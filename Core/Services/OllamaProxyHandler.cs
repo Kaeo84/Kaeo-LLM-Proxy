@@ -436,6 +436,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Track which original model was requested so we can resolve the upstream URL.
         string originalModel = string.Empty;
+        bool isStreamingRequest = false;
 
         if (req.HasEntityBody)
         {
@@ -451,6 +452,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 originalModel = log.Model; // set by NormalizeRequestBody
                 if (_settings.CollectRequestDetails)
                     log.RequestBody = RedactRequestBodyForLog(bodyText, originalModel);
+                isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
                 upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
@@ -465,27 +467,71 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
         ApplyApiKey(upstreamReq, apiKey);
-        HttpResponseMessage upstreamResp = await SendUpstreamAsync(
-            upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        // For streaming chat requests, pre-commit SSE headers to the client immediately and
+        // pump heartbeat comments while waiting for the upstream to send its first response
+        // header. llama.cpp does not send any HTTP headers until the first token is ready,
+        // so clients with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s)
+        // would otherwise time out silently during long prompt-processing / thinking phases.
+        bool headersPreCommitted = false;
+        using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task preResponseHeartbeatTask = Task.CompletedTask;
+
+        if (isStreamingRequest && ShouldEmitHeartbeats(originalModel))
+        {
+            resp.StatusCode = 200;
+            resp.ContentType = "text/event-stream";
+            resp.SendChunked = true;
+            resp.KeepAlive = true;
+            headersPreCommitted = true;
+
+            // Flush a single comment frame so the HTTP headers are actually sent on the wire.
+            byte[] initial = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
+            await resp.OutputStream.WriteAsync(initial, ct);
+            await resp.OutputStream.FlushAsync(ct);
+
+            preResponseHeartbeatTask = PumpPreResponseHeartbeatsAsync(
+                resp.OutputStream,
+                _settings.StreamingHeartbeatIntervalSeconds,
+                preResponseCts.Token);
+        }
+
+        HttpResponseMessage upstreamResp;
+        try
+        {
+            upstreamResp = await SendUpstreamAsync(
+                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+        }
+        finally
+        {
+            // Stop the pre-response heartbeat pump as soon as upstream headers arrive.
+            await preResponseCts.CancelAsync();
+            await preResponseHeartbeatTask;
+        }
 
         log.StatusCode = (int)upstreamResp.StatusCode;
-        resp.StatusCode = (int)upstreamResp.StatusCode;
 
-        // Copy response headers
-        foreach (var header in upstreamResp.Headers)
+        // Only set status/headers if we haven't already pre-committed them to the client.
+        if (!headersPreCommitted)
         {
-            if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-            if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
-            resp.Headers[header.Key] = string.Join(",", header.Value);
-        }
-        foreach (var header in upstreamResp.Content.Headers)
-        {
-            if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-            resp.Headers[header.Key] = string.Join(",", header.Value);
-        }
+            resp.StatusCode = (int)upstreamResp.StatusCode;
 
-        resp.SendChunked = true;
-        resp.KeepAlive = true;
+            // Copy response headers
+            foreach (var header in upstreamResp.Headers)
+            {
+                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
+                resp.Headers[header.Key] = string.Join(",", header.Value);
+            }
+            foreach (var header in upstreamResp.Content.Headers)
+            {
+                if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+                resp.Headers[header.Key] = string.Join(",", header.Value);
+            }
+
+            resp.SendChunked = true;
+            resp.KeepAlive = true;
+        }
 
         if (!upstreamResp.IsSuccessStatusCode)
         {
@@ -493,8 +539,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
-            byte[] errorBytes = System.Text.Encoding.UTF8.GetBytes(errorBody);
-            await resp.OutputStream.WriteAsync(errorBytes, ct);
+
+            if (headersPreCommitted)
+            {
+                // Headers already sent as 200/SSE — emit the error as a data frame so the
+                // client sees it rather than getting a silent stream close.
+                string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{(int)upstreamResp.StatusCode}}}}}\n\n";
+                byte[] errorFrameBytes = Encoding.UTF8.GetBytes(errorFrame);
+                await resp.OutputStream.WriteAsync(errorFrameBytes, ct);
+            }
+            else
+            {
+                byte[] errorBytes = System.Text.Encoding.UTF8.GetBytes(errorBody);
+                await resp.OutputStream.WriteAsync(errorBytes, ct);
+            }
             resp.OutputStream.Close();
             return;
         }
@@ -586,6 +644,49 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private static bool IsChatCompletionsPath(string? path) =>
         path?.Equals("/v1/chat/completions", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// Returns true when a JSON POST body has <c>"stream": true</c>, indicating the client
+    /// expects an SSE response and we should pre-commit headers before the upstream responds.
+    /// </summary>
+    private static bool IsStreamingJsonBody(string json)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("stream", out JsonElement el)
+                && el.ValueKind == JsonValueKind.True;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Pumps SSE comment heartbeat frames into <paramref name="output"/> at
+    /// <paramref name="intervalSeconds"/> intervals until <paramref name="ct"/> is cancelled.
+    /// Used to keep the client connection alive while waiting for the upstream to send its
+    /// first response header (i.e. before the first token is generated).
+    /// </summary>
+    private static async Task PumpPreResponseHeartbeatsAsync(
+        Stream output,
+        int intervalSeconds,
+        CancellationToken ct)
+    {
+        byte[] heartbeat = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
+        TimeSpan interval = TimeSpan.FromSeconds(Math.Clamp(intervalSeconds, 5, 300));
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(interval, ct).ConfigureAwait(false);
+                await output.WriteAsync(heartbeat, ct).ConfigureAwait(false);
+                await output.FlushAsync(ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { /* expected on cancel */ }
+    }
 
     private static async Task CopyStreamWithSseHeartbeatsAsync(
         Stream source,
@@ -2011,7 +2112,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             LlamaCppChoice? choice = chunk.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = choice?.Delta;
-            string token = delta?.Content ?? delta?.ReasoningContent ?? string.Empty;
+            string token = (string.IsNullOrEmpty(delta?.Content) ? delta?.ReasoningContent : delta?.Content) ?? string.Empty;
             AppendStreamingToolCalls(toolCallBuilders, delta?.ToolCalls);
             token = CaptureXmlToolCallToken(token, xmlToolCallBuilder, ref capturingXmlToolCall);
             bool done = choice?.FinishReason != null;
