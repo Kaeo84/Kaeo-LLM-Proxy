@@ -189,8 +189,8 @@ internal sealed class LoggingSettings
     public int AppLogRetainedFileCount { get; set; } = 7;
 
     /// <summary>
-    /// Legacy database size setting retained for backward-compatible settings deserialization.
-    /// Request-log growth is now controlled by retention cleanup instead of database-file archiving.
+    /// Request-log growth is controlled by retention cleanup instead of database-file archiving.
+    /// This setting is no longer used by the SQLite-backed database.
     /// </summary>
     public int RequestLogFileSizeLimitMb { get; set; } = 50;
 
