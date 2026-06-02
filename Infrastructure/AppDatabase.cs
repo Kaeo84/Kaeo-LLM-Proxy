@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
 using Microsoft.Data.Sqlite;
@@ -32,6 +33,8 @@ internal sealed class AppDatabase : IDisposable
         string? directory = Path.GetDirectoryName(_configuredDbPath);
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
+
+        PrepareDatabaseFile();
 
         SqliteConnectionStringBuilder builder = new()
         {
@@ -805,6 +808,53 @@ internal sealed class AppDatabase : IDisposable
                 """;
             command.ExecuteNonQuery();
         }
+    }
+
+    private void PrepareDatabaseFile()
+    {
+        if (!File.Exists(_configuredDbPath))
+            return;
+
+        FileInfo fileInfo = new(_configuredDbPath);
+        if (fileInfo.Length == 0)
+            return;
+
+        if (IsSqliteDatabaseFile(_configuredDbPath))
+            return;
+
+        string archivedPath = BuildArchivedDatabasePath();
+        File.Move(_configuredDbPath, archivedPath, overwrite: false);
+
+        Log.Warning(
+            "Existing database file at {Path} is not a SQLite database. Archived it to {ArchivePath} and created a new SQLite database.",
+            _configuredDbPath,
+            archivedPath);
+    }
+
+    private string BuildArchivedDatabasePath()
+    {
+        string directory = Path.GetDirectoryName(_configuredDbPath) ?? AppDomain.CurrentDomain.BaseDirectory;
+        string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(_configuredDbPath);
+        string extension = Path.GetExtension(_configuredDbPath);
+
+        return Path.Combine(
+            directory,
+            $"{fileNameWithoutExtension}_pre_sqlite_{DateTime.UtcNow:yyyyMMdd_HHmmss}{extension}.bak");
+    }
+
+    private static bool IsSqliteDatabaseFile(string path)
+    {
+        byte[] header = new byte[16];
+
+        using FileStream stream = File.OpenRead(path);
+        if (stream.Length < header.Length)
+            return false;
+
+        int bytesRead = stream.Read(header, 0, header.Length);
+        if (bytesRead < header.Length)
+            return false;
+
+        return Encoding.ASCII.GetString(header) == "SQLite format 3\0";
     }
 
     private SqliteConnection OpenConnection()
