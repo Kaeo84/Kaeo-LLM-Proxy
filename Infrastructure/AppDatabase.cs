@@ -21,6 +21,7 @@ internal sealed class AppDatabase : IDisposable
     };
 
     private readonly string _configuredDbPath;
+    private readonly string _activeDbPath;
     private readonly Lock _lock = new();
     private readonly string _connectionString;
 
@@ -34,11 +35,11 @@ internal sealed class AppDatabase : IDisposable
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
 
-        PrepareDatabaseFile();
+        _activeDbPath = PrepareDatabaseFile();
 
         SqliteConnectionStringBuilder builder = new()
         {
-            DataSource = _configuredDbPath,
+            DataSource = _activeDbPath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Shared,
         };
@@ -47,7 +48,7 @@ internal sealed class AppDatabase : IDisposable
 
         InitializeDatabase();
 
-        Log.Debug("AppDatabase opened {Path}", _configuredDbPath);
+        Log.Debug("AppDatabase opened {Path}", _activeDbPath);
     }
 
     /// <summary>
@@ -810,36 +811,72 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    private void PrepareDatabaseFile()
+    private string PrepareDatabaseFile()
     {
         if (!File.Exists(_configuredDbPath))
-            return;
+            return _configuredDbPath;
 
         FileInfo fileInfo = new(_configuredDbPath);
         if (fileInfo.Length == 0)
-            return;
+            return _configuredDbPath;
 
         if (IsSqliteDatabaseFile(_configuredDbPath))
-            return;
+            return _configuredDbPath;
 
-        string archivedPath = BuildArchivedDatabasePath();
-        File.Move(_configuredDbPath, archivedPath, overwrite: false);
+        string archivedPath = BuildArchivedDatabasePath(_configuredDbPath);
+        try
+        {
+            File.Move(_configuredDbPath, archivedPath, overwrite: false);
 
-        Log.Warning(
-            "Existing database file at {Path} is not a SQLite database. Archived it to {ArchivePath} and created a new SQLite database.",
-            _configuredDbPath,
-            archivedPath);
+            Log.Warning(
+                "Existing database file at {Path} is not a SQLite database. Archived it to {ArchivePath} and created a new SQLite database.",
+                _configuredDbPath,
+                archivedPath);
+
+            return _configuredDbPath;
+        }
+        catch (IOException ex)
+        {
+            string fallbackPath = BuildFallbackSqlitePath(_configuredDbPath);
+            Log.Warning(
+                ex,
+                "Existing non-SQLite database file at {Path} is locked by another process and could not be archived. Using fallback SQLite database path {FallbackPath}.",
+                _configuredDbPath,
+                fallbackPath);
+            return fallbackPath;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            string fallbackPath = BuildFallbackSqlitePath(_configuredDbPath);
+            Log.Warning(
+                ex,
+                "Existing non-SQLite database file at {Path} could not be archived due to access restrictions. Using fallback SQLite database path {FallbackPath}.",
+                _configuredDbPath,
+                fallbackPath);
+            return fallbackPath;
+        }
     }
 
-    private string BuildArchivedDatabasePath()
+    private static string BuildArchivedDatabasePath(string originalPath)
     {
-        string directory = Path.GetDirectoryName(_configuredDbPath) ?? AppDomain.CurrentDomain.BaseDirectory;
-        string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(_configuredDbPath);
-        string extension = Path.GetExtension(_configuredDbPath);
+        string directory = Path.GetDirectoryName(originalPath) ?? AppDomain.CurrentDomain.BaseDirectory;
+        string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(originalPath);
+        string extension = Path.GetExtension(originalPath);
 
         return Path.Combine(
             directory,
             $"{fileNameWithoutExtension}_pre_sqlite_{DateTime.UtcNow:yyyyMMdd_HHmmss}{extension}.bak");
+    }
+
+    private static string BuildFallbackSqlitePath(string originalPath)
+    {
+        string directory = Path.GetDirectoryName(originalPath) ?? AppDomain.CurrentDomain.BaseDirectory;
+        string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(originalPath);
+        string extension = Path.GetExtension(originalPath);
+
+        return Path.Combine(
+            directory,
+            $"{fileNameWithoutExtension}_sqlite_{DateTime.UtcNow:yyyyMMdd_HHmmss}{extension}");
     }
 
     private static bool IsSqliteDatabaseFile(string path)
