@@ -8,7 +8,7 @@ namespace Kaeo.LlmProxy.Core.Services;
 
 /// <summary>
 /// Thread-safe service that tracks request logs and aggregate statistics.
-/// Persists every entry to <see cref="AppDatabase"/> (LiteDB) when one is supplied.
+/// Persists every entry to <see cref="AppDatabase"/> (SQLite) when one is supplied.
 /// On construction, seeds the in-memory queue from the store so the GUI is populated after restart.
 /// Runs a background timer every 15 minutes to prune entries older than the configured retention window.
 /// All public members are safe to call from any thread.
@@ -237,7 +237,7 @@ internal sealed class StatisticsService : IDisposable
     }
 
     /// <summary>
-    /// Deletes entries from LiteDB and the in-memory queue that are older than
+    /// Deletes entries from the SQLite store and the in-memory queue that are older than
     /// <see cref="_retentionHours"/>. A value of 0 means keep forever.
     /// </summary>
     private void PruneExpired()

@@ -1,64 +1,129 @@
-using LiteDB;
+using System.Data;
+using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
+using Microsoft.Data.Sqlite;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Infrastructure;
 
 /// <summary>
-/// Central LiteDB application database. Stores application data in collections, including
+/// Central SQLite application database. Stores application data in tables, including
 /// request logs, exceptions, model mappings, instruction sets, and heartbeat counters.
 /// </summary>
 internal sealed class AppDatabase : IDisposable
 {
-    private const string RequestCollectionName = "requests";
-    private const string ExceptionCollectionName = "exceptions";
-    private const string ModelMappingCollectionName = "model_mappings";
-    private const string InstructionSetCollectionName = "instruction_sets";
-    private const string HeartbeatCollectionName = "heartbeats";
-    private const string RuntimeSettingsCollectionName = "runtime_settings";
     private const string RuntimeSettingsId = "current";
 
-    private readonly string _logDir;
-    private readonly string _configuredDbPath;
-    private readonly long _fileSizeLimitBytes;
-    private readonly Lock _lock = new();
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
 
-    private LiteDatabase? _db;
-    private string _currentDbPath = string.Empty;
+    private readonly string _configuredDbPath;
+    private readonly Lock _lock = new();
+    private readonly string _connectionString;
 
     public AppDatabase(LoggingSettings settings)
     {
-        _configuredDbPath = settings.GetApplicationDatabasePath();
-        _logDir = Path.GetDirectoryName(_configuredDbPath)
-            ?? Path.Combine(settings.LogDirectory, "requests");
-        _fileSizeLimitBytes = (long)settings.RequestLogFileSizeLimitMb * 1024 * 1024;
+        ArgumentNullException.ThrowIfNull(settings);
 
-        Directory.CreateDirectory(_logDir);
-        OpenDatabase();
+        _configuredDbPath = settings.GetApplicationDatabasePath();
+
+        string? directory = Path.GetDirectoryName(_configuredDbPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        SqliteConnectionStringBuilder builder = new()
+        {
+            DataSource = _configuredDbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+        };
+
+        _connectionString = builder.ToString();
+
+        InitializeDatabase();
+
+        Log.Debug("AppDatabase opened {Path}", _configuredDbPath);
     }
 
     /// <summary>
-    /// Inserts a request log entry, cycling the database file if it has grown too large.
+    /// Inserts a request log entry.
     /// If <paramref name="ex"/> is provided, the full exception detail is stored in the
-    /// exceptions collection and the generated id is linked back onto <paramref name="entry"/>.
+    /// exceptions table and the generated id is linked back onto <paramref name="entry"/>.
     /// </summary>
     public void Insert(RequestLog entry, Exception? ex = null)
     {
+        ArgumentNullException.ThrowIfNull(entry);
+
         lock (_lock)
         {
-            CycleIfNeeded();
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
 
             if (ex is not null)
             {
                 ExceptionDetail detail = ExceptionDetail.FromException(ex, entry);
-                ILiteCollection<ExceptionDetail> exCol =
-                    _db!.GetCollection<ExceptionDetail>(ExceptionCollectionName);
-                exCol.Insert(detail);
+                detail.Id = InsertException(connection, transaction, detail);
                 entry.ExceptionId = detail.Id;
             }
 
-            ILiteCollection<RequestLog> col = _db!.GetCollection<RequestLog>(RequestCollectionName);
-            col.Insert(entry);
+            using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                INSERT INTO requests (
+                    timestamp_utc,
+                    method,
+                    ollama_path,
+                    upstream_path,
+                    model,
+                    streaming,
+                    status,
+                    error_message,
+                    status_code,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    tokens_per_second,
+                    exception_id,
+                    request_body,
+                    response_body,
+                    request_bytes,
+                    response_bytes,
+                    summarization_retries,
+                    original_message_count,
+                    summarized_message_count
+                )
+                VALUES (
+                    $timestampUtc,
+                    $method,
+                    $ollamaPath,
+                    $upstreamPath,
+                    $model,
+                    $streaming,
+                    $status,
+                    $errorMessage,
+                    $statusCode,
+                    $durationMs,
+                    $promptTokens,
+                    $completionTokens,
+                    $tokensPerSecond,
+                    $exceptionId,
+                    $requestBody,
+                    $responseBody,
+                    $requestBytes,
+                    $responseBytes,
+                    $summarizationRetries,
+                    $originalMessageCount,
+                    $summarizedMessageCount
+                );
+                """;
+
+            AddRequestLogParameters(command, entry);
+            command.ExecuteNonQuery();
+
+            transaction.Commit();
         }
     }
 
@@ -66,19 +131,112 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            return [.. _db!.GetCollection<ModelMapping>(ModelMappingCollectionName).FindAll()];
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    is_enabled,
+                    proxy_name,
+                    model_name,
+                    enable_thinking_compatibility,
+                    enable_heartbeats,
+                    upstream_type,
+                    api_key,
+                    upstream_url,
+                    upstream_timeout_seconds,
+                    repeat_penalty,
+                    temperature,
+                    enable_auto_summarization,
+                    preserve_recent_message_count,
+                    max_summarization_retries,
+                    instruction_set_name,
+                    redact_request_bodies,
+                    redact_response_bodies,
+                    redact_sensitive_json_fields
+                FROM model_mappings
+                ORDER BY proxy_name;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ModelMapping> mappings = [];
+
+            while (reader.Read())
+                mappings.Add(ReadModelMapping(reader));
+
+            return mappings;
         }
     }
 
     public void SaveModelMappings(IEnumerable<ModelMapping> mappings)
     {
+        ArgumentNullException.ThrowIfNull(mappings);
+
         lock (_lock)
         {
-            ILiteCollection<ModelMapping> col = _db!.GetCollection<ModelMapping>(ModelMappingCollectionName);
-            col.DeleteAll();
-            ModelMapping[] items = [.. mappings];
-            if (items.Length > 0)
-                col.InsertBulk(items);
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            using (SqliteCommand deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = "DELETE FROM model_mappings;";
+                deleteCommand.ExecuteNonQuery();
+            }
+
+            foreach (ModelMapping mapping in mappings)
+            {
+                using SqliteCommand insertCommand = connection.CreateCommand();
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText =
+                    """
+                    INSERT INTO model_mappings (
+                        proxy_name,
+                        is_enabled,
+                        model_name,
+                        enable_thinking_compatibility,
+                        enable_heartbeats,
+                        upstream_type,
+                        api_key,
+                        upstream_url,
+                        upstream_timeout_seconds,
+                        repeat_penalty,
+                        temperature,
+                        enable_auto_summarization,
+                        preserve_recent_message_count,
+                        max_summarization_retries,
+                        instruction_set_name,
+                        redact_request_bodies,
+                        redact_response_bodies,
+                        redact_sensitive_json_fields
+                    )
+                    VALUES (
+                        $proxyName,
+                        $isEnabled,
+                        $modelName,
+                        $enableThinkingCompatibility,
+                        $enableHeartbeats,
+                        $upstreamType,
+                        $apiKey,
+                        $upstreamUrl,
+                        $upstreamTimeoutSeconds,
+                        $repeatPenalty,
+                        $temperature,
+                        $enableAutoSummarization,
+                        $preserveRecentMessageCount,
+                        $maxSummarizationRetries,
+                        $instructionSetName,
+                        $redactRequestBodies,
+                        $redactResponseBodies,
+                        $redactSensitiveJsonFields
+                    );
+                    """;
+
+                AddModelMappingParameters(insertCommand, mapping);
+                insertCommand.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
         }
     }
 
@@ -86,19 +244,64 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            return [.. _db!.GetCollection<InstructionSet>(InstructionSetCollectionName).FindAll().OrderBy(i => i.Name)];
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT name, instructions, description
+                FROM instruction_sets
+                ORDER BY name;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<InstructionSet> instructionSets = [];
+
+            while (reader.Read())
+            {
+                instructionSets.Add(new InstructionSet
+                {
+                    Name = reader.GetString(0),
+                    Instructions = reader.GetString(1),
+                    Description = reader.IsDBNull(2) ? null : reader.GetString(2),
+                });
+            }
+
+            return instructionSets;
         }
     }
 
     public void SaveInstructionSets(IEnumerable<InstructionSet> instructionSets)
     {
+        ArgumentNullException.ThrowIfNull(instructionSets);
+
         lock (_lock)
         {
-            ILiteCollection<InstructionSet> col = _db!.GetCollection<InstructionSet>(InstructionSetCollectionName);
-            col.DeleteAll();
-            InstructionSet[] items = [.. instructionSets];
-            if (items.Length > 0)
-                col.InsertBulk(items);
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            using (SqliteCommand deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = "DELETE FROM instruction_sets;";
+                deleteCommand.ExecuteNonQuery();
+            }
+
+            foreach (InstructionSet instructionSet in instructionSets)
+            {
+                using SqliteCommand insertCommand = connection.CreateCommand();
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText =
+                    """
+                    INSERT INTO instruction_sets (name, instructions, description)
+                    VALUES ($name, $instructions, $description);
+                    """;
+                insertCommand.Parameters.AddWithValue("$name", instructionSet.Name);
+                insertCommand.Parameters.AddWithValue("$instructions", instructionSet.Instructions);
+                insertCommand.Parameters.AddWithValue("$description", DbValue(instructionSet.Description));
+                insertCommand.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
         }
     }
 
@@ -106,23 +309,51 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            return [.. _db!.GetCollection<PersistedHeartbeat>(HeartbeatCollectionName)
-                .FindAll()
-                .Select(h => (h.Model, h.Count, h.LastSentUtc))];
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT model, count, last_sent_utc
+                FROM heartbeats
+                ORDER BY model;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<(string Model, long Count, DateTime LastSentUtc)> results = [];
+
+            while (reader.Read())
+            {
+                results.Add((
+                    reader.GetString(0),
+                    reader.GetInt64(1),
+                    ReadUtc(reader, 2)));
+            }
+
+            return results;
         }
     }
 
     public void UpsertHeartbeat(string model, long count, DateTime lastSentUtc)
     {
+        if (string.IsNullOrWhiteSpace(model))
+            throw new ArgumentException("Heartbeat model is required.", nameof(model));
+
         lock (_lock)
         {
-            ILiteCollection<PersistedHeartbeat> col = _db!.GetCollection<PersistedHeartbeat>(HeartbeatCollectionName);
-            col.Upsert(new PersistedHeartbeat
-            {
-                Model = model,
-                Count = count,
-                LastSentUtc = lastSentUtc,
-            });
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO heartbeats (model, count, last_sent_utc)
+                VALUES ($model, $count, $lastSentUtc)
+                ON CONFLICT(model) DO UPDATE SET
+                    count = excluded.count,
+                    last_sent_utc = excluded.last_sent_utc;
+                """;
+            command.Parameters.AddWithValue("$model", model.Trim());
+            command.Parameters.AddWithValue("$count", count);
+            command.Parameters.AddWithValue("$lastSentUtc", ToUtcText(lastSentUtc));
+            command.ExecuteNonQuery();
         }
     }
 
@@ -130,7 +361,10 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            _db!.GetCollection<PersistedHeartbeat>(HeartbeatCollectionName).DeleteAll();
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM heartbeats;";
+            command.ExecuteNonQuery();
         }
     }
 
@@ -138,11 +372,39 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            PersistedRuntimeSettings? persisted = _db!
-                .GetCollection<PersistedRuntimeSettings>(RuntimeSettingsCollectionName)
-                .FindById(RuntimeSettingsId);
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    auto_start_proxy,
+                    start_with_dashboard_open,
+                    allow_multiple_instances,
+                    show_close_to_tray_notification,
+                    collect_request_details,
+                    collect_response_details,
+                    enable_streaming_heartbeats,
+                    streaming_heartbeat_interval_seconds
+                FROM runtime_settings
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", RuntimeSettingsId);
 
-            return persisted?.ToRuntimeSettings() ?? new RuntimeSettings();
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return new RuntimeSettings();
+
+            return new RuntimeSettings
+            {
+                AutoStartProxy = ReadBoolean(reader, 0),
+                StartWithDashboardOpen = ReadBoolean(reader, 1),
+                AllowMultipleInstances = ReadBoolean(reader, 2),
+                ShowCloseToTrayNotification = ReadBoolean(reader, 3),
+                CollectRequestDetails = ReadBoolean(reader, 4),
+                CollectResponseDetails = ReadBoolean(reader, 5),
+                EnableStreamingHeartbeats = ReadBoolean(reader, 6),
+                StreamingHeartbeatIntervalSeconds = reader.GetInt32(7),
+            };
         }
     }
 
@@ -152,8 +414,53 @@ internal sealed class AppDatabase : IDisposable
 
         lock (_lock)
         {
-            _db!.GetCollection<PersistedRuntimeSettings>(RuntimeSettingsCollectionName)
-                .Upsert(PersistedRuntimeSettings.FromRuntimeSettings(settings));
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO runtime_settings (
+                    id,
+                    auto_start_proxy,
+                    start_with_dashboard_open,
+                    allow_multiple_instances,
+                    show_close_to_tray_notification,
+                    collect_request_details,
+                    collect_response_details,
+                    enable_streaming_heartbeats,
+                    streaming_heartbeat_interval_seconds
+                )
+                VALUES (
+                    $id,
+                    $autoStartProxy,
+                    $startWithDashboardOpen,
+                    $allowMultipleInstances,
+                    $showCloseToTrayNotification,
+                    $collectRequestDetails,
+                    $collectResponseDetails,
+                    $enableStreamingHeartbeats,
+                    $streamingHeartbeatIntervalSeconds
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    auto_start_proxy = excluded.auto_start_proxy,
+                    start_with_dashboard_open = excluded.start_with_dashboard_open,
+                    allow_multiple_instances = excluded.allow_multiple_instances,
+                    show_close_to_tray_notification = excluded.show_close_to_tray_notification,
+                    collect_request_details = excluded.collect_request_details,
+                    collect_response_details = excluded.collect_response_details,
+                    enable_streaming_heartbeats = excluded.enable_streaming_heartbeats,
+                    streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds;
+                """;
+
+            command.Parameters.AddWithValue("$id", RuntimeSettingsId);
+            command.Parameters.AddWithValue("$autoStartProxy", ToSqliteBoolean(settings.AutoStartProxy));
+            command.Parameters.AddWithValue("$startWithDashboardOpen", ToSqliteBoolean(settings.StartWithDashboardOpen));
+            command.Parameters.AddWithValue("$allowMultipleInstances", ToSqliteBoolean(settings.AllowMultipleInstances));
+            command.Parameters.AddWithValue("$showCloseToTrayNotification", ToSqliteBoolean(settings.ShowCloseToTrayNotification));
+            command.Parameters.AddWithValue("$collectRequestDetails", ToSqliteBoolean(settings.CollectRequestDetails));
+            command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
+            command.Parameters.AddWithValue("$enableStreamingHeartbeats", ToSqliteBoolean(settings.EnableStreamingHeartbeats));
+            command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
+            command.ExecuteNonQuery();
         }
     }
 
@@ -162,9 +469,18 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            ILiteCollection<ExceptionDetail> col =
-                _db!.GetCollection<ExceptionDetail>(ExceptionCollectionName);
-            return col.FindById(exceptionId);
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, timestamp_utc, exception_type, message, stack_trace, inner_exceptions_json, method, path, model
+                FROM exceptions
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", exceptionId);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadExceptionDetail(reader) : null;
         }
     }
 
@@ -176,8 +492,44 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            ILiteCollection<RequestLog> col = _db!.GetCollection<RequestLog>(RequestCollectionName);
-            return [.. col.FindAll().OrderByDescending(r => r.Timestamp).Take(count)];
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    timestamp_utc,
+                    method,
+                    ollama_path,
+                    upstream_path,
+                    model,
+                    streaming,
+                    status,
+                    error_message,
+                    status_code,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    tokens_per_second,
+                    exception_id,
+                    request_body,
+                    response_body,
+                    request_bytes,
+                    response_bytes,
+                    summarization_retries,
+                    original_message_count,
+                    summarized_message_count
+                FROM requests
+                ORDER BY timestamp_utc DESC
+                LIMIT $count;
+                """;
+            command.Parameters.AddWithValue("$count", count);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<RequestLog> entries = [];
+            while (reader.Read())
+                entries.Add(ReadRequestLog(reader));
+
+            return entries;
         }
     }
 
@@ -190,8 +542,69 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            ILiteCollection<RequestLog> col = _db!.GetCollection<RequestLog>(RequestCollectionName);
-            return [.. col.FindAll().OrderByDescending(r => r.Timestamp).Take(count).Reverse()];
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    timestamp_utc,
+                    method,
+                    ollama_path,
+                    upstream_path,
+                    model,
+                    streaming,
+                    status,
+                    error_message,
+                    status_code,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    tokens_per_second,
+                    exception_id,
+                    request_body,
+                    response_body,
+                    request_bytes,
+                    response_bytes,
+                    summarization_retries,
+                    original_message_count,
+                    summarized_message_count
+                FROM (
+                    SELECT
+                        timestamp_utc,
+                        method,
+                        ollama_path,
+                        upstream_path,
+                        model,
+                        streaming,
+                        status,
+                        error_message,
+                        status_code,
+                        duration_ms,
+                        prompt_tokens,
+                        completion_tokens,
+                        tokens_per_second,
+                        exception_id,
+                        request_body,
+                        response_body,
+                        request_bytes,
+                        response_bytes,
+                        summarization_retries,
+                        original_message_count,
+                        summarized_message_count
+                    FROM requests
+                    ORDER BY timestamp_utc DESC
+                    LIMIT $count
+                ) recent
+                ORDER BY timestamp_utc ASC;
+                """;
+            command.Parameters.AddWithValue("$count", count);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<RequestLog> entries = [];
+            while (reader.Read())
+                entries.Add(ReadRequestLog(reader));
+
+            return entries;
         }
     }
 
@@ -204,22 +617,55 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            ILiteCollection<RequestLog> col = _db!.GetCollection<RequestLog>(RequestCollectionName);
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
 
-            // Collect exception ids that are about to be removed so we can clean those up too.
-            List<int> exceptionIds = [.. col
-                .Find(r => r.Timestamp < cutoff && r.ExceptionId.HasValue)
-                .Select(r => r.ExceptionId!.Value)];
+            List<int> exceptionIds = [];
 
-            int deleted = col.DeleteMany(r => r.Timestamp < cutoff);
+            using (SqliteCommand selectCommand = connection.CreateCommand())
+            {
+                selectCommand.Transaction = transaction;
+                selectCommand.CommandText =
+                    """
+                    SELECT exception_id
+                    FROM requests
+                    WHERE timestamp_utc < $cutoffUtc
+                      AND exception_id IS NOT NULL;
+                    """;
+                selectCommand.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+
+                using SqliteDataReader reader = selectCommand.ExecuteReader();
+                while (reader.Read())
+                    exceptionIds.Add(reader.GetInt32(0));
+            }
+
+            int deleted;
+
+            using (SqliteCommand deleteRequests = connection.CreateCommand())
+            {
+                deleteRequests.Transaction = transaction;
+                deleteRequests.CommandText =
+                    """
+                    DELETE FROM requests
+                    WHERE timestamp_utc < $cutoffUtc;
+                    """;
+                deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+                deleted = deleteRequests.ExecuteNonQuery();
+            }
 
             if (exceptionIds.Count > 0)
             {
-                ILiteCollection<ExceptionDetail> exCol =
-                    _db!.GetCollection<ExceptionDetail>(ExceptionCollectionName);
-                foreach (int id in exceptionIds)
-                    exCol.Delete(id);
+                foreach (int id in exceptionIds.Distinct())
+                {
+                    using SqliteCommand deleteException = connection.CreateCommand();
+                    deleteException.Transaction = transaction;
+                    deleteException.CommandText = "DELETE FROM exceptions WHERE id = $id;";
+                    deleteException.Parameters.AddWithValue("$id", id);
+                    deleteException.ExecuteNonQuery();
+                }
             }
+
+            transaction.Commit();
 
             if (deleted > 0)
                 Log.Debug("AppDatabase pruned {Count} request entries older than {Cutoff:u}", deleted, cutoff);
@@ -233,153 +679,328 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            ILiteCollection<RequestLog> col = _db!.GetCollection<RequestLog>(RequestCollectionName);
-            IEnumerable<RequestLog> all = col.FindAll();
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN status = $errorStatus THEN 1 ELSE 0 END), 0) AS errors,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens
+                FROM requests;
+                """;
+            command.Parameters.AddWithValue("$errorStatus", (int)RequestStatus.Error);
 
-            long total = 0, errors = 0, prompt = 0, completion = 0;
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return (0, 0, 0, 0);
 
-            foreach (RequestLog r in all)
-            {
-                total++;
-                if (r.Status == RequestStatus.Error) errors++;
-                prompt += r.PromptTokens;
-                completion += r.CompletionTokens;
-            }
-
-            return (total, errors, prompt, completion);
+            return (
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetInt64(2),
+                reader.GetInt64(3));
         }
     }
 
-    // ── Internals ────────────────────────────────────────────────────────────
-
-    private void OpenDatabase()
-    {
-        _currentDbPath = _configuredDbPath;
-
-        var connStr = new ConnectionString(_currentDbPath)
-        {
-            Connection = ConnectionType.Shared,
-        };
-
-        _db = new LiteDatabase(connStr);
-
-        // Ensure an index on Timestamp for fast ordered queries.
-        ILiteCollection<RequestLog> col = _db.GetCollection<RequestLog>(RequestCollectionName);
-        col.EnsureIndex(r => r.Timestamp);
-
-        // Index exceptions by their auto-id (default) — also index timestamp for browsing.
-        ILiteCollection<ExceptionDetail> exCol =
-            _db.GetCollection<ExceptionDetail>(ExceptionCollectionName);
-        exCol.EnsureIndex(e => e.Timestamp);
-
-        _db.GetCollection<ModelMapping>(ModelMappingCollectionName).EnsureIndex(m => m.ProxyName, unique: true);
-        _db.GetCollection<ModelMapping>(ModelMappingCollectionName).EnsureIndex(m => m.ModelName);
-        _db.GetCollection<InstructionSet>(InstructionSetCollectionName).EnsureIndex(i => i.Name, unique: true);
-        _db.GetCollection<PersistedHeartbeat>(HeartbeatCollectionName).EnsureIndex(h => h.Model, unique: true);
-        _db.GetCollection<PersistedRuntimeSettings>(RuntimeSettingsCollectionName).EnsureIndex(s => s.Id, unique: true);
-
-        Log.Debug("AppDatabase opened {Path}", _currentDbPath);
-    }
-
-    private void CycleIfNeeded()
-    {
-        if (!File.Exists(_currentDbPath))
-            return;
-
-        long size = new FileInfo(_currentDbPath).Length;
-        if (size < _fileSizeLimitBytes)
-            return;
-
-        Log.Information("AppDatabase cycling — file size {SizeMb:F1} MB exceeds limit", size / 1024.0 / 1024.0);
-
-        _db?.Dispose();
-        _db = null;
-
-        string archive = Path.Combine(_logDir,
-            $"{Path.GetFileNameWithoutExtension(_currentDbPath)}_{DateTime.UtcNow:yyyyMMdd_HHmmss}{Path.GetExtension(_currentDbPath)}");
-        File.Move(_currentDbPath, archive);
-
-        OpenDatabase();
-    }
-
-    public void Dispose()
+    private void InitializeDatabase()
     {
         lock (_lock)
         {
-            _db?.Dispose();
-            _db = null;
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                PRAGMA journal_mode = WAL;
+                PRAGMA foreign_keys = OFF;
+
+                CREATE TABLE IF NOT EXISTS exceptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    exception_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    stack_trace TEXT NULL,
+                    inner_exceptions_json TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    model TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    ollama_path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    streaming INTEGER NOT NULL,
+                    status INTEGER NOT NULL,
+                    error_message TEXT NULL,
+                    status_code INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    tokens_per_second REAL NOT NULL,
+                    exception_id INTEGER NULL,
+                    request_body TEXT NULL,
+                    response_body TEXT NULL,
+                    request_bytes INTEGER NOT NULL,
+                    response_bytes INTEGER NOT NULL,
+                    summarization_retries INTEGER NOT NULL,
+                    original_message_count INTEGER NULL,
+                    summarized_message_count INTEGER NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
+                CREATE INDEX IF NOT EXISTS idx_requests_exception_id ON requests(exception_id);
+                CREATE INDEX IF NOT EXISTS idx_exceptions_timestamp_utc ON exceptions(timestamp_utc);
+
+                CREATE TABLE IF NOT EXISTS model_mappings (
+                    proxy_name TEXT PRIMARY KEY,
+                    is_enabled INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    enable_thinking_compatibility INTEGER NOT NULL,
+                    enable_heartbeats INTEGER NOT NULL,
+                    upstream_type INTEGER NOT NULL,
+                    api_key TEXT NULL,
+                    upstream_url TEXT NOT NULL,
+                    upstream_timeout_seconds INTEGER NOT NULL,
+                    repeat_penalty REAL NOT NULL,
+                    temperature REAL NOT NULL,
+                    enable_auto_summarization INTEGER NOT NULL,
+                    preserve_recent_message_count INTEGER NOT NULL,
+                    max_summarization_retries INTEGER NOT NULL,
+                    instruction_set_name TEXT NULL,
+                    redact_request_bodies INTEGER NOT NULL,
+                    redact_response_bodies INTEGER NOT NULL,
+                    redact_sensitive_json_fields INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
+
+                CREATE TABLE IF NOT EXISTS instruction_sets (
+                    name TEXT PRIMARY KEY,
+                    instructions TEXT NOT NULL,
+                    description TEXT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS heartbeats (
+                    model TEXT PRIMARY KEY,
+                    count INTEGER NOT NULL,
+                    last_sent_utc TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    id TEXT PRIMARY KEY,
+                    auto_start_proxy INTEGER NOT NULL,
+                    start_with_dashboard_open INTEGER NOT NULL,
+                    allow_multiple_instances INTEGER NOT NULL,
+                    show_close_to_tray_notification INTEGER NOT NULL,
+                    collect_request_details INTEGER NOT NULL,
+                    collect_response_details INTEGER NOT NULL,
+                    enable_streaming_heartbeats INTEGER NOT NULL,
+                    streaming_heartbeat_interval_seconds INTEGER NOT NULL
+                );
+                """;
+            command.ExecuteNonQuery();
         }
     }
-}
 
-internal sealed class PersistedHeartbeat
-{
-    [BsonId]
-    public string Model { get; set; } = string.Empty;
-
-    public long Count { get; set; }
-
-    public DateTime LastSentUtc { get; set; }
-}
-
-internal sealed class PersistedRuntimeSettings
-{
-    [BsonId]
-    public string Id { get; set; } = "current";
-
-    public bool AutoStartProxy { get; set; } = true;
-
-    public bool StartWithDashboardOpen { get; set; }
-
-    public bool AllowMultipleInstances { get; set; }
-
-    public bool ShowCloseToTrayNotification { get; set; } = true;
-
-    public bool CollectRequestDetails { get; set; } =
-#if DEBUG
-        true;
-#else
-        false;
-#endif
-
-    public bool CollectResponseDetails { get; set; } =
-#if DEBUG
-        true;
-#else
-        false;
-#endif
-
-    public bool EnableStreamingHeartbeats { get; set; } = true;
-
-    public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
-
-    public static PersistedRuntimeSettings FromRuntimeSettings(RuntimeSettings settings)
+    private SqliteConnection OpenConnection()
     {
-        ArgumentNullException.ThrowIfNull(settings);
-
-        return new PersistedRuntimeSettings
-        {
-            Id = "current",
-            AutoStartProxy = settings.AutoStartProxy,
-            StartWithDashboardOpen = settings.StartWithDashboardOpen,
-            AllowMultipleInstances = settings.AllowMultipleInstances,
-            ShowCloseToTrayNotification = settings.ShowCloseToTrayNotification,
-            CollectRequestDetails = settings.CollectRequestDetails,
-            CollectResponseDetails = settings.CollectResponseDetails,
-            EnableStreamingHeartbeats = settings.EnableStreamingHeartbeats,
-            StreamingHeartbeatIntervalSeconds = settings.StreamingHeartbeatIntervalSeconds,
-        };
+        SqliteConnection connection = new(_connectionString);
+        connection.Open();
+        return connection;
     }
 
-    public RuntimeSettings ToRuntimeSettings() => new()
+    private static void AddRequestLogParameters(SqliteCommand command, RequestLog entry)
     {
-        AutoStartProxy = AutoStartProxy,
-        StartWithDashboardOpen = StartWithDashboardOpen,
-        AllowMultipleInstances = AllowMultipleInstances,
-        ShowCloseToTrayNotification = ShowCloseToTrayNotification,
-        CollectRequestDetails = CollectRequestDetails,
-        CollectResponseDetails = CollectResponseDetails,
-        EnableStreamingHeartbeats = EnableStreamingHeartbeats,
-        StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
+        command.Parameters.AddWithValue("$timestampUtc", ToUtcText(entry.Timestamp));
+        command.Parameters.AddWithValue("$method", entry.Method);
+        command.Parameters.AddWithValue("$ollamaPath", entry.OllamaPath);
+        command.Parameters.AddWithValue("$upstreamPath", entry.UpstreamPath);
+        command.Parameters.AddWithValue("$model", entry.Model);
+        command.Parameters.AddWithValue("$streaming", ToSqliteBoolean(entry.Streaming));
+        command.Parameters.AddWithValue("$status", (int)entry.Status);
+        command.Parameters.AddWithValue("$errorMessage", DbValue(entry.ErrorMessage));
+        command.Parameters.AddWithValue("$statusCode", entry.StatusCode);
+        command.Parameters.AddWithValue("$durationMs", entry.DurationMs);
+        command.Parameters.AddWithValue("$promptTokens", entry.PromptTokens);
+        command.Parameters.AddWithValue("$completionTokens", entry.CompletionTokens);
+        command.Parameters.AddWithValue("$tokensPerSecond", entry.TokensPerSecond);
+        command.Parameters.AddWithValue("$exceptionId", entry.ExceptionId.HasValue ? entry.ExceptionId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$requestBody", DbValue(entry.RequestBody));
+        command.Parameters.AddWithValue("$responseBody", DbValue(entry.ResponseBody));
+        command.Parameters.AddWithValue("$requestBytes", entry.RequestBytes);
+        command.Parameters.AddWithValue("$responseBytes", entry.ResponseBytes);
+        command.Parameters.AddWithValue("$summarizationRetries", entry.SummarizationRetries);
+        command.Parameters.AddWithValue("$originalMessageCount", entry.OriginalMessageCount.HasValue ? entry.OriginalMessageCount.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$summarizedMessageCount", entry.SummarizedMessageCount.HasValue ? entry.SummarizedMessageCount.Value : DBNull.Value);
+    }
+
+    private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
+    {
+        command.Parameters.AddWithValue("$proxyName", mapping.ProxyName);
+        command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(mapping.IsEnabled));
+        command.Parameters.AddWithValue("$modelName", mapping.ModelName);
+        command.Parameters.AddWithValue("$enableThinkingCompatibility", ToSqliteBoolean(mapping.EnableThinkingCompatibility));
+        command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
+        command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
+        command.Parameters.AddWithValue("$apiKey", DbValue(mapping.ApiKey));
+        command.Parameters.AddWithValue("$upstreamUrl", mapping.UpstreamUrl);
+        command.Parameters.AddWithValue("$upstreamTimeoutSeconds", mapping.UpstreamTimeoutSeconds);
+        command.Parameters.AddWithValue("$repeatPenalty", mapping.RepeatPenalty);
+        command.Parameters.AddWithValue("$temperature", mapping.Temperature);
+        command.Parameters.AddWithValue("$enableAutoSummarization", ToSqliteBoolean(mapping.EnableAutoSummarization));
+        command.Parameters.AddWithValue("$preserveRecentMessageCount", mapping.PreserveRecentMessageCount);
+        command.Parameters.AddWithValue("$maxSummarizationRetries", mapping.MaxSummarizationRetries);
+        command.Parameters.AddWithValue("$instructionSetName", DbValue(mapping.InstructionSetName));
+        command.Parameters.AddWithValue("$redactRequestBodies", ToSqliteBoolean(mapping.RedactRequestBodies));
+        command.Parameters.AddWithValue("$redactResponseBodies", ToSqliteBoolean(mapping.RedactResponseBodies));
+        command.Parameters.AddWithValue("$redactSensitiveJsonFields", ToSqliteBoolean(mapping.RedactSensitiveJsonFields));
+    }
+
+    private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
+    {
+        IsEnabled = ReadBoolean(reader, 0),
+        ProxyName = reader.GetString(1),
+        ModelName = reader.GetString(2),
+        EnableThinkingCompatibility = ReadBoolean(reader, 3),
+        EnableHeartbeats = ReadBoolean(reader, 4),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(5))
+            ? (UpstreamType)reader.GetInt32(5)
+            : UpstreamType.OpenAI,
+        ApiKey = reader.IsDBNull(6) ? null : reader.GetString(6),
+        UpstreamUrl = reader.GetString(7),
+        UpstreamTimeoutSeconds = reader.GetInt32(8),
+        RepeatPenalty = reader.GetDouble(9),
+        Temperature = reader.GetDouble(10),
+        EnableAutoSummarization = ReadBoolean(reader, 11),
+        PreserveRecentMessageCount = reader.GetInt32(12),
+        MaxSummarizationRetries = reader.GetInt32(13),
+        InstructionSetName = reader.IsDBNull(14) ? null : reader.GetString(14),
+        RedactRequestBodies = ReadBoolean(reader, 15),
+        RedactResponseBodies = ReadBoolean(reader, 16),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 17),
     };
+
+    private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
+    {
+        Timestamp = ReadUtc(reader, 0).ToLocalTime(),
+        Method = reader.GetString(1),
+        OllamaPath = reader.GetString(2),
+        UpstreamPath = reader.GetString(3),
+        Model = reader.GetString(4),
+        Streaming = ReadBoolean(reader, 5),
+        Status = Enum.IsDefined(typeof(RequestStatus), reader.GetInt32(6))
+            ? (RequestStatus)reader.GetInt32(6)
+            : RequestStatus.Error,
+        ErrorMessage = reader.IsDBNull(7) ? null : reader.GetString(7),
+        StatusCode = reader.GetInt32(8),
+        DurationMs = reader.GetDouble(9),
+        PromptTokens = reader.GetInt32(10),
+        CompletionTokens = reader.GetInt32(11),
+        TokensPerSecond = reader.GetDouble(12),
+        ExceptionId = reader.IsDBNull(13) ? null : reader.GetInt32(13),
+        RequestBody = reader.IsDBNull(14) ? null : reader.GetString(14),
+        ResponseBody = reader.IsDBNull(15) ? null : reader.GetString(15),
+        RequestBytes = reader.GetInt64(16),
+        ResponseBytes = reader.GetInt64(17),
+        SummarizationRetries = reader.GetInt32(18),
+        OriginalMessageCount = reader.IsDBNull(19) ? null : reader.GetInt32(19),
+        SummarizedMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
+    };
+
+    private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()
+    {
+        Id = reader.GetInt32(0),
+        Timestamp = ReadUtc(reader, 1),
+        ExceptionType = reader.GetString(2),
+        Message = reader.GetString(3),
+        StackTrace = reader.IsDBNull(4) ? null : reader.GetString(4),
+        InnerExceptions = DeserializeInnerExceptions(reader.IsDBNull(5) ? null : reader.GetString(5)),
+        Method = reader.GetString(6),
+        Path = reader.GetString(7),
+        Model = reader.GetString(8),
+    };
+
+    private static int InsertException(SqliteConnection connection, SqliteTransaction transaction, ExceptionDetail detail)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO exceptions (
+                timestamp_utc,
+                exception_type,
+                message,
+                stack_trace,
+                inner_exceptions_json,
+                method,
+                path,
+                model
+            )
+            VALUES (
+                $timestampUtc,
+                $exceptionType,
+                $message,
+                $stackTrace,
+                $innerExceptionsJson,
+                $method,
+                $path,
+                $model
+            );
+            SELECT last_insert_rowid();
+            """;
+        command.Parameters.AddWithValue("$timestampUtc", ToUtcText(detail.Timestamp));
+        command.Parameters.AddWithValue("$exceptionType", detail.ExceptionType);
+        command.Parameters.AddWithValue("$message", detail.Message);
+        command.Parameters.AddWithValue("$stackTrace", DbValue(detail.StackTrace));
+        command.Parameters.AddWithValue("$innerExceptionsJson", JsonSerializer.Serialize(detail.InnerExceptions, _jsonOptions));
+        command.Parameters.AddWithValue("$method", detail.Method);
+        command.Parameters.AddWithValue("$path", detail.Path);
+        command.Parameters.AddWithValue("$model", detail.Model);
+
+        object? scalar = command.ExecuteScalar();
+        return Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static List<string> DeserializeInnerExceptions(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json, _jsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static string ToUtcText(DateTime value) =>
+        (value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime()).ToString("O");
+
+    private static DateTime ReadUtc(SqliteDataReader reader, int ordinal)
+    {
+        string value = reader.GetString(ordinal);
+        return DateTime.Parse(
+            value,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AssumeUniversal);
+    }
+
+    private static bool ReadBoolean(SqliteDataReader reader, int ordinal) => reader.GetInt64(ordinal) != 0;
+
+    private static int ToSqliteBoolean(bool value) => value ? 1 : 0;
+
+    private static object DbValue(string? value) => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value;
+
+    public void Dispose()
+    {
+        // Connections are opened per operation and disposed immediately.
+    }
 }

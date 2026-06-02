@@ -188,11 +188,14 @@ internal sealed class LoggingSettings
     /// <summary>Number of rolled app-log files to retain (oldest deleted first). Min: 1, Max: 999.</summary>
     public int AppLogRetainedFileCount { get; set; } = 7;
 
-    /// <summary>Maximum size in MB of the LiteDB application database before archiving. Min: 1, Max: 5000.</summary>
+    /// <summary>
+    /// Legacy database size setting retained for backward-compatible settings deserialization.
+    /// Request-log growth is now controlled by retention cleanup instead of database-file archiving.
+    /// </summary>
     public int RequestLogFileSizeLimitMb { get; set; } = 50;
 
     /// <summary>
-    /// Full path of the active LiteDB application database file. Empty uses the default path under the application Data directory.
+    /// Full path of the active SQLite application database file. Empty uses the default path under the application Data directory.
     /// </summary>
     public string ApplicationDatabasePath { get; set; } = string.Empty;
 
