@@ -17,3 +17,8 @@ Data/
 # Windows
 Thumbs.db
 Desktop.ini
+
+#OneDriveSync Software GoodSync
+_gsdata*/
+*._gs
+*.gsl
