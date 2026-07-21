@@ -30,6 +30,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly ComboBox _cmbUpstreamType = new();
     private readonly Label _lblApiKey = new();
     private readonly TextBox _txtApiKey = new();
+    private readonly CheckBox _chkShowApiKey = new();
     private readonly Label _lblModelName = new();
     private readonly ComboBox _cmbModelName = new();
     private readonly Button _btnFetchModels = new();
@@ -223,8 +224,8 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_cmbUpstreamType, 1, 2);
 
         _tlpMain.Controls.Add(_lblApiKey, 0, 3);
-        _tlpMain.SetColumnSpan(_txtApiKey, 2);
         _tlpMain.Controls.Add(_txtApiKey, 1, 3);
+        _tlpMain.Controls.Add(_chkShowApiKey, 2, 3);
 
         _tlpMain.Controls.Add(_lblModelName, 0, 4);
         _tlpMain.Controls.Add(_cmbModelName, 1, 4);
@@ -293,8 +294,15 @@ internal sealed class ModelMappingDialog : Form
 
         _txtApiKey.Dock = DockStyle.Fill;
         _txtApiKey.Margin = new Padding(0, 4, 0, 4);
-        _txtApiKey.PasswordChar = '●';
+        _txtApiKey.UseSystemPasswordChar = true;
         _txtApiKey.PlaceholderText = "Optional bearer token for online OpenAI-compatible services";
+
+        _chkShowApiKey.Anchor = AnchorStyles.Left;
+        _chkShowApiKey.AutoSize = true;
+        _chkShowApiKey.Margin = new Padding(8, 4, 0, 4);
+        _chkShowApiKey.Text = "Show";
+        _chkShowApiKey.CheckedChanged += (_, _) => _txtApiKey.UseSystemPasswordChar = !_chkShowApiKey.Checked;
+        _toolTip.SetToolTip(_chkShowApiKey, "Toggle visibility of the API key text.");
 
         _lblModelName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblModelName.AutoSize = true;

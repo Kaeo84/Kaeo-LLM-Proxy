@@ -174,6 +174,31 @@ internal sealed class ModelMapping
     /// Applies when body-level redaction is disabled but detail capture is enabled.
     /// </summary>
     public bool RedactSensitiveJsonFields { get; set; } = true;
+
+    /// <summary>
+    /// Creates a deep copy of this ModelMapping instance with all properties cloned.
+    /// </summary>
+    public ModelMapping Clone() => new()
+    {
+        IsEnabled = IsEnabled,
+        ProxyName = ProxyName,
+        ModelName = ModelName,
+        EnableThinkingCompatibility = EnableThinkingCompatibility,
+        EnableHeartbeats = EnableHeartbeats,
+        ApiKey = ApiKey,
+        UpstreamType = UpstreamType,
+        UpstreamUrl = UpstreamUrl,
+        UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
+        RepeatPenalty = RepeatPenalty,
+        Temperature = Temperature,
+        EnableAutoSummarization = EnableAutoSummarization,
+        PreserveRecentMessageCount = PreserveRecentMessageCount,
+        MaxSummarizationRetries = MaxSummarizationRetries,
+        InstructionSetName = InstructionSetName,
+        RedactRequestBodies = RedactRequestBodies,
+        RedactResponseBodies = RedactResponseBodies,
+        RedactSensitiveJsonFields = RedactSensitiveJsonFields,
+    };
 }
 
 /// <summary>Logging configuration persisted inside settings.jsonc.</summary>

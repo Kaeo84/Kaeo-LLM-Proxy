@@ -265,8 +265,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private static void ApplyApiKey(HttpRequestMessage request, string? apiKey)
     {
-        request.Headers.Authorization = null;
-
+        // A mapping-level API key always wins over whatever the client sent, so stale or
+        // mismatched client credentials never shadow a correctly configured upstream key.
+        // When no mapping key is configured, leave the client's own Authorization header
+        // (if any) untouched instead of clearing it - callers such as Visual Studio's
+        // OpenAI-compatible model connections rely on their own key passing straight
+        // through to the upstream for mappings that don't set ApiKey.
         if (!string.IsNullOrWhiteSpace(apiKey))
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
     }
@@ -431,9 +435,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (name.Equals("Host", StringComparison.OrdinalIgnoreCase)
              || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
              || name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
+             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
                 continue;
+
+            // Authorization is copied here so a client's own bearer token (e.g. Visual
+            // Studio's OpenAI-compatible model connection) reaches the upstream for
+            // mappings without their own configured ApiKey. ApplyApiKey below overrides
+            // this with the mapping's key when one is configured.
 
             string value = req.Headers[name] ?? string.Empty;
             if (!upstreamReq.Headers.TryAddWithoutValidation(name, value))

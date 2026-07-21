@@ -960,6 +960,64 @@ internal partial class MainForm : Form
 
     // ── Instruction Sets ──────────────────────────────────────────────────────
 
+    private void BtnDuplicateMapping_Click(object? sender, EventArgs e)
+    {
+        DataGridViewRow? row = GetSelectedMappingRow();
+        if (row is null)
+        {
+            MessageBox.Show("Select a model mapping row to duplicate.", "Duplicate Model",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (row.Tag is not ModelMapping originalMapping)
+        {
+            MessageBox.Show("The selected row does not contain a valid mapping.", "Duplicate Model",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        ModelMapping duplicatedMapping = originalMapping.Clone();
+        duplicatedMapping.ProxyName = GenerateUniqueProxyName(originalMapping.ProxyName);
+
+        int idx = _dgvMappings.Rows.Add(
+            duplicatedMapping.IsEnabled ? "Yes" : "No",
+            duplicatedMapping.ProxyName,
+            duplicatedMapping.ModelName,
+            duplicatedMapping.UpstreamUrl,
+            duplicatedMapping.UpstreamType.ToDisplayName());
+
+        DataGridViewRow newRow = _dgvMappings.Rows[idx];
+        newRow.Tag = duplicatedMapping;
+
+        _dgvMappings.ClearSelection();
+        newRow.Selected = true;
+    }
+
+    private string GenerateUniqueProxyName(string baseName)
+    {
+        HashSet<string> existingNames = new(StringComparer.OrdinalIgnoreCase);
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            if (row.IsNewRow)
+                continue;
+
+            string? proxyName = row.Cells[_colProxyName.Name].Value?.ToString();
+            if (!string.IsNullOrWhiteSpace(proxyName))
+                existingNames.Add(proxyName);
+        }
+
+        string candidateName = $"{baseName} - Copy";
+        if (!existingNames.Contains(candidateName))
+            return candidateName;
+
+        int counter = 2;
+        while (existingNames.Contains($"{baseName} - Copy {counter}"))
+            counter++;
+
+        return $"{baseName} - Copy {counter}";
+    }
+
     private void RefreshInstructionsList()
     {
         _lstInstructions.BeginUpdate();

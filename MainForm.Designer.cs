@@ -99,6 +99,7 @@ partial class MainForm
         _flpMappingButtons = new FlowLayoutPanel();
         _btnAddMapping = new Button();
         _btnRemoveMapping = new Button();
+        _btnDuplicateMapping = new Button();
         _btnConfigureMapping = new Button();
         _chkAutoStart = new CheckBox();
         _chkStartWithDashboard = new CheckBox();
@@ -720,6 +721,7 @@ partial class MainForm
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         _flpMappingButtons.Controls.Add(_btnAddMapping);
         _flpMappingButtons.Controls.Add(_btnRemoveMapping);
+        _flpMappingButtons.Controls.Add(_btnDuplicateMapping);
         _flpMappingButtons.Controls.Add(_btnConfigureMapping);
         _flpMappingButtons.Dock = DockStyle.Fill;
         _flpMappingButtons.FlowDirection = FlowDirection.LeftToRight;
@@ -738,6 +740,12 @@ partial class MainForm
         _btnRemoveMapping.Name = "_btnRemoveMapping";
         _btnRemoveMapping.Text = "Remove Mapping";
         _btnRemoveMapping.Click += BtnRemoveMapping_Click;
+
+        _btnDuplicateMapping.AutoSize = true;
+        _btnDuplicateMapping.Margin = new Padding(4, 4, 4, 4);
+        _btnDuplicateMapping.Name = "_btnDuplicateMapping";
+        _btnDuplicateMapping.Text = "Duplicate Selected";
+        _btnDuplicateMapping.Click += BtnDuplicateMapping_Click;
 
         _btnConfigureMapping.AutoSize = true;
         _btnConfigureMapping.Margin = new Padding(4, 4, 4, 4);
@@ -1331,6 +1339,7 @@ partial class MainForm
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
+    private Button _btnDuplicateMapping;
     private Button _btnConfigureMapping;
     private Button _btnSaveSettings;
     private CheckBox _chkAutoStart;
