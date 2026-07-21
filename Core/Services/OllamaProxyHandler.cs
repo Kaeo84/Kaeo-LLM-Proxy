@@ -336,7 +336,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "POST" && path == "/api/show")
             {
-                log.UpstreamPath = "/v1/models/{model}";
+                log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleShowAsync(req, resp, log, ct);
             }
             else if (method == "POST" && path == "/api/generate")
@@ -1340,7 +1340,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await Task.CompletedTask;
     }
 
-    // ── /api/show → GET /v1/models/{id}, fallback GET /v1/models ───────────
+    // /api/show → answered entirely from local mapping config, no upstream call
 
     private async Task HandleShowAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -1353,42 +1353,25 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(body, requestedModel);
 
-        var (showBase, showTimeout, showApiKey) = ResolveUpstream(requestedModel);
-        using var showReqMsg = new HttpRequestMessage(HttpMethod.Get, $"/v1/models/{Uri.EscapeDataString(modelName)}");
-        ApplyApiKey(showReqMsg, showApiKey);
-        using HttpResponseMessage upstreamResp = await SendUpstreamAsync(showReqMsg, showBase, showTimeout, HttpCompletionOption.ResponseContentRead, ct);
+        // /api/show asks the proxy what it has configured for a model — it isn't a
+        // request the upstream needs to answer, and upstreams vary wildly in whether/how
+        // they support a single-model lookup (some return 404, some 400, some nothing at
+        // all). Building the response purely from the mapping avoids depending on any of
+        // that and keeps model availability consistent with what /api/tags reports.
+        var placeholderModel = new LlamaCppModel { Id = modelName };
 
-        string upstreamBody = await upstreamResp.Content.ReadAsStringAsync(ct);
-        LlamaCppModel? model = null;
-
-        if (upstreamResp.IsSuccessStatusCode)
-        {
-            model = JsonSerializer.Deserialize<LlamaCppModel>(upstreamBody, _jsonOptions);
-        }
-        else
-        {
-            // Fall back to the /v1/models list for any failure, not just 404 — some
-            // OpenAI-compatible providers (e.g. Alibaba DashScope/Qwen) don't support
-            // GET /v1/models/{id} and return 400 (or other non-404 codes) instead of a
-            // proper 404, which would otherwise skip this fallback entirely and cause
-            // /api/show to fail for every model on that upstream.
-            model = await TryFindModelFromListAsync(modelName, showBase, showTimeout, showApiKey, ct);
-        }
-
-        resp.StatusCode = upstreamResp.IsSuccessStatusCode || model is not null
-            ? 200
-            : (int)upstreamResp.StatusCode;
+        resp.StatusCode = mapping is not null ? 200 : 404;
         log.StatusCode = resp.StatusCode;
 
         var showResp = new OllamaShowResponse
         {
-            Model = mapping?.ProxyName ?? model?.Id ?? modelName,
-            Details = CreateOllamaModelDetails(model ?? new LlamaCppModel { Id = modelName }),
-            ModelInfo = CreateOllamaModelInfo(mapping, model),
-            Capabilities = BuildCapabilities(mapping, model?.Id ?? modelName),
+            Model = mapping?.ProxyName ?? modelName,
+            Details = CreateOllamaModelDetails(placeholderModel),
+            ModelInfo = CreateOllamaModelInfo(mapping, placeholderModel),
+            Capabilities = BuildCapabilities(mapping, modelName),
         };
 
-        log.Status = upstreamResp.IsSuccessStatusCode || model is not null ? RequestStatus.Success : RequestStatus.Error;
+        log.Status = mapping is not null ? RequestStatus.Success : RequestStatus.Error;
         await WriteJsonAsync(resp, showResp, ct);
     }
 
