@@ -1365,8 +1365,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             model = JsonSerializer.Deserialize<LlamaCppModel>(upstreamBody, _jsonOptions);
         }
-        else if (upstreamResp.StatusCode == HttpStatusCode.NotFound)
+        else
         {
+            // Fall back to the /v1/models list for any failure, not just 404 — some
+            // OpenAI-compatible providers (e.g. Alibaba DashScope/Qwen) don't support
+            // GET /v1/models/{id} and return 400 (or other non-404 codes) instead of a
+            // proper 404, which would otherwise skip this fallback entirely and cause
+            // /api/show to fail for every model on that upstream.
             model = await TryFindModelFromListAsync(modelName, showBase, showTimeout, showApiKey, ct);
         }
 
