@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Infrastructure;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Core.Services;
@@ -251,8 +252,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         HttpCompletionOption completionOption,
         CancellationToken ct)
     {
-        // Build absolute URI from base + relative path already set on req
-        req.RequestUri = new Uri(new Uri(baseUrl + "/"), req.RequestUri!.ToString().TrimStart('/'));
+        // Build absolute URI from base + relative path already set on req.
+        // See UpstreamUriHelper for why this can't be done via HttpClient.BaseAddress
+        // or naive string concatenation without risking a 404 from the upstream.
+        req.RequestUri = UpstreamUriHelper.BuildRequestUri(baseUrl, req.RequestUri!.ToString());
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
@@ -262,7 +265,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private static void ApplyApiKey(HttpRequestMessage request, string? apiKey)
     {
-        if (!string.IsNullOrWhiteSpace(apiKey) && request.Headers.Authorization is null)
+        request.Headers.Authorization = null;
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
     }
 
@@ -426,7 +431,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (name.Equals("Host", StringComparison.OrdinalIgnoreCase)
              || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
              || name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
+             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase)
+             || name.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
                 continue;
 
             string value = req.Headers[name] ?? string.Empty;

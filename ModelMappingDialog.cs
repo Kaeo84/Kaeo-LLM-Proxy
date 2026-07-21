@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Infrastructure;
 
 namespace Kaeo.LlmProxy;
 
@@ -49,6 +50,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly FlowLayoutPanel _flpButtons = new();
     private readonly Button _btnOk = new();
     private readonly Button _btnCancel = new();
+    private readonly ToolTip _toolTip = new();
 
     private string _upstreamUrl = string.Empty;
 
@@ -56,6 +58,11 @@ internal sealed class ModelMappingDialog : Form
     {
         InitializeUi();
         _txtUpstreamUrl.TextChanged += (_, _) => _upstreamUrl = _txtUpstreamUrl.Text.Trim();
+        _toolTip.SetToolTip(
+            _txtUpstreamUrl,
+            "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
+            + "https://provider.example/compatible-mode/v1. A trailing \"/v1\" is handled\n"
+            + "automatically and won't be duplicated in requests.");
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -463,11 +470,11 @@ internal sealed class ModelMappingDialog : Form
         {
             using var client = new HttpClient
             {
-                BaseAddress = new Uri(upstreamUrl),
                 Timeout = TimeSpan.FromSeconds(10),
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+            Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models");
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
             if (!string.IsNullOrWhiteSpace(apiKey))
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 

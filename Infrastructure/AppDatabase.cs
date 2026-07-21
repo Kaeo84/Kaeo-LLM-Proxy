@@ -712,6 +712,9 @@ internal sealed class AppDatabase : IDisposable
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
+
+            MigrateLegacyModelMappingsTable(connection);
+
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
@@ -810,6 +813,60 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Handles pre-existing <c>model_mappings</c> tables from older database schemas that
+    /// predate the <c>proxy_name</c> primary key column. Rather than silently losing the
+    /// old data, the legacy table is renamed out of the way so a fresh, up-to-date
+    /// <c>model_mappings</c> table can be created by the schema script.
+    /// </summary>
+    private static void MigrateLegacyModelMappingsTable(SqliteConnection connection)
+    {
+        const string tableName = "model_mappings";
+
+        if (!TableExists(connection, tableName))
+            return;
+
+        if (ColumnExists(connection, tableName, "proxy_name"))
+            return;
+
+        string legacyTableName = $"{tableName}_legacy_{DateTime.UtcNow:yyyyMMddHHmmss}";
+
+        using SqliteCommand renameCommand = connection.CreateCommand();
+        renameCommand.CommandText = $"ALTER TABLE {tableName} RENAME TO {legacyTableName};";
+        renameCommand.ExecuteNonQuery();
+
+        Log.Warning(
+            "The existing {Table} table used an outdated schema without a {Column} column. " +
+            "It was renamed to {LegacyTable} and a new {Table} table will be created. " +
+            "Model mappings must be re-entered.",
+            tableName,
+            "proxy_name",
+            legacyTableName);
+    }
+
+    private static bool TableExists(SqliteConnection connection, string tableName)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = $name;";
+        command.Parameters.AddWithValue("$name", tableName);
+        return command.ExecuteScalar() is not null;
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string tableName, string columnName)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
     private void PrepareDatabaseFile()
     {
         if (!File.Exists(_configuredDbPath))
@@ -819,8 +876,23 @@ internal sealed class AppDatabase : IDisposable
         if (fileInfo.Length == 0)
             return;
 
-        if (IsSqliteDatabaseFile(_configuredDbPath))
+        try
+        {
+            if (IsSqliteDatabaseFile(_configuredDbPath))
+                return;
+        }
+        catch (IOException ex)
+        {
+            // The file is locked by another process (e.g. another running instance of this
+            // application with AllowMultipleInstances enabled). Assume it is a valid SQLite
+            // database rather than crashing; the shared-cache connection below will fail with
+            // a clearer error if that assumption turns out to be wrong.
+            Log.Warning(
+                ex,
+                "Could not verify database file {Path} because it is in use by another process. Assuming it is a valid SQLite database.",
+                _configuredDbPath);
             return;
+        }
 
         try
         {
@@ -846,7 +918,7 @@ internal sealed class AppDatabase : IDisposable
     {
         byte[] header = new byte[16];
 
-        using FileStream stream = File.OpenRead(path);
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         if (stream.Length < header.Length)
             return false;
 
@@ -1037,10 +1109,12 @@ internal sealed class AppDatabase : IDisposable
     private static DateTime ReadUtc(SqliteDataReader reader, int ordinal)
     {
         string value = reader.GetString(ordinal);
-        return DateTime.Parse(
+        DateTime parsed = DateTime.Parse(
             value,
             System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.RoundtripKind | System.Globalization.DateTimeStyles.AssumeUniversal);
+            System.Globalization.DateTimeStyles.RoundtripKind);
+
+        return parsed.Kind == DateTimeKind.Utc ? parsed : parsed.ToUniversalTime();
     }
 
     private static bool ReadBoolean(SqliteDataReader reader, int ordinal) => reader.GetInt64(ordinal) != 0;

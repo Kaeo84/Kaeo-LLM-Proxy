@@ -1444,15 +1444,20 @@ internal partial class MainForm : Form
 
         int timeout = mapping is { UpstreamTimeoutSeconds: > 0 } ? mapping.UpstreamTimeoutSeconds : 300;
 
+        // Build the absolute request URI via the shared helper rather than HttpClient.BaseAddress.
+        // A root-relative request URI ("/v1/chat/completions") combined with BaseAddress would
+        // discard any path segment already present in upstreamUrl (e.g. ".../compatible-mode/v1"),
+        // and naive concatenation can duplicate a trailing "/v1" segment - both cause a 404.
+        Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/chat/completions");
+
         // Use Timeout.InfiniteTimeSpan so HttpClient doesn't pre-empt our own per-read
         // cancellation; we manage timeouts ourselves below.
         using var client = new HttpClient
         {
-            BaseAddress = new Uri(upstreamUrl),
             Timeout = Timeout.InfiniteTimeSpan,
         };
 
-        using var reqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        using var reqMsg = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
             Content = new StringContent(requestBodyJson, Encoding.UTF8, "application/json"),
         };
@@ -1465,7 +1470,7 @@ internal partial class MainForm : Form
         requestCts.CancelAfter(TimeSpan.FromSeconds(timeout));
 
         System.Diagnostics.Debug.WriteLine(
-            $"[TestConsole] POST {upstreamUrl.TrimEnd('/')}/v1/chat/completions model={model}");
+            $"[TestConsole] POST {requestUri} model={model}");
 
         HttpResponseMessage resp = await SendTestConsoleRequestAsync(client, reqMsg, timeout, ct, requestCts.Token);
 
