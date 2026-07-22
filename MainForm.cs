@@ -245,21 +245,26 @@ internal partial class MainForm : Form
 
     private void BtnLogDetails_Click(object? sender, EventArgs e)
     {
-        if (_lstLogs.SelectedItems.Count == 0)
+        if (_lstLogs.SelectedIndices.Count == 0)
         {
             MessageBox.Show("Select a log entry first.", "No selection",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (_lstLogs.SelectedItems[0].Tag is RequestLog log)
-            ShowLogDetails(log);
+        int index = _lstLogs.SelectedIndices[0];
+        if (index >= 0 && index < _logCache.Count)
+            ShowLogDetails(_logCache[index]);
     }
 
     private void LstLogs_DoubleClick(object? sender, EventArgs e)
     {
-        if (_lstLogs.SelectedItems.Count > 0 && _lstLogs.SelectedItems[0].Tag is RequestLog log)
-            ShowLogDetails(log);
+        if (_lstLogs.SelectedIndices.Count == 0)
+            return;
+
+        int index = _lstLogs.SelectedIndices[0];
+        if (index >= 0 && index < _logCache.Count)
+            ShowLogDetails(_logCache[index]);
     }
 
     private void ShowLogDetails(RequestLog log)
