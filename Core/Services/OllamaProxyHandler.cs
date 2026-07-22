@@ -2410,6 +2410,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 },
             })];
 
+    private const string XmlToolCallCloseTag = "</tool_call>";
+
     private static string CaptureXmlToolCallToken(string token, StringBuilder toolCallBuilder, ref bool isCapturing)
     {
         if (string.IsNullOrEmpty(token))
@@ -2418,7 +2420,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (isCapturing)
         {
             toolCallBuilder.Append(token);
-            if (toolCallBuilder.ToString().Contains("</tool_call>", StringComparison.OrdinalIgnoreCase))
+            if (BuilderContainsTagInTail(toolCallBuilder, XmlToolCallCloseTag, token.Length))
                 isCapturing = false;
 
             return string.Empty;
@@ -2430,10 +2432,47 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         string visibleContent = token[..startIndex];
         toolCallBuilder.Append(token[startIndex..]);
-        if (!toolCallBuilder.ToString().Contains("</tool_call>", StringComparison.OrdinalIgnoreCase))
+        if (!BuilderContainsTagInTail(toolCallBuilder, XmlToolCallCloseTag, token.Length - startIndex))
             isCapturing = true;
 
         return visibleContent;
+    }
+
+    /// <summary>
+    /// Allocation-free check for whether <paramref name="tag"/> appears in the portion of
+    /// <paramref name="builder"/> that could newly contain it after appending
+    /// <paramref name="appendedLength"/> characters. Searches only the tail window (the appended
+    /// characters plus tag.Length - 1 characters of overlap) via the StringBuilder indexer,
+    /// avoiding the per-token full-builder string allocation that ToString().Contains(...) caused.
+    /// </summary>
+    private static bool BuilderContainsTagInTail(StringBuilder builder, string tag, int appendedLength)
+    {
+        int length = builder.Length;
+        int tagLength = tag.Length;
+        if (length < tagLength)
+            return false;
+
+        int windowStart = Math.Max(0, length - appendedLength - (tagLength - 1));
+        int lastPossibleStart = length - tagLength;
+
+        for (int start = windowStart; start <= lastPossibleStart; start++)
+        {
+            if (BuilderMatchesTagAt(builder, start, tag))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool BuilderMatchesTagAt(StringBuilder builder, int start, string tag)
+    {
+        for (int i = 0; i < tag.Length; i++)
+        {
+            if (char.ToUpperInvariant(builder[start + i]) != char.ToUpperInvariant(tag[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static ToolCallExtraction ExtractXmlToolCalls(string? content)

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
 using Serilog;
@@ -30,11 +31,23 @@ internal sealed class StatisticsService : IDisposable
 
     private readonly System.Threading.Timer? _cleanupTimer;
 
+    // Bounded channel decoupling the hot request path from SQLite writes. A single dedicated
+    // writer task consumes entries so a burst of requests cannot queue unbounded work on the
+    // thread pool (the previous ThreadPool.QueueUserWorkItem approach). When the channel is full
+    // the newest entry is dropped and a warning is logged, shedding load instead of growing memory.
+    private readonly Channel<PersistEntry>? _persistChannel;
+    private readonly Task? _persistTask;
+    private int _droppedPersistEntries;
+
     // Cached snapshot of the in-memory queue returned by GetRecentLogs(). Rebuilt only when
     // the underlying queue changes (_snapshotDirty) to avoid allocating a new array on every
     // GUI refresh tick.
     private IReadOnlyList<RequestLog>? _cachedSnapshot;
-    private volatile bool _snapshotDirty = true;
+
+    // Dirty flag as an int (1 = dirty, 0 = clean) so GetRecentLogs can claim the rebuild atomically
+    // via Interlocked.CompareExchange, preventing multiple concurrent refreshes from each
+    // allocating a redundant snapshot array.
+    private int _snapshotDirty = 1;
 
     // Per-model heartbeat counters. Key: resolved model name. Updated lock-free via Interlocked.
     private readonly ConcurrentDictionary<string, HeartbeatStat> _heartbeats = new(StringComparer.OrdinalIgnoreCase);
@@ -67,6 +80,48 @@ internal sealed class StatisticsService : IDisposable
         // Background cleanup: prune stale entries every 15 minutes.
         _cleanupTimer = new System.Threading.Timer(_ => PruneExpired(), null,
             TimeSpan.FromMinutes(15), TimeSpan.FromMinutes(15));
+
+        // Bounded persistence channel + single dedicated writer, only when a store is present.
+        if (store is not null)
+        {
+            int capacity = Math.Max(16, maxEntries);
+            _persistChannel = Channel.CreateBounded<PersistEntry>(new BoundedChannelOptions(capacity)
+            {
+                // Wait mode + non-blocking TryWrite gives drop-newest semantics WITH a detectable
+                // false return when full (DropNewest/DropOldest modes make TryWrite always succeed,
+                // hiding overflow). We never call WriteAsync, so TryWrite never actually blocks.
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = false,
+            });
+            _persistTask = Task.Run(() => PersistLoopAsync(_persistChannel.Reader));
+        }
+    }
+
+    /// <summary>
+    /// Single consumer that drains the persistence channel and writes each entry to the store.
+    /// Runs until the channel is completed during <see cref="Dispose"/>.
+    /// </summary>
+    private async Task PersistLoopAsync(ChannelReader<PersistEntry> reader)
+    {
+        try
+        {
+            await foreach (PersistEntry item in reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                try
+                {
+                    _store!.Insert(item.Entry, item.Exception);
+                }
+                catch (Exception storeEx)
+                {
+                    Log.Warning(storeEx, "Failed to persist request log entry");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Channel completed during shutdown — expected.
+        }
     }
 
     public void UpdateMaxEntries(int max)
@@ -85,7 +140,7 @@ internal sealed class StatisticsService : IDisposable
         // Enqueue a lightweight copy (no request/response bodies) to keep memory usage low.
         // The full entry — including bodies — is persisted to SQLite on a background thread below.
         _logs.Enqueue(CreateSummary(entry));
-        _snapshotDirty = true;
+        Volatile.Write(ref _snapshotDirty, 1);
 
         long now = Stopwatch.GetTimestamp();
         _requestTimestamps.Enqueue(now);
@@ -106,17 +161,18 @@ internal sealed class StatisticsService : IDisposable
         while (_logs.Count > _maxEntries)
             _logs.TryDequeue(out _);
 
-        // Persist to LiteDB on a background thread to avoid blocking the request pipeline.
-        if (_store is not null)
+        // Hand the full entry (including bodies and any exception) to the bounded persistence
+        // channel. The dedicated writer task persists it without blocking the request pipeline.
+        // When the channel is full, DropNewest sheds this entry; log a warning (rate-limited by
+        // counting) so sustained overflow is visible without flooding the log.
+        if (_store is not null && _persistChannel is not null)
         {
-            // Capture for closure — exception may carry a large stack trace so we pass it
-            // through only when present, letting the store write the separate exceptions table.
-            Exception? capturedException = ex;
-            ThreadPool.QueueUserWorkItem(_ =>
+            if (!_persistChannel.Writer.TryWrite(new PersistEntry(entry, ex)))
             {
-                try { _store.Insert(entry, capturedException); }
-                catch (Exception storeEx) { Log.Warning(storeEx, "Failed to persist request log entry"); }
-            });
+                int dropped = Interlocked.Increment(ref _droppedPersistEntries);
+                if (dropped == 1 || dropped % 100 == 0)
+                    Log.Warning("Request log persistence channel is full; {Count} entries dropped so far", dropped);
+            }
         }
 
         StatsChanged?.Invoke(this, EventArgs.Empty);
@@ -156,10 +212,12 @@ internal sealed class StatisticsService : IDisposable
 
     public IReadOnlyList<RequestLog> GetRecentLogs()
     {
-        if (_snapshotDirty)
+        // Atomically claim the rebuild: only the thread that flips dirty 1 -> 0 rebuilds the
+        // snapshot. Concurrent callers see 0 and reuse the existing (possibly being-rebuilt)
+        // snapshot rather than each allocating a redundant array.
+        if (Interlocked.CompareExchange(ref _snapshotDirty, 0, 1) == 1)
         {
             _cachedSnapshot = [.. _logs.Reverse()];
-            _snapshotDirty = false;
         }
 
         return _cachedSnapshot ?? [];
@@ -197,7 +255,7 @@ internal sealed class StatisticsService : IDisposable
     public void Reset()
     {
         while (_logs.TryDequeue(out _)) { }
-        _snapshotDirty = true;
+        Volatile.Write(ref _snapshotDirty, 1);
         Interlocked.Exchange(ref _totalRequests, 0);
         Interlocked.Exchange(ref _totalErrors, 0);
         Interlocked.Exchange(ref _totalPromptTokens, 0);
@@ -306,7 +364,7 @@ internal sealed class StatisticsService : IDisposable
 
             if (pruned > 0)
             {
-                _snapshotDirty = true;
+                Volatile.Write(ref _snapshotDirty, 1);
                 StatsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
@@ -316,8 +374,28 @@ internal sealed class StatisticsService : IDisposable
         }
     }
 
-    public void Dispose() => _cleanupTimer?.Dispose();
+    public void Dispose()
+    {
+        _cleanupTimer?.Dispose();
+
+        if (_persistChannel is not null)
+        {
+            // Signal no more writes and let the writer drain remaining entries to the store.
+            _persistChannel.Writer.TryComplete();
+            try
+            {
+                _persistTask?.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Timed out or failed while draining request log persistence channel");
+            }
+        }
+    }
 }
+
+/// <summary>A request log entry plus its optional exception, queued for background persistence.</summary>
+internal sealed record PersistEntry(RequestLog Entry, Exception? Exception);
 
 /// <summary>Mutable counter holder used internally by <see cref="StatisticsService"/>.</summary>
 internal sealed class HeartbeatStat
