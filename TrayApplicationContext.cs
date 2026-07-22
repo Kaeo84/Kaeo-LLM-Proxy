@@ -40,7 +40,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _settings.ListenAddress, _settings.ListenPort, _settings.ModelMappings.Count);
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
-        _perfService = new PerformanceService();
+        _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
         _handler = new OllamaProxyHandler(_settings, _stats);
         _handler.StartHeartbeatMonitors();
         _server = new ProxyServer(_handler);

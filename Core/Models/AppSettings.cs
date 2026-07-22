@@ -78,6 +78,8 @@ internal sealed class RuntimeSettings
     public bool EnableStreamingHeartbeats { get; set; } = true;
 
     public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
+
+    public bool EnablePerformanceSampling { get; set; } = true;
 }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
@@ -373,6 +375,13 @@ internal sealed class AppSettings
     [JsonIgnore]
     public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
 
+    /// <summary>
+    /// When true, the dashboard periodically samples CPU and memory usage for display.
+    /// Disable to reduce background overhead. Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnablePerformanceSampling { get; set; } = true;
+
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
@@ -464,6 +473,7 @@ internal sealed class AppSettings
         CollectResponseDetails = CollectResponseDetails,
         EnableStreamingHeartbeats = EnableStreamingHeartbeats,
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
+        EnablePerformanceSampling = EnablePerformanceSampling,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -478,6 +488,7 @@ internal sealed class AppSettings
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         EnableStreamingHeartbeats = runtimeSettings.EnableStreamingHeartbeats;
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
+        EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
     }
 
     /// <summary>

@@ -387,7 +387,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details,
                     collect_response_details,
                     enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds
+                    streaming_heartbeat_interval_seconds,
+                    enable_performance_sampling
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -407,6 +408,7 @@ internal sealed class AppDatabase : IDisposable
                 CollectResponseDetails = ReadBoolean(reader, 5),
                 EnableStreamingHeartbeats = ReadBoolean(reader, 6),
                 StreamingHeartbeatIntervalSeconds = reader.GetInt32(7),
+                EnablePerformanceSampling = ReadBoolean(reader, 8),
             };
         }
     }
@@ -430,7 +432,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details,
                     collect_response_details,
                     enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds
+                    streaming_heartbeat_interval_seconds,
+                    enable_performance_sampling
                 )
                 VALUES (
                     $id,
@@ -441,7 +444,8 @@ internal sealed class AppDatabase : IDisposable
                     $collectRequestDetails,
                     $collectResponseDetails,
                     $enableStreamingHeartbeats,
-                    $streamingHeartbeatIntervalSeconds
+                    $streamingHeartbeatIntervalSeconds,
+                    $enablePerformanceSampling
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -451,7 +455,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details = excluded.collect_request_details,
                     collect_response_details = excluded.collect_response_details,
                     enable_streaming_heartbeats = excluded.enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds;
+                    streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
+                    enable_performance_sampling = excluded.enable_performance_sampling;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -463,6 +468,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
             command.Parameters.AddWithValue("$enableStreamingHeartbeats", ToSqliteBoolean(settings.EnableStreamingHeartbeats));
             command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
+            command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.ExecuteNonQuery();
         }
     }
@@ -857,11 +863,34 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details INTEGER NOT NULL,
                     collect_response_details INTEGER NOT NULL,
                     enable_streaming_heartbeats INTEGER NOT NULL,
-                    streaming_heartbeat_interval_seconds INTEGER NOT NULL
+                    streaming_heartbeat_interval_seconds INTEGER NOT NULL,
+                    enable_performance_sampling INTEGER NOT NULL DEFAULT 1
                 );
                 """;
             command.ExecuteNonQuery();
+
+            MigrateRuntimeSettingsTable(connection);
         }
+    }
+
+    /// <summary>
+    /// Adds the <c>enable_performance_sampling</c> column to pre-existing runtime_settings
+    /// tables that were created before this column was introduced.
+    /// </summary>
+    private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "runtime_settings"))
+            return;
+
+        if (ColumnExists(connection, "runtime_settings", "enable_performance_sampling"))
+            return;
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "ALTER TABLE runtime_settings ADD COLUMN enable_performance_sampling INTEGER NOT NULL DEFAULT 1;";
+        command.ExecuteNonQuery();
+
+        Log.Information("Migrated runtime_settings table: added enable_performance_sampling column.");
     }
 
     /// <summary>

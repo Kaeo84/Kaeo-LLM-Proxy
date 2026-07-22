@@ -105,6 +105,7 @@ partial class MainForm
         _chkStartWithDashboard = new CheckBox();
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
+        _chkPerformanceSampling = new CheckBox();
 
         _grpLogging = new GroupBox();
         _tlpLogging = new TableLayoutPanel();
@@ -591,7 +592,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 11;
+        _tlpSettings.RowCount = 12;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.Controls.Add(_lblListenPort, 0, 0);
@@ -606,16 +607,18 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkCollectDetails, 0, 4);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
         _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 5);
+        _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 6);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 6);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 7);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 7);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 8);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 8);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 9);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 9);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 10);
         _tlpSettings.SetColumnSpan(_btnSaveSettings, 2);
-        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 10);
+        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 11);
 
         _lblListenPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblListenPort.AutoSize = true;
@@ -653,9 +656,14 @@ partial class MainForm
         _chkCollectDetails.Text = "Collect request details (captures raw request body into each log entry)";
 
         _chkCollectResponseDetails.AutoSize = true;
-        _chkCollectResponseDetails.Margin = new Padding(4, 4, 4, 8);
+        _chkCollectResponseDetails.Margin = new Padding(4, 4, 4, 4);
         _chkCollectResponseDetails.Name = "_chkCollectResponseDetails";
         _chkCollectResponseDetails.Text = "Collect response details (captures LLM response text into each log entry)";
+
+        _chkPerformanceSampling.AutoSize = true;
+        _chkPerformanceSampling.Margin = new Padding(4, 4, 4, 8);
+        _chkPerformanceSampling.Name = "_chkPerformanceSampling";
+        _chkPerformanceSampling.Text = "Enable performance sampling (CPU and memory monitoring on dashboard)";
 
         _chkStreamingHeartbeats.AutoSize = true;
         _chkStreamingHeartbeats.Margin = new Padding(4, 4, 4, 4);
@@ -1346,6 +1354,7 @@ partial class MainForm
     private CheckBox _chkStartWithDashboard;
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
+    private CheckBox _chkPerformanceSampling;
     private CheckBox _chkStreamingHeartbeats;
     private Label _lblHeartbeatInterval;
     private TextBox _txtHeartbeatInterval;

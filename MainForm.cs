@@ -666,6 +666,7 @@ internal partial class MainForm : Form
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
+        _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
         _txtHeartbeatInterval.Text = _settings.StreamingHeartbeatIntervalSeconds.ToString();
 
@@ -794,6 +795,7 @@ internal partial class MainForm : Form
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
+        _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
 
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";
@@ -866,6 +868,7 @@ internal partial class MainForm : Form
         _stats.UpdateMaxEntries(maxLogs);
         _stats.UpdateRetentionHours(logRetentionHours);
         _handler.UpdateSettings(_settings);
+        _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);

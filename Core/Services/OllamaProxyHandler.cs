@@ -2077,7 +2077,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(stream, Encoding.UTF8);
         await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
-        var responseAccumulator = collectResponse ? new StringBuilder() : null;
+        using PooledCharBuffer? responseAccumulator = collectResponse ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
         long responseBytes = 0;
@@ -2175,7 +2175,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(stream, Encoding.UTF8);
         await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
-        var responseAccumulator = collectResponse ? new StringBuilder() : null;
+        using PooledCharBuffer? responseAccumulator = collectResponse ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
         long responseBytes = 0;
