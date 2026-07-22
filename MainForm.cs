@@ -18,6 +18,10 @@ internal partial class MainForm : Form
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
 
+    // Cached snapshot of log summaries backing the virtual-mode ListView. Only visible rows
+    // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
+    private IReadOnlyList<RequestLog> _logCache = [];
+
     internal event EventHandler? MinimizedToTray;
 
     private const string TestConsoleHeartbeatMarker = "__kaeo_test_console_heartbeat__";
@@ -35,6 +39,11 @@ internal partial class MainForm : Form
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
+
+        // Virtual mode materializes only the visible rows (plus a small buffer) instead of
+        // creating a ListViewItem for every log entry on each refresh.
+        _lstLogs.VirtualMode = true;
+        _lstLogs.RetrieveVirtualItem += LstLogs_RetrieveVirtualItem;
 
         _stats.StatsChanged += OnStatsChanged;
         _server.StatusChanged += OnServerStatusChanged;
@@ -190,40 +199,46 @@ internal partial class MainForm : Form
 
     private void RefreshLogs()
     {
-        IReadOnlyList<RequestLog> logs = _stats.GetRecentLogs();
+        _logCache = _stats.GetRecentLogs();
+        _lstLogs.VirtualListSize = _logCache.Count;
+        _lstLogs.Invalidate();
+    }
 
-        _lstLogs.BeginUpdate();
-        _lstLogs.Items.Clear();
-
-        foreach (RequestLog log in logs)
+    private void LstLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _logCache.Count)
         {
-            var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
-            item.SubItems.Add(log.Method);
-            item.SubItems.Add(log.OllamaPath);
-            item.SubItems.Add(log.Model);
-            item.SubItems.Add(log.Status.ToString());
-            item.SubItems.Add($"{log.DurationMs:F0}");
-            item.SubItems.Add($"{log.PromptTokens}+{log.CompletionTokens}");
-            item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
-            item.Tag = log;
-
-            item.ForeColor = log.Status switch
-            {
-                RequestStatus.Error => Color.Red,
-                RequestStatus.Cancelled => Color.DarkOrange,
-                _ => SystemColors.WindowText,
-            };
-
-            _lstLogs.Items.Add(item);
+            e.Item = new ListViewItem(string.Empty);
+            return;
         }
 
-        _lstLogs.EndUpdate();
+        RequestLog log = _logCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Model);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add($"{log.PromptTokens}+{log.CompletionTokens}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
     }
 
     private void BtnClearLogs_Click(object? sender, EventArgs e)
     {
         _stats.Reset();
-        _lstLogs.Items.Clear();
+        _logCache = [];
+        _lstLogs.VirtualListSize = 0;
+        _lstLogs.Invalidate();
     }
 
     private void BtnRefreshLogs_Click(object? sender, EventArgs e) => RefreshLogs();
@@ -249,6 +264,18 @@ internal partial class MainForm : Form
 
     private void ShowLogDetails(RequestLog log)
     {
+        // The in-memory entry is a lightweight summary without request/response bodies.
+        // Load the full entry from SQLite on demand so large bodies stay out of memory.
+        RequestLog? full = _database.LoadFullLogEntry(log.Timestamp);
+        if (full is null)
+        {
+            MessageBox.Show("Log entry not found in the database. It may have been pruned.",
+                "Not Found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        log = full;
+
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Timestamp : {log.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         sb.AppendLine($"Method    : {log.Method}");

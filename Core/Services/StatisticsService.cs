@@ -30,6 +30,12 @@ internal sealed class StatisticsService : IDisposable
 
     private readonly System.Threading.Timer? _cleanupTimer;
 
+    // Cached snapshot of the in-memory queue returned by GetRecentLogs(). Rebuilt only when
+    // the underlying queue changes (_snapshotDirty) to avoid allocating a new array on every
+    // GUI refresh tick.
+    private IReadOnlyList<RequestLog>? _cachedSnapshot;
+    private volatile bool _snapshotDirty = true;
+
     // Per-model heartbeat counters. Key: resolved model name. Updated lock-free via Interlocked.
     private readonly ConcurrentDictionary<string, HeartbeatStat> _heartbeats = new(StringComparer.OrdinalIgnoreCase);
 
@@ -76,7 +82,10 @@ internal sealed class StatisticsService : IDisposable
 
     public void AddLog(RequestLog entry, Exception? ex = null)
     {
-        _logs.Enqueue(entry);
+        // Enqueue a lightweight copy (no request/response bodies) to keep memory usage low.
+        // The full entry — including bodies — is persisted to SQLite on a background thread below.
+        _logs.Enqueue(CreateSummary(entry));
+        _snapshotDirty = true;
 
         long now = Stopwatch.GetTimestamp();
         _requestTimestamps.Enqueue(now);
@@ -113,7 +122,47 @@ internal sealed class StatisticsService : IDisposable
         StatsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public IReadOnlyList<RequestLog> GetRecentLogs() => [.. _logs.Reverse()];
+    /// <summary>
+    /// Creates a lightweight copy of a <see cref="RequestLog"/> without the potentially large
+    /// <see cref="RequestLog.RequestBody"/> and <see cref="RequestLog.ResponseBody"/> strings.
+    /// The in-memory queue holds only these summaries; full bodies live in SQLite and are
+    /// loaded on demand when a detail view is opened.
+    /// </summary>
+    private static RequestLog CreateSummary(RequestLog source) => new()
+    {
+        Timestamp = source.Timestamp,
+        Method = source.Method,
+        OllamaPath = source.OllamaPath,
+        UpstreamPath = source.UpstreamPath,
+        Model = source.Model,
+        Streaming = source.Streaming,
+        Status = source.Status,
+        ErrorMessage = source.ErrorMessage,
+        StatusCode = source.StatusCode,
+        DurationMs = source.DurationMs,
+        PromptTokens = source.PromptTokens,
+        CompletionTokens = source.CompletionTokens,
+        TokensPerSecond = source.TokensPerSecond,
+        ExceptionId = source.ExceptionId,
+        RequestBody = null,
+        ResponseBody = null,
+        RequestBytes = source.RequestBytes,
+        ResponseBytes = source.ResponseBytes,
+        SummarizationRetries = source.SummarizationRetries,
+        OriginalMessageCount = source.OriginalMessageCount,
+        SummarizedMessageCount = source.SummarizedMessageCount,
+    };
+
+    public IReadOnlyList<RequestLog> GetRecentLogs()
+    {
+        if (_snapshotDirty)
+        {
+            _cachedSnapshot = [.. _logs.Reverse()];
+            _snapshotDirty = false;
+        }
+
+        return _cachedSnapshot ?? [];
+    }
 
     /// <summary>
     /// Retrieves the full <see cref="ExceptionDetail"/> for a log entry, or null if
@@ -147,6 +196,7 @@ internal sealed class StatisticsService : IDisposable
     public void Reset()
     {
         while (_logs.TryDequeue(out _)) { }
+        _snapshotDirty = true;
         Interlocked.Exchange(ref _totalRequests, 0);
         Interlocked.Exchange(ref _totalErrors, 0);
         Interlocked.Exchange(ref _totalPromptTokens, 0);
@@ -254,7 +304,10 @@ internal sealed class StatisticsService : IDisposable
             int pruned = _store.DeleteOlderThan(cutoff);
 
             if (pruned > 0)
+            {
+                _snapshotDirty = true;
                 StatsChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
         catch (Exception ex)
         {

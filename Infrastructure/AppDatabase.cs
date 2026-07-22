@@ -564,8 +564,6 @@ internal sealed class AppDatabase : IDisposable
                     completion_tokens,
                     tokens_per_second,
                     exception_id,
-                    request_body,
-                    response_body,
                     request_bytes,
                     response_bytes,
                     summarization_retries,
@@ -587,8 +585,6 @@ internal sealed class AppDatabase : IDisposable
                         completion_tokens,
                         tokens_per_second,
                         exception_id,
-                        request_body,
-                        response_body,
                         request_bytes,
                         response_bytes,
                         summarization_retries,
@@ -605,9 +601,58 @@ internal sealed class AppDatabase : IDisposable
             using SqliteDataReader reader = command.ExecuteReader();
             List<RequestLog> entries = [];
             while (reader.Read())
-                entries.Add(ReadRequestLog(reader));
+                entries.Add(ReadRequestLogSummary(reader));
 
             return entries;
+        }
+    }
+
+    /// <summary>
+    /// Loads a single full request log entry — including <c>request_body</c> and
+    /// <c>response_body</c> — matching the supplied local timestamp. Used to populate the
+    /// detail view on demand so large bodies do not need to live in memory. Returns null if
+    /// no matching entry exists. When multiple rows share a timestamp, the most recently
+    /// inserted row is returned.
+    /// </summary>
+    public RequestLog? LoadFullLogEntry(DateTime localTimestamp)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    timestamp_utc,
+                    method,
+                    ollama_path,
+                    upstream_path,
+                    model,
+                    streaming,
+                    status,
+                    error_message,
+                    status_code,
+                    duration_ms,
+                    prompt_tokens,
+                    completion_tokens,
+                    tokens_per_second,
+                    exception_id,
+                    request_body,
+                    response_body,
+                    request_bytes,
+                    response_bytes,
+                    summarization_retries,
+                    original_message_count,
+                    summarized_message_count
+                FROM requests
+                WHERE timestamp_utc = $timestampUtc
+                ORDER BY id DESC
+                LIMIT 1;
+                """;
+            command.Parameters.AddWithValue("$timestampUtc", ToUtcText(localTimestamp));
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadRequestLog(reader) : null;
         }
     }
 
@@ -1038,6 +1083,38 @@ internal sealed class AppDatabase : IDisposable
         SummarizationRetries = reader.GetInt32(18),
         OriginalMessageCount = reader.IsDBNull(19) ? null : reader.GetInt32(19),
         SummarizedMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
+    };
+
+    /// <summary>
+    /// Reads a <see cref="RequestLog"/> from a result set that excludes the
+    /// <c>request_body</c> and <c>response_body</c> columns (see <c>LoadRecent</c>).
+    /// Column ordinals after <c>exception_id</c> shift down by two accordingly.
+    /// </summary>
+    private static RequestLog ReadRequestLogSummary(SqliteDataReader reader) => new()
+    {
+        Timestamp = ReadUtc(reader, 0).ToLocalTime(),
+        Method = reader.GetString(1),
+        OllamaPath = reader.GetString(2),
+        UpstreamPath = reader.GetString(3),
+        Model = reader.GetString(4),
+        Streaming = ReadBoolean(reader, 5),
+        Status = Enum.IsDefined(typeof(RequestStatus), reader.GetInt32(6))
+            ? (RequestStatus)reader.GetInt32(6)
+            : RequestStatus.Error,
+        ErrorMessage = reader.IsDBNull(7) ? null : reader.GetString(7),
+        StatusCode = reader.GetInt32(8),
+        DurationMs = reader.GetDouble(9),
+        PromptTokens = reader.GetInt32(10),
+        CompletionTokens = reader.GetInt32(11),
+        TokensPerSecond = reader.GetDouble(12),
+        ExceptionId = reader.IsDBNull(13) ? null : reader.GetInt32(13),
+        RequestBody = null,
+        ResponseBody = null,
+        RequestBytes = reader.GetInt64(14),
+        ResponseBytes = reader.GetInt64(15),
+        SummarizationRetries = reader.GetInt32(16),
+        OriginalMessageCount = reader.IsDBNull(17) ? null : reader.GetInt32(17),
+        SummarizedMessageCount = reader.IsDBNull(18) ? null : reader.GetInt32(18),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()
