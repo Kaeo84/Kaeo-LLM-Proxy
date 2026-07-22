@@ -437,6 +437,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
 
+            // Log the full exception detail server-side only. The client receives a generic
+            // message so internal details (paths, hostnames, connection strings) are never leaked.
+            Log.Error(ex, "Unhandled error processing {Method} {Path}", method, path);
+
             // Persist the full exception detail (stack trace, inner exceptions) separately.
             _stats.AddLog(log, ex);
             exceptionLogged = true;
@@ -444,7 +448,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             try
             {
                 resp.StatusCode = 500;
-                await WriteJsonAsync(resp, new { error = ex.Message }, ct);
+                await WriteJsonAsync(resp, new { error = "Internal proxy error." }, ct);
             }
             catch { }
 
@@ -885,7 +889,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             JsonObject? root;
             try { root = JsonNode.Parse(data) as JsonObject; }
-            catch (JsonException) { root = null; }
+            catch (JsonException ex)
+            {
+                Log.Debug(ex, "Skipping unparseable SSE data frame in OpenAI stream rewriter");
+                root = null;
+            }
 
             if (root is null || root["choices"] is not JsonArray choices)
             {
@@ -1579,8 +1587,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         string body = await ReadBodyAsync(req, ct);
         log.RequestBytes = Encoding.UTF8.GetByteCount(body);
-        OllamaGenerateRequest? ollamaReq = JsonSerializer.Deserialize<OllamaGenerateRequest>(body, _jsonOptions);
-        ArgumentNullException.ThrowIfNull(ollamaReq);
+        OllamaGenerateRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaGenerateRequest>(body, resp, log, ct);
+        if (ollamaReq is null)
+            return;
 
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
@@ -1696,8 +1705,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         string body = await ReadBodyAsync(req, ct);
         log.RequestBytes = Encoding.UTF8.GetByteCount(body);
-        OllamaChatRequest? ollamaReq = JsonSerializer.Deserialize<OllamaChatRequest>(body, _jsonOptions);
-        ArgumentNullException.ThrowIfNull(ollamaReq);
+        OllamaChatRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaChatRequest>(body, resp, log, ct);
+        if (ollamaReq is null)
+            return;
 
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
@@ -1931,8 +1941,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private async Task HandleEmbeddingsAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
         string body = await ReadBodyAsync(req, ct);
-        OllamaEmbeddingsRequest? ollamaReq = JsonSerializer.Deserialize<OllamaEmbeddingsRequest>(body, _jsonOptions);
-        ArgumentNullException.ThrowIfNull(ollamaReq);
+        OllamaEmbeddingsRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaEmbeddingsRequest>(body, resp, log, ct);
+        if (ollamaReq is null)
+            return;
 
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
@@ -2057,7 +2068,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             LlamaCppStreamChunk? chunk;
             try { chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(line, _jsonOptions); }
-            catch { continue; }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Skipping unparseable streaming completion chunk");
+                continue;
+            }
 
             if (chunk is null) continue;
 
@@ -2162,7 +2177,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             LlamaCppStreamChunk? chunk;
             try { chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(line, _jsonOptions); }
-            catch { continue; }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Skipping unparseable streaming chat chunk");
+                continue;
+            }
 
             if (chunk is null) continue;
 
@@ -2737,6 +2756,36 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         public long Limit { get; } = limit;
         public long Actual { get; } = actual;
+    }
+
+    /// <summary>
+    /// Deserializes a JSON request body into <typeparamref name="T"/>. When the body is missing,
+    /// malformed, or does not match the expected shape, writes a 400 Bad Request response, marks
+    /// the log as an error, and returns null so the caller can simply return.
+    /// </summary>
+    private async Task<T?> TryDeserializeRequestAsync<T>(string body, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+        where T : class
+    {
+        T? result;
+        try
+        {
+            result = JsonSerializer.Deserialize<T>(body, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            Log.Debug(ex, "Rejected malformed JSON request body");
+            result = null;
+        }
+
+        if (result is null)
+        {
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = "Invalid or malformed request body.";
+            resp.StatusCode = 400;
+            await WriteJsonAsync(resp, new { error = "Invalid or malformed request body." }, ct);
+        }
+
+        return result;
     }
 
     private static async Task WriteJsonAsync(HttpListenerResponse resp, object value, CancellationToken ct)
