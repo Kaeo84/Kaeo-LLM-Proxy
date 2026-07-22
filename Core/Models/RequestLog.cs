@@ -10,6 +10,13 @@ internal enum RequestStatus
 /// <summary>A single logged proxy request with timing and token stats.</summary>
 internal sealed class RequestLog
 {
+    /// <summary>
+    /// Unique correlation ID assigned when the request is received. Surfaced in server logs
+    /// (via Serilog LogContext) and in error responses so a client-reported failure can be
+    /// correlated with the exact server-side request.
+    /// </summary>
+    public string RequestId { get; set; } = string.Empty;
+
     public DateTime Timestamp { get; set; } = DateTime.Now;
     public string Method { get; set; } = string.Empty;
     public string OllamaPath { get; set; } = string.Empty;

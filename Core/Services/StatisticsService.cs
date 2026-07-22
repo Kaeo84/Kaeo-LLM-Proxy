@@ -130,6 +130,7 @@ internal sealed class StatisticsService : IDisposable
     /// </summary>
     private static RequestLog CreateSummary(RequestLog source) => new()
     {
+        RequestId = source.RequestId,
         Timestamp = source.Timestamp,
         Method = source.Method,
         OllamaPath = source.OllamaPath,

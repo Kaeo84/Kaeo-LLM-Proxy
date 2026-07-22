@@ -327,14 +327,43 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string path = req.Url?.AbsolutePath ?? "/";
         string method = req.HttpMethod;
 
+        // Short correlation ID for this request. Pushed into Serilog's LogContext so every log
+        // emitted while handling the request carries it, and echoed back in error responses so a
+        // client-reported failure can be matched to the exact server-side request.
+        string requestId = Guid.NewGuid().ToString("N")[..12];
+
         var log = new RequestLog
         {
+            RequestId = requestId,
             Method = method,
             OllamaPath = path,
         };
 
         var sw = Stopwatch.StartNew();
 
+        try
+        {
+            using (Serilog.Context.LogContext.PushProperty("RequestId", requestId))
+            {
+                await HandleCoreAsync(req, resp, log, path, method, requestId, sw, ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inFlightRequests);
+        }
+    }
+
+    private async Task HandleCoreAsync(
+        HttpListenerRequest req,
+        HttpListenerResponse resp,
+        RequestLog log,
+        string path,
+        string method,
+        string requestId,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
         // Handle CORS preflight and static version probe without logging — they are infrastructure
         // noise and would inflate the request log on every client connection.
         resp.AddHeader("Access-Control-Allow-Origin", "*");
@@ -345,14 +374,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             resp.StatusCode = 204;
             resp.Close();
-            Interlocked.Decrement(ref _inFlightRequests);
             return;
         }
 
         if (method == "GET" && path == "/api/version")
         {
             await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
-            Interlocked.Decrement(ref _inFlightRequests);
             return;
         }
 
@@ -424,7 +451,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             try
             {
                 resp.StatusCode = 413;
-                await WriteJsonAsync(resp, new { error = "Request body too large." }, ct);
+                await WriteJsonAsync(resp, new { error = "Request body too large.", requestId }, ct);
             }
             catch { }
 
@@ -448,7 +475,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             try
             {
                 resp.StatusCode = 500;
-                await WriteJsonAsync(resp, new { error = "Internal proxy error." }, ct);
+                await WriteJsonAsync(resp, new { error = "Internal proxy error.", requestId }, ct);
             }
             catch { }
 
@@ -463,8 +490,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
             if (!exceptionLogged)
                 _stats.AddLog(log);
-
-            Interlocked.Decrement(ref _inFlightRequests);
         }
     }
 

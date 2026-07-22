@@ -41,7 +41,10 @@ internal static class AppLogger
                 rollOnFileSizeLimit: true,
                 fileSizeLimitBytes: (long)settings.AppLogFileSizeLimitMb * 1024 * 1024,
                 retainedFileCountLimit: settings.AppLogRetainedFileCount,
-                shared: false,
+                // shared: true allows multiple application instances (AllowMultipleInstances) to
+                // write to the same log file concurrently via mutex-protected IO instead of each
+                // instance throwing IOException and silently losing its diagnostic logs.
+                shared: true,
                 buffered: false)
             .CreateLogger();
 
