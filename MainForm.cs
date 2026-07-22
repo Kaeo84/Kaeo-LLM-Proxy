@@ -116,7 +116,7 @@ internal partial class MainForm : Form
     {
         try
         {
-            _server.Start(_settings.ListenPort, _settings.ListenAddress);
+            _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
             RefreshStatus();
         }
         catch (Exception ex)
@@ -142,7 +142,7 @@ internal partial class MainForm : Form
     {
         try
         {
-            await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress);
+            await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
             RefreshStatus();
         }
         catch (Exception ex)

@@ -278,6 +278,20 @@ internal sealed class AppSettings
     /// </summary>
     public string ListenAddress { get; set; } = "localhost";
 
+    /// <summary>
+    /// Maximum allowed request body size in bytes. Requests with a body larger than this are
+    /// rejected with 413 Payload Too Large before being buffered, protecting the proxy from
+    /// memory-exhaustion attacks. Default: 10 MB.
+    /// </summary>
+    public long MaxRequestBodyBytes { get; set; } = 10L * 1024 * 1024;
+
+    /// <summary>
+    /// Maximum number of concurrent in-flight proxy requests. When this many requests are being
+    /// processed, additional incoming requests are rejected with 503 Service Unavailable instead of
+    /// queueing without bound. Default: 64.
+    /// </summary>
+    public int MaxConcurrentRequests { get; set; } = 64;
+
     /// <summary>Model name mappings loaded from the application database at startup.</summary>
     [JsonIgnore]
     public List<ModelMapping> ModelMappings { get; set; } = [];

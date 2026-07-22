@@ -17,11 +17,19 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
     private readonly OllamaProxyHandler _handler = handler;
     private bool _disposed;
 
+    // Caps the number of concurrently processed requests. When saturated, new requests are
+    // rejected with 503 instead of queueing without bound (which would exhaust memory/threads).
+    // Recreated on Start() so the limit tracks the current settings value.
+    private SemaphoreSlim? _concurrencyGate;
+
+    // How long a request waits for a free concurrency slot before being rejected with 503.
+    private static readonly TimeSpan _acquireTimeout = TimeSpan.FromSeconds(5);
+
     public bool IsRunning { get; private set; }
 
     public event EventHandler<string>? StatusChanged;
 
-    public void Start(int port, string listenAddress = "localhost")
+    public void Start(int port, string listenAddress = "localhost", int maxConcurrentRequests = 64)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -55,6 +63,10 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         _listener.Prefixes.Add(prefix);
         _listener.Start();
 
+        int gateSize = Math.Max(1, maxConcurrentRequests);
+        _concurrencyGate?.Dispose();
+        _concurrencyGate = new SemaphoreSlim(gateSize, gateSize);
+
         _cts = new CancellationTokenSource();
         _listenTask = AcceptLoopAsync(_cts.Token);
         IsRunning = true;
@@ -64,10 +76,10 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         StatusChanged?.Invoke(this, $"Listening on {displayHost}:{port}");
     }
 
-    public async Task RestartAsync(int port, string listenAddress = "localhost")
+    public async Task RestartAsync(int port, string listenAddress = "localhost", int maxConcurrentRequests = 64)
     {
         await StopAsync().ConfigureAwait(false);
-        Start(port, listenAddress);
+        Start(port, listenAddress, maxConcurrentRequests);
     }
 
     public async Task StopAsync()
@@ -97,6 +109,9 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         _listener = null;
         _listenTask = null;
 
+        _concurrencyGate?.Dispose();
+        _concurrencyGate = null;
+
         StatusChanged?.Invoke(this, "Stopped");
     }
 
@@ -121,14 +136,56 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
                 break;
             }
 
+            SemaphoreSlim? gate = _concurrencyGate;
+            if (gate is null)
+                break;
+
+            // Acquire a concurrency slot before dispatching. If none frees up within the
+            // acquire timeout, shed load immediately with 503 rather than queueing without
+            // bound (which would exhaust memory and thread-pool resources).
+            bool acquired;
+            try
+            {
+                acquired = await gate.WaitAsync(_acquireTimeout, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (!acquired)
+            {
+                _ = Task.Run(() => RejectOverloadedAsync(context), ct);
+                continue;
+            }
+
             // Fire-and-forget each request on the thread pool. Exceptions are observed
             // here so a client disconnect (HttpListenerException / I/O abort) never
-            // surfaces as an unobserved TaskScheduler exception.
-            _ = Task.Run(() => HandleRequestSafelyAsync(context, ct), ct);
+            // surfaces as an unobserved TaskScheduler exception. The acquired slot is
+            // released inside HandleRequestSafelyAsync.
+            _ = Task.Run(() => HandleRequestSafelyAsync(context, gate, ct), ct);
         }
     }
 
-    private async Task HandleRequestSafelyAsync(HttpListenerContext context, CancellationToken ct)
+    private static async Task RejectOverloadedAsync(HttpListenerContext context)
+    {
+        try
+        {
+            context.Response.StatusCode = 503;
+            context.Response.ContentType = "application/json";
+            byte[] body = System.Text.Encoding.UTF8.GetBytes(
+                "{\"error\":\"Server is at capacity. Please retry shortly.\"}");
+            await context.Response.OutputStream.WriteAsync(body).ConfigureAwait(false);
+            context.Response.Close();
+        }
+        catch
+        {
+            // Client may have disconnected; nothing to do.
+            try { context.Response.Close(); } catch { }
+        }
+    }
+
+    private async Task HandleRequestSafelyAsync(HttpListenerContext context, SemaphoreSlim gate, CancellationToken ct)
     {
         try
         {
@@ -155,6 +212,11 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         {
             try { context.Response.Close(); }
             catch { /* Already closed or aborted. */ }
+
+            // Release the concurrency slot. Guard against disposal during shutdown.
+            try { gate.Release(); }
+            catch (ObjectDisposedException) { }
+            catch (SemaphoreFullException) { }
         }
     }
 
@@ -177,6 +239,9 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
         _listener?.Close();
         _listener = null;
+
+        _concurrencyGate?.Dispose();
+        _concurrencyGate = null;
 
         // Wait for the accept loop to complete with a timeout
         if (listenTask is not null)

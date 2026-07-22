@@ -80,7 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            _server.Start(_settings.ListenPort, _settings.ListenAddress);
+            _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
             _trayIcon.Text = $"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}";
             Log.Information("Proxy started on {Address}:{Port}", _settings.ListenAddress, _settings.ListenPort);
         }
@@ -126,7 +126,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress);
+            await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
             _trayIcon.Text = $"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}";
         }
         catch (Exception ex)

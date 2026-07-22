@@ -31,6 +31,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     // Shared pooled HttpClient — avoids socket exhaustion under load.
     private HttpClient _httpClient = BuildHttpClient(settings);
 
+    // Number of requests currently being processed by HandleAsync. Used to defer disposal of a
+    // superseded HttpClient until in-flight requests that may still be using it have completed.
+    private int _inFlightRequests;
+
     private readonly StatisticsService _stats = stats;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
 
@@ -41,11 +45,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         HttpClient old = _httpClient;
         _httpClient = BuildHttpClient(settings);
 
-        // Delayed dispose to allow in-flight requests to complete
+        // Dispose the superseded client only once no in-flight requests remain that could still
+        // be using it. A fixed delay is unsafe because requests can run up to the per-mapping
+        // upstream timeout (e.g. 300 s). We poll the in-flight counter and fall back to a hard
+        // 5-minute safety timeout so the old client is never leaked indefinitely.
         _ = Task.Run(async () =>
         {
-            await Task.Delay(TimeSpan.FromSeconds(30));
-            old.Dispose();
+            try
+            {
+                DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+                while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
+                    await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort wait; always dispose below.
+            }
+            finally
+            {
+                old.Dispose();
+            }
         });
 
         SynchronizeHeartbeatMonitors();
@@ -298,6 +317,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     public async Task HandleAsync(HttpListenerContext context, CancellationToken ct)
     {
+        // Track in-flight requests so a superseded HttpClient (see UpdateSettings) is not disposed
+        // while a request that may still be using it is running.
+        Interlocked.Increment(ref _inFlightRequests);
+
         HttpListenerRequest req = context.Request;
         HttpListenerResponse resp = context.Response;
 
@@ -322,12 +345,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             resp.StatusCode = 204;
             resp.Close();
+            Interlocked.Decrement(ref _inFlightRequests);
             return;
         }
 
         if (method == "GET" && path == "/api/version")
         {
             await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
+            Interlocked.Decrement(ref _inFlightRequests);
             return;
         }
 
@@ -389,6 +414,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.Status = RequestStatus.Cancelled;
             try { resp.StatusCode = 499; resp.Close(); } catch { }
         }
+        catch (RequestBodyTooLargeException ex)
+        {
+            // Oversized request body — reject before buffering to protect against memory exhaustion.
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = ex.Message;
+            Log.Warning("Rejected oversized request body on {Path}: {Message}", path, ex.Message);
+
+            try
+            {
+                resp.StatusCode = 413;
+                await WriteJsonAsync(resp, new { error = "Request body too large." }, ct);
+            }
+            catch { }
+
+            sw.Stop();
+            log.DurationMs = sw.Elapsed.TotalMilliseconds;
+            return;
+        }
         catch (Exception ex)
         {
             log.Status = RequestStatus.Error;
@@ -416,6 +459,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
             if (!exceptionLogged)
                 _stats.AddLog(log);
+
+            Interlocked.Decrement(ref _inFlightRequests);
         }
     }
 
@@ -469,7 +514,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (isJsonPost)
             {
-                string bodyText = await new System.IO.StreamReader(req.InputStream).ReadToEndAsync(ct);
+                string bodyText = await ReadBodyAsync(req, ct);
                 log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
                 string rewritten = NormalizeRequestBody(bodyText, log, ShouldApplyThinkingCompatibility);
                 originalModel = log.Model; // set by NormalizeRequestBody
@@ -531,6 +576,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             await preResponseCts.CancelAsync();
             await preResponseHeartbeatTask;
         }
+
+        // Ensure the response (and its pooled connection) is released on every exit path,
+        // including the early error return and any exception thrown mid-stream.
+        using HttpResponseMessage ownedUpstreamResponse = upstreamResp;
 
         log.StatusCode = (int)upstreamResp.StatusCode;
 
@@ -1900,7 +1949,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StringContent embedContent = new(JsonSerializer.Serialize(llamaReq, _jsonOptions), Encoding.UTF8, "application/json");
         using var embedReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings") { Content = embedContent };
         ApplyApiKey(embedReqMsg, embedApiKey);
-        HttpResponseMessage upstreamResp = await SendUpstreamAsync(embedReqMsg, embedBase, embedTimeout, HttpCompletionOption.ResponseContentRead, ct);
+        using HttpResponseMessage upstreamResp = await SendUpstreamAsync(embedReqMsg, embedBase, embedTimeout, HttpCompletionOption.ResponseContentRead, ct);
         log.StatusCode = (int)upstreamResp.StatusCode;
 
         string respBody = await upstreamResp.Content.ReadAsStringAsync(ct);
@@ -2652,10 +2701,42 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     // ── Utility ──────────────────────────────────────────────────────────────
 
-    private static async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
+    /// <summary>
+    /// Reads the request body as a string, enforcing the configured
+    /// <see cref="AppSettings.MaxRequestBodyBytes"/> limit. Rejecting oversized bodies before they
+    /// are fully buffered protects the proxy from memory-exhaustion (DoS) attacks.
+    /// </summary>
+    /// <exception cref="RequestBodyTooLargeException">Thrown when the body exceeds the limit.</exception>
+    private async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
     {
-        using StreamReader reader = new(req.InputStream, req.ContentEncoding);
-        return await reader.ReadToEndAsync(ct);
+        long limit = _settings.MaxRequestBodyBytes;
+
+        // Fast path: a declared Content-Length over the limit is rejected without reading the body.
+        if (req.ContentLength64 > limit)
+            throw new RequestBodyTooLargeException(limit, req.ContentLength64);
+
+        using MemoryStream buffer = new();
+        byte[] chunk = new byte[81920];
+        long total = 0;
+        int read;
+        while ((read = await req.InputStream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        {
+            total += read;
+            if (total > limit)
+                throw new RequestBodyTooLargeException(limit, total);
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return req.ContentEncoding.GetString(buffer.ToArray());
+    }
+
+    /// <summary>Indicates a request body exceeded <see cref="AppSettings.MaxRequestBodyBytes"/>.</summary>
+    private sealed class RequestBodyTooLargeException(long limit, long actual)
+        : Exception($"Request body of {actual} bytes exceeds the configured maximum of {limit} bytes.")
+    {
+        public long Limit { get; } = limit;
+        public long Actual { get; } = actual;
     }
 
     private static async Task WriteJsonAsync(HttpListenerResponse resp, object value, CancellationToken ct)
