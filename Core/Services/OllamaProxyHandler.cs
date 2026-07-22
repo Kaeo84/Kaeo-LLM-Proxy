@@ -364,19 +364,25 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Stopwatch sw,
         CancellationToken ct)
     {
-        // Handle CORS preflight and static version probe without logging — they are infrastructure
-        // noise and would inflate the request log on every client connection.
-        resp.AddHeader("Access-Control-Allow-Origin", "*");
-        resp.AddHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-        resp.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-        if (method == "OPTIONS")
+        // CORS headers and OPTIONS preflight are only emitted when explicitly enabled. In a
+        // backend-to-backend topology (behind a load balancer/WAF) browsers never call the proxy
+        // directly, so a wildcard CORS policy is unnecessary and would let any webpage drive it.
+        if (_settings.EnableCors)
         {
-            resp.StatusCode = 204;
-            resp.Close();
-            return;
+            resp.AddHeader("Access-Control-Allow-Origin", "*");
+            resp.AddHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+            resp.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+            if (method == "OPTIONS")
+            {
+                resp.StatusCode = 204;
+                resp.Close();
+                return;
+            }
         }
 
+        // Static version probe answered without logging — infrastructure noise that would inflate
+        // the request log on every client connection.
         if (method == "GET" && path == "/api/version")
         {
             await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
@@ -493,6 +499,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
+    /// <summary>
+    /// Returns true for request headers that must NOT be forwarded to the upstream. This includes
+    /// hop-by-hop headers managed by <see cref="HttpClient"/> itself, and proxy/forwarding headers
+    /// (X-Forwarded-*, X-Real-IP, Forwarded) that a client reaching the proxy directly could spoof
+    /// to impersonate a trusted edge. Because the proxy sits behind a load balancer/WAF, any such
+    /// header arriving from a client is untrusted and is dropped rather than relayed.
+    /// </summary>
+    private static bool ShouldSkipRequestHeader(string name)
+    {
+        return name.Equals("Host", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Connection", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Forwarded", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("X-Real-IP", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase);
+    }
+
     // ── /v1/* → transparent passthrough ────────────────────────────────────
 
     /// <summary>
@@ -511,14 +535,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             RequestUri = new Uri(req.Url!.PathAndQuery, UriKind.Relative),
         };
 
-        // Copy request headers, skipping hop-by-hop headers the HttpClient manages itself.
+        // Copy request headers, skipping hop-by-hop headers the HttpClient manages itself and
+        // proxy/forwarding headers that a direct-access client could spoof (see ShouldSkipRequestHeader).
         foreach (string? name in req.Headers.AllKeys)
         {
             if (name is null) continue;
-            if (name.Equals("Host", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)
-             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
+            if (ShouldSkipRequestHeader(name))
                 continue;
 
             // Authorization is copied here so a client's own bearer token (e.g. Visual
@@ -2410,8 +2432,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 },
             })];
 
-    private const string XmlToolCallCloseTag = "</tool_call>";
-
     private static string CaptureXmlToolCallToken(string token, StringBuilder toolCallBuilder, ref bool isCapturing)
     {
         if (string.IsNullOrEmpty(token))
@@ -2420,7 +2440,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (isCapturing)
         {
             toolCallBuilder.Append(token);
-            if (BuilderContainsTagInTail(toolCallBuilder, XmlToolCallCloseTag, token.Length))
+            if (toolCallBuilder.ToString().Contains("</tool_call>", StringComparison.OrdinalIgnoreCase))
                 isCapturing = false;
 
             return string.Empty;
@@ -2432,47 +2452,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         string visibleContent = token[..startIndex];
         toolCallBuilder.Append(token[startIndex..]);
-        if (!BuilderContainsTagInTail(toolCallBuilder, XmlToolCallCloseTag, token.Length - startIndex))
+        if (!toolCallBuilder.ToString().Contains("</tool_call>", StringComparison.OrdinalIgnoreCase))
             isCapturing = true;
 
         return visibleContent;
-    }
-
-    /// <summary>
-    /// Allocation-free check for whether <paramref name="tag"/> appears in the portion of
-    /// <paramref name="builder"/> that could newly contain it after appending
-    /// <paramref name="appendedLength"/> characters. Searches only the tail window (the appended
-    /// characters plus tag.Length - 1 characters of overlap) via the StringBuilder indexer,
-    /// avoiding the per-token full-builder string allocation that ToString().Contains(...) caused.
-    /// </summary>
-    private static bool BuilderContainsTagInTail(StringBuilder builder, string tag, int appendedLength)
-    {
-        int length = builder.Length;
-        int tagLength = tag.Length;
-        if (length < tagLength)
-            return false;
-
-        int windowStart = Math.Max(0, length - appendedLength - (tagLength - 1));
-        int lastPossibleStart = length - tagLength;
-
-        for (int start = windowStart; start <= lastPossibleStart; start++)
-        {
-            if (BuilderMatchesTagAt(builder, start, tag))
-                return true;
-        }
-
-        return false;
-    }
-
-    private static bool BuilderMatchesTagAt(StringBuilder builder, int start, string tag)
-    {
-        for (int i = 0; i < tag.Length; i++)
-        {
-            if (char.ToUpperInvariant(builder[start + i]) != char.ToUpperInvariant(tag[i]))
-                return false;
-        }
-
-        return true;
     }
 
     private static ToolCallExtraction ExtractXmlToolCalls(string? content)

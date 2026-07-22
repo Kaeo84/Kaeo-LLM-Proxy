@@ -947,22 +947,44 @@ internal sealed class AppDatabase : IDisposable
 
         try
         {
-            File.Delete(_configuredDbPath);
+            // Preserve the unrecognized file by renaming it to a timestamped *.bak instead of
+            // permanently deleting it, so no user data is lost if the file was misidentified.
+            string backupPath = CreateUniqueBackupPath(_configuredDbPath);
+            File.Move(_configuredDbPath, backupPath);
 
             Log.Warning(
-                "Existing database file at {Path} is not a SQLite database. It was deleted and a new SQLite database will be created.",
-                _configuredDbPath);
+                "Existing database file at {Path} is not a SQLite database. It was renamed to {BackupPath} and a new SQLite database will be created.",
+                _configuredDbPath, backupPath);
         }
         catch (IOException ex)
         {
             throw new InvalidOperationException(
-                $"The legacy non-SQLite database file '{_configuredDbPath}' could not be deleted because it is in use by another process. Close the process that is locking the file and try again. {ex.Message}");
+                $"The legacy non-SQLite database file '{_configuredDbPath}' could not be renamed because it is in use by another process. Close the process that is locking the file and try again. {ex.Message}");
         }
         catch (UnauthorizedAccessException ex)
         {
             throw new InvalidOperationException(
-                $"The legacy non-SQLite database file '{_configuredDbPath}' could not be deleted due to access restrictions. Fix the file permissions and try again. {ex.Message}");
+                $"The legacy non-SQLite database file '{_configuredDbPath}' could not be renamed due to access restrictions. Fix the file permissions and try again. {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Builds a collision-free backup path for a database file being set aside, of the form
+    /// <c>{path}.{yyyyMMdd-HHmmss}.bak</c> (with a numeric suffix appended if that already exists).
+    /// </summary>
+    private static string CreateUniqueBackupPath(string path)
+    {
+        string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        string candidate = $"{path}.{timestamp}.bak";
+
+        int suffix = 1;
+        while (File.Exists(candidate))
+        {
+            candidate = $"{path}.{timestamp}-{suffix}.bak";
+            suffix++;
+        }
+
+        return candidate;
     }
 
     private static bool IsSqliteDatabaseFile(string path)

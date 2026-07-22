@@ -292,6 +292,14 @@ internal sealed class AppSettings
     /// </summary>
     public int MaxConcurrentRequests { get; set; } = 64;
 
+    /// <summary>
+    /// When true, the proxy emits permissive CORS headers (Access-Control-Allow-Origin: *) and
+    /// answers OPTIONS preflight requests, allowing browser-based clients to call it directly.
+    /// Default: false. Keep false when the proxy is only reached backend-to-backend (e.g. behind a
+    /// load balancer/WAF), since a wildcard CORS policy lets any webpage drive the proxy from a browser.
+    /// </summary>
+    public bool EnableCors { get; set; } = false;
+
     /// <summary>Model name mappings loaded from the application database at startup.</summary>
     [JsonIgnore]
     public List<ModelMapping> ModelMappings { get; set; } = [];
@@ -391,6 +399,9 @@ internal sealed class AppSettings
 
     public void Save()
     {
+        // Clamp/validate before persisting so the on-disk configuration is always sane.
+        Normalize();
+
         try
         {
             string dir = Path.GetDirectoryName(_settingsPath)!;
@@ -401,6 +412,45 @@ internal sealed class AppSettings
         {
             Log.Error(ex, "Failed to save settings to {Path}", _settingsPath);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Clamps mutable settings to their valid ranges and validates model-mapping URLs. Called at the
+    /// start of <see cref="Save"/> so persisted configuration is always sane — protecting the proxy
+    /// from invalid values (for example, a non-positive upstream timeout would create an
+    /// already-cancelled <see cref="System.Threading.CancellationTokenSource"/>, and an out-of-range
+    /// port would fail to bind). Numeric values are clamped silently; an unsupported upstream URL
+    /// scheme is logged as a warning (the mapping will simply fail to connect at request time). This
+    /// method never throws, so it is safe to invoke from every <c>Save()</c> call site.
+    /// </summary>
+    public void Normalize()
+    {
+        ListenPort = Math.Clamp(ListenPort, 1, 65535);
+        MaxConcurrentRequests = Math.Clamp(MaxConcurrentRequests, 1, 10000);
+        MaxRequestBodyBytes = Math.Max(MaxRequestBodyBytes, 1024);
+        MaxLogEntries = Math.Clamp(MaxLogEntries, 10, 100000);
+        StreamingHeartbeatIntervalSeconds = Math.Clamp(StreamingHeartbeatIntervalSeconds, 5, 300);
+
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (mapping.UpstreamTimeoutSeconds <= 0)
+                mapping.UpstreamTimeoutSeconds = 300;
+
+            mapping.PreserveRecentMessageCount = Math.Clamp(mapping.PreserveRecentMessageCount, 2, 20);
+            mapping.MaxSummarizationRetries = Math.Clamp(mapping.MaxSummarizationRetries, 1, 3);
+            mapping.Temperature = Math.Clamp(mapping.Temperature, 0.0, 2.0);
+            mapping.RepeatPenalty = Math.Clamp(mapping.RepeatPenalty, 0.0, 2.0);
+
+            if (!string.IsNullOrWhiteSpace(mapping.UpstreamUrl)
+                && Uri.TryCreate(mapping.UpstreamUrl, UriKind.Absolute, out Uri? uri)
+                && !uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+                && !uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Warning(
+                    "Model mapping '{ProxyName}' has unsupported upstream URL scheme '{Scheme}' ({Url}); only http and https are supported",
+                    mapping.ProxyName, uri.Scheme, mapping.UpstreamUrl);
+            }
         }
     }
 

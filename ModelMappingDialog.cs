@@ -398,7 +398,7 @@ internal sealed class ModelMappingDialog : Form
         _flpButtons.Margin = new Padding(0, 8, 0, 0);
 
         _btnOk.AutoSize = true;
-        _btnOk.DialogResult = DialogResult.OK;
+        _btnOk.Click += BtnOk_Click;
         _btnOk.MinimumSize = new Size(80, 28);
         _btnOk.Text = "OK";
 
@@ -422,6 +422,35 @@ internal sealed class ModelMappingDialog : Form
         Text = "Configure Model";
 
         ResumeLayout(false);
+    }
+
+    private void BtnOk_Click(object? sender, EventArgs e)
+    {
+        // Validate the upstream URL before accepting. A non-empty URL must be a valid absolute
+        // URI using http/https; otherwise reject with a clear message and keep the dialog open
+        // (DialogResult stays None). Setting DialogResult.OK closes the modal and returns OK.
+        string url = _txtUpstreamUrl.Text.Trim();
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
+            {
+                MessageBox.Show(this,
+                    "The upstream URL is not a valid absolute URL (e.g. http://192.168.1.10:8080).",
+                    "Invalid Upstream URL", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+                && !uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this,
+                    $"The upstream URL scheme '{uri.Scheme}' is not supported. Use an http:// or https:// URL.",
+                    "Invalid Upstream URL", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
+        DialogResult = DialogResult.OK;
     }
 
     private async void BtnFetchModels_Click(object? sender, EventArgs e)
