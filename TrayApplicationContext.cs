@@ -23,13 +23,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext() : this(AppSettings.Load()) { }
 
-    public TrayApplicationContext(AppSettings settings)
+    public TrayApplicationContext(AppSettings settings) : this(settings, new AppDatabase(settings.Logging)) { }
+
+    public TrayApplicationContext(AppSettings settings, AppDatabase database)
     {
         _settings = settings;
+        _database = database;
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
-        _database = new AppDatabase(_settings.Logging);
         _settings.ApplyRuntimeSettings(_database.LoadRuntimeSettings());
         _settings.ModelMappings = [.. _database.LoadModelMappings()];
         _settings.InstructionSets = [.. _database.LoadInstructionSets()];
@@ -234,8 +236,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         Log.Information("Kaeo LLM Proxy shutting down");
         _trayIcon.Visible = false;
-        await _server.StopAsync();
-        Application.Exit();
+        try
+        {
+            await _server.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping proxy during shutdown");
+        }
+        finally
+        {
+            Application.Exit();
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -249,6 +261,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _trayIcon.Dispose();
             _server.Dispose();
+            _handler.Dispose();
+            _stats.Dispose();
             _database.Dispose();
             _perfService.Dispose();
             AppLogger.Shutdown();

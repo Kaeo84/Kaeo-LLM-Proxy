@@ -26,7 +26,7 @@ internal static class Program
         };
 
         AppSettings settings = AppSettings.Load();
-        using AppDatabase database = new(settings.Logging);
+        AppDatabase database = new(settings.Logging);
         settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
 
         if (!settings.AllowMultipleInstances)
@@ -49,7 +49,7 @@ internal static class Program
             GC.KeepAlive(mutex);
         }
 
-        Application.Run(new TrayApplicationContext(settings));
+        Application.Run(new TrayApplicationContext(settings, database));
     }
 
     internal static Icon GetApplicationIcon()

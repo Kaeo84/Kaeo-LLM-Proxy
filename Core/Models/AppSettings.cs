@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Core.Models;
 
@@ -367,17 +368,26 @@ internal sealed class AppSettings
             string json = File.ReadAllText(_settingsPath);
             return JsonSerializer.Deserialize<AppSettings>(json, _readOptions) ?? new AppSettings();
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warning(ex, "Failed to load settings from {Path}, using defaults", _settingsPath);
             return new AppSettings();
         }
     }
 
     public void Save()
     {
-        string dir = Path.GetDirectoryName(_settingsPath)!;
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(_settingsPath, JsonSerializer.Serialize(this, _writeOptions));
+        try
+        {
+            string dir = Path.GetDirectoryName(_settingsPath)!;
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(_settingsPath, JsonSerializer.Serialize(this, _writeOptions));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Error(ex, "Failed to save settings to {Path}", _settingsPath);
+            throw;
+        }
     }
 
     public RuntimeSettings CreateRuntimeSettings() => new()

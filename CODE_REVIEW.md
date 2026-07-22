@@ -8,7 +8,7 @@
 
 ## Critical Bugs
 
-### 1. Double `AppDatabase` instantiation — SQLite locking risk
+### 1. [RESOLVED] Double `AppDatabase` instantiation — SQLite locking risk
 **Files:** `Program.cs` (line 29), `TrayApplicationContext.cs` (line 32)
 
 `Program.Main` creates an `AppDatabase`, loads runtime settings, then passes `settings` into `TrayApplicationContext`, which creates a **second** `AppDatabase` on the same file. The first instance stays alive (via `using`) until `Application.Run` returns, so **two SQLite connections to the same file exist for the entire app lifetime**. Under concurrent writes (request logging + settings saves), this can cause `SQLITE_BUSY` errors or data corruption.
@@ -24,7 +24,7 @@ Application.Run(new TrayApplicationContext(settings));     // creates instance 2
 
 ---
 
-### 2. `OllamaProxyHandler` and `StatisticsService` never disposed
+### 2. [RESOLVED] `OllamaProxyHandler` and `StatisticsService` never disposed
 **File:** `TrayApplicationContext.cs` (lines 241–257)
 
 `Dispose(bool)` disposes `_trayIcon`, `_server`, `_database`, and `_perfService`, but **not** `_handler` (which holds an `HttpClient` and heartbeat timers) or `_stats` (which holds a cleanup `Timer`). On shutdown, heartbeat monitors keep firing and the `HttpClient` handler leaks sockets.
@@ -49,7 +49,7 @@ protected override void Dispose(bool disposing)
 
 ---
 
-### 3. `OnExit` — unhandled exception in `async void` crashes the process
+### 3. [RESOLVED] `OnExit` — unhandled exception in `async void` crashes the process
 **File:** `TrayApplicationContext.cs` (lines 233–239)
 
 ```csharp
@@ -68,7 +68,7 @@ No `try/catch`. Per the project's own WinForms guidelines, `async void` handlers
 
 ---
 
-### 4. `UpdateSettings` — race condition on `_httpClient` swap
+### 4. [RESOLVED] `UpdateSettings` — race condition on `_httpClient` swap
 **File:** `OllamaProxyHandler.cs` (lines 40–46)
 
 ```csharp
@@ -88,7 +88,7 @@ In-flight requests holding a reference to the old `HttpClient` will get `ObjectD
 
 ---
 
-### 5. `PruneExpired` — race condition loses log entries
+### 5. [RESOLVED] `PruneExpired` — race condition loses log entries
 **File:** `StatisticsService.cs` (lines 256–262)
 
 ```csharp
@@ -106,14 +106,14 @@ Between draining the queue and re-enqueuing the kept entries, concurrent `AddLog
 
 ## Moderate Issues
 
-### 6. `IsContextOverflowErrorAsync` consumes the response body
+### 6. [RESOLVED] `IsContextOverflowErrorAsync` consumes the response body
 **File:** `OllamaProxyHandler.cs` (lines 211–242)
 
 Called from `HandleChatAsync` (line 1719) with `HttpCompletionOption.ResponseHeadersRead`. `ReadAsStringAsync` buffers the content, so a subsequent `ReadAsStringAsync` in the error-forwarding path (line 553) still works. However, this **double-reads** the body into memory. For very large error responses this doubles allocation. Consider reading once and passing the string forward.
 
 ---
 
-### 7. `AppSettings.Load` — silent catch-all swallows config errors
+### 7. [RESOLVED] `AppSettings.Load` — silent catch-all swallows config errors
 **File:** `AppSettings.cs` (lines 365–373)
 
 ```csharp
@@ -129,14 +129,14 @@ A corrupted `settings.jsonc` silently resets to defaults. The user has no indica
 
 ---
 
-### 8. `AppSettings.Save` — no error handling
+### 8. [RESOLVED] `AppSettings.Save` — no error handling
 **File:** `AppSettings.cs` (lines 376–381)
 
 `File.WriteAllText` can throw (`IOException`, `UnauthorizedAccessException`). No `try/catch` means a failed save propagates up and may crash the settings-save UI flow.
 
 ---
 
-### 9. `AppDatabase.DeleteOlderThan` — N+1 delete for exceptions
+### 9. [RESOLVED] `AppDatabase.DeleteOlderThan` — N+1 delete for exceptions
 **File:** `AppDatabase.cs` (lines 659–668)
 
 Each exception ID is deleted with a separate `DELETE` command inside a loop. For large pruning operations this is slow.
@@ -145,7 +145,7 @@ Each exception ID is deleted with a separate `DELETE` command inside a loop. For
 
 ---
 
-### 10. No index on `requests.timestamp_utc`
+### 10. [RESOLVED] No index on `requests.timestamp_utc` (already fixed prior to this work)
 **File:** `AppDatabase.cs` (schema, lines 736–759)
 
 `LoadRecent` and `DeleteOlderThan` both filter on `timestamp_utc`. Without an index, these are full table scans. As the table grows (72-hour retention with high traffic), performance degrades.
@@ -154,28 +154,28 @@ Each exception ID is deleted with a separate `DELETE` command inside a loop. For
 
 ---
 
-### 11. `ProxyServer.Dispose` doesn't await the listen task
+### 11. [RESOLVED] `ProxyServer.Dispose` doesn't await the listen task
 **File:** `ProxyServer.cs` (lines 158–176)
 
 `Dispose` cancels the CTS and closes the listener but never awaits `_listenTask`. The accept loop may still be running when Dispose returns, potentially accessing disposed objects.
 
 ---
 
-### 12. `ProxyServer.AcceptLoopAsync` — `_listener!` null-forgiving operator
+### 12. [RESOLVED] `ProxyServer.AcceptLoopAsync` — `_listener!` null-forgiving operator
 **File:** `ProxyServer.cs` (line 110)
 
 If `StopAsync` runs concurrently and nulls `_listener`, the `!` suppresses the compiler warning but doesn't prevent a `NullReferenceException`.
 
 ---
 
-### 13. `IsStreamingJsonBody` parses the entire JSON body just to check `"stream"`
+### 13. [RESOLVED] `IsStreamingJsonBody` parses the entire JSON body just to check `"stream"`
 **File:** `OllamaProxyHandler.cs` (lines 666–678)
 
 For large request bodies (long conversations), `JsonDocument.Parse` allocates the full DOM just to read one boolean. A lightweight regex or `Utf8JsonReader` scan would be far cheaper.
 
 ---
 
-### 14. `HandlePsAsync` — unnecessary `await Task.CompletedTask`
+### 14. [RESOLVED] `HandlePsAsync` — unnecessary `await Task.CompletedTask`
 **File:** `OllamaProxyHandler.cs` (line 1340)
 
 ```csharp

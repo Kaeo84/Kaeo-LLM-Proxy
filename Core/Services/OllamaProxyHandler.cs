@@ -26,7 +26,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private AppSettings _settings = settings;
+    private volatile AppSettings _settings = settings;
 
     // Shared pooled HttpClient — avoids socket exhaustion under load.
     private HttpClient _httpClient = BuildHttpClient(settings);
@@ -40,7 +40,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         _settings = settings;
         HttpClient old = _httpClient;
         _httpClient = BuildHttpClient(settings);
-        old.Dispose();
+
+        // Delayed dispose to allow in-flight requests to complete
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30));
+            old.Dispose();
+        });
+
         SynchronizeHeartbeatMonitors();
     }
 
@@ -206,21 +213,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Checks if the upstream error response indicates a context size overflow.
-    /// Returns true if the error message contains "context" and "exceeded" or similar patterns.
+    /// Returns a tuple of (isOverflow, body) where body is the response content read once.
     /// </summary>
-    private static async Task<bool> IsContextOverflowErrorAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<(bool IsOverflow, string Body)> IsContextOverflowErrorAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode)
-            return false;
+            return (false, string.Empty);
 
         if ((int)response.StatusCode != 500)
-            return false;
+            return (false, string.Empty);
 
         try
         {
             string body = await response.Content.ReadAsStringAsync(ct);
             if (string.IsNullOrWhiteSpace(body))
-                return false;
+                return (false, body);
 
             // Try to parse as structured error
             LlamaCppErrorResponse? errorResp = JsonSerializer.Deserialize<LlamaCppErrorResponse>(body, _jsonOptions);
@@ -230,14 +237,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 errorMessage = body;
 
             // Check for common context overflow patterns
-            return errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
+            bool isOverflow = errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
                 && (errorMessage.Contains("exceeded", StringComparison.OrdinalIgnoreCase)
                  || errorMessage.Contains("too large", StringComparison.OrdinalIgnoreCase)
                  || errorMessage.Contains("too long", StringComparison.OrdinalIgnoreCase));
+
+            return (isOverflow, body);
         }
         catch
         {
-            return false;
+            return (false, string.Empty);
         }
     }
 
@@ -662,16 +671,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>
     /// Returns true when a JSON POST body has <c>"stream": true</c>, indicating the client
     /// expects an SSE response and we should pre-commit headers before the upstream responds.
+    /// Uses a lightweight regex scan instead of parsing the full JSON DOM.
     /// </summary>
     private static bool IsStreamingJsonBody(string json)
     {
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(json);
-            return doc.RootElement.TryGetProperty("stream", out JsonElement el)
-                && el.ValueKind == JsonValueKind.True;
+            // Match "stream": true with optional whitespace, case-insensitive
+            return Regex.IsMatch(json, "\"stream\"\\s*:\\s*true", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
         }
-        catch (JsonException)
+        catch (RegexMatchTimeoutException)
         {
             return false;
         }
@@ -1337,7 +1346,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         log.Status = RequestStatus.Success;
         await WriteJsonAsync(resp, new { models = running }, ct);
-        await Task.CompletedTask;
     }
 
     // /api/show → answered entirely from local mapping config, no upstream call
@@ -1716,7 +1724,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.StatusCode = (int)upstreamResp.StatusCode;
 
             // Check for context overflow error
-            bool isContextOverflow = await IsContextOverflowErrorAsync(upstreamResp, ct);
+            (bool isContextOverflow, string errorBody) = await IsContextOverflowErrorAsync(upstreamResp, ct);
 
             if (!upstreamResp.IsSuccessStatusCode)
             {
@@ -1759,11 +1767,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
 
                 // Non-retriable error or retries exhausted
-                string nonRetriableErrorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
                 log.Status = RequestStatus.Error;
                 log.ErrorMessage = isContextOverflow
                     ? $"Upstream {(int)upstreamResp.StatusCode}: Context overflow after {retryCount} summarization attempts"
-                    : $"Upstream {(int)upstreamResp.StatusCode}: {nonRetriableErrorBody}";
+                    : $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
 
                 if (retryCount > 0)
                 {

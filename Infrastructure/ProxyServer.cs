@@ -107,7 +107,10 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
             HttpListenerContext context;
             try
             {
-                context = await _listener!.GetContextAsync().WaitAsync(ct).ConfigureAwait(false);
+                var listener = _listener;
+                if (listener is null)
+                    break;
+                context = await listener.GetContextAsync().WaitAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -164,6 +167,7 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         IsRunning = false;
 
         CancellationTokenSource? cts = _cts;
+        Task? listenTask = _listenTask;
         _cts = null;
         _listenTask = null;
 
@@ -173,5 +177,26 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
         _listener?.Close();
         _listener = null;
+
+        // Wait for the accept loop to complete with a timeout
+        if (listenTask is not null)
+        {
+            try
+            {
+                listenTask.Wait(TimeSpan.FromSeconds(5));
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when cancellation occurs
+            }
+            catch (AggregateException ex) when (ex.InnerException is OperationCanceledException)
+            {
+                // Expected when cancellation occurs
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Error waiting for accept loop to complete during disposal");
+            }
+        }
     }
 }

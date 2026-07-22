@@ -658,14 +658,20 @@ internal sealed class AppDatabase : IDisposable
 
             if (exceptionIds.Count > 0)
             {
-                foreach (int id in exceptionIds.Distinct())
+                var distinctIds = exceptionIds.Distinct().ToList();
+                var parameters = new List<string>();
+                using SqliteCommand deleteExceptions = connection.CreateCommand();
+                deleteExceptions.Transaction = transaction;
+
+                for (int i = 0; i < distinctIds.Count; i++)
                 {
-                    using SqliteCommand deleteException = connection.CreateCommand();
-                    deleteException.Transaction = transaction;
-                    deleteException.CommandText = "DELETE FROM exceptions WHERE id = $id;";
-                    deleteException.Parameters.AddWithValue("$id", id);
-                    deleteException.ExecuteNonQuery();
+                    string paramName = $"$id{i}";
+                    parameters.Add(paramName);
+                    deleteExceptions.Parameters.AddWithValue(paramName, distinctIds[i]);
                 }
+
+                deleteExceptions.CommandText = $"DELETE FROM exceptions WHERE id IN ({string.Join(", ", parameters)});";
+                deleteExceptions.ExecuteNonQuery();
             }
 
             transaction.Commit();

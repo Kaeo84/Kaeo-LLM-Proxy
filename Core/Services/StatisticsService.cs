@@ -237,8 +237,10 @@ internal sealed class StatisticsService : IDisposable
     }
 
     /// <summary>
-    /// Deletes entries from the SQLite store and the in-memory queue that are older than
+    /// Deletes entries from the SQLite store that are older than
     /// <see cref="_retentionHours"/>. A value of 0 means keep forever.
+    /// The in-memory queue is left as-is (eventually consistent) — stale entries
+    /// will naturally age out as new entries push them out due to the max-entries limit.
     /// </summary>
     private void PruneExpired()
     {
@@ -252,17 +254,7 @@ internal sealed class StatisticsService : IDisposable
             int pruned = _store.DeleteOlderThan(cutoff);
 
             if (pruned > 0)
-            {
-                // Also evict from the in-memory queue so the GUI stays in sync.
-                // Snapshot to a list, filter, and rebuild — cheapest approach for
-                // the small in-memory queue size (<= MaxLogEntries).
-                RequestLog[] kept = [.. _logs.Where(r => r.Timestamp >= cutoff)];
-                while (_logs.TryDequeue(out _)) { }
-                foreach (RequestLog entry in kept)
-                    _logs.Enqueue(entry);
-
                 StatsChanged?.Invoke(this, EventArgs.Empty);
-            }
         }
         catch (Exception ex)
         {
