@@ -29,7 +29,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private volatile AppSettings _settings = settings;
 
     // Shared pooled HttpClient — avoids socket exhaustion under load.
-    private HttpClient _httpClient = BuildHttpClient(settings);
+    private HttpClient _httpClient = BuildHttpClient();
 
     // Number of requests currently being processed by HandleAsync. Used to defer disposal of a
     // superseded HttpClient until in-flight requests that may still be using it have completed.
@@ -43,7 +43,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         _settings = settings;
         HttpClient old = _httpClient;
-        _httpClient = BuildHttpClient(settings);
+        _httpClient = BuildHttpClient();
 
         // Dispose the superseded client only once no in-flight requests remain that could still
         // be using it. A fixed delay is unsafe because requests can run up to the per-mapping
@@ -303,7 +303,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
     }
 
-    private static HttpClient BuildHttpClient(AppSettings _) =>
+    private static HttpClient BuildHttpClient() =>
         new(new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),

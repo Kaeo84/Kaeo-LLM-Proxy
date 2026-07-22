@@ -104,6 +104,7 @@ internal partial class MainForm : Form
 
     private void OnServerStatusChanged(object? sender, string status)
     {
+        if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
             BeginInvoke(RefreshStatus);
@@ -164,6 +165,7 @@ internal partial class MainForm : Form
 
     private void OnStatsChanged(object? sender, EventArgs e)
     {
+        if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
             BeginInvoke(RefreshStats);
@@ -174,6 +176,7 @@ internal partial class MainForm : Form
 
     private void OnPerfSampled(object? sender, EventArgs e)
     {
+        if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
             BeginInvoke(UpdatePerfLabels);
@@ -487,7 +490,7 @@ internal partial class MainForm : Form
 
     private void OnHeartbeatsChanged(object? sender, EventArgs e)
     {
-        if (IsDisposed) return;
+        if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
             BeginInvoke(RefreshHeartbeats);
