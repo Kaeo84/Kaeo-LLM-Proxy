@@ -99,9 +99,11 @@ internal sealed class ModelMapping
     public bool EnableThinkingCompatibility { get; set; } = true;
 
     /// <summary>
-    /// Overrides vision (image input) capability reporting for this model. When null (default),
-    /// vision support is inferred from the upstream model name. Set true or false to force the
-    /// capability advertised on the /api/tags and /api/show discovery endpoints.
+    /// Overrides vision (image input) capability reporting for this model. Vision support is
+    /// explicit-only: when null (default), vision is reported as unsupported. Set true to
+    /// advertise the "vision" capability on the /api/tags and /api/show discovery endpoints;
+    /// there is no name-based inference, since upstream OpenAI-compatible /v1/models responses
+    /// (e.g. Qwen Cloud) carry no modality metadata to infer from.
     /// </summary>
     public bool? SupportsVision { get; set; }
 
@@ -505,9 +507,11 @@ internal sealed class AppSettings
     /// </summary>
     public string ResolveModelName(string requestedModel)
     {
+        string normalizedRequested = NormalizeModelTag(requestedModel);
+
         foreach (ModelMapping mapping in ModelMappings)
         {
-            if (mapping.IsEnabled && string.Equals(mapping.ProxyName, requestedModel, StringComparison.OrdinalIgnoreCase))
+            if (mapping.IsEnabled && string.Equals(NormalizeModelTag(mapping.ProxyName), normalizedRequested, StringComparison.OrdinalIgnoreCase))
                 return mapping.ModelName;
         }
 
@@ -516,23 +520,40 @@ internal sealed class AppSettings
 
     /// <summary>
     /// Finds an enabled model mapping by either the exposed proxy name or the upstream model name.
-    /// Returns null when no enabled configured mapping matches.
+    /// Returns null when no enabled configured mapping matches. Comparisons ignore any Ollama-style
+    /// ":tag" suffix (e.g. "myqwen:latest" matches a mapping configured as "myqwen"), since Ollama
+    /// clients commonly append ":latest" even when the proxy name has no tag.
     /// </summary>
     public ModelMapping? FindModelMapping(string requestedModel)
     {
+        string normalizedRequested = NormalizeModelTag(requestedModel);
+
         foreach (ModelMapping mapping in ModelMappings)
         {
             if (!mapping.IsEnabled)
                 continue;
 
-            if (string.Equals(mapping.ProxyName, requestedModel, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(mapping.ModelName, requestedModel, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(NormalizeModelTag(mapping.ProxyName), normalizedRequested, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(NormalizeModelTag(mapping.ModelName), normalizedRequested, StringComparison.OrdinalIgnoreCase))
             {
                 return mapping;
             }
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Strips a trailing Ollama-style ":tag" suffix (e.g. ":latest") from a model name for
+    /// comparison purposes. Returns the original string unchanged when no tag suffix is present.
+    /// </summary>
+    public static string NormalizeModelTag(string? modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+            return string.Empty;
+
+        int colonIndex = modelName.IndexOf(':');
+        return colonIndex < 0 ? modelName : modelName[..colonIndex];
     }
 
     /// <summary>

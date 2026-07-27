@@ -1460,6 +1460,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         OllamaShowRequest? showReq = JsonSerializer.Deserialize<OllamaShowRequest>(body, _jsonOptions);
         string requestedModel = showReq?.Model ?? showReq?.Name ?? string.Empty;
         ModelMapping? mapping = _settings.FindModelMapping(requestedModel);
+        if (mapping is null && !string.IsNullOrWhiteSpace(requestedModel))
+        {
+            Log.Warning(
+                "/api/show could not find a configured mapping for requested model {RequestedModel}. " +
+                "Capabilities (including vision) will not reflect any per-mapping override.",
+                requestedModel);
+        }
         string modelName = mapping?.ModelName ?? _settings.ResolveModelName(requestedModel);
         log.Model = modelName;
         if (_settings.CollectRequestDetails)
@@ -1562,13 +1569,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             caps.Add("embedding");
         }
 
-        // Vision is taken from the explicit per-mapping override when configured; otherwise it
-        // is inferred from the model name so existing mappings keep working unchanged.
-        bool supportsVision = mapping?.SupportsVision
-            ?? (lowered.Contains("vision", StringComparison.Ordinal)
-                || lowered.Contains("llava", StringComparison.Ordinal)
-                || lowered.Contains("vl", StringComparison.Ordinal));
-        if (supportsVision)
+        // Vision is explicit-only: there is no reliable way to infer multimodal support from an
+        // OpenAI-compatible model id (upstream /v1/models responses, e.g. Qwen Cloud, carry no
+        // modality metadata). The per-mapping override is the sole source of truth; unset means
+        // vision is not advertised.
+        if (mapping?.SupportsVision ?? false)
         {
             caps.Add("vision");
         }
