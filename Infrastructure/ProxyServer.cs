@@ -117,6 +117,11 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
+        // Tracks the in-flight GetContextAsync task so we can observe its exception
+        // if the loop exits while it is still pending (prevents unobserved task exceptions
+        // when the listener is stopped/disposed during shutdown).
+        Task<HttpListenerContext>? pendingGetContext = null;
+
         while (!ct.IsCancellationRequested)
         {
             HttpListenerContext context;
@@ -125,13 +130,19 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
                 var listener = _listener;
                 if (listener is null)
                     break;
-                context = await listener.GetContextAsync().WaitAsync(ct).ConfigureAwait(false);
+                pendingGetContext = listener.GetContextAsync();
+                context = await pendingGetContext.WaitAsync(ct).ConfigureAwait(false);
+                pendingGetContext = null;
             }
             catch (OperationCanceledException)
             {
                 break;
             }
             catch (HttpListenerException)
+            {
+                break;
+            }
+            catch (ObjectDisposedException)
             {
                 break;
             }
@@ -164,6 +175,19 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
             // surfaces as an unobserved TaskScheduler exception. The acquired slot is
             // released inside HandleRequestSafelyAsync.
             _ = Task.Run(() => HandleRequestSafelyAsync(context, gate, ct), ct);
+        }
+
+        // If the loop exited while GetContextAsync was still pending (e.g. cancellation
+        // won the race against WaitAsync), the original task will eventually fault with
+        // ObjectDisposedException when the listener is stopped. Observe it here so it
+        // never surfaces as an unobserved TaskScheduler exception.
+        if (pendingGetContext is not null)
+        {
+            _ = pendingGetContext.ContinueWith(
+                static t => { _ = t.Exception; },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 
