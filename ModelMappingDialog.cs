@@ -235,27 +235,12 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        // Every row sizes to its content except row 17, a flexible filler that absorbs leftover
+        // vertical space so the button row stays anchored near the bottom of the dialog.
         _tlpMain.RowCount = 20;
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < _tlpMain.RowCount; i++)
+            _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMain.RowStyles[17] = new RowStyle(SizeType.Percent, 100F);
         _tlpMain.Dock = DockStyle.Fill;
         _tlpMain.Padding = new Padding(8);
 
