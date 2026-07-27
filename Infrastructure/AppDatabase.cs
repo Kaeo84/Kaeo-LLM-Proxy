@@ -143,6 +143,7 @@ internal sealed class AppDatabase : IDisposable
                     proxy_name,
                     model_name,
                     enable_thinking_compatibility,
+                    supports_vision,
                     enable_heartbeats,
                     upstream_type,
                     api_key,
@@ -198,6 +199,7 @@ internal sealed class AppDatabase : IDisposable
                         is_enabled,
                         model_name,
                         enable_thinking_compatibility,
+                        supports_vision,
                         enable_heartbeats,
                         upstream_type,
                         api_key,
@@ -218,6 +220,7 @@ internal sealed class AppDatabase : IDisposable
                         $isEnabled,
                         $modelName,
                         $enableThinkingCompatibility,
+                        $supportsVision,
                         $enableHeartbeats,
                         $upstreamType,
                         $apiKey,
@@ -824,6 +827,7 @@ internal sealed class AppDatabase : IDisposable
                     is_enabled INTEGER NOT NULL,
                     model_name TEXT NOT NULL,
                     enable_thinking_compatibility INTEGER NOT NULL,
+                    supports_vision INTEGER NULL,
                     enable_heartbeats INTEGER NOT NULL,
                     upstream_type INTEGER NOT NULL,
                     api_key TEXT NULL,
@@ -870,6 +874,7 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             MigrateRuntimeSettingsTable(connection);
+            MigrateModelMappingsTable(connection);
         }
     }
 
@@ -891,6 +896,24 @@ internal sealed class AppDatabase : IDisposable
         command.ExecuteNonQuery();
 
         Log.Information("Migrated runtime_settings table: added enable_performance_sampling column.");
+    }
+
+    /// <summary>
+    /// Adds the nullable <c>supports_vision</c> override to existing model mappings.
+    /// </summary>
+    private static void MigrateModelMappingsTable(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "model_mappings")
+            || ColumnExists(connection, "model_mappings", "supports_vision"))
+        {
+            return;
+        }
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_vision INTEGER NULL;";
+        command.ExecuteNonQuery();
+
+        Log.Information("Migrated model_mappings table: added supports_vision column.");
     }
 
     /// <summary>
@@ -1069,6 +1092,9 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(mapping.IsEnabled));
         command.Parameters.AddWithValue("$modelName", mapping.ModelName);
         command.Parameters.AddWithValue("$enableThinkingCompatibility", ToSqliteBoolean(mapping.EnableThinkingCompatibility));
+        command.Parameters.AddWithValue("$supportsVision", mapping.SupportsVision.HasValue
+            ? ToSqliteBoolean(mapping.SupportsVision.Value)
+            : DBNull.Value);
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
         command.Parameters.AddWithValue("$apiKey", DbValue(mapping.ApiKey));
@@ -1091,22 +1117,23 @@ internal sealed class AppDatabase : IDisposable
         ProxyName = reader.GetString(1),
         ModelName = reader.GetString(2),
         EnableThinkingCompatibility = ReadBoolean(reader, 3),
-        EnableHeartbeats = ReadBoolean(reader, 4),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(5))
-            ? (UpstreamType)reader.GetInt32(5)
+        SupportsVision = reader.IsDBNull(4) ? null : ReadBoolean(reader, 4),
+        EnableHeartbeats = ReadBoolean(reader, 5),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
+            ? (UpstreamType)reader.GetInt32(6)
             : UpstreamType.OpenAI,
-        ApiKey = reader.IsDBNull(6) ? null : reader.GetString(6),
-        UpstreamUrl = reader.GetString(7),
-        UpstreamTimeoutSeconds = reader.GetInt32(8),
-        RepeatPenalty = reader.GetDouble(9),
-        Temperature = reader.GetDouble(10),
-        EnableAutoSummarization = ReadBoolean(reader, 11),
-        PreserveRecentMessageCount = reader.GetInt32(12),
-        MaxSummarizationRetries = reader.GetInt32(13),
-        InstructionSetName = reader.IsDBNull(14) ? null : reader.GetString(14),
-        RedactRequestBodies = ReadBoolean(reader, 15),
-        RedactResponseBodies = ReadBoolean(reader, 16),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 17),
+        ApiKey = reader.IsDBNull(7) ? null : reader.GetString(7),
+        UpstreamUrl = reader.GetString(8),
+        UpstreamTimeoutSeconds = reader.GetInt32(9),
+        RepeatPenalty = reader.GetDouble(10),
+        Temperature = reader.GetDouble(11),
+        EnableAutoSummarization = ReadBoolean(reader, 12),
+        PreserveRecentMessageCount = reader.GetInt32(13),
+        MaxSummarizationRetries = reader.GetInt32(14),
+        InstructionSetName = reader.IsDBNull(15) ? null : reader.GetString(15),
+        RedactRequestBodies = ReadBoolean(reader, 16),
+        RedactResponseBodies = ReadBoolean(reader, 17),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 18),
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
