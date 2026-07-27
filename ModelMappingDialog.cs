@@ -126,20 +126,10 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool? SupportsVision
+    private bool SupportsVision
     {
-        get => _chkSupportsVision.CheckState switch
-        {
-            CheckState.Checked => true,
-            CheckState.Unchecked => false,
-            _ => null,
-        };
-        set => _chkSupportsVision.CheckState = value switch
-        {
-            true => CheckState.Checked,
-            false => CheckState.Unchecked,
-            _ => CheckState.Indeterminate,
-        };
+        get => _chkSupportsVision.Checked;
+        set => _chkSupportsVision.Checked = value;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -418,9 +408,7 @@ internal sealed class ModelMappingDialog : Form
 
         _chkSupportsVision.AutoSize = true;
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
-        _chkSupportsVision.Text = "Model supports vision (image) input \u2014 grayed = auto-detect from model name";
-        _chkSupportsVision.ThreeState = true;
-        _chkSupportsVision.CheckState = CheckState.Indeterminate;
+        _chkSupportsVision.Text = "Model supports vision (image) input";
 
         _chkEnableHeartbeats.AutoSize = true;
         _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
@@ -653,7 +641,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
-        dlg.SupportsVision = mapping.SupportsVision;
+        dlg.SupportsVision = mapping.SupportsVision ?? false;
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.Temperature = mapping.Temperature;
