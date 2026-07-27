@@ -46,6 +46,11 @@ internal sealed class ModelMappingDialog : Form
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
     private readonly CheckBox _chkSupportsVision = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
+    private readonly CheckBox _chkEnableAutoSummarization = new();
+    private readonly Label _lblPreserveRecentCount = new();
+    private readonly NumericUpDown _nudPreserveRecentCount = new();
+    private readonly Label _lblMaxSummarizationRetries = new();
+    private readonly NumericUpDown _nudMaxSummarizationRetries = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
     private readonly CheckBox _chkRedactSensitiveJsonFields = new();
@@ -172,6 +177,27 @@ internal sealed class ModelMappingDialog : Form
         set => _nudRepeatPenalty.Value = ClampDecimal(value, _nudRepeatPenalty.Minimum, _nudRepeatPenalty.Maximum, 1.0M);
     }
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool EnableAutoSummarization
+    {
+        get => _chkEnableAutoSummarization.Checked;
+        set => _chkEnableAutoSummarization.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int PreserveRecentMessageCount
+    {
+        get => (int)_nudPreserveRecentCount.Value;
+        set => _nudPreserveRecentCount.Value = Math.Clamp(value, (int)_nudPreserveRecentCount.Minimum, (int)_nudPreserveRecentCount.Maximum);
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int MaxSummarizationRetries
+    {
+        get => (int)_nudMaxSummarizationRetries.Value;
+        set => _nudMaxSummarizationRetries.Value = Math.Clamp(value, (int)_nudMaxSummarizationRetries.Minimum, (int)_nudMaxSummarizationRetries.Maximum);
+    }
+
     private void PopulateInstructionSets(IEnumerable<InstructionSet> instructionSets)
     {
         _cmbInstructionSet.Items.Clear();
@@ -209,7 +235,10 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _tlpMain.RowCount = 17;
+        _tlpMain.RowCount = 20;
+        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -225,6 +254,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.Dock = DockStyle.Fill;
         _tlpMain.Padding = new Padding(8);
@@ -273,14 +303,22 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkSupportsVision, 0, 11);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
         _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 12);
+        _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 13);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 14);
+        _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 14);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 15);
+        _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 15);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 13);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 16);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 14);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 17);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 15);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 18);
         _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 16);
+        _tlpMain.Controls.Add(_flpButtons, 0, 19);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -404,6 +442,38 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableHeartbeats.Text = "Enable streaming heartbeats for this model (keep-alive frames while waiting)";
         _chkEnableHeartbeats.Checked = true;
 
+        _chkEnableAutoSummarization.AutoSize = true;
+        _chkEnableAutoSummarization.Margin = new Padding(0, 8, 0, 2);
+        _chkEnableAutoSummarization.Text = "Enable automatic context summarization on overflow";
+        _chkEnableAutoSummarization.Checked = true;
+        _toolTip.SetToolTip(_chkEnableAutoSummarization, "When the model's context window is exceeded, summarize older history and retry.");
+
+        _lblPreserveRecentCount.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblPreserveRecentCount.AutoSize = true;
+        _lblPreserveRecentCount.Margin = new Padding(0, 4, 8, 4);
+        _lblPreserveRecentCount.Text = "Preserve Recent Exchanges:";
+
+        _nudPreserveRecentCount.Dock = DockStyle.Left;
+        _nudPreserveRecentCount.Margin = new Padding(0, 4, 0, 4);
+        _nudPreserveRecentCount.Maximum = 20;
+        _nudPreserveRecentCount.Minimum = 2;
+        _nudPreserveRecentCount.Size = new Size(90, 25);
+        _nudPreserveRecentCount.Value = 4;
+        _toolTip.SetToolTip(_nudPreserveRecentCount, "Number of recent user/assistant exchanges to keep verbatim (2-20).");
+
+        _lblMaxSummarizationRetries.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMaxSummarizationRetries.AutoSize = true;
+        _lblMaxSummarizationRetries.Margin = new Padding(0, 4, 8, 4);
+        _lblMaxSummarizationRetries.Text = "Max Summarization Retries:";
+
+        _nudMaxSummarizationRetries.Dock = DockStyle.Left;
+        _nudMaxSummarizationRetries.Margin = new Padding(0, 4, 0, 4);
+        _nudMaxSummarizationRetries.Maximum = 3;
+        _nudMaxSummarizationRetries.Minimum = 1;
+        _nudMaxSummarizationRetries.Size = new Size(90, 25);
+        _nudMaxSummarizationRetries.Value = 2;
+        _toolTip.SetToolTip(_nudMaxSummarizationRetries, "Maximum summarization retry attempts on context overflow (1-3).");
+
         _chkRedactRequestBodies.AutoSize = true;
         _chkRedactRequestBodies.Margin = new Padding(0, 8, 0, 2);
         _chkRedactRequestBodies.Text = "Redact captured request bodies";
@@ -438,7 +508,7 @@ internal sealed class ModelMappingDialog : Form
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         CancelButton = _btnCancel;
-        ClientSize = new Size(600, 540);
+        ClientSize = new Size(600, 640);
         Controls.Add(_tlpMain);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -603,6 +673,9 @@ internal sealed class ModelMappingDialog : Form
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
+        dlg.EnableAutoSummarization = mapping.EnableAutoSummarization;
+        dlg.PreserveRecentMessageCount = mapping.PreserveRecentMessageCount;
+        dlg.MaxSummarizationRetries = mapping.MaxSummarizationRetries;
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
         dlg.RedactResponseBodies = mapping.RedactResponseBodies;
         dlg.RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields;
@@ -629,6 +702,9 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
+        mapping.EnableAutoSummarization = dlg.EnableAutoSummarization;
+        mapping.PreserveRecentMessageCount = dlg.PreserveRecentMessageCount;
+        mapping.MaxSummarizationRetries = dlg.MaxSummarizationRetries;
         mapping.RedactRequestBodies = dlg.RedactRequestBodies;
         mapping.RedactResponseBodies = dlg.RedactResponseBodies;
         mapping.RedactSensitiveJsonFields = dlg.RedactSensitiveJsonFields;
