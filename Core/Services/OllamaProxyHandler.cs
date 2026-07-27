@@ -1524,6 +1524,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Model = modelName,
             ModifiedAt = DateTime.UtcNow.ToString("o"),
             Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }),
+            Capabilities = BuildCapabilities(mapping, mapping.ModelName),
         };
     }
 
@@ -1561,9 +1562,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             caps.Add("embedding");
         }
 
-        if (lowered.Contains("vision", StringComparison.Ordinal)
-            || lowered.Contains("llava", StringComparison.Ordinal)
-            || lowered.Contains("vl", StringComparison.Ordinal))
+        // Vision is taken from the explicit per-mapping override when configured; otherwise it
+        // is inferred from the model name so existing mappings keep working unchanged.
+        bool supportsVision = mapping?.SupportsVision
+            ?? (lowered.Contains("vision", StringComparison.Ordinal)
+                || lowered.Contains("llava", StringComparison.Ordinal)
+                || lowered.Contains("vl", StringComparison.Ordinal));
+        if (supportsVision)
         {
             caps.Add("vision");
         }

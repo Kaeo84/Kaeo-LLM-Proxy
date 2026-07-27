@@ -44,6 +44,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly NumericUpDown _nudRepeatPenalty = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
+    private readonly CheckBox _chkSupportsVision = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
@@ -120,6 +121,23 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool? SupportsVision
+    {
+        get => _chkSupportsVision.CheckState switch
+        {
+            CheckState.Checked => true,
+            CheckState.Unchecked => false,
+            _ => null,
+        };
+        set => _chkSupportsVision.CheckState = value switch
+        {
+            true => CheckState.Checked,
+            false => CheckState.Unchecked,
+            _ => CheckState.Indeterminate,
+        };
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private int UpstreamTimeoutSeconds
     {
         get => int.TryParse(_txtUpstreamTimeout.Text, out int v) && v > 0 ? v : 300;
@@ -191,7 +209,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _tlpMain.RowCount = 16;
+        _tlpMain.RowCount = 17;
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -251,16 +269,18 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkIsEnabled, 0, 9);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
         _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 10);
+        _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 11);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 11);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 12);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 12);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 13);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 13);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 14);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 14);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 15);
         _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 15);
+        _tlpMain.Controls.Add(_flpButtons, 0, 16);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -372,6 +392,12 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
+
+        _chkSupportsVision.AutoSize = true;
+        _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
+        _chkSupportsVision.Text = "Model supports vision (image) input \u2014 grayed = auto-detect from model name";
+        _chkSupportsVision.ThreeState = true;
+        _chkSupportsVision.CheckState = CheckState.Indeterminate;
 
         _chkEnableHeartbeats.AutoSize = true;
         _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
@@ -572,6 +598,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
+        dlg.SupportsVision = mapping.SupportsVision;
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.Temperature = mapping.Temperature;
@@ -597,6 +624,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
+        mapping.SupportsVision = dlg.SupportsVision;
         mapping.EnableHeartbeats = dlg.EnableHeartbeats;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.Temperature = dlg.Temperature;

@@ -114,6 +114,9 @@ internal sealed class OllamaModelEntry
     [JsonPropertyName("size")] public long Size { get; set; }
     [JsonPropertyName("digest")] public string Digest { get; set; } = string.Empty;
     [JsonPropertyName("details")] public OllamaModelDetails? Details { get; set; }
+
+    /// <summary>Ollama-style capability tokens (e.g. completion, tools, vision) advertised for this model.</summary>
+    [JsonPropertyName("capabilities")] public List<string>? Capabilities { get; set; }
 }
 
 internal sealed class OllamaModelDetails

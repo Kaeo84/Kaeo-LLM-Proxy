@@ -99,6 +99,13 @@ internal sealed class ModelMapping
     public bool EnableThinkingCompatibility { get; set; } = true;
 
     /// <summary>
+    /// Overrides vision (image input) capability reporting for this model. When null (default),
+    /// vision support is inferred from the upstream model name. Set true or false to force the
+    /// capability advertised on the /api/tags and /api/show discovery endpoints.
+    /// </summary>
+    public bool? SupportsVision { get; set; }
+
+    /// <summary>
     /// When true, this mapping participates in streaming heartbeat emission while waiting for upstream tokens.
     /// The global <see cref="AppSettings.EnableStreamingHeartbeats"/> must also be enabled. Default: true.
     /// </summary>
@@ -187,6 +194,7 @@ internal sealed class ModelMapping
         ProxyName = ProxyName,
         ModelName = ModelName,
         EnableThinkingCompatibility = EnableThinkingCompatibility,
+        SupportsVision = SupportsVision,
         EnableHeartbeats = EnableHeartbeats,
         ApiKey = ApiKey,
         UpstreamType = UpstreamType,
