@@ -80,6 +80,12 @@ internal sealed class RuntimeSettings
     public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
 
     public bool EnablePerformanceSampling { get; set; } = true;
+
+    /// <summary>
+    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
+    /// specification at /swagger/v1/swagger.json. Default: false.
+    /// </summary>
+    public bool EnableApiExplorer { get; set; } = false;
 }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
@@ -392,6 +398,14 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnablePerformanceSampling { get; set; } = true;
 
+    /// <summary>
+    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
+    /// specification at /swagger/v1/swagger.json, allowing browser-based exploration of all
+    /// proxy endpoints. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableApiExplorer { get; set; } = false;
+
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
@@ -484,6 +498,7 @@ internal sealed class AppSettings
         EnableStreamingHeartbeats = EnableStreamingHeartbeats,
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
+        EnableApiExplorer = EnableApiExplorer,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -499,6 +514,7 @@ internal sealed class AppSettings
         EnableStreamingHeartbeats = runtimeSettings.EnableStreamingHeartbeats;
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
+        EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }
 
     /// <summary>

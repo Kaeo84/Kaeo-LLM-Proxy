@@ -391,7 +391,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_response_details,
                     enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds,
-                    enable_performance_sampling
+                    enable_performance_sampling,
+                    enable_api_explorer
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -412,6 +413,7 @@ internal sealed class AppDatabase : IDisposable
                 EnableStreamingHeartbeats = ReadBoolean(reader, 6),
                 StreamingHeartbeatIntervalSeconds = reader.GetInt32(7),
                 EnablePerformanceSampling = ReadBoolean(reader, 8),
+                EnableApiExplorer = ReadBoolean(reader, 9),
             };
         }
     }
@@ -436,7 +438,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_response_details,
                     enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds,
-                    enable_performance_sampling
+                    enable_performance_sampling,
+                    enable_api_explorer
                 )
                 VALUES (
                     $id,
@@ -448,7 +451,8 @@ internal sealed class AppDatabase : IDisposable
                     $collectResponseDetails,
                     $enableStreamingHeartbeats,
                     $streamingHeartbeatIntervalSeconds,
-                    $enablePerformanceSampling
+                    $enablePerformanceSampling,
+                    $enableApiExplorer
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -459,7 +463,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_response_details = excluded.collect_response_details,
                     enable_streaming_heartbeats = excluded.enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
-                    enable_performance_sampling = excluded.enable_performance_sampling;
+                    enable_performance_sampling = excluded.enable_performance_sampling,
+                    enable_api_explorer = excluded.enable_api_explorer;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -472,6 +477,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enableStreamingHeartbeats", ToSqliteBoolean(settings.EnableStreamingHeartbeats));
             command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
+            command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.ExecuteNonQuery();
         }
     }
@@ -868,7 +874,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_response_details INTEGER NOT NULL,
                     enable_streaming_heartbeats INTEGER NOT NULL,
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
-                    enable_performance_sampling INTEGER NOT NULL DEFAULT 1
+                    enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
+                    enable_api_explorer INTEGER NOT NULL DEFAULT 0
                 );
                 """;
             command.ExecuteNonQuery();
@@ -879,23 +886,33 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Adds the <c>enable_performance_sampling</c> column to pre-existing runtime_settings
-    /// tables that were created before this column was introduced.
+    /// Adds columns to pre-existing runtime_settings tables that were created before they
+    /// were introduced: <c>enable_performance_sampling</c> and <c>enable_api_explorer</c>.
     /// </summary>
     private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
     {
         if (!TableExists(connection, "runtime_settings"))
             return;
 
-        if (ColumnExists(connection, "runtime_settings", "enable_performance_sampling"))
-            return;
+        if (!ColumnExists(connection, "runtime_settings", "enable_performance_sampling"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN enable_performance_sampling INTEGER NOT NULL DEFAULT 1;";
+            command.ExecuteNonQuery();
 
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            "ALTER TABLE runtime_settings ADD COLUMN enable_performance_sampling INTEGER NOT NULL DEFAULT 1;";
-        command.ExecuteNonQuery();
+            Log.Information("Migrated runtime_settings table: added enable_performance_sampling column.");
+        }
 
-        Log.Information("Migrated runtime_settings table: added enable_performance_sampling column.");
+        if (!ColumnExists(connection, "runtime_settings", "enable_api_explorer"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN enable_api_explorer INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added enable_api_explorer column.");
+        }
     }
 
     /// <summary>

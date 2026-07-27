@@ -389,6 +389,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
+        // Swagger UI API explorer — served only when explicitly enabled in settings.
+        if (_settings.EnableApiExplorer && method == "GET")
+        {
+            if (path is "/swagger" or "/swagger/")
+            {
+                await WriteHtmlAsync(resp, SwaggerHtml, ct);
+                return;
+            }
+
+            if (path == "/swagger/v1/swagger.json")
+            {
+                await WriteJsonRawAsync(resp, OpenApiSpec, ct);
+                return;
+            }
+        }
+
         bool exceptionLogged = false;
         try
         {
@@ -2854,6 +2870,391 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await resp.OutputStream.WriteAsync(bytes, ct);
         resp.Close();
     }
+
+    private static async Task WriteJsonRawAsync(HttpListenerResponse resp, string json, CancellationToken ct)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        resp.ContentType = "application/json";
+        resp.ContentLength64 = bytes.Length;
+        await resp.OutputStream.WriteAsync(bytes, ct);
+        resp.Close();
+    }
+
+    private static async Task WriteHtmlAsync(HttpListenerResponse resp, string html, CancellationToken ct)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(html);
+        resp.ContentType = "text/html; charset=utf-8";
+        resp.ContentLength64 = bytes.Length;
+        await resp.OutputStream.WriteAsync(bytes, ct);
+        resp.Close();
+    }
+
+    // ── Swagger UI / OpenAPI ────────────────────────────────────────────────
+
+    private const string SwaggerHtml = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <title>Kaeo LLM Proxy — API Explorer</title>
+            <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+            <style>
+                body { margin: 0; padding: 0; }
+                .topbar { display: none; }
+            </style>
+        </head>
+        <body>
+            <div id="swagger-ui"></div>
+            <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+            <script>
+                SwaggerUIBundle({
+                    url: '/swagger/v1/swagger.json',
+                    dom_id: '#swagger-ui',
+                    presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+                    layout: 'BaseLayout',
+                });
+            </script>
+        </body>
+        </html>
+        """;
+
+    private const string OpenApiSpec = """
+        {
+          "openapi": "3.0.3",
+          "info": {
+            "title": "Kaeo LLM Proxy",
+            "description": "Ollama-compatible proxy that translates requests to OpenAI-compatible upstreams (llama.cpp, Qwen Cloud, etc.).",
+            "version": "0.1.0"
+          },
+          "servers": [
+            { "url": "/", "description": "This proxy" }
+          ],
+          "paths": {
+            "/api/version": {
+              "get": {
+                "summary": "Proxy version probe",
+                "operationId": "getVersion",
+                "tags": ["Discovery"],
+                "responses": {
+                  "200": {
+                    "description": "Version information",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "type": "object",
+                          "properties": { "version": { "type": "string" } }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/api/tags": {
+              "get": {
+                "summary": "List available models",
+                "description": "Returns all enabled model mappings with their capabilities (completion, tools, thinking, vision).",
+                "operationId": "listModels",
+                "tags": ["Discovery"],
+                "responses": {
+                  "200": {
+                    "description": "Model list",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "type": "object",
+                          "properties": {
+                            "models": {
+                              "type": "array",
+                              "items": { "$ref": "#/components/schemas/ModelEntry" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/api/ps": {
+              "get": {
+                "summary": "List running models",
+                "operationId": "listRunningModels",
+                "tags": ["Discovery"],
+                "responses": {
+                  "200": {
+                    "description": "Running model list",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "type": "object",
+                          "properties": {
+                            "models": { "type": "array", "items": { "type": "object" } }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/api/show": {
+              "post": {
+                "summary": "Show model information",
+                "description": "Returns detailed information about a model including its capabilities and configuration.",
+                "operationId": "showModel",
+                "tags": ["Discovery"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "required": ["model"],
+                        "properties": {
+                          "model": { "type": "string", "description": "Model name (e.g. 'myqwen' or 'myqwen:latest')" },
+                          "name": { "type": "string", "description": "Alias for model" }
+                        }
+                      }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": {
+                    "description": "Model details",
+                    "content": {
+                      "application/json": {
+                        "schema": { "$ref": "#/components/schemas/ShowResponse" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "/api/chat": {
+              "post": {
+                "summary": "Chat completion",
+                "description": "Sends a chat conversation to the upstream model. Supports streaming (NDJSON) and non-streaming responses, tool calls, and vision (image) inputs.",
+                "operationId": "chat",
+                "tags": ["Generation"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": { "$ref": "#/components/schemas/ChatRequest" }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": { "description": "Chat response (streaming NDJSON or single JSON)" }
+                }
+              }
+            },
+            "/api/generate": {
+              "post": {
+                "summary": "Text generation",
+                "description": "Sends a prompt to the upstream model for text completion. Supports streaming and non-streaming.",
+                "operationId": "generate",
+                "tags": ["Generation"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": { "$ref": "#/components/schemas/GenerateRequest" }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": { "description": "Generation response" }
+                }
+              }
+            },
+            "/api/embeddings": {
+              "post": {
+                "summary": "Generate embeddings",
+                "operationId": "embeddings",
+                "tags": ["Generation"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "required": ["model", "prompt"],
+                        "properties": {
+                          "model": { "type": "string" },
+                          "prompt": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": { "description": "Embedding vector" }
+                }
+              }
+            },
+            "/api/embed": {
+              "post": {
+                "summary": "Generate embeddings (alias)",
+                "operationId": "embed",
+                "tags": ["Generation"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "required": ["model", "input"],
+                        "properties": {
+                          "model": { "type": "string" },
+                          "input": {
+                            "oneOf": [
+                              { "type": "string" },
+                              { "type": "array", "items": { "type": "string" } }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": { "description": "Embedding vectors" }
+                }
+              }
+            },
+            "/v1/chat/completions": {
+              "post": {
+                "summary": "OpenAI-compatible chat completions (passthrough)",
+                "description": "Transparent passthrough to the upstream OpenAI-compatible /v1/chat/completions endpoint.",
+                "operationId": "openAiChat",
+                "tags": ["OpenAI Passthrough"],
+                "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+                "responses": { "200": { "description": "OpenAI chat completion response" } }
+              }
+            },
+            "/v1/completions": {
+              "post": {
+                "summary": "OpenAI-compatible completions (passthrough)",
+                "operationId": "openAiCompletions",
+                "tags": ["OpenAI Passthrough"],
+                "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+                "responses": { "200": { "description": "OpenAI completion response" } }
+              }
+            },
+            "/v1/models": {
+              "get": {
+                "summary": "OpenAI-compatible model list (passthrough)",
+                "operationId": "openAiModels",
+                "tags": ["OpenAI Passthrough"],
+                "responses": { "200": { "description": "OpenAI model list" } }
+              }
+            },
+            "/v1/embeddings": {
+              "post": {
+                "summary": "OpenAI-compatible embeddings (passthrough)",
+                "operationId": "openAiEmbeddings",
+                "tags": ["OpenAI Passthrough"],
+                "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
+                "responses": { "200": { "description": "OpenAI embedding response" } }
+              }
+            }
+          },
+          "components": {
+            "schemas": {
+              "ModelEntry": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "model": { "type": "string" },
+                  "modified_at": { "type": "string", "format": "date-time" },
+                  "size": { "type": "integer", "format": "int64" },
+                  "digest": { "type": "string" },
+                  "details": {
+                    "type": "object",
+                    "properties": {
+                      "parent_model": { "type": "string" },
+                      "format": { "type": "string" },
+                      "family": { "type": "string" },
+                      "families": { "type": "array", "items": { "type": "string" } },
+                      "parameter_size": { "type": "string" },
+                      "quantization_level": { "type": "string" }
+                    }
+                  },
+                  "capabilities": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["completion", "tools", "thinking", "vision"] },
+                    "description": "Advertised model capabilities. 'vision' is present only when explicitly enabled per-mapping."
+                  }
+                }
+              },
+              "ShowResponse": {
+                "type": "object",
+                "properties": {
+                  "modelfile": { "type": "string" },
+                  "parameters": { "type": "string" },
+                  "template": { "type": "string" },
+                  "details": { "$ref": "#/components/schemas/ModelEntry/properties/details" },
+                  "model_info": { "type": "object" },
+                  "capabilities": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  }
+                }
+              },
+              "ChatRequest": {
+                "type": "object",
+                "required": ["model", "messages"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+                        "content": { "type": "string" },
+                        "images": { "type": "array", "items": { "type": "string" }, "description": "Base64-encoded images (vision models)" },
+                        "tool_calls": { "type": "array", "items": { "type": "object" } }
+                      }
+                    }
+                  },
+                  "stream": { "type": "boolean", "default": true },
+                  "format": { "type": "string" },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "temperature": { "type": "number" },
+                      "repeat_penalty": { "type": "number" },
+                      "num_predict": { "type": "integer" }
+                    }
+                  },
+                  "tools": { "type": "array", "items": { "type": "object" } }
+                }
+              },
+              "GenerateRequest": {
+                "type": "object",
+                "required": ["model", "prompt"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "prompt": { "type": "string" },
+                  "system": { "type": "string" },
+                  "stream": { "type": "boolean", "default": true },
+                  "format": { "type": "string" },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "temperature": { "type": "number" },
+                      "repeat_penalty": { "type": "number" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """;
 
     private static void FillTokenStats(RequestLog log, LlamaCppUsage? usage)
     {

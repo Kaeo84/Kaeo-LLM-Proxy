@@ -48,6 +48,7 @@ internal partial class MainForm : Form
         _stats.StatsChanged += OnStatsChanged;
         _server.StatusChanged += OnServerStatusChanged;
         _perfService.Sampled += OnPerfSampled;
+        _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -100,6 +101,27 @@ internal partial class MainForm : Form
         _btnDashStart.Enabled = !running;
         _btnDashStop.Enabled = running;
         _btnDashRestart.Enabled = running;
+    }
+
+    /// <summary>
+    /// Updates the API Explorer URL note label based on the current enable state,
+    /// listen address, and port.
+    /// </summary>
+    private void UpdateApiExplorerUrlLabel()
+    {
+        if (!_chkApiExplorer.Checked)
+        {
+            _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+            _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
+            return;
+        }
+
+        string host = _settings.ListenAddress.Trim();
+        if (host is "0.0.0.0" or "+" or "")
+            host = "localhost";
+
+        _lblApiExplorerUrl.Text = $"API Explorer URL: http://{host}:{_settings.ListenPort}/swagger";
+        _lblApiExplorerUrl.ForeColor = SystemColors.Highlight;
     }
 
     private void OnServerStatusChanged(object? sender, string status)
@@ -667,6 +689,7 @@ internal partial class MainForm : Form
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
+        _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
         _txtHeartbeatInterval.Text = _settings.StreamingHeartbeatIntervalSeconds.ToString();
 
@@ -720,6 +743,8 @@ internal partial class MainForm : Form
         _txtReqLogSize.Text = _settings.Logging.RequestLogFileSizeLimitMb.ToString();
         _txtRequestDbPath.Text = _settings.Logging.GetApplicationDatabasePath();
         _txtLogRetention.Text = _settings.Logging.LogRetentionHours.ToString();
+
+        UpdateApiExplorerUrlLabel();
     }
 
     private void BtnSaveSettings_Click(object? sender, EventArgs e)
@@ -796,6 +821,7 @@ internal partial class MainForm : Form
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
+        _settings.EnableApiExplorer = _chkApiExplorer.Checked;
 
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";
@@ -877,6 +903,7 @@ internal partial class MainForm : Form
             "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
         RefreshStatus();
+        UpdateApiExplorerUrlLabel();
     }
 
     private void BtnBrowseRequestDb_Click(object? sender, EventArgs e)
