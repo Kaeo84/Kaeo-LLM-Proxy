@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Security.Principal;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
 
@@ -13,6 +16,14 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.System);
+
+        // Binding the proxy to anything other than "localhost" (e.g. 0.0.0.0 / a specific NIC IP)
+        // requires the process to be elevated, because http.sys only grants non-elevated processes
+        // free use of the loopback binding. Re-launch ourselves elevated via a UAC prompt so the
+        // proxy can listen on all interfaces without the user having to right-click "Run as admin".
+        // If the user declines the UAC prompt we simply continue non-elevated (localhost still works).
+        if (!IsRunningAsAdministrator() && TryRelaunchElevated())
+            return;
 
         // Surface ALL unhandled exceptions instead of silently swallowing them.
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -50,6 +61,47 @@ internal static class Program
         }
 
         Application.Run(new TrayApplicationContext(settings, database));
+    }
+
+    /// <summary>
+    /// Returns true when the current process is running with an elevated (Administrator) token.
+    /// </summary>
+    private static bool IsRunningAsAdministrator()
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    /// <summary>
+    /// Attempts to re-launch the current executable elevated via a UAC prompt. Returns true when
+    /// an elevated instance was started (the caller should exit the current non-elevated process).
+    /// Returns false if the user declined the prompt or elevation could not be started, in which
+    /// case the caller should continue running non-elevated.
+    /// </summary>
+    private static bool TryRelaunchElevated()
+    {
+        string? exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath))
+            return false;
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = true,
+                Verb = "runas",
+            };
+
+            using var elevated = System.Diagnostics.Process.Start(startInfo);
+            return elevated is not null;
+        }
+        catch (Win32Exception)
+        {
+            // The user declined the UAC prompt (ERROR_CANCELLED). Continue non-elevated.
+            return false;
+        }
     }
 
     internal static Icon GetApplicationIcon()

@@ -86,6 +86,8 @@ partial class MainForm
         _tlpSettings = new TableLayoutPanel();
         _lblListenPort = new Label();
         _txtListenPort = new TextBox();
+        _lblListenAddress = new Label();
+        _cmbListenAddress = new ComboBox();
         _lblMaxLogs = new Label();
         _txtMaxLogs = new TextBox();
         _lblMappings = new Label();
@@ -594,37 +596,39 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 14;
+        _tlpSettings.RowCount = 15;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.Controls.Add(_lblListenPort, 0, 0);
         _tlpSettings.Controls.Add(_txtListenPort, 1, 0);
-        _tlpSettings.Controls.Add(_lblMaxLogs, 0, 1);
-        _tlpSettings.Controls.Add(_txtMaxLogs, 1, 1);
+        _tlpSettings.Controls.Add(_lblListenAddress, 0, 1);
+        _tlpSettings.Controls.Add(_cmbListenAddress, 1, 1);
+        _tlpSettings.Controls.Add(_lblMaxLogs, 0, 2);
+        _tlpSettings.Controls.Add(_txtMaxLogs, 1, 2);
         _tlpSettings.SetColumnSpan(_chkAutoStart, 2);
-        _tlpSettings.Controls.Add(_chkAutoStart, 0, 2);
+        _tlpSettings.Controls.Add(_chkAutoStart, 0, 3);
         _tlpSettings.SetColumnSpan(_chkStartWithDashboard, 2);
-        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 3);
+        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 4);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 4);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 5);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 5);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 6);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 6);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 7);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 7);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 8);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 9);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 10);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 10);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 11);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 11);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 12);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 12);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 13);
         _tlpSettings.SetColumnSpan(_btnSaveSettings, 2);
-        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 13);
+        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 14);
 
         _lblListenPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblListenPort.AutoSize = true;
@@ -635,6 +639,17 @@ partial class MainForm
         _txtListenPort.Dock = DockStyle.Fill;
         _txtListenPort.Margin = new Padding(4, 6, 4, 4);
         _txtListenPort.Name = "_txtListenPort";
+
+        _lblListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblListenAddress.AutoSize = true;
+        _lblListenAddress.Margin = new Padding(4, 8, 8, 4);
+        _lblListenAddress.Name = "_lblListenAddress";
+        _lblListenAddress.Text = "Listen Address:";
+
+        _cmbListenAddress.Dock = DockStyle.Fill;
+        _cmbListenAddress.DropDownStyle = ComboBoxStyle.DropDown;
+        _cmbListenAddress.Margin = new Padding(4, 6, 4, 4);
+        _cmbListenAddress.Name = "_cmbListenAddress";
 
         _lblMaxLogs.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMaxLogs.AutoSize = true;
@@ -1352,6 +1367,8 @@ partial class MainForm
     private TableLayoutPanel _tlpSettings;
     private Label _lblListenPort;
     private TextBox _txtListenPort;
+    private Label _lblListenAddress;
+    private ComboBox _cmbListenAddress;
     private Label _lblMaxLogs;
     private TextBox _txtMaxLogs;
     private Label _lblMappings;

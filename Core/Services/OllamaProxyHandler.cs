@@ -381,6 +381,31 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
         }
 
+        // Load balancer / uptime health checks commonly probe "/" with GET or HEAD. Answer
+        // directly without logging. HEAD must never write body bytes — HttpListener treats the
+        // response as having a 0-byte entity body for HEAD requests, and writing anything to the
+        // output stream (even via WriteJsonAsync's normal JSON payload) throws
+        // ProtocolViolationException ("Bytes to be written to the stream exceed the Content-Length
+        // bytes size specified").
+        if (path == "/" && (method == "GET" || method == "HEAD"))
+        {
+            resp.ContentType = "text/plain";
+            if (method == "HEAD")
+            {
+                resp.ContentLength64 = 0;
+                resp.Close();
+            }
+            else
+            {
+                byte[] bytes = Encoding.UTF8.GetBytes("OK");
+                resp.ContentLength64 = bytes.Length;
+                await resp.OutputStream.WriteAsync(bytes, ct);
+                resp.Close();
+            }
+
+            return;
+        }
+
         // Static version probe answered without logging — infrastructure noise that would inflate
         // the request log on every client connection.
         if (method == "GET" && path == "/api/version")

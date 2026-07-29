@@ -1,4 +1,7 @@
 using System.Net.Http.Json;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
@@ -6,6 +9,7 @@ using System.Text.Json.Serialization;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Serilog;
 
 namespace Kaeo.LlmProxy;
 
@@ -680,9 +684,56 @@ internal partial class MainForm : Form
 
     // ── Settings ─────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Fills the Listen Address dropdown with "all interfaces" (0.0.0.0), "localhost", and
+    /// every non-loopback IPv4/IPv6 address currently assigned to the machine, then selects
+    /// the value that matches the current setting (or adds it as a custom entry if it's an
+    /// address the dropdown doesn't otherwise enumerate, e.g. a specific NIC IP that changed).
+    /// </summary>
+    private void PopulateListenAddressOptions()
+    {
+        _cmbListenAddress.Items.Clear();
+        _cmbListenAddress.Items.Add("0.0.0.0");
+        _cmbListenAddress.Items.Add("localhost");
+
+        try
+        {
+            foreach (NetworkInterface nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up)
+                    continue;
+
+                foreach (UnicastIPAddressInformation addr in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (addr.Address.AddressFamily is not (AddressFamily.InterNetwork or AddressFamily.InterNetworkV6))
+                        continue;
+                    if (IPAddress.IsLoopback(addr.Address))
+                        continue;
+                    if (addr.Address.IsIPv6LinkLocal)
+                        continue;
+
+                    string ip = addr.Address.ToString();
+                    if (!_cmbListenAddress.Items.Contains(ip))
+                        _cmbListenAddress.Items.Add(ip);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to enumerate local network interfaces for the Listen Address dropdown");
+        }
+
+        string current = string.IsNullOrWhiteSpace(_settings.ListenAddress) ? "localhost" : _settings.ListenAddress.Trim();
+        if (!_cmbListenAddress.Items.Contains(current))
+            _cmbListenAddress.Items.Add(current);
+
+        _cmbListenAddress.Text = current;
+    }
+
     private void LoadSettingsToForm()
     {
         _txtListenPort.Text = _settings.ListenPort.ToString();
+        PopulateListenAddressOptions();
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
@@ -815,6 +866,7 @@ internal partial class MainForm : Form
         }
 
         _settings.ListenPort = port;
+        _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
         _settings.MaxLogEntries = maxLogs;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;

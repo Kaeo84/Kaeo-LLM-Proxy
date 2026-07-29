@@ -60,8 +60,28 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         // Build prefix - using "+" or specific IPs may require admin or netsh urlacl reservation
         string prefix = $"http://{host}:{port}/";
 
-        _listener.Prefixes.Add(prefix);
-        _listener.Start();
+        try
+        {
+            _listener.Prefixes.Add(prefix);
+            _listener.Start();
+        }
+        catch (HttpListenerException ex) when (ex.ErrorCode == 5)
+        {
+            // ERROR_ACCESS_DENIED. Windows' http.sys only allows non-elevated processes to
+            // reserve "localhost" bindings for free; binding to "+" (all interfaces), "0.0.0.0",
+            // or a specific machine IP requires either running elevated or a one-time URL ACL
+            // reservation. Surface the exact command so the user can fix it without guessing.
+            _listener.Close();
+            _listener = null;
+
+            string netshCommand = $"netsh http add urlacl url=http://{host}:{port}/ user=Everyone";
+            throw new InvalidOperationException(
+                $"Access denied while starting the proxy on {prefix}. " +
+                $"Listening on an address other than 'localhost' requires either running this application " +
+                $"as Administrator, or a one-time URL reservation. Open an elevated Command Prompt and run:\n\n" +
+                $"{netshCommand}\n\n" +
+                "Then try starting the proxy again.", ex);
+        }
 
         int gateSize = Math.Max(1, maxConcurrentRequests);
         _concurrencyGate?.Dispose();
