@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
 using Serilog;
@@ -945,7 +946,11 @@ internal partial class MainForm : Form
             }
         }
 
-        _database.SaveModelMappings(_settings.ModelMappings);
+        // Encrypt API keys for persistence while keeping plaintext in memory for the running proxy.
+        if (!TryEncryptApiKeysForSave(out List<ModelMapping> persistedMappings))
+            return;
+
+        _database.SaveModelMappings(persistedMappings);
         _database.SaveInstructionSets(_settings.InstructionSets);
         _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
         _settings.Save();
@@ -962,6 +967,57 @@ internal partial class MainForm : Form
 
         RefreshStatus();
         UpdateApiExplorerUrlLabel();
+    }
+
+    /// <summary>
+    /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
+    /// the model mappings with API keys encrypted for persistence. The in-memory
+    /// <see cref="AppSettings.ModelMappings"/> keep plaintext keys so the running proxy keeps
+    /// working. Returns false — aborting the save — when the user cancels the passphrase prompt.
+    /// </summary>
+    private bool TryEncryptApiKeysForSave(out List<ModelMapping> persistedMappings)
+    {
+        bool anyApiKey = _settings.ModelMappings.Any(m => !string.IsNullOrWhiteSpace(m.ApiKey));
+
+        if (anyApiKey && string.IsNullOrEmpty(_settings.RuntimePassphrase))
+        {
+            if (!PassphraseDialog.Prompt(
+                    this,
+                    "One or more model mappings have an API key.\nEnter a passphrase to encrypt them before saving.",
+                    out string passphrase,
+                    out bool remember))
+            {
+                MessageBox.Show(
+                    "A passphrase is required to encrypt API keys. Settings were not saved.",
+                    "Save Cancelled",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+                persistedMappings = [];
+                return false;
+            }
+
+            _settings.RuntimePassphrase = passphrase;
+
+            // Persist the passphrase only when the user opted in; otherwise clear any stored value.
+            _settings.SecurityPassphrase = remember ? passphrase : null;
+        }
+
+        persistedMappings = _settings.ModelMappings.Select(mapping =>
+        {
+            if (string.IsNullOrWhiteSpace(mapping.ApiKey)
+                || string.IsNullOrEmpty(_settings.RuntimePassphrase)
+                || SecretProtector.IsEncrypted(mapping.ApiKey))
+            {
+                return mapping;
+            }
+
+            ModelMapping encrypted = mapping.Clone();
+            encrypted.ApiKey = SecretProtector.Encrypt(mapping.ApiKey, _settings.RuntimePassphrase);
+            return encrypted;
+        }).ToList();
+
+        return true;
     }
 
     private void BtnBrowseRequestDb_Click(object? sender, EventArgs e)

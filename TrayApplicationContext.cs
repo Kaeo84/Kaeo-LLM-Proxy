@@ -33,7 +33,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
         _settings.ApplyRuntimeSettings(_database.LoadRuntimeSettings());
-        _settings.ModelMappings = [.. _database.LoadModelMappings()];
+
+        // Program.Main loads and decrypts model mappings before constructing this context so the
+        // passphrase prompt can run before the proxy starts. Only load from the database when they
+        // have not already been populated (e.g. when this context is created directly in tests).
+        if (_settings.ModelMappings.Count == 0)
+            _settings.ModelMappings = [.. _database.LoadModelMappings()];
+
         _settings.InstructionSets = [.. _database.LoadInstructionSets()];
 
         Log.Information("Kaeo LLM Proxy starting. ListenAddress={Address} ListenPort={Port} MappingsCount={Count}",

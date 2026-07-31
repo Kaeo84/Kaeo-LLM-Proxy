@@ -454,6 +454,20 @@ internal sealed class AppSettings
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
+    /// <summary>
+    /// Optional passphrase persisted in settings.jsonc used to decrypt model-mapping API keys.
+    /// When set, encrypted API keys are decrypted automatically at startup without prompting.
+    /// Leave null to require the user to enter the passphrase each launch.
+    /// </summary>
+    public string? SecurityPassphrase { get; set; }
+
+    /// <summary>
+    /// Session-only passphrase used to encrypt/decrypt API keys. Populated at startup from
+    /// <see cref="SecurityPassphrase"/> or from the launch-time prompt. Never persisted to disk.
+    /// </summary>
+    [JsonIgnore]
+    public string? RuntimePassphrase { get; set; }
+
     public static AppSettings Load()
     {
         if (!File.Exists(_settingsPath))

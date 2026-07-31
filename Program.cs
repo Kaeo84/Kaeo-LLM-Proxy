@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Principal;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
 
 namespace Kaeo.LlmProxy;
@@ -60,6 +61,11 @@ internal static class Program
             GC.KeepAlive(mutex);
         }
 
+        // Load mappings early so we can resolve the passphrase and decrypt API keys
+        // before the TrayApplicationContext starts the proxy.
+        settings.ModelMappings = [.. database.LoadModelMappings()];
+        ResolvePassphrase(settings);
+
         Application.Run(new TrayApplicationContext(settings, database));
     }
 
@@ -102,6 +108,96 @@ internal static class Program
             // The user declined the UAC prompt (ERROR_CANCELLED). Continue non-elevated.
             return false;
         }
+    }
+
+    /// <summary>
+    /// Resolves the passphrase needed to decrypt encrypted API keys in model mappings.
+    /// Tries the stored <see cref="AppSettings.SecurityPassphrase"/> first; if absent or
+    /// incorrect, prompts the user with an optional "remember" checkbox.
+    /// </summary>
+    private static void ResolvePassphrase(AppSettings settings)
+    {
+        bool hasEncrypted = settings.ModelMappings.Any(m => SecretProtector.IsEncrypted(m.ApiKey));
+
+        if (!hasEncrypted)
+        {
+            // No encrypted keys yet; carry the stored passphrase forward for future saves.
+            settings.RuntimePassphrase = settings.SecurityPassphrase;
+            return;
+        }
+
+        // Try the stored passphrase first.
+        if (!string.IsNullOrEmpty(settings.SecurityPassphrase))
+        {
+            if (TryDecryptAllMappings(settings.ModelMappings, settings.SecurityPassphrase))
+            {
+                settings.RuntimePassphrase = settings.SecurityPassphrase;
+                return;
+            }
+
+            // Stored passphrase is wrong; remove it so it is not reused on next launch.
+            settings.SecurityPassphrase = null;
+            settings.Save();
+        }
+
+        // Prompt until the user supplies a valid passphrase or cancels.
+        while (true)
+        {
+            if (!PassphraseDialog.Prompt(
+                    owner: null,
+                    "One or more model mappings have encrypted API keys.\nEnter the passphrase to decrypt them.",
+                    out string passphrase,
+                    out bool remember))
+            {
+                // User cancelled — encrypted keys stay encrypted; upstream auth will fail for those mappings.
+                return;
+            }
+
+            if (TryDecryptAllMappings(settings.ModelMappings, passphrase))
+            {
+                settings.RuntimePassphrase = passphrase;
+
+                if (remember)
+                {
+                    settings.SecurityPassphrase = passphrase;
+                    settings.Save();
+                }
+
+                return;
+            }
+
+            MessageBox.Show(
+                "The passphrase could not decrypt the stored API keys. Please try again.",
+                "Invalid Passphrase",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Verifies that every encrypted API key can be decrypted with <paramref name="passphrase"/>,
+    /// then applies the decryption in-place. Returns false if any key fails authentication.
+    /// </summary>
+    private static bool TryDecryptAllMappings(List<ModelMapping> mappings, string passphrase)
+    {
+        // First pass: verify all encrypted keys can be decrypted (all-or-nothing).
+        foreach (ModelMapping mapping in mappings)
+        {
+            if (SecretProtector.IsEncrypted(mapping.ApiKey)
+                && !SecretProtector.TryDecrypt(mapping.ApiKey!, passphrase, out _))
+            {
+                return false;
+            }
+        }
+
+        // Second pass: apply decryption.
+        foreach (ModelMapping mapping in mappings)
+        {
+            if (SecretProtector.IsEncrypted(mapping.ApiKey))
+                mapping.ApiKey = SecretProtector.Decrypt(mapping.ApiKey!, passphrase);
+        }
+
+        return true;
     }
 
     internal static Icon GetApplicationIcon()
