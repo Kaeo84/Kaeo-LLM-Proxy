@@ -66,6 +66,23 @@ internal sealed class InstructionSet
     public string? Description { get; set; }
 }
 
+/// <summary>
+/// A named secret (e.g. an upstream API key) stored centrally so multiple model mappings can
+/// reference it by name instead of each carrying its own copy. The <see cref="Secret"/> is kept
+/// in plaintext in memory while the app runs but is encrypted at rest in the application database.
+/// </summary>
+internal sealed class StoredCredential
+{
+    /// <summary>Unique name for this credential, referenced by <see cref="ModelMapping.CredentialName"/>.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The secret value (e.g. bearer API key). Plaintext in memory, encrypted at rest.</summary>
+    public string Secret { get; set; } = string.Empty;
+
+    /// <summary>Optional description of what this credential is used for.</summary>
+    public string? Description { get; set; }
+}
+
 /// <summary>Mutable runtime settings stored in the application database.</summary>
 internal sealed class RuntimeSettings
 {
@@ -164,6 +181,13 @@ internal sealed class ModelMapping
     public string? ApiKey { get; set; }
 
     /// <summary>
+    /// Optional name of a centrally stored <see cref="StoredCredential"/> whose secret is used as
+    /// the bearer API key for this mapping. When set, it takes precedence over the literal
+    /// <see cref="ApiKey"/>. Leave null to use <see cref="ApiKey"/> directly.
+    /// </summary>
+    public string? CredentialName { get; set; }
+
+    /// <summary>
     /// Upstream base URL for this mapping (e.g. "http://192.168.1.10:8080"). Required.
     /// Each mapping must specify its own upstream server.
     /// </summary>
@@ -240,6 +264,7 @@ internal sealed class ModelMapping
         SupportsVision = SupportsVision,
         EnableHeartbeats = EnableHeartbeats,
         ApiKey = ApiKey,
+        CredentialName = CredentialName,
         UpstreamType = UpstreamType,
         ThinkingMode = ThinkingMode,
         UpstreamUrl = UpstreamUrl,
@@ -361,6 +386,10 @@ internal sealed class AppSettings
     /// <summary>Named instruction sets loaded from the application database at startup.</summary>
     [JsonIgnore]
     public List<InstructionSet> InstructionSets { get; set; } = [];
+
+    /// <summary>Named credentials (secrets) loaded from the application database at startup.</summary>
+    [JsonIgnore]
+    public List<StoredCredential> Credentials { get; set; } = [];
 
     /// <summary>Maximum number of log entries to keep in memory. Min: 10, Max: 100000.</summary>
     public int MaxLogEntries { get; set; } = 500;
@@ -649,6 +678,41 @@ internal sealed class AppSettings
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Finds a stored credential by name (case-insensitive).
+    /// Returns null when no credential with the given name exists.
+    /// </summary>
+    public StoredCredential? FindCredential(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        foreach (StoredCredential credential in Credentials)
+        {
+            if (string.Equals(credential.Name, name, StringComparison.OrdinalIgnoreCase))
+                return credential;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Resolves the effective bearer API key for a model mapping. When the mapping references a
+    /// stored credential (<see cref="ModelMapping.CredentialName"/>) that exists, its secret is
+    /// returned; otherwise the mapping's literal <see cref="ModelMapping.ApiKey"/> is used.
+    /// Returns null when neither yields a usable key.
+    /// </summary>
+    public string? ResolveApiKey(ModelMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+
+        StoredCredential? credential = FindCredential(mapping.CredentialName);
+        if (credential is not null && !string.IsNullOrWhiteSpace(credential.Secret))
+            return credential.Secret;
+
+        return string.IsNullOrWhiteSpace(mapping.ApiKey) ? null : mapping.ApiKey;
     }
 
     /// <summary>Writes the annotated default config template to disk on first run.</summary>

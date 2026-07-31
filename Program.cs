@@ -61,9 +61,10 @@ internal static class Program
             GC.KeepAlive(mutex);
         }
 
-        // Load mappings early so we can resolve the passphrase and decrypt API keys
-        // before the TrayApplicationContext starts the proxy.
+        // Load mappings and credentials early so we can resolve the passphrase and decrypt
+        // their secrets before the TrayApplicationContext starts the proxy.
         settings.ModelMappings = [.. database.LoadModelMappings()];
+        settings.Credentials = [.. database.LoadCredentials()];
         ResolvePassphrase(settings);
 
         Application.Run(new TrayApplicationContext(settings, database));
@@ -117,11 +118,12 @@ internal static class Program
     /// </summary>
     private static void ResolvePassphrase(AppSettings settings)
     {
-        bool hasEncrypted = settings.ModelMappings.Any(m => SecretProtector.IsEncrypted(m.ApiKey));
+        bool hasEncrypted = settings.ModelMappings.Any(m => SecretProtector.IsEncrypted(m.ApiKey))
+            || settings.Credentials.Any(c => SecretProtector.IsEncrypted(c.Secret));
 
         if (!hasEncrypted)
         {
-            // No encrypted keys yet; carry the stored passphrase forward for future saves.
+            // No encrypted secrets yet; carry the stored passphrase forward for future saves.
             settings.RuntimePassphrase = settings.SecurityPassphrase;
             return;
         }
@@ -129,7 +131,7 @@ internal static class Program
         // Try the stored passphrase first.
         if (!string.IsNullOrEmpty(settings.SecurityPassphrase))
         {
-            if (TryDecryptAllMappings(settings.ModelMappings, settings.SecurityPassphrase))
+            if (TryDecryptAllSecrets(settings, settings.SecurityPassphrase))
             {
                 settings.RuntimePassphrase = settings.SecurityPassphrase;
                 return;
@@ -145,15 +147,15 @@ internal static class Program
         {
             if (!PassphraseDialog.Prompt(
                     owner: null,
-                    "One or more model mappings have encrypted API keys.\nEnter the passphrase to decrypt them.",
+                    "One or more stored secrets are encrypted.\nEnter the passphrase to decrypt them.",
                     out string passphrase,
                     out bool remember))
             {
-                // User cancelled — encrypted keys stay encrypted; upstream auth will fail for those mappings.
+                // User cancelled — encrypted secrets stay encrypted; auth that needs them will fail.
                 return;
             }
 
-            if (TryDecryptAllMappings(settings.ModelMappings, passphrase))
+            if (TryDecryptAllSecrets(settings, passphrase))
             {
                 settings.RuntimePassphrase = passphrase;
 
@@ -167,7 +169,7 @@ internal static class Program
             }
 
             MessageBox.Show(
-                "The passphrase could not decrypt the stored API keys. Please try again.",
+                "The passphrase could not decrypt the stored secrets. Please try again.",
                 "Invalid Passphrase",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -175,13 +177,14 @@ internal static class Program
     }
 
     /// <summary>
-    /// Verifies that every encrypted API key can be decrypted with <paramref name="passphrase"/>,
-    /// then applies the decryption in-place. Returns false if any key fails authentication.
+    /// Verifies that every encrypted secret (model-mapping API keys and stored credentials) can be
+    /// decrypted with <paramref name="passphrase"/>, then applies the decryption in-place.
+    /// Returns false if any secret fails authentication.
     /// </summary>
-    private static bool TryDecryptAllMappings(List<ModelMapping> mappings, string passphrase)
+    private static bool TryDecryptAllSecrets(AppSettings settings, string passphrase)
     {
-        // First pass: verify all encrypted keys can be decrypted (all-or-nothing).
-        foreach (ModelMapping mapping in mappings)
+        // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).
+        foreach (ModelMapping mapping in settings.ModelMappings)
         {
             if (SecretProtector.IsEncrypted(mapping.ApiKey)
                 && !SecretProtector.TryDecrypt(mapping.ApiKey!, passphrase, out _))
@@ -190,11 +193,26 @@ internal static class Program
             }
         }
 
+        foreach (StoredCredential credential in settings.Credentials)
+        {
+            if (SecretProtector.IsEncrypted(credential.Secret)
+                && !SecretProtector.TryDecrypt(credential.Secret, passphrase, out _))
+            {
+                return false;
+            }
+        }
+
         // Second pass: apply decryption.
-        foreach (ModelMapping mapping in mappings)
+        foreach (ModelMapping mapping in settings.ModelMappings)
         {
             if (SecretProtector.IsEncrypted(mapping.ApiKey))
                 mapping.ApiKey = SecretProtector.Decrypt(mapping.ApiKey!, passphrase);
+        }
+
+        foreach (StoredCredential credential in settings.Credentials)
+        {
+            if (SecretProtector.IsEncrypted(credential.Secret))
+                credential.Secret = SecretProtector.Decrypt(credential.Secret, passphrase);
         }
 
         return true;

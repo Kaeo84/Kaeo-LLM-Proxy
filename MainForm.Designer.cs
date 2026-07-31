@@ -21,6 +21,7 @@ partial class MainForm
         _tabLogs = new TabPage();
         _tabSettings = new TabPage();
         _tabInstructions = new TabPage();
+        _tabCredentials = new TabPage();
         _tabTest = new TabPage();
         _tabHeartbeats = new TabPage();
 
@@ -145,6 +146,16 @@ partial class MainForm
         _txtInstructionPreview = new TextBox();
         _lblInstructionPreview = new Label();
 
+        // Credentials tab controls
+        _tlpCredentials = new TableLayoutPanel();
+        _lstCredentials = new ListView();
+        _colCredName = new ColumnHeader();
+        _colCredDescription = new ColumnHeader();
+        _flpCredentialButtons = new FlowLayoutPanel();
+        _btnAddCredential = new Button();
+        _btnEditCredential = new Button();
+        _btnRemoveCredential = new Button();
+
         // Test Console controls
         _tlpTestOuter = new TableLayoutPanel();
         _tlpTestTop = new TableLayoutPanel();
@@ -193,6 +204,9 @@ partial class MainForm
         _tlpLogs.SuspendLayout();
         _flpLogsButtons.SuspendLayout();
         _tabSettings.SuspendLayout();
+        _tabCredentials.SuspendLayout();
+        _tlpCredentials.SuspendLayout();
+        _flpCredentialButtons.SuspendLayout();
         _tabTest.SuspendLayout();
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
@@ -212,6 +226,7 @@ partial class MainForm
         _tabControl.Controls.Add(_tabLogs);
         _tabControl.Controls.Add(_tabSettings);
         _tabControl.Controls.Add(_tabInstructions);
+        _tabControl.Controls.Add(_tabCredentials);
         _tabControl.Controls.Add(_tabTest);
         _tabControl.Controls.Add(_tabHeartbeats);
         _tabControl.Dock = DockStyle.Fill;
@@ -1020,6 +1035,72 @@ partial class MainForm
         _txtInstructionPreview.ReadOnly = true;
         _txtInstructionPreview.ScrollBars = ScrollBars.Vertical;
 
+        // ── Credentials tab ─────────────────────────────────────────────────
+
+        // _tabCredentials
+        _tabCredentials.Controls.Add(_tlpCredentials);
+        _tabCredentials.Dock = DockStyle.Fill;
+        _tabCredentials.Name = "_tabCredentials";
+        _tabCredentials.Padding = new Padding(8);
+        _tabCredentials.Text = "Credentials";
+
+        // _tlpCredentials — 1 column, 2 rows: list | buttons
+        _tlpCredentials.ColumnCount = 1;
+        _tlpCredentials.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpCredentials.Controls.Add(_lstCredentials, 0, 0);
+        _tlpCredentials.Controls.Add(_flpCredentialButtons, 0, 1);
+        _tlpCredentials.Dock = DockStyle.Fill;
+        _tlpCredentials.Name = "_tlpCredentials";
+        _tlpCredentials.RowCount = 2;
+        _tlpCredentials.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _tlpCredentials.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        // _lstCredentials
+        _lstCredentials.Columns.Add(_colCredName);
+        _lstCredentials.Columns.Add(_colCredDescription);
+        _lstCredentials.Dock = DockStyle.Fill;
+        _lstCredentials.FullRowSelect = true;
+        _lstCredentials.GridLines = true;
+        _lstCredentials.Margin = new Padding(0, 0, 0, 8);
+        _lstCredentials.MultiSelect = false;
+        _lstCredentials.Name = "_lstCredentials";
+        _lstCredentials.View = View.Details;
+        _lstCredentials.DoubleClick += LstCredentials_DoubleClick;
+
+        _colCredName.Text = "Name";
+        _colCredName.Width = 200;
+        _colCredDescription.Text = "Description";
+        _colCredDescription.Width = 400;
+
+        // _flpCredentialButtons
+        _flpCredentialButtons.AutoSize = true;
+        _flpCredentialButtons.Controls.Add(_btnAddCredential);
+        _flpCredentialButtons.Controls.Add(_btnEditCredential);
+        _flpCredentialButtons.Controls.Add(_btnRemoveCredential);
+        _flpCredentialButtons.Dock = DockStyle.Fill;
+        _flpCredentialButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpCredentialButtons.Margin = new Padding(0);
+        _flpCredentialButtons.Name = "_flpCredentialButtons";
+        _flpCredentialButtons.WrapContents = false;
+
+        _btnAddCredential.AutoSize = true;
+        _btnAddCredential.Margin = new Padding(0, 0, 8, 0);
+        _btnAddCredential.Name = "_btnAddCredential";
+        _btnAddCredential.Text = "Add New";
+        _btnAddCredential.Click += BtnAddCredential_Click;
+
+        _btnEditCredential.AutoSize = true;
+        _btnEditCredential.Margin = new Padding(0, 0, 8, 0);
+        _btnEditCredential.Name = "_btnEditCredential";
+        _btnEditCredential.Text = "Edit";
+        _btnEditCredential.Click += BtnEditCredential_Click;
+
+        _btnRemoveCredential.AutoSize = true;
+        _btnRemoveCredential.Margin = new Padding(0, 0, 8, 0);
+        _btnRemoveCredential.Name = "_btnRemoveCredential";
+        _btnRemoveCredential.Text = "Remove";
+        _btnRemoveCredential.Click += BtnRemoveCredential_Click;
+
         // ── Test Console tab ──────────────────────────────────────────────────
 
         // _tabTest
@@ -1300,6 +1381,10 @@ partial class MainForm
         _tlpInstructions.ResumeLayout(false);
         _tlpInstructions.PerformLayout();
         _flpInstructionButtons.ResumeLayout(false);
+        _tabCredentials.ResumeLayout(false);
+        _tlpCredentials.ResumeLayout(false);
+        _tlpCredentials.PerformLayout();
+        _flpCredentialButtons.ResumeLayout(false);
         _flpStatusButtons.ResumeLayout(false);
         _flpStatusButtons.PerformLayout();
         _pnlStatus.ResumeLayout(false);
@@ -1437,6 +1522,17 @@ partial class MainForm
     private Button _btnRemoveInstruction;
     private Label _lblInstructionPreview;
     private TextBox _txtInstructionPreview;
+
+    // Credentials tab
+    private TabPage _tabCredentials;
+    private TableLayoutPanel _tlpCredentials;
+    private ListView _lstCredentials;
+    private ColumnHeader _colCredName;
+    private ColumnHeader _colCredDescription;
+    private FlowLayoutPanel _flpCredentialButtons;
+    private Button _btnAddCredential;
+    private Button _btnEditCredential;
+    private Button _btnRemoveCredential;
 
     // Test Console
     private TabPage _tabTest;

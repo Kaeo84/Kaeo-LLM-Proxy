@@ -64,6 +64,7 @@ internal partial class MainForm : Form
         RefreshStats();
         RefreshLogs();
         RefreshHeartbeats();
+        RefreshCredentials();
         _stats.HeartbeatsChanged += OnHeartbeatsChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
@@ -768,6 +769,7 @@ internal partial class MainForm : Form
                 EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
                 EnableHeartbeats = mapping.EnableHeartbeats,
                 ApiKey = mapping.ApiKey,
+                CredentialName = mapping.CredentialName,
                 UpstreamUrl = mapping.UpstreamUrl,
                 UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds,
                 RepeatPenalty = mapping.RepeatPenalty,
@@ -930,6 +932,7 @@ internal partial class MainForm : Form
                     SupportsVision         = advanced?.SupportsVision,
                     EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
                     ApiKey                 = advanced?.ApiKey,
+                    CredentialName         = advanced?.CredentialName,
                     UpstreamUrl            = upstreamUrl.Trim(),
                     UpstreamTimeoutSeconds = advanced?.UpstreamTimeoutSeconds ?? 300,
                     RepeatPenalty          = advanced?.RepeatPenalty ?? 1.0,
@@ -946,11 +949,15 @@ internal partial class MainForm : Form
             }
         }
 
-        // Encrypt API keys for persistence while keeping plaintext in memory for the running proxy.
+        // Encrypt secrets for persistence while keeping plaintext in memory for the running proxy.
         if (!TryEncryptApiKeysForSave(out List<ModelMapping> persistedMappings))
             return;
 
+        if (!TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials))
+            return;
+
         _database.SaveModelMappings(persistedMappings);
+        _database.SaveCredentials(persistedCredentials);
         _database.SaveInstructionSets(_settings.InstructionSets);
         _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
         _settings.Save();
@@ -970,6 +977,32 @@ internal partial class MainForm : Form
     }
 
     /// <summary>
+    /// Ensures a session passphrase is available, prompting the user when necessary. The passphrase
+    /// is persisted to settings only when the user opts in via the "remember" checkbox; otherwise
+    /// any previously stored value is cleared. Returns false when the user cancels the prompt.
+    /// </summary>
+    private bool EnsurePassphrase()
+    {
+        if (!string.IsNullOrEmpty(_settings.RuntimePassphrase))
+            return true;
+
+        if (!PassphraseDialog.Prompt(
+                this,
+                "One or more secrets need to be encrypted.\nEnter a passphrase to encrypt them before saving.",
+                out string passphrase,
+                out bool remember))
+        {
+            return false;
+        }
+
+        _settings.RuntimePassphrase = passphrase;
+
+        // Persist the passphrase only when the user opted in; otherwise clear any stored value.
+        _settings.SecurityPassphrase = remember ? passphrase : null;
+        return true;
+    }
+
+    /// <summary>
     /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
     /// the model mappings with API keys encrypted for persistence. The in-memory
     /// <see cref="AppSettings.ModelMappings"/> keep plaintext keys so the running proxy keeps
@@ -981,11 +1014,7 @@ internal partial class MainForm : Form
 
         if (anyApiKey && string.IsNullOrEmpty(_settings.RuntimePassphrase))
         {
-            if (!PassphraseDialog.Prompt(
-                    this,
-                    "One or more model mappings have an API key.\nEnter a passphrase to encrypt them before saving.",
-                    out string passphrase,
-                    out bool remember))
+            if (!EnsurePassphrase())
             {
                 MessageBox.Show(
                     "A passphrase is required to encrypt API keys. Settings were not saved.",
@@ -996,11 +1025,6 @@ internal partial class MainForm : Form
                 persistedMappings = [];
                 return false;
             }
-
-            _settings.RuntimePassphrase = passphrase;
-
-            // Persist the passphrase only when the user opted in; otherwise clear any stored value.
-            _settings.SecurityPassphrase = remember ? passphrase : null;
         }
 
         persistedMappings = _settings.ModelMappings.Select(mapping =>
@@ -1015,6 +1039,51 @@ internal partial class MainForm : Form
             ModelMapping encrypted = mapping.Clone();
             encrypted.ApiKey = SecretProtector.Encrypt(mapping.ApiKey, _settings.RuntimePassphrase);
             return encrypted;
+        }).ToList();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
+    /// the stored credentials with secrets encrypted for persistence. The in-memory
+    /// <see cref="AppSettings.Credentials"/> keep plaintext secrets so the running proxy can resolve
+    /// them. Returns false — aborting the save — when the user cancels the passphrase prompt.
+    /// </summary>
+    private bool TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials)
+    {
+        bool anySecret = _settings.Credentials.Any(c => !string.IsNullOrWhiteSpace(c.Secret));
+
+        if (anySecret && string.IsNullOrEmpty(_settings.RuntimePassphrase))
+        {
+            if (!EnsurePassphrase())
+            {
+                MessageBox.Show(
+                    "A passphrase is required to encrypt stored credentials. Settings were not saved.",
+                    "Save Cancelled",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+                persistedCredentials = [];
+                return false;
+            }
+        }
+
+        persistedCredentials = _settings.Credentials.Select(credential =>
+        {
+            if (string.IsNullOrWhiteSpace(credential.Secret)
+                || string.IsNullOrEmpty(_settings.RuntimePassphrase)
+                || SecretProtector.IsEncrypted(credential.Secret))
+            {
+                return credential;
+            }
+
+            return new StoredCredential
+            {
+                Name = credential.Name,
+                Description = credential.Description,
+                Secret = SecretProtector.Encrypt(credential.Secret, _settings.RuntimePassphrase),
+            };
         }).ToList();
 
         return true;
@@ -1046,7 +1115,7 @@ internal partial class MainForm : Form
         // configure it, and only add a grid row on OK.
         ModelMapping mapping = new();
 
-        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, [], out _))
+        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], out _))
             return;
 
         int idx = _dgvMappings.Rows.Add(
@@ -1102,7 +1171,7 @@ internal partial class MainForm : Form
             ? []
             : [mapping.ModelName];
 
-        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, existingItems, out _))
+        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, existingItems, out _))
         {
             // Write user-edited values back into the grid cells. The grid is read-only;
             // these values come exclusively from the modal.
@@ -1346,6 +1415,133 @@ internal partial class MainForm : Form
         {
             MessageBox.Show($"Removed instruction set and cleared it from {clearedMappings} model mapping(s).",
                 "Instruction Set Removed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    // ── Credentials ─────────────────────────────────────────────────────────
+
+    private void RefreshCredentials()
+    {
+        _lstCredentials.BeginUpdate();
+        _lstCredentials.Items.Clear();
+
+        foreach (StoredCredential credential in _settings.Credentials)
+        {
+            // The secret is intentionally never displayed in the list.
+            ListViewItem item = new(credential.Name);
+            item.SubItems.Add(credential.Description ?? string.Empty);
+            item.Tag = credential;
+            _lstCredentials.Items.Add(item);
+        }
+
+        _lstCredentials.EndUpdate();
+    }
+
+    private void BtnAddCredential_Click(object? sender, EventArgs e)
+    {
+        StoredCredential? newCredential = CredentialDialog.ShowAddEditDialog(this);
+        if (newCredential is null)
+            return;
+
+        if (_settings.Credentials.Any(c => string.Equals(c.Name, newCredential.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show($"A credential named '{newCredential.Name}' already exists.", "Duplicate Name",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        _settings.Credentials.Add(newCredential);
+        RefreshCredentials();
+    }
+
+    private void BtnEditCredential_Click(object? sender, EventArgs e)
+    {
+        if (_lstCredentials.SelectedItems.Count == 0)
+        {
+            MessageBox.Show("Select a credential to edit.", "No selection",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_lstCredentials.SelectedItems[0].Tag is not StoredCredential existing)
+            return;
+
+        StoredCredential? edited = CredentialDialog.ShowAddEditDialog(this, existing);
+        if (edited is null)
+            return;
+
+        string oldName = existing.Name;
+
+        if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase)
+            && _settings.Credentials.Any(c => c != existing
+                && string.Equals(c.Name, edited.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show($"A credential named '{edited.Name}' already exists.", "Duplicate Name",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        existing.Name = edited.Name;
+        existing.Secret = edited.Secret;
+        existing.Description = edited.Description;
+
+        if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase))
+            PropagateCredentialReferenceChange(oldName, edited.Name);
+
+        RefreshCredentials();
+    }
+
+    private void BtnRemoveCredential_Click(object? sender, EventArgs e)
+    {
+        if (_lstCredentials.SelectedItems.Count == 0)
+        {
+            MessageBox.Show("Select a credential to remove.", "No selection",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_lstCredentials.SelectedItems[0].Tag is not StoredCredential toRemove)
+            return;
+
+        DialogResult result = MessageBox.Show(
+            $"Are you sure you want to remove the credential '{toRemove.Name}'?\n"
+            + "Model mappings that reference it will fall back to their own API key.",
+            "Confirm Removal", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+        if (result != DialogResult.Yes)
+            return;
+
+        _settings.Credentials.Remove(toRemove);
+        PropagateCredentialReferenceChange(toRemove.Name, null);
+        RefreshCredentials();
+    }
+
+    private void LstCredentials_DoubleClick(object? sender, EventArgs e)
+    {
+        BtnEditCredential_Click(sender, e);
+    }
+
+    /// <summary>
+    /// Updates every model mapping that references a credential named <paramref name="oldName"/>
+    /// so it references <paramref name="newName"/> instead (null clears the reference). Applies to
+    /// both the in-memory mappings used by the running proxy and the grid row tags that are read
+    /// back on save.
+    /// </summary>
+    private void PropagateCredentialReferenceChange(string oldName, string? newName)
+    {
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            if (row.Tag is ModelMapping mapping
+                && string.Equals(mapping.CredentialName, oldName, StringComparison.OrdinalIgnoreCase))
+            {
+                mapping.CredentialName = newName;
+            }
+        }
+
+        foreach (ModelMapping mapping in _settings.ModelMappings)
+        {
+            if (string.Equals(mapping.CredentialName, oldName, StringComparison.OrdinalIgnoreCase))
+                mapping.CredentialName = newName;
         }
     }
 
@@ -1699,8 +1895,9 @@ internal partial class MainForm : Form
             Content = new StringContent(requestBodyJson, Encoding.UTF8, "application/json"),
         };
         reqMsg.Headers.Accept.ParseAdd("text/event-stream");
-        if (!string.IsNullOrWhiteSpace(mapping?.ApiKey))
-            reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", mapping.ApiKey.Trim());
+        string? effectiveApiKey = mapping is null ? null : _settings.ResolveApiKey(mapping);
+        if (!string.IsNullOrWhiteSpace(effectiveApiKey))
+            reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveApiKey.Trim());
 
         // Overall request-level timeout so a stalled upstream cannot hang the UI forever.
         using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

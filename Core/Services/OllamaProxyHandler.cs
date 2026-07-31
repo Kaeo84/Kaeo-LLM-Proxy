@@ -190,7 +190,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     "Each mapping must specify its own UpstreamUrl.");
 
             int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
-            return (mapping.UpstreamUrl.TrimEnd('/'), timeout, mapping.ApiKey);
+            return (mapping.UpstreamUrl.TrimEnd('/'), timeout, _settings.ResolveApiKey(mapping));
         }
 
         // Fallback: if model name is empty/null and we have at least one mapping,
@@ -205,7 +205,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     "Each mapping must specify its own UpstreamUrl.");
 
             int timeout = fallback.UpstreamTimeoutSeconds > 0 ? fallback.UpstreamTimeoutSeconds : 300;
-            return (fallback.UpstreamUrl.TrimEnd('/'), timeout, fallback.ApiKey);
+            return (fallback.UpstreamUrl.TrimEnd('/'), timeout, _settings.ResolveApiKey(fallback));
         }
 
         throw new InvalidOperationException(

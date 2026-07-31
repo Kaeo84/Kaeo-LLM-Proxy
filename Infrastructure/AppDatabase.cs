@@ -157,7 +157,8 @@ internal sealed class AppDatabase : IDisposable
                     instruction_set_name,
                     redact_request_bodies,
                     redact_response_bodies,
-                    redact_sensitive_json_fields
+                    redact_sensitive_json_fields,
+                    credential_name
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -213,7 +214,8 @@ internal sealed class AppDatabase : IDisposable
                         instruction_set_name,
                         redact_request_bodies,
                         redact_response_bodies,
-                        redact_sensitive_json_fields
+                        redact_sensitive_json_fields,
+                        credential_name
                     )
                     VALUES (
                         $proxyName,
@@ -234,7 +236,8 @@ internal sealed class AppDatabase : IDisposable
                         $instructionSetName,
                         $redactRequestBodies,
                         $redactResponseBodies,
-                        $redactSensitiveJsonFields
+                        $redactSensitiveJsonFields,
+                        $credentialName
                     );
                     """;
 
@@ -304,6 +307,79 @@ internal sealed class AppDatabase : IDisposable
                 insertCommand.Parameters.AddWithValue("$name", instructionSet.Name);
                 insertCommand.Parameters.AddWithValue("$instructions", instructionSet.Instructions);
                 insertCommand.Parameters.AddWithValue("$description", DbValue(instructionSet.Description));
+                insertCommand.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>
+    /// Loads all stored credentials. The <c>secret</c> values are returned exactly as stored
+    /// (encrypted envelopes when a passphrase was used); decryption is handled by the caller.
+    /// </summary>
+    public IReadOnlyList<StoredCredential> LoadCredentials()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT name, secret, description
+                FROM credentials
+                ORDER BY name;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<StoredCredential> credentials = [];
+
+            while (reader.Read())
+            {
+                credentials.Add(new StoredCredential
+                {
+                    Name = reader.GetString(0),
+                    Secret = reader.GetString(1),
+                    Description = reader.IsDBNull(2) ? null : reader.GetString(2),
+                });
+            }
+
+            return credentials;
+        }
+    }
+
+    /// <summary>
+    /// Replaces the stored credentials table with the supplied set. Secrets should already be
+    /// encrypted by the caller before being passed in.
+    /// </summary>
+    public void SaveCredentials(IEnumerable<StoredCredential> credentials)
+    {
+        ArgumentNullException.ThrowIfNull(credentials);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            using (SqliteCommand deleteCommand = connection.CreateCommand())
+            {
+                deleteCommand.Transaction = transaction;
+                deleteCommand.CommandText = "DELETE FROM credentials;";
+                deleteCommand.ExecuteNonQuery();
+            }
+
+            foreach (StoredCredential credential in credentials)
+            {
+                using SqliteCommand insertCommand = connection.CreateCommand();
+                insertCommand.Transaction = transaction;
+                insertCommand.CommandText =
+                    """
+                    INSERT INTO credentials (name, secret, description)
+                    VALUES ($name, $secret, $description);
+                    """;
+                insertCommand.Parameters.AddWithValue("$name", credential.Name);
+                insertCommand.Parameters.AddWithValue("$secret", credential.Secret);
+                insertCommand.Parameters.AddWithValue("$description", DbValue(credential.Description));
                 insertCommand.ExecuteNonQuery();
             }
 
@@ -853,7 +929,8 @@ internal sealed class AppDatabase : IDisposable
                     instruction_set_name TEXT NULL,
                     redact_request_bodies INTEGER NOT NULL,
                     redact_response_bodies INTEGER NOT NULL,
-                    redact_sensitive_json_fields INTEGER NOT NULL
+                    redact_sensitive_json_fields INTEGER NOT NULL,
+                    credential_name TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -861,6 +938,12 @@ internal sealed class AppDatabase : IDisposable
                 CREATE TABLE IF NOT EXISTS instruction_sets (
                     name TEXT PRIMARY KEY,
                     instructions TEXT NOT NULL,
+                    description TEXT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS credentials (
+                    name TEXT PRIMARY KEY,
+                    secret TEXT NOT NULL,
                     description TEXT NULL
                 );
 
@@ -934,21 +1017,31 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Adds the nullable <c>supports_vision</c> override to existing model mappings.
+    /// Adds nullable columns to existing model mappings that were created before they were
+    /// introduced: the <c>supports_vision</c> override and the <c>credential_name</c> reference.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
-        if (!TableExists(connection, "model_mappings")
-            || ColumnExists(connection, "model_mappings", "supports_vision"))
-        {
+        if (!TableExists(connection, "model_mappings"))
             return;
+
+        if (!ColumnExists(connection, "model_mappings", "supports_vision"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_vision INTEGER NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added supports_vision column.");
         }
 
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_vision INTEGER NULL;";
-        command.ExecuteNonQuery();
+        if (!ColumnExists(connection, "model_mappings", "credential_name"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN credential_name TEXT NULL;";
+            command.ExecuteNonQuery();
 
-        Log.Information("Migrated model_mappings table: added supports_vision column.");
+            Log.Information("Migrated model_mappings table: added credential_name column.");
+        }
     }
 
     /// <summary>
@@ -1144,6 +1237,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$redactRequestBodies", ToSqliteBoolean(mapping.RedactRequestBodies));
         command.Parameters.AddWithValue("$redactResponseBodies", ToSqliteBoolean(mapping.RedactResponseBodies));
         command.Parameters.AddWithValue("$redactSensitiveJsonFields", ToSqliteBoolean(mapping.RedactSensitiveJsonFields));
+        command.Parameters.AddWithValue("$credentialName", DbValue(mapping.CredentialName));
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1169,6 +1263,7 @@ internal sealed class AppDatabase : IDisposable
         RedactRequestBodies = ReadBoolean(reader, 16),
         RedactResponseBodies = ReadBoolean(reader, 17),
         RedactSensitiveJsonFields = ReadBoolean(reader, 18),
+        CredentialName = reader.IsDBNull(19) ? null : reader.GetString(19),
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
