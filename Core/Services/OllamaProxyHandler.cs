@@ -728,6 +728,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using CountingStream countingStream = new(resp.OutputStream);
         bool shouldMirrorReasoningContent = IsChatCompletionsPath(req.Url?.AbsolutePath);
 
+        // Per-model thinking extraction (e.g. Qwen Cloud's older inline <think> format) is only
+        // meaningful on the OpenAI chat-completions surface where reasoning_content is understood.
+        ModelMapping? activeMapping = _settings.FindModelMapping(originalModel);
+        ThinkingMode thinkingMode = shouldMirrorReasoningContent && activeMapping is not null
+            ? activeMapping.ThinkingMode
+            : ThinkingMode.Off;
+
         if (_settings.CollectResponseDetails)
         {
             using ResponseCaptureStream captureStream = new(countingStream);
@@ -738,6 +745,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     await CopyOpenAiChatCompletionSseStreamAsync(
                         upstreamStream,
                         captureStream,
+                        thinkingMode,
                         ShouldEmitHeartbeats(originalModel),
                         _settings.StreamingHeartbeatIntervalSeconds,
                         ct,
@@ -756,7 +764,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else
             {
-                await upstreamStream.CopyToAsync(captureStream, ct);
+                await CopyNonStreamingChatResponseAsync(upstreamStream, captureStream, thinkingMode, ct);
             }
 
             log.ResponseBody = RedactResponseBodyForLog(captureStream.GetCapturedText(), originalModel);
@@ -768,6 +776,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 await CopyOpenAiChatCompletionSseStreamAsync(
                     upstreamStream,
                     countingStream,
+                    thinkingMode,
                     ShouldEmitHeartbeats(originalModel),
                     _settings.StreamingHeartbeatIntervalSeconds,
                     ct,
@@ -786,7 +795,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         else
         {
-            await upstreamStream.CopyToAsync(countingStream, ct);
+            await CopyNonStreamingChatResponseAsync(upstreamStream, countingStream, thinkingMode, ct);
         }
 
         log.ResponseBytes = countingStream.BytesWritten;
@@ -808,6 +817,71 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private static bool IsChatCompletionsPath(string? path) =>
         path?.Equals("/v1/chat/completions", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// Copies a non-streaming (complete JSON) chat-completion response, optionally extracting
+    /// <c>&lt;think&gt;</c> blocks from <c>content</c> into <c>reasoning_content</c> when the
+    /// model's <see cref="ThinkingMode"/> is <see cref="ThinkingMode.ExtractThinkTags"/>.
+    /// </summary>
+    private static async Task CopyNonStreamingChatResponseAsync(
+        Stream source,
+        Stream destination,
+        ThinkingMode thinkingMode,
+        CancellationToken ct)
+    {
+        if (thinkingMode != ThinkingMode.ExtractThinkTags)
+        {
+            await source.CopyToAsync(destination, ct);
+            return;
+        }
+
+        using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        string body = await reader.ReadToEndAsync(ct);
+        string transformed = TransformNonStreamingChatBody(body);
+        byte[] bytes = Encoding.UTF8.GetBytes(transformed);
+        await destination.WriteAsync(bytes, ct);
+    }
+
+    /// <summary>
+    /// Transforms a complete (non-streaming) OpenAI chat-completion JSON body by extracting
+    /// <c>&lt;think&gt;...&lt;/think&gt;</c> blocks from each choice's <c>message.content</c>
+    /// into <c>message.reasoning_content</c>. Returns the original text unchanged if parsing fails.
+    /// </summary>
+    private static string TransformNonStreamingChatBody(string json)
+    {
+        try
+        {
+            JsonObject? root = JsonNode.Parse(json) as JsonObject;
+            if (root is null || root["choices"] is not JsonArray choices)
+                return json;
+
+            foreach (JsonNode? choiceNode in choices)
+            {
+                if (choiceNode is not JsonObject choice) continue;
+                if (choice["message"] is not JsonObject message) continue;
+
+                string content = message["content"] is JsonValue cv
+                    && cv.TryGetValue(out string? contentStr) ? contentStr ?? string.Empty : string.Empty;
+                if (string.IsNullOrEmpty(content)) continue;
+
+                (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content);
+                if (reasoning.Length > 0)
+                {
+                    string existing = message["reasoning_content"] is JsonValue erv
+                        && erv.TryGetValue(out string? ervStr) ? ervStr ?? string.Empty : string.Empty;
+                    message["reasoning_content"] = JsonValue.Create(existing + reasoning);
+                }
+
+                message["content"] = JsonValue.Create(answer);
+            }
+
+            return root.ToJsonString(_jsonOptions);
+        }
+        catch
+        {
+            return json;
+        }
+    }
 
     /// <summary>
     /// Returns true when a JSON POST body has <c>"stream": true</c>, indicating the client
@@ -893,6 +967,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static async Task CopyOpenAiChatCompletionSseStreamAsync(
         Stream source,
         Stream destination,
+        ThinkingMode thinkingMode,
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
         CancellationToken ct,
@@ -901,7 +976,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
         TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
-        OpenAiSseRewriter rewriter = new();
+        OpenAiSseRewriter rewriter = new(thinkingMode);
 
         while (!ct.IsCancellationRequested)
         {
@@ -943,6 +1018,131 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Incrementally separates <c>&lt;think&gt;...&lt;/think&gt;</c> reasoning blocks from normal
+    /// answer text as an upstream stream arrives. Providers such as Qwen Cloud (older response
+    /// format) emit reasoning inline inside the <c>content</c> field; this extractor splits it out
+    /// so callers can re-emit the reasoning as <c>reasoning_content</c>.
+    ///
+    /// The extractor is stateful across calls because a <c>&lt;think&gt;</c> / <c>&lt;/think&gt;</c>
+    /// tag may be split across SSE chunks. Any trailing text that could be the prefix of a tag is
+    /// held in <see cref="_pending"/> until the next call (or <see cref="Flush"/> at end of stream)
+    /// so a partial tag is never emitted as literal content.
+    /// </summary>
+    private sealed class ThinkTagExtractor
+    {
+        private const string OpenTag = "<think>";
+        private const string CloseTag = "</think>";
+
+        private bool _inThink;
+        private string _pending = string.Empty;
+
+        /// <summary>
+        /// Feeds the next incremental fragment of <c>content</c> text. Returns the separated
+        /// reasoning and answer text that is safe to emit now (either may be empty). Call
+        /// <see cref="Flush"/> once at end of stream to drain any buffered trailing text.
+        /// </summary>
+        public (string Reasoning, string Content) Process(string fragment)
+        {
+            if (fragment.Length == 0)
+                return (string.Empty, string.Empty);
+
+            string work = _pending + fragment;
+            _pending = string.Empty;
+
+            var reasoning = new StringBuilder();
+            var content = new StringBuilder();
+
+            int pos = 0;
+            while (pos < work.Length)
+            {
+                string activeTag = _inThink ? CloseTag : OpenTag;
+                int tagIndex = work.IndexOf(activeTag, pos, StringComparison.Ordinal);
+
+                if (tagIndex < 0)
+                {
+                    // No complete tag found. Hold back a possible partial tag at the tail so it
+                    // can be completed by the next fragment instead of being emitted literally.
+                    int hold = PartialTagSuffixLength(work, pos, activeTag);
+                    int emitEnd = work.Length - hold;
+
+                    if (emitEnd > pos)
+                        Append(_inThink ? reasoning : content, work[pos..emitEnd]);
+
+                    if (hold > 0)
+                        _pending = work[emitEnd..];
+
+                    pos = work.Length;
+                    break;
+                }
+
+                // Emit text before the tag, then flip state and continue after the tag.
+                if (tagIndex > pos)
+                    Append(_inThink ? reasoning : content, work[pos..tagIndex]);
+
+                _inThink = !_inThink;
+                pos = tagIndex + activeTag.Length;
+            }
+
+            return (reasoning.ToString(), content.ToString());
+        }
+
+        /// <summary>
+        /// Drains any buffered trailing text at end of stream. If the stream ended while still
+        /// inside an unterminated <c>&lt;think&gt;</c> block, the remainder is treated as reasoning;
+        /// otherwise it is treated as answer content.
+        /// </summary>
+        public (string Reasoning, string Content) Flush()
+        {
+            string remaining = _pending;
+            _pending = string.Empty;
+
+            if (remaining.Length == 0)
+                return (string.Empty, string.Empty);
+
+            return _inThink ? (remaining, string.Empty) : (string.Empty, remaining);
+        }
+
+        /// <summary>
+        /// One-shot extraction for a complete (non-streaming) <c>content</c> string. Returns the
+        /// separated reasoning and answer text with all <c>&lt;think&gt;...&lt;/think&gt;</c> blocks
+        /// removed from the answer.
+        /// </summary>
+        public static (string Reasoning, string Content) ExtractAll(string content)
+        {
+            if (string.IsNullOrEmpty(content))
+                return (string.Empty, string.Empty);
+
+            ThinkTagExtractor extractor = new();
+            (string reasoning, string answer) = extractor.Process(content);
+            (string tailReasoning, string tailAnswer) = extractor.Flush();
+            return (reasoning + tailReasoning, answer + tailAnswer);
+        }
+
+        private static void Append(StringBuilder target, string text)
+        {
+            if (text.Length > 0)
+                target.Append(text);
+        }
+
+        /// <summary>
+        /// Returns the number of trailing characters (from <paramref name="start"/> onward) that
+        /// form a proper prefix of <paramref name="tag"/>. This is the amount to buffer rather than
+        /// emit, so a tag split across fragments is still recognised on the next call.
+        /// </summary>
+        private static int PartialTagSuffixLength(string work, int start, string tag)
+        {
+            int max = Math.Min(tag.Length - 1, work.Length - start);
+            for (int len = max; len > 0; len--)
+            {
+                if (string.CompareOrdinal(work, work.Length - len, tag, 0, len) == 0)
+                    return len;
+            }
+
+            return 0;
+        }
+    }
+
+    /// <summary>
     /// Rewrites an OpenAI-compatible SSE chat-completion stream on the fly:
     ///   • mirrors <c>reasoning_content</c> into <c>content</c> when <c>content</c> is empty,
     ///   • detects inline XML tool-call blocks (<c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=K&gt;V&lt;/parameter&gt;…&lt;/function&gt;&lt;/tool_call&gt;</c>)
@@ -951,10 +1151,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     ///     execute the tool instead of receiving raw XML text,
     ///   • forces <c>finish_reason</c> to <c>"tool_calls"</c> on the terminal chunk when tool calls were emitted.
     /// </summary>
-    private sealed class OpenAiSseRewriter
+    private sealed class OpenAiSseRewriter(ThinkingMode thinkingMode)
     {
         // Per-choice buffer of streamed delta.content prior to/within a tool_call block.
         private readonly Dictionary<int, ChoiceState> _state = [];
+
+        // Per-choice incremental <think> tag extractor, used only when thinkingMode == ExtractThinkTags.
+        private readonly Dictionary<int, ThinkTagExtractor> _thinkExtractors = [];
+        private readonly ThinkingMode _thinkingMode = thinkingMode;
 
         public IEnumerable<string> Process(string rawLine)
         {
@@ -1003,9 +1207,41 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     _state[index] = cs;
                 }
 
-                // Mirror reasoning_content → content (when content is empty/null).
                 JsonObject? delta = choice["delta"] as JsonObject;
-                if (delta is not null
+
+                // Extract inline <think>...</think> blocks from content into reasoning_content
+                // (e.g. Qwen Cloud's older response format) so clients can render a thinking box.
+                if (_thinkingMode == ThinkingMode.ExtractThinkTags && delta is not null)
+                {
+                    if (!_thinkExtractors.TryGetValue(index, out ThinkTagExtractor? extractor))
+                    {
+                        extractor = new ThinkTagExtractor();
+                        _thinkExtractors[index] = extractor;
+                    }
+
+                    string incoming = delta["content"] is JsonValue contentValue
+                        && contentValue.TryGetValue(out string? contentStr)
+                            ? contentStr ?? string.Empty
+                            : string.Empty;
+
+                    (string reasoning, string content) = extractor.Process(incoming);
+
+                    if (reasoning.Length > 0)
+                    {
+                        string existingReasoning = delta["reasoning_content"] is JsonValue erv
+                            && erv.TryGetValue(out string? ervStr) ? ervStr ?? string.Empty : string.Empty;
+                        delta["reasoning_content"] = JsonValue.Create(existingReasoning + reasoning);
+                    }
+
+                    // Always rewrite content to the non-thinking remainder (may be empty) so the
+                    // thinking text is removed from the visible answer.
+                    delta["content"] = JsonValue.Create(content);
+                }
+
+                // Mirror reasoning_content → content (when content is empty/null). Only in Off mode;
+                // in Extract mode we deliberately keep reasoning separate from the visible answer.
+                if (_thinkingMode == ThinkingMode.Off
+                    && delta is not null
                     && delta["reasoning_content"] is JsonValue rv
                     && rv.TryGetValue(out string? rcStr)
                     && !string.IsNullOrEmpty(rcStr)

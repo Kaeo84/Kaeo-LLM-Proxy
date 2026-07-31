@@ -14,6 +14,22 @@ internal enum UpstreamType
     OpenAI,
 }
 
+/// <summary>
+/// Controls how upstream reasoning/"thinking" text is transformed before being returned to clients.
+/// </summary>
+internal enum ThinkingMode
+{
+    /// <summary>Pass the upstream response through unchanged (default).</summary>
+    Off = 0,
+
+    /// <summary>
+    /// Extract <c>&lt;think&gt;...&lt;/think&gt;</c> blocks from the <c>content</c> field and
+    /// re-emit them as <c>reasoning_content</c>, removing them from the visible answer. Used for
+    /// providers such as Qwen Cloud that return reasoning inline in the older response format.
+    /// </summary>
+    ExtractThinkTags = 1,
+}
+
 internal static class UpstreamTypeExtensions
 {
     public static string ToDisplayName(this UpstreamType upstreamType) => upstreamType switch
@@ -123,6 +139,18 @@ internal sealed class ModelMapping
     public UpstreamType UpstreamType { get; set; } = UpstreamType.OpenAI;
 
     /// <summary>
+    /// Controls how upstream "thinking"/reasoning text is surfaced to clients. Some providers
+    /// (e.g. Qwen Cloud's older response format) embed reasoning inside the normal <c>content</c>
+    /// field wrapped in <c>&lt;think&gt;...&lt;/think&gt;</c> tags, which modern clients such as
+    /// Visual Studio cannot roll into a dedicated thinking box. When set to
+    /// <see cref="ThinkingMode.ExtractThinkTags"/>, the proxy strips those tags out of
+    /// <c>content</c> and re-emits the enclosed text as <c>reasoning_content</c> (for both
+    /// streaming and non-streaming responses) so clients can render a collapsible thinking panel.
+    /// Defaults to <see cref="ThinkingMode.Off"/> (pass responses through unchanged).
+    /// </summary>
+    public ThinkingMode ThinkingMode { get; set; } = ThinkingMode.Off;
+
+    /// <summary>
     /// Optional bearer API key used when forwarding requests to OpenAI-compatible online services.
     /// Leave empty for local upstreams that do not require authentication.
     /// </summary>
@@ -206,6 +234,7 @@ internal sealed class ModelMapping
         EnableHeartbeats = EnableHeartbeats,
         ApiKey = ApiKey,
         UpstreamType = UpstreamType,
+        ThinkingMode = ThinkingMode,
         UpstreamUrl = UpstreamUrl,
         UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
         RepeatPenalty = RepeatPenalty,
