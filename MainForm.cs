@@ -741,6 +741,7 @@ internal partial class MainForm : Form
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
+        _chkAutoSummarization.Checked = _settings.EnableAutoSummarization;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
         _txtHeartbeatInterval.Text = _settings.StreamingHeartbeatIntervalSeconds.ToString();
 
@@ -874,6 +875,7 @@ internal partial class MainForm : Form
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
+        _settings.EnableAutoSummarization = _chkAutoSummarization.Checked;
 
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";

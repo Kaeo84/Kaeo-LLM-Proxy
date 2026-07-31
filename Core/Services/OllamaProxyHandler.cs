@@ -2050,9 +2050,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         log.Streaming = ollamaReq.Stream;
             var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
 
-        // Get model mapping for context management settings
+        // Get model mapping for context management settings. Auto-summarization requires both the
+        // global master switch (_settings.EnableAutoSummarization) and the per-mapping flag.
         ModelMapping? mapping = _settings.FindModelMapping(ollamaReq.Model);
-        bool enableAutoSummarization = mapping?.EnableAutoSummarization ?? true;
+        bool enableAutoSummarization = _settings.EnableAutoSummarization && (mapping?.EnableAutoSummarization ?? true);
         int preserveRecentCount = mapping?.PreserveRecentMessageCount ?? 4;
         int maxRetries = mapping?.MaxSummarizationRetries ?? 2;
 

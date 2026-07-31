@@ -102,6 +102,13 @@ internal sealed class RuntimeSettings
     /// specification at /swagger/v1/swagger.json. Default: false.
     /// </summary>
     public bool EnableApiExplorer { get; set; } = false;
+
+    /// <summary>
+    /// When true, the proxy automatically summarizes older conversation history and retries a
+    /// chat request when the upstream reports a context-window overflow. This global master switch
+    /// must be enabled in addition to the per-mapping EnableAutoSummarization flag. Default: true.
+    /// </summary>
+    public bool EnableAutoSummarization { get; set; } = true;
 }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
@@ -435,6 +442,15 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
+    /// <summary>
+    /// When true, the proxy automatically summarizes older conversation history and retries a chat
+    /// request when the upstream reports a context-window overflow. Global master switch that must be
+    /// enabled in addition to the per-mapping <see cref="ModelMapping.EnableAutoSummarization"/> flag.
+    /// Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableAutoSummarization { get; set; } = true;
+
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
@@ -528,6 +544,7 @@ internal sealed class AppSettings
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
+        EnableAutoSummarization = EnableAutoSummarization,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -544,6 +561,7 @@ internal sealed class AppSettings
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
+        EnableAutoSummarization = runtimeSettings.EnableAutoSummarization;
     }
 
     /// <summary>

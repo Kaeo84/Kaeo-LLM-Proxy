@@ -110,6 +110,7 @@ partial class MainForm
         _chkPerformanceSampling = new CheckBox();
         _chkApiExplorer = new CheckBox();
         _lblApiExplorerUrl = new Label();
+        _chkAutoSummarization = new CheckBox();
 
         _grpLogging = new GroupBox();
         _tlpLogging = new TableLayoutPanel();
@@ -596,7 +597,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 15;
+        _tlpSettings.RowCount = 16;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.Controls.Add(_lblListenPort, 0, 0);
@@ -619,16 +620,18 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
         _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
+        _tlpSettings.SetColumnSpan(_chkAutoSummarization, 2);
+        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 10);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 10);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 11);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 12);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 13);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
         _tlpSettings.SetColumnSpan(_btnSaveSettings, 2);
-        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 14);
+        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 15);
 
         _lblListenPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblListenPort.AutoSize = true;
@@ -696,6 +699,11 @@ partial class MainForm
         _lblApiExplorerUrl.Name = "_lblApiExplorerUrl";
         _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
         _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+
+        _chkAutoSummarization.AutoSize = true;
+        _chkAutoSummarization.Margin = new Padding(4, 4, 4, 8);
+        _chkAutoSummarization.Name = "_chkAutoSummarization";
+        _chkAutoSummarization.Text = "Automatically summarize context and retry on context overflow";
 
         _chkStreamingHeartbeats.AutoSize = true;
         _chkStreamingHeartbeats.Margin = new Padding(4, 4, 4, 4);
@@ -1391,6 +1399,7 @@ partial class MainForm
     private CheckBox _chkPerformanceSampling;
     private CheckBox _chkApiExplorer;
     private Label _lblApiExplorerUrl;
+    private CheckBox _chkAutoSummarization;
     private CheckBox _chkStreamingHeartbeats;
     private Label _lblHeartbeatInterval;
     private TextBox _txtHeartbeatInterval;
