@@ -25,12 +25,9 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblProxyName = new();
     private readonly TextBox _txtProxyName = new();
     private readonly Label _lblUpstreamUrl = new();
-    private readonly TextBox _txtUpstreamUrl = new();
+    private readonly ComboBox _cmbUpstreamUrl = new();
     private readonly Label _lblUpstreamType = new();
     private readonly ComboBox _cmbUpstreamType = new();
-    private readonly Label _lblApiKey = new();
-    private readonly TextBox _txtApiKey = new();
-    private readonly CheckBox _chkShowApiKey = new();
     private readonly Label _lblCredential = new();
     private readonly ComboBox _cmbCredential = new();
     private readonly Label _lblModelName = new();
@@ -62,13 +59,14 @@ internal sealed class ModelMappingDialog : Form
     private readonly ToolTip _toolTip = new();
 
     private string _upstreamUrl = string.Empty;
+    private List<StoredCredential> _credentials = [];
 
     public ModelMappingDialog()
     {
         InitializeUi();
-        _txtUpstreamUrl.TextChanged += (_, _) => _upstreamUrl = _txtUpstreamUrl.Text.Trim();
+        _cmbUpstreamUrl.TextChanged += (_, _) => _upstreamUrl = _cmbUpstreamUrl.Text.Trim();
         _toolTip.SetToolTip(
-            _txtUpstreamUrl,
+            _cmbUpstreamUrl,
             "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
             + "https://provider.example/compatible-mode/v1. A trailing \"/v1\" is handled\n"
             + "automatically and won't be duplicated in requests.");
@@ -221,6 +219,7 @@ internal sealed class ModelMappingDialog : Form
 
     private void PopulateCredentials(IEnumerable<StoredCredential> credentials)
     {
+        _credentials = [.. credentials];
         _cmbCredential.Items.Clear();
         _cmbCredential.Items.Add(NoneLabel);
         foreach (StoredCredential credential in credentials)
@@ -229,6 +228,22 @@ internal sealed class ModelMappingDialog : Form
                 _cmbCredential.Items.Add(credential.Name);
         }
         _cmbCredential.SelectedIndex = 0;
+    }
+
+    private void PopulateUpstreamUrls(IEnumerable<string> urls, string? selected)
+    {
+        _cmbUpstreamUrl.Items.Clear();
+        foreach (string url in urls.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(url))
+                _cmbUpstreamUrl.Items.Add(url);
+        }
+
+        if (!string.IsNullOrWhiteSpace(selected))
+        {
+            _cmbUpstreamUrl.Text = selected;
+            _upstreamUrl = selected;
+        }
     }
 
     private void PopulateModelItems(IEnumerable<string> models, string? selected)
@@ -257,12 +272,12 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        // Every row sizes to its content except row 18, a flexible filler that absorbs leftover
+        // Every row sizes to its content except row 17, a flexible filler that absorbs leftover
         // vertical space so the button row stays anchored near the bottom of the dialog.
-        _tlpMain.RowCount = 21;
+        _tlpMain.RowCount = 20;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles[18] = new RowStyle(SizeType.Percent, 100F);
+        _tlpMain.RowStyles[17] = new RowStyle(SizeType.Percent, 100F);
         _tlpMain.Dock = DockStyle.Fill;
         _tlpMain.Padding = new Padding(8);
 
@@ -271,65 +286,61 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_txtProxyName, 1, 0);
 
         _tlpMain.Controls.Add(_lblUpstreamUrl, 0, 1);
-        _tlpMain.SetColumnSpan(_txtUpstreamUrl, 2);
-        _tlpMain.Controls.Add(_txtUpstreamUrl, 1, 1);
+        _tlpMain.SetColumnSpan(_cmbUpstreamUrl, 2);
+        _tlpMain.Controls.Add(_cmbUpstreamUrl, 1, 1);
 
         _tlpMain.Controls.Add(_lblUpstreamType, 0, 2);
         _tlpMain.SetColumnSpan(_cmbUpstreamType, 2);
         _tlpMain.Controls.Add(_cmbUpstreamType, 1, 2);
 
-        _tlpMain.Controls.Add(_lblApiKey, 0, 3);
-        _tlpMain.Controls.Add(_txtApiKey, 1, 3);
-        _tlpMain.Controls.Add(_chkShowApiKey, 2, 3);
-
-        _tlpMain.Controls.Add(_lblCredential, 0, 4);
+        _tlpMain.Controls.Add(_lblCredential, 0, 3);
         _tlpMain.SetColumnSpan(_cmbCredential, 2);
-        _tlpMain.Controls.Add(_cmbCredential, 1, 4);
+        _tlpMain.Controls.Add(_cmbCredential, 1, 3);
 
-        _tlpMain.Controls.Add(_lblModelName, 0, 5);
-        _tlpMain.Controls.Add(_cmbModelName, 1, 5);
-        _tlpMain.Controls.Add(_btnFetchModels, 2, 5);
+        _tlpMain.Controls.Add(_lblModelName, 0, 4);
+        _tlpMain.Controls.Add(_cmbModelName, 1, 4);
+        _tlpMain.Controls.Add(_btnFetchModels, 2, 4);
 
-        _tlpMain.Controls.Add(_lblInstructionSet, 0, 6);
+        _tlpMain.Controls.Add(_lblInstructionSet, 0, 5);
         _tlpMain.SetColumnSpan(_cmbInstructionSet, 2);
-        _tlpMain.Controls.Add(_cmbInstructionSet, 1, 6);
+        _tlpMain.Controls.Add(_cmbInstructionSet, 1, 5);
 
-        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 7);
+        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 6);
         _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
-        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 7);
+        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 6);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 8);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 7);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 8);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 7);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 9);
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 8);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 9);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 8);
 
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 10);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 9);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 11);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 10);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
-        _tlpMain.Controls.Add(_chkSupportsVision, 0, 12);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 11);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 13);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 12);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 14);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 15);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 13);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 14);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 15);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 16);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 14);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 15);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 16);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 15);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 17);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 16);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 18);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 17);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 19);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 18);
         _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 20);
+        _tlpMain.Controls.Add(_flpButtons, 0, 19);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -344,8 +355,9 @@ internal sealed class ModelMappingDialog : Form
         _lblUpstreamUrl.Margin = new Padding(0, 4, 8, 4);
         _lblUpstreamUrl.Text = "Upstream URL:";
 
-        _txtUpstreamUrl.Dock = DockStyle.Fill;
-        _txtUpstreamUrl.Margin = new Padding(0, 4, 0, 4);
+        _cmbUpstreamUrl.Dock = DockStyle.Fill;
+        _cmbUpstreamUrl.DropDownStyle = ComboBoxStyle.DropDown;
+        _cmbUpstreamUrl.Margin = new Padding(0, 4, 0, 4);
 
         _lblUpstreamType.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblUpstreamType.AutoSize = true;
@@ -355,23 +367,6 @@ internal sealed class ModelMappingDialog : Form
         _cmbUpstreamType.Dock = DockStyle.Fill;
         _cmbUpstreamType.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbUpstreamType.Margin = new Padding(0, 4, 0, 4);
-
-        _lblApiKey.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblApiKey.AutoSize = true;
-        _lblApiKey.Margin = new Padding(0, 8, 8, 4);
-        _lblApiKey.Text = "API Key:";
-
-        _txtApiKey.Dock = DockStyle.Fill;
-        _txtApiKey.Margin = new Padding(0, 4, 0, 4);
-        _txtApiKey.UseSystemPasswordChar = true;
-        _txtApiKey.PlaceholderText = "Optional bearer token for online OpenAI-compatible services";
-
-        _chkShowApiKey.Anchor = AnchorStyles.Left;
-        _chkShowApiKey.AutoSize = true;
-        _chkShowApiKey.Margin = new Padding(8, 4, 0, 4);
-        _chkShowApiKey.Text = "Show";
-        _chkShowApiKey.CheckedChanged += (_, _) => _txtApiKey.UseSystemPasswordChar = !_chkShowApiKey.Checked;
-        _toolTip.SetToolTip(_chkShowApiKey, "Toggle visibility of the API key text.");
 
         _lblCredential.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblCredential.AutoSize = true;
@@ -383,9 +378,8 @@ internal sealed class ModelMappingDialog : Form
         _cmbCredential.Margin = new Padding(0, 4, 0, 4);
         _toolTip.SetToolTip(
             _cmbCredential,
-            "Optionally use a centrally stored credential (API key) instead of the per-mapping\n"
-            + "API key above. Manage credentials on the Credentials tab. When a credential is\n"
-            + "selected, its secret is used for upstream authentication.");
+            "Use a centrally stored credential (API key) for upstream authentication.\n"
+            + "Manage credentials on the Credentials tab.");
 
         _lblModelName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblModelName.AutoSize = true;
@@ -548,7 +542,7 @@ internal sealed class ModelMappingDialog : Form
         // Validate the upstream URL before accepting. A non-empty URL must be a valid absolute
         // URI using http/https; otherwise reject with a clear message and keep the dialog open
         // (DialogResult stays None). Setting DialogResult.OK closes the modal and returns OK.
-        string url = _txtUpstreamUrl.Text.Trim();
+        string url = _cmbUpstreamUrl.Text.Trim();
         if (!string.IsNullOrWhiteSpace(url))
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
@@ -590,7 +584,17 @@ internal sealed class ModelMappingDialog : Form
 
         try
         {
-            List<string> models = await FetchUpstreamModelsAsync(_upstreamUrl, _txtApiKey.Text);
+            // Resolve the API key from the selected credential
+            string? apiKey = null;
+            string? credentialName = CredentialName;
+            if (!string.IsNullOrWhiteSpace(credentialName))
+            {
+                StoredCredential? credential = _credentials.FirstOrDefault(
+                    c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase));
+                apiKey = credential?.Secret;
+            }
+
+            List<string> models = await FetchUpstreamModelsAsync(_upstreamUrl, apiKey);
 
             if (models.Count == 0)
             {
@@ -668,6 +672,7 @@ internal sealed class ModelMappingDialog : Form
     /// writes the user's changes back to <paramref name="mapping"/> when accepted.
     /// </summary>
     /// <param name="existingModelItems">Models currently listed in the row's combo cell, used to seed the model picker.</param>
+    /// <param name="existingUpstreamUrls">Upstream URLs from all mappings, used to populate the URL dropdown.</param>
     /// <param name="updatedModelItems">Receives the current list of model items after the dialog closes (whether OK or Cancel).</param>
     public static bool ShowConfigureDialog(
         IWin32Window owner,
@@ -675,20 +680,21 @@ internal sealed class ModelMappingDialog : Form
         IEnumerable<InstructionSet> instructionSets,
         IEnumerable<StoredCredential> credentials,
         IEnumerable<string> existingModelItems,
+        IEnumerable<string> existingUpstreamUrls,
         out List<string> updatedModelItems)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(instructionSets);
         ArgumentNullException.ThrowIfNull(credentials);
         ArgumentNullException.ThrowIfNull(existingModelItems);
+        ArgumentNullException.ThrowIfNull(existingUpstreamUrls);
 
         using ModelMappingDialog dlg = new();
         dlg.PopulateInstructionSets(instructionSets);
         dlg.PopulateCredentials(credentials);
         dlg.PopulateUpstreamTypes(mapping.UpstreamType);
+        dlg.PopulateUpstreamUrls(existingUpstreamUrls, mapping.UpstreamUrl);
         dlg._txtProxyName.Text = mapping.ProxyName ?? string.Empty;
-        dlg._txtUpstreamUrl.Text = mapping.UpstreamUrl ?? string.Empty;
-        dlg._txtApiKey.Text = mapping.ApiKey ?? string.Empty;
         dlg.CredentialName = mapping.CredentialName;
         dlg._upstreamUrl = mapping.UpstreamUrl ?? string.Empty;
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
@@ -716,10 +722,7 @@ internal sealed class ModelMappingDialog : Form
 
         mapping.ProxyName = dlg._txtProxyName.Text.Trim();
         mapping.IsEnabled = dlg._chkIsEnabled.Checked;
-        mapping.UpstreamUrl = dlg._txtUpstreamUrl.Text.Trim();
-        mapping.ApiKey = string.IsNullOrWhiteSpace(dlg._txtApiKey.Text)
-            ? null
-            : dlg._txtApiKey.Text.Trim();
+        mapping.UpstreamUrl = dlg._cmbUpstreamUrl.Text.Trim();
         mapping.CredentialName = dlg.CredentialName;
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();

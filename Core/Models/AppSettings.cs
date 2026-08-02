@@ -175,15 +175,9 @@ internal sealed class ModelMapping
     public ThinkingMode ThinkingMode { get; set; } = ThinkingMode.Off;
 
     /// <summary>
-    /// Optional bearer API key used when forwarding requests to OpenAI-compatible online services.
-    /// Leave empty for local upstreams that do not require authentication.
-    /// </summary>
-    public string? ApiKey { get; set; }
-
-    /// <summary>
     /// Optional name of a centrally stored <see cref="StoredCredential"/> whose secret is used as
-    /// the bearer API key for this mapping. When set, it takes precedence over the literal
-    /// <see cref="ApiKey"/>. Leave null to use <see cref="ApiKey"/> directly.
+    /// the bearer API key for this mapping. Leave null for local upstreams that do not require
+    /// authentication.
     /// </summary>
     public string? CredentialName { get; set; }
 
@@ -263,7 +257,6 @@ internal sealed class ModelMapping
         EnableThinkingCompatibility = EnableThinkingCompatibility,
         SupportsVision = SupportsVision,
         EnableHeartbeats = EnableHeartbeats,
-        ApiKey = ApiKey,
         CredentialName = CredentialName,
         UpstreamType = UpstreamType,
         ThinkingMode = ThinkingMode,
@@ -699,20 +692,18 @@ internal sealed class AppSettings
     }
 
     /// <summary>
-    /// Resolves the effective bearer API key for a model mapping. When the mapping references a
-    /// stored credential (<see cref="ModelMapping.CredentialName"/>) that exists, its secret is
-    /// returned; otherwise the mapping's literal <see cref="ModelMapping.ApiKey"/> is used.
-    /// Returns null when neither yields a usable key.
+    /// Resolves the effective bearer API key for a model mapping by looking up the referenced
+    /// stored credential (<see cref="ModelMapping.CredentialName"/>). Returns null when no
+    /// credential is referenced or the credential does not exist.
     /// </summary>
     public string? ResolveApiKey(ModelMapping mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
 
         StoredCredential? credential = FindCredential(mapping.CredentialName);
-        if (credential is not null && !string.IsNullOrWhiteSpace(credential.Secret))
-            return credential.Secret;
-
-        return string.IsNullOrWhiteSpace(mapping.ApiKey) ? null : mapping.ApiKey;
+        return credential is not null && !string.IsNullOrWhiteSpace(credential.Secret)
+            ? credential.Secret
+            : null;
     }
 
     /// <summary>Writes the annotated default config template to disk on first run.</summary>

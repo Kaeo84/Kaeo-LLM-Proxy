@@ -146,7 +146,6 @@ internal sealed class AppDatabase : IDisposable
                     supports_vision,
                     enable_heartbeats,
                     upstream_type,
-                    api_key,
                     upstream_url,
                     upstream_timeout_seconds,
                     repeat_penalty,
@@ -203,7 +202,6 @@ internal sealed class AppDatabase : IDisposable
                         supports_vision,
                         enable_heartbeats,
                         upstream_type,
-                        api_key,
                         upstream_url,
                         upstream_timeout_seconds,
                         repeat_penalty,
@@ -225,7 +223,6 @@ internal sealed class AppDatabase : IDisposable
                         $supportsVision,
                         $enableHeartbeats,
                         $upstreamType,
-                        $apiKey,
                         $upstreamUrl,
                         $upstreamTimeoutSeconds,
                         $repeatPenalty,
@@ -918,7 +915,6 @@ internal sealed class AppDatabase : IDisposable
                     supports_vision INTEGER NULL,
                     enable_heartbeats INTEGER NOT NULL,
                     upstream_type INTEGER NOT NULL,
-                    api_key TEXT NULL,
                     upstream_url TEXT NOT NULL,
                     upstream_timeout_seconds INTEGER NOT NULL,
                     repeat_penalty REAL NOT NULL,
@@ -1225,7 +1221,6 @@ internal sealed class AppDatabase : IDisposable
             : DBNull.Value);
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
-        command.Parameters.AddWithValue("$apiKey", DbValue(mapping.ApiKey));
         command.Parameters.AddWithValue("$upstreamUrl", mapping.UpstreamUrl);
         command.Parameters.AddWithValue("$upstreamTimeoutSeconds", mapping.UpstreamTimeoutSeconds);
         command.Parameters.AddWithValue("$repeatPenalty", mapping.RepeatPenalty);
@@ -1251,19 +1246,18 @@ internal sealed class AppDatabase : IDisposable
         UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
             ? (UpstreamType)reader.GetInt32(6)
             : UpstreamType.OpenAI,
-        ApiKey = reader.IsDBNull(7) ? null : reader.GetString(7),
-        UpstreamUrl = reader.GetString(8),
-        UpstreamTimeoutSeconds = reader.GetInt32(9),
-        RepeatPenalty = reader.GetDouble(10),
-        Temperature = reader.GetDouble(11),
-        EnableAutoSummarization = ReadBoolean(reader, 12),
-        PreserveRecentMessageCount = reader.GetInt32(13),
-        MaxSummarizationRetries = reader.GetInt32(14),
-        InstructionSetName = reader.IsDBNull(15) ? null : reader.GetString(15),
-        RedactRequestBodies = ReadBoolean(reader, 16),
-        RedactResponseBodies = ReadBoolean(reader, 17),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 18),
-        CredentialName = reader.IsDBNull(19) ? null : reader.GetString(19),
+        UpstreamUrl = reader.GetString(7),
+        UpstreamTimeoutSeconds = reader.GetInt32(8),
+        RepeatPenalty = reader.GetDouble(9),
+        Temperature = reader.GetDouble(10),
+        EnableAutoSummarization = ReadBoolean(reader, 11),
+        PreserveRecentMessageCount = reader.GetInt32(12),
+        MaxSummarizationRetries = reader.GetInt32(13),
+        InstructionSetName = reader.IsDBNull(14) ? null : reader.GetString(14),
+        RedactRequestBodies = ReadBoolean(reader, 15),
+        RedactResponseBodies = ReadBoolean(reader, 16),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 17),
+        CredentialName = reader.IsDBNull(18) ? null : reader.GetString(18),
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()

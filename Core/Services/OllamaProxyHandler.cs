@@ -137,7 +137,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
-        ApplyApiKey(request, mapping.ApiKey);
+        ApplyApiKey(request, _settings.ResolveApiKey(mapping));
         int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
         using HttpResponseMessage response = await SendUpstreamAsync(
             request,
@@ -586,8 +586,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             // Authorization is copied here so a client's own bearer token (e.g. Visual
             // Studio's OpenAI-compatible model connection) reaches the upstream for
-            // mappings without their own configured ApiKey. ApplyApiKey below overrides
-            // this with the mapping's key when one is configured.
+            // mappings without their own configured credential. ApplyApiKey below overrides
+            // this with the mapping's resolved credential secret when one is configured.
 
             string value = req.Headers[name] ?? string.Empty;
             if (!upstreamReq.Headers.TryAddWithoutValidation(name, value))
@@ -3680,7 +3680,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ModelName = mapping.ModelName,
             EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
             EnableHeartbeats = mapping.EnableHeartbeats,
-            ApiKey = mapping.ApiKey,
+            CredentialName = mapping.CredentialName,
             UpstreamType = mapping.UpstreamType,
             UpstreamUrl = mapping.UpstreamUrl,
             UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds,

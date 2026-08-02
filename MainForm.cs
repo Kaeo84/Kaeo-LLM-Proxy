@@ -768,7 +768,6 @@ internal partial class MainForm : Form
                 ModelName = mapping.ModelName,
                 EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
                 EnableHeartbeats = mapping.EnableHeartbeats,
-                ApiKey = mapping.ApiKey,
                 CredentialName = mapping.CredentialName,
                 UpstreamUrl = mapping.UpstreamUrl,
                 UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds,
@@ -931,7 +930,6 @@ internal partial class MainForm : Form
                     EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
                     SupportsVision         = advanced?.SupportsVision,
                     EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
-                    ApiKey                 = advanced?.ApiKey,
                     CredentialName         = advanced?.CredentialName,
                     UpstreamUrl            = upstreamUrl.Trim(),
                     UpstreamTimeoutSeconds = advanced?.UpstreamTimeoutSeconds ?? 300,
@@ -949,14 +947,12 @@ internal partial class MainForm : Form
             }
         }
 
-        // Encrypt secrets for persistence while keeping plaintext in memory for the running proxy.
-        if (!TryEncryptApiKeysForSave(out List<ModelMapping> persistedMappings))
-            return;
-
+        // Encrypt credential secrets for persistence while keeping plaintext in memory for the
+        // running proxy. Model mappings only reference credentials by name and carry no secrets.
         if (!TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials))
             return;
 
-        _database.SaveModelMappings(persistedMappings);
+        _database.SaveModelMappings(_settings.ModelMappings);
         _database.SaveCredentials(persistedCredentials);
         _database.SaveInstructionSets(_settings.InstructionSets);
         _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
@@ -999,48 +995,6 @@ internal partial class MainForm : Form
 
         // Persist the passphrase only when the user opted in; otherwise clear any stored value.
         _settings.SecurityPassphrase = remember ? passphrase : null;
-        return true;
-    }
-
-    /// <summary>
-    /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
-    /// the model mappings with API keys encrypted for persistence. The in-memory
-    /// <see cref="AppSettings.ModelMappings"/> keep plaintext keys so the running proxy keeps
-    /// working. Returns false — aborting the save — when the user cancels the passphrase prompt.
-    /// </summary>
-    private bool TryEncryptApiKeysForSave(out List<ModelMapping> persistedMappings)
-    {
-        bool anyApiKey = _settings.ModelMappings.Any(m => !string.IsNullOrWhiteSpace(m.ApiKey));
-
-        if (anyApiKey && string.IsNullOrEmpty(_settings.RuntimePassphrase))
-        {
-            if (!EnsurePassphrase())
-            {
-                MessageBox.Show(
-                    "A passphrase is required to encrypt API keys. Settings were not saved.",
-                    "Save Cancelled",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-
-                persistedMappings = [];
-                return false;
-            }
-        }
-
-        persistedMappings = _settings.ModelMappings.Select(mapping =>
-        {
-            if (string.IsNullOrWhiteSpace(mapping.ApiKey)
-                || string.IsNullOrEmpty(_settings.RuntimePassphrase)
-                || SecretProtector.IsEncrypted(mapping.ApiKey))
-            {
-                return mapping;
-            }
-
-            ModelMapping encrypted = mapping.Clone();
-            encrypted.ApiKey = SecretProtector.Encrypt(mapping.ApiKey, _settings.RuntimePassphrase);
-            return encrypted;
-        }).ToList();
-
         return true;
     }
 
@@ -1115,7 +1069,7 @@ internal partial class MainForm : Form
         // configure it, and only add a grid row on OK.
         ModelMapping mapping = new();
 
-        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], out _))
+        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], CollectUpstreamUrls(), out _))
             return;
 
         int idx = _dgvMappings.Rows.Add(
@@ -1171,7 +1125,7 @@ internal partial class MainForm : Form
             ? []
             : [mapping.ModelName];
 
-        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, existingItems, out _))
+        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, existingItems, CollectUpstreamUrls(), out _))
         {
             // Write user-edited values back into the grid cells. The grid is read-only;
             // these values come exclusively from the modal.
@@ -1195,6 +1149,24 @@ internal partial class MainForm : Form
             return current;
 
         return null;
+    }
+
+    /// <summary>
+    /// Collects distinct upstream URLs from all model mappings in the grid for reuse in the dialog.
+    /// </summary>
+    private List<string> CollectUpstreamUrls()
+    {
+        var urls = new List<string>();
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            if (row.IsNewRow || row.Tag is not ModelMapping mapping)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(mapping.UpstreamUrl))
+                urls.Add(mapping.UpstreamUrl);
+        }
+
+        return urls;
     }
 
     private void BtnRemoveMapping_Click(object? sender, EventArgs e)

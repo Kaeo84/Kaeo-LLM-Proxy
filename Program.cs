@@ -112,14 +112,13 @@ internal static class Program
     }
 
     /// <summary>
-    /// Resolves the passphrase needed to decrypt encrypted API keys in model mappings.
+    /// Resolves the passphrase needed to decrypt encrypted credential secrets.
     /// Tries the stored <see cref="AppSettings.SecurityPassphrase"/> first; if absent or
     /// incorrect, prompts the user with an optional "remember" checkbox.
     /// </summary>
     private static void ResolvePassphrase(AppSettings settings)
     {
-        bool hasEncrypted = settings.ModelMappings.Any(m => SecretProtector.IsEncrypted(m.ApiKey))
-            || settings.Credentials.Any(c => SecretProtector.IsEncrypted(c.Secret));
+        bool hasEncrypted = settings.Credentials.Any(c => SecretProtector.IsEncrypted(c.Secret));
 
         if (!hasEncrypted)
         {
@@ -177,22 +176,13 @@ internal static class Program
     }
 
     /// <summary>
-    /// Verifies that every encrypted secret (model-mapping API keys and stored credentials) can be
-    /// decrypted with <paramref name="passphrase"/>, then applies the decryption in-place.
+    /// Verifies that every encrypted credential secret can be decrypted with
+    /// <paramref name="passphrase"/>, then applies the decryption in-place.
     /// Returns false if any secret fails authentication.
     /// </summary>
     private static bool TryDecryptAllSecrets(AppSettings settings, string passphrase)
     {
         // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).
-        foreach (ModelMapping mapping in settings.ModelMappings)
-        {
-            if (SecretProtector.IsEncrypted(mapping.ApiKey)
-                && !SecretProtector.TryDecrypt(mapping.ApiKey!, passphrase, out _))
-            {
-                return false;
-            }
-        }
-
         foreach (StoredCredential credential in settings.Credentials)
         {
             if (SecretProtector.IsEncrypted(credential.Secret)
@@ -203,12 +193,6 @@ internal static class Program
         }
 
         // Second pass: apply decryption.
-        foreach (ModelMapping mapping in settings.ModelMappings)
-        {
-            if (SecretProtector.IsEncrypted(mapping.ApiKey))
-                mapping.ApiKey = SecretProtector.Decrypt(mapping.ApiKey!, passphrase);
-        }
-
         foreach (StoredCredential credential in settings.Credentials)
         {
             if (SecretProtector.IsEncrypted(credential.Secret))
