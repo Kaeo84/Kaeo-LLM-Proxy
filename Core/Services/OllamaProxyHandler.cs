@@ -1861,10 +1861,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static Dictionary<string, object> CreateOllamaModelInfo(ModelMapping? mapping, LlamaCppModel? model)
     {
         string id = model?.Id ?? mapping?.ModelName ?? string.Empty;
+        string family = GetModelFamily(id);
+        int contextWindow = mapping?.GetEffectiveContextWindow() ?? ModelMapping.DefaultContextWindowTokens;
+
         Dictionary<string, object> modelInfo = new(StringComparer.OrdinalIgnoreCase)
         {
-            ["general.architecture"] = GetModelFamily(id),
+            ["general.architecture"] = family,
             ["general.basename"] = id,
+            ["general.context_length"] = contextWindow,
+            [$"{family}.context_length"] = contextWindow,
             ["proxy.upstream_type"] = mapping?.UpstreamType.ToDisplayName() ?? UpstreamType.OpenAI.ToDisplayName(),
         };
 

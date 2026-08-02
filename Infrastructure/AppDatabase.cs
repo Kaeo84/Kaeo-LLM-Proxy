@@ -157,7 +157,9 @@ internal sealed class AppDatabase : IDisposable
                     redact_request_bodies,
                     redact_response_bodies,
                     redact_sensitive_json_fields,
-                    credential_name
+                    credential_name,
+                    thinking_mode,
+                    context_window_tokens
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -213,7 +215,9 @@ internal sealed class AppDatabase : IDisposable
                         redact_request_bodies,
                         redact_response_bodies,
                         redact_sensitive_json_fields,
-                        credential_name
+                        credential_name,
+                        thinking_mode,
+                        context_window_tokens
                     )
                     VALUES (
                         $proxyName,
@@ -234,7 +238,9 @@ internal sealed class AppDatabase : IDisposable
                         $redactRequestBodies,
                         $redactResponseBodies,
                         $redactSensitiveJsonFields,
-                        $credentialName
+                        $credentialName,
+                        $thinkingMode,
+                        $contextWindowTokens
                     );
                     """;
 
@@ -926,7 +932,9 @@ internal sealed class AppDatabase : IDisposable
                     redact_request_bodies INTEGER NOT NULL,
                     redact_response_bodies INTEGER NOT NULL,
                     redact_sensitive_json_fields INTEGER NOT NULL,
-                    credential_name TEXT NULL
+                    credential_name TEXT NULL,
+                    thinking_mode INTEGER NOT NULL DEFAULT 0,
+                    context_window_tokens INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1037,6 +1045,24 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added credential_name column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "thinking_mode"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN thinking_mode INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added thinking_mode column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "context_window_tokens"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_window_tokens INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added context_window_tokens column.");
         }
     }
 
@@ -1233,6 +1259,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$redactResponseBodies", ToSqliteBoolean(mapping.RedactResponseBodies));
         command.Parameters.AddWithValue("$redactSensitiveJsonFields", ToSqliteBoolean(mapping.RedactSensitiveJsonFields));
         command.Parameters.AddWithValue("$credentialName", DbValue(mapping.CredentialName));
+        command.Parameters.AddWithValue("$thinkingMode", (int)mapping.ThinkingMode);
+        command.Parameters.AddWithValue("$contextWindowTokens", mapping.ContextWindowTokens);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1258,6 +1286,10 @@ internal sealed class AppDatabase : IDisposable
         RedactResponseBodies = ReadBoolean(reader, 16),
         RedactSensitiveJsonFields = ReadBoolean(reader, 17),
         CredentialName = reader.IsDBNull(18) ? null : reader.GetString(18),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(19))
+            ? (ThinkingMode)reader.GetInt32(19)
+            : ThinkingMode.Off,
+        ContextWindowTokens = reader.GetInt32(20),
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()

@@ -37,12 +37,15 @@ internal sealed class ModelMappingDialog : Form
     private readonly ComboBox _cmbInstructionSet = new();
     private readonly Label _lblUpstreamTimeout = new();
     private readonly TextBox _txtUpstreamTimeout = new();
+    private readonly Label _lblContextWindow = new();
+    private readonly TextBox _txtContextWindow = new();
     private readonly Label _lblTemperature = new();
     private readonly NumericUpDown _nudTemperature = new();
     private readonly Label _lblRepeatPenalty = new();
     private readonly NumericUpDown _nudRepeatPenalty = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
+    private readonly CheckBox _chkExtractThinkTags = new();
     private readonly CheckBox _chkSupportsVision = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkEnableAutoSummarization = new();
@@ -155,6 +158,20 @@ internal sealed class ModelMappingDialog : Form
     {
         get => int.TryParse(_txtUpstreamTimeout.Text, out int v) && v > 0 ? v : 300;
         set => _txtUpstreamTimeout.Text = value <= 0 ? "300" : value.ToString();
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int ContextWindowTokens
+    {
+        get => int.TryParse(_txtContextWindow.Text, out int v) && v >= 0 ? v : 0;
+        set => _txtContextWindow.Text = value <= 0 ? string.Empty : value.ToString();
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private ThinkingMode ThinkingMode
+    {
+        get => _chkExtractThinkTags.Checked ? ThinkingMode.ExtractThinkTags : ThinkingMode.Off;
+        set => _chkExtractThinkTags.Checked = value == ThinkingMode.ExtractThinkTags;
     }
 
     private static decimal ClampDecimal(double value, decimal min, decimal max, decimal fallback)
@@ -272,12 +289,12 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        // Every row sizes to its content except row 17, a flexible filler that absorbs leftover
+        // Every row sizes to its content except row 19, a flexible filler that absorbs leftover
         // vertical space so the button row stays anchored near the bottom of the dialog.
-        _tlpMain.RowCount = 20;
+        _tlpMain.RowCount = 22;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles[17] = new RowStyle(SizeType.Percent, 100F);
+        _tlpMain.RowStyles[19] = new RowStyle(SizeType.Percent, 100F);
         _tlpMain.Dock = DockStyle.Fill;
         _tlpMain.Padding = new Padding(8);
 
@@ -309,38 +326,44 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
         _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 6);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 7);
-        _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 7);
+        _tlpMain.Controls.Add(_lblContextWindow, 0, 7);
+        _tlpMain.SetColumnSpan(_txtContextWindow, 2);
+        _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 8);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 8);
+        _tlpMain.SetColumnSpan(_nudTemperature, 2);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 8);
+
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 9);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 8);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 9);
 
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 9);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 10);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 10);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 11);
+        _tlpMain.SetColumnSpan(_chkExtractThinkTags, 3);
+        _tlpMain.Controls.Add(_chkExtractThinkTags, 0, 12);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
-        _tlpMain.Controls.Add(_chkSupportsVision, 0, 11);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 13);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 12);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 14);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 13);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 14);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 15);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 16);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 14);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 15);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 16);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 17);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 15);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 17);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 16);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 18);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 17);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 19);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 18);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 20);
         _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 19);
+        _tlpMain.Controls.Add(_flpButtons, 0, 21);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -413,6 +436,19 @@ internal sealed class ModelMappingDialog : Form
         _txtUpstreamTimeout.Dock = DockStyle.Fill;
         _txtUpstreamTimeout.Margin = new Padding(0, 4, 0, 4);
 
+        _lblContextWindow.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblContextWindow.AutoSize = true;
+        _lblContextWindow.Margin = new Padding(0, 8, 8, 4);
+        _lblContextWindow.Text = "Context Window (tokens):";
+
+        _txtContextWindow.Dock = DockStyle.Fill;
+        _txtContextWindow.Margin = new Padding(0, 4, 0, 4);
+        _txtContextWindow.PlaceholderText = $"Auto ({ModelMapping.DefaultContextWindowTokens:N0})";
+        _toolTip.SetToolTip(
+            _txtContextWindow,
+            $"Model context window size in tokens. Leave empty to use the default ({ModelMapping.DefaultContextWindowTokens:N0}).\n"
+            + "Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).");
+
         _lblTemperature.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTemperature.AutoSize = true;
         _lblTemperature.Margin = new Padding(0, 8, 8, 4);
@@ -449,6 +485,14 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
+
+        _chkExtractThinkTags.AutoSize = true;
+        _chkExtractThinkTags.Margin = new Padding(0, 2, 0, 2);
+        _chkExtractThinkTags.Text = "Extract <think> tags into reasoning_content (Qwen Cloud compatibility)";
+        _toolTip.SetToolTip(
+            _chkExtractThinkTags,
+            "When checked, <think>...</think> blocks are removed from visible content and\n"
+            + "re-emitted as reasoning_content for collapsible thinking panels in clients like VS.");
 
         _chkSupportsVision.AutoSize = true;
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
@@ -701,9 +745,11 @@ internal sealed class ModelMappingDialog : Form
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
+        dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.SupportsVision = mapping.SupportsVision ?? false;
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
+        dlg.ContextWindowTokens = mapping.ContextWindowTokens;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
         dlg.EnableAutoSummarization = mapping.EnableAutoSummarization;
@@ -728,9 +774,11 @@ internal sealed class ModelMappingDialog : Form
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
+        mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.SupportsVision = dlg.SupportsVision;
         mapping.EnableHeartbeats = dlg.EnableHeartbeats;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
+        mapping.ContextWindowTokens = dlg.ContextWindowTokens;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
         mapping.EnableAutoSummarization = dlg.EnableAutoSummarization;

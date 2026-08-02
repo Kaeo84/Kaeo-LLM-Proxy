@@ -247,6 +247,25 @@ internal sealed class ModelMapping
     public bool RedactSensitiveJsonFields { get; set; } = true;
 
     /// <summary>
+    /// Model context window size in tokens. When 0 (default), uses <see cref="DefaultContextWindowTokens"/>.
+    /// Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).
+    /// This value is advertised to clients via /api/show model_info and used by clients like GitHub Copilot
+    /// to determine context summarization thresholds.
+    /// </summary>
+    public int ContextWindowTokens { get; set; }
+
+    /// <summary>
+    /// Default context window when <see cref="ContextWindowTokens"/> is not explicitly set (0).
+    /// Conservative fallback that works for most models; override per-model if needed.
+    /// </summary>
+    public const int DefaultContextWindowTokens = 131072;
+
+    /// <summary>
+    /// Returns the effective context window for this mapping: the explicit value if set, otherwise the default.
+    /// </summary>
+    public int GetEffectiveContextWindow() => ContextWindowTokens > 0 ? ContextWindowTokens : DefaultContextWindowTokens;
+
+    /// <summary>
     /// Creates a deep copy of this ModelMapping instance with all properties cloned.
     /// </summary>
     public ModelMapping Clone() => new()
@@ -271,6 +290,7 @@ internal sealed class ModelMapping
         RedactRequestBodies = RedactRequestBodies,
         RedactResponseBodies = RedactResponseBodies,
         RedactSensitiveJsonFields = RedactSensitiveJsonFields,
+        ContextWindowTokens = ContextWindowTokens,
     };
 }
 
