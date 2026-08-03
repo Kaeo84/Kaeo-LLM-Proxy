@@ -586,8 +586,10 @@ internal sealed class ModelMappingDialog : Form
         _pnlScroll.AutoScroll = true;
         _pnlScroll.Dock = DockStyle.Fill;
         _pnlScroll.Controls.Add(_tlpMain);
-        Controls.Add(_flpButtons);
+        // Add order defines dock Z-order: the bottom-docked button row must be added after the
+        // fill panel so it is laid out first and the scroll area stops above it.
         Controls.Add(_pnlScroll);
+        Controls.Add(_flpButtons);
         FormBorderStyle = FormBorderStyle.Sizable;
         MinimumSize = new Size(480, 420);
         MaximizeBox = false;
