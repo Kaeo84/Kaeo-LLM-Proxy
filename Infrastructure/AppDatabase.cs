@@ -159,7 +159,8 @@ internal sealed class AppDatabase : IDisposable
                     redact_sensitive_json_fields,
                     credential_name,
                     thinking_mode,
-                    context_window_tokens
+                    context_window_tokens,
+                    synthesize_openai_metadata
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -217,7 +218,8 @@ internal sealed class AppDatabase : IDisposable
                         redact_sensitive_json_fields,
                         credential_name,
                         thinking_mode,
-                        context_window_tokens
+                        context_window_tokens,
+                        synthesize_openai_metadata
                     )
                     VALUES (
                         $proxyName,
@@ -240,7 +242,8 @@ internal sealed class AppDatabase : IDisposable
                         $redactSensitiveJsonFields,
                         $credentialName,
                         $thinkingMode,
-                        $contextWindowTokens
+                        $contextWindowTokens,
+                        $synthesizeOpenAiMetadata
                     );
                     """;
 
@@ -1064,6 +1067,15 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated model_mappings table: added context_window_tokens column.");
         }
+
+        if (!ColumnExists(connection, "model_mappings", "synthesize_openai_metadata"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN synthesize_openai_metadata INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added synthesize_openai_metadata column.");
+        }
     }
 
     /// <summary>
@@ -1261,6 +1273,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$credentialName", DbValue(mapping.CredentialName));
         command.Parameters.AddWithValue("$thinkingMode", (int)mapping.ThinkingMode);
         command.Parameters.AddWithValue("$contextWindowTokens", mapping.ContextWindowTokens);
+        command.Parameters.AddWithValue("$synthesizeOpenAiMetadata", ToSqliteBoolean(mapping.SynthesizeOpenAiMetadata));
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1290,6 +1303,7 @@ internal sealed class AppDatabase : IDisposable
             ? (ThinkingMode)reader.GetInt32(19)
             : ThinkingMode.Off,
         ContextWindowTokens = reader.GetInt32(20),
+        SynthesizeOpenAiMetadata = ReadBoolean(reader, 21),
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()

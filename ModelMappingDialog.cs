@@ -48,6 +48,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly CheckBox _chkExtractThinkTags = new();
     private readonly CheckBox _chkSupportsVision = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
+    private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
     private readonly CheckBox _chkEnableAutoSummarization = new();
     private readonly Label _lblPreserveRecentCount = new();
     private readonly NumericUpDown _nudPreserveRecentCount = new();
@@ -289,12 +290,12 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        // Every row sizes to its content except row 19, a flexible filler that absorbs leftover
+        // Every row sizes to its content except row 20, a flexible filler that absorbs leftover
         // vertical space so the button row stays anchored near the bottom of the dialog.
-        _tlpMain.RowCount = 22;
+        _tlpMain.RowCount = 23;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles[19] = new RowStyle(SizeType.Percent, 100F);
+        _tlpMain.RowStyles[20] = new RowStyle(SizeType.Percent, 100F);
         _tlpMain.Dock = DockStyle.Fill;
         _tlpMain.Padding = new Padding(8);
 
@@ -348,22 +349,24 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkSupportsVision, 0, 13);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
         _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 14);
+        _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
+        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 15);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 15);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 16);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 17);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 16);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 17);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 17);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 18);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 17);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 18);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 18);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 19);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 19);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 20);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 20);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 21);
         _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 21);
+        _tlpMain.Controls.Add(_flpButtons, 0, 22);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -502,6 +505,16 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
         _chkEnableHeartbeats.Text = "Enable streaming heartbeats for this model (keep-alive frames while waiting)";
         _chkEnableHeartbeats.Checked = true;
+
+        _chkSynthesizeOpenAiMetadata.AutoSize = true;
+        _chkSynthesizeOpenAiMetadata.Margin = new Padding(0, 2, 0, 2);
+        _chkSynthesizeOpenAiMetadata.Text = "Synthesize OpenAI /v1/models metadata";
+        _chkSynthesizeOpenAiMetadata.Checked = false;
+        _toolTip.SetToolTip(
+            _chkSynthesizeOpenAiMetadata,
+            "When checked, the proxy synthesizes OpenAI /v1/models metadata with the\n"
+            + "configured context window and reasoning capabilities instead of\n"
+            + "passing through the upstream model list.");
 
         _chkEnableAutoSummarization.AutoSize = true;
         _chkEnableAutoSummarization.Margin = new Padding(0, 8, 0, 2);
@@ -748,6 +761,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.SupportsVision = mapping.SupportsVision ?? false;
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
+        dlg._chkSynthesizeOpenAiMetadata.Checked = mapping.SynthesizeOpenAiMetadata;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.ContextWindowTokens = mapping.ContextWindowTokens;
         dlg.Temperature = mapping.Temperature;
@@ -777,6 +791,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.SupportsVision = dlg.SupportsVision;
         mapping.EnableHeartbeats = dlg.EnableHeartbeats;
+        mapping.SynthesizeOpenAiMetadata = dlg._chkSynthesizeOpenAiMetadata.Checked;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.ContextWindowTokens = dlg.ContextWindowTokens;
         mapping.Temperature = dlg.Temperature;

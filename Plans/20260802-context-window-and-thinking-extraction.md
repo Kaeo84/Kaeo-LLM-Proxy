@@ -45,9 +45,40 @@ Append: thinking_mode(19), context_window_tokens(20).
 6. [x] Dialog wiring: read/write in `ShowConfigureDialog`
 7. [x] MainForm round-trip: add fields to both mapping initializers
 8. [x] Build verification
-9. [ ] Git commit
+9. [x] Git commit
 
 **Update this file with [x] after completing each step.**
+
+---
+
+## Implementation Complete
+
+All steps have been successfully implemented and committed as `e2c7ba2`. The feature is ready for testing:
+
+### Context Window Changes
+- **Storage**: `ContextWindowTokens` field added to `ModelMapping` (int, default 0 = auto)
+- **Default**: Conservative fallback of 131,072 tokens via `DefaultContextWindowTokens` constant
+- **UI**: Context Window TextBox in Configure Model dialog with placeholder showing auto-default
+- **Discovery**: `CreateOllamaModelInfo` now emits both `general.context_length` and `{family}.context_length`
+- **Database**: New `context_window_tokens` column migrated automatically with DEFAULT 0
+
+### Thinking Extraction Changes
+- **Storage**: `ThinkingMode` enum already existed; now persisted in database
+- **UI**: "Extract <think> tags into reasoning_content" checkbox in Configure Model dialog
+- **Handler**: Existing OpenAI `/v1/chat/completions` path already honors `ThinkingMode` when set
+- **Database**: New `thinking_mode` column migrated automatically with DEFAULT 0 (Off)
+- **Round-trip**: All mapping initializers updated to preserve both new fields
+
+### Testing Instructions
+1. Restart the app to pick up the database migration
+2. Open Configure Model dialog for any mapping
+3. Verify Context Window field appears with placeholder text showing auto-default
+4. Verify "Extract <think> tags" checkbox appears after thinking compatibility
+5. Set context window override (e.g., 32768) and enable thinking extraction
+6. Save and verify values round-trip through reopen
+7. Check `/api/show` response for the model - should contain `general.context_length` and `{family}.context_length`
+8. Test with Copilot - context meter should reflect the advertised window
+9. Test with a Qwen Cloud model that emits `<think>` tags - verify extraction into `reasoning_content`
 
 ---
 

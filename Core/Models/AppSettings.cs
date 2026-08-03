@@ -266,6 +266,15 @@ internal sealed class ModelMapping
     public int GetEffectiveContextWindow() => ContextWindowTokens > 0 ? ContextWindowTokens : DefaultContextWindowTokens;
 
     /// <summary>
+    /// When true, this model appears in the synthesized <c>/v1/models</c> response with proper
+    /// context window and capability metadata instead of passing through to the upstream provider.
+    /// Enable for models used by clients like Visual Studio Copilot that rely on the OpenAI-style
+    /// discovery endpoint to read context windows and reasoning capabilities. Default: false
+    /// (preserves existing passthrough behavior).
+    /// </summary>
+    public bool SynthesizeOpenAiMetadata { get; set; }
+
+    /// <summary>
     /// Creates a deep copy of this ModelMapping instance with all properties cloned.
     /// </summary>
     public ModelMapping Clone() => new()
@@ -291,6 +300,7 @@ internal sealed class ModelMapping
         RedactResponseBodies = RedactResponseBodies,
         RedactSensitiveJsonFields = RedactSensitiveJsonFields,
         ContextWindowTokens = ContextWindowTokens,
+        SynthesizeOpenAiMetadata = SynthesizeOpenAiMetadata,
     };
 }
 
