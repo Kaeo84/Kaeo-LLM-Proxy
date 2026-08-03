@@ -17,7 +17,7 @@ namespace Kaeo.LlmProxy.Core.Services;
 /// </summary>
 internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats) : IDisposable
 {
-    private const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
+    internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
@@ -1752,7 +1752,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             : body;
     }
 
-    private static string RedactSensitiveJsonFields(string body)
+    internal static string RedactSensitiveJsonFields(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
             return body;

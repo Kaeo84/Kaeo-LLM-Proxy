@@ -1074,7 +1074,7 @@ internal partial class MainForm : Form
         // configure it, and only add a grid row on OK.
         ModelMapping mapping = new();
 
-        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], CollectUpstreamUrls(), out _))
+        if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], CollectUpstreamUrls(), _settings, _stats, out _))
             return;
 
         int idx = _dgvMappings.Rows.Add(
@@ -1130,7 +1130,7 @@ internal partial class MainForm : Form
             ? []
             : [mapping.ModelName];
 
-        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, existingItems, CollectUpstreamUrls(), out _))
+        if (ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, existingItems, CollectUpstreamUrls(), _settings, _stats, out _))
         {
             // Write user-edited values back into the grid cells. The grid is read-only;
             // these values come exclusively from the modal.

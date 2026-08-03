@@ -4,10 +4,12 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
 
 namespace Kaeo.LlmProxy;
@@ -66,6 +68,8 @@ internal sealed class ModelMappingDialog : Form
 
     private string _upstreamUrl = string.Empty;
     private List<StoredCredential> _credentials = [];
+    private AppSettings? _settings;
+    private StatisticsService? _stats;
 
     public ModelMappingDialog()
     {
@@ -686,9 +690,13 @@ internal sealed class ModelMappingDialog : Form
                 apiKey = credential?.Secret;
             }
 
-            List<string> models = await FetchUpstreamModelsAsync(_upstreamUrl, apiKey);
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            UpstreamModelFetchResult result = await FetchUpstreamModelsAsync(_upstreamUrl, apiKey);
+            sw.Stop();
 
-            if (models.Count == 0)
+            LogFetchModelsRequest(result, sw.Elapsed.TotalMilliseconds);
+
+            if (result.Models.Count == 0)
             {
                 MessageBox.Show(this,
                     $"Failed to fetch models from '{_upstreamUrl}'. Check that the server is reachable.",
@@ -699,12 +707,18 @@ internal sealed class ModelMappingDialog : Form
             string? current = _cmbModelName.SelectedItem?.ToString() ?? _cmbModelName.Text;
 
             _cmbModelName.Items.Clear();
-            _cmbModelName.Items.AddRange([.. models.Cast<object>()]);
+            _cmbModelName.Items.AddRange([.. result.Models.Cast<object>()]);
 
-            if (!string.IsNullOrWhiteSpace(current) && models.Contains(current))
+            if (!string.IsNullOrWhiteSpace(current) && result.Models.Contains(current))
                 _cmbModelName.SelectedItem = current;
             else if (_cmbModelName.Items.Count > 0)
                 _cmbModelName.SelectedIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Failed to fetch models from '{_upstreamUrl}': {ex.Message}",
+                "Fetch Models", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -714,9 +728,64 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>
-    /// Fetches the model list from the specified upstream URL and returns the ids, or an empty list on failure.
+    /// Records the /v1/models discovery call in the request log, following the same body-capture
+    /// gating and per-model redaction as proxied traffic. No-op when no statistics service was
+    /// supplied to the dialog.
     /// </summary>
-    internal static async Task<List<string>> FetchUpstreamModelsAsync(string upstreamUrl, string? apiKey = null)
+    private void LogFetchModelsRequest(UpstreamModelFetchResult result, double durationMs)
+    {
+        if (_stats is null)
+            return;
+
+        string model = _cmbModelName.SelectedItem?.ToString() ?? _cmbModelName.Text ?? string.Empty;
+        ModelMapping? mapping = _settings?.FindModelMapping(model);
+
+        RequestLog log = new()
+        {
+            Method = "GET",
+            OllamaPath = "(fetch models)",
+            UpstreamPath = "/v1/models",
+            Model = model,
+            DurationMs = durationMs,
+            StatusCode = result.StatusCode,
+        };
+
+        if (result.ErrorMessage is null)
+        {
+            log.Status = RequestStatus.Success;
+        }
+        else
+        {
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = result.ErrorMessage;
+        }
+
+        if (result.ResponseBody is not null)
+        {
+            log.ResponseBytes = Encoding.UTF8.GetByteCount(result.ResponseBody);
+            if (_settings?.CollectResponseDetails == true)
+            {
+                log.ResponseBody = mapping?.RedactResponseBodies ?? true
+                    ? OllamaProxyHandler.RedactedBodyText
+                    : mapping?.RedactSensitiveJsonFields ?? true
+                        ? OllamaProxyHandler.RedactSensitiveJsonFields(result.ResponseBody)
+                        : result.ResponseBody;
+            }
+        }
+        else
+        {
+            log.ResponseBytes = -1;
+        }
+
+        _stats.AddLog(log);
+    }
+
+    /// <summary>
+    /// Fetches the model list from the specified upstream URL. Returns the parsed model ids along
+    /// with the HTTP status code, raw response body, and any error text so the caller can record
+    /// the discovery call in the request log.
+    /// </summary>
+    internal static async Task<UpstreamModelFetchResult> FetchUpstreamModelsAsync(string upstreamUrl, string? apiKey = null)
     {
         try
         {
@@ -731,32 +800,47 @@ internal sealed class ModelMappingDialog : Form
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 
             using HttpResponseMessage resp = await client.SendAsync(request);
+            string body = await resp.Content.ReadAsStringAsync();
 
             if (!resp.IsSuccessStatusCode)
-                return [];
-
-            using JsonDocument doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-            JsonElement data = doc.RootElement.GetProperty("data");
+                return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, $"Upstream {(int)resp.StatusCode}: {body}");
 
             var models = new List<string>();
-
-            foreach (JsonElement item in data.EnumerateArray())
+            try
             {
-                if (item.TryGetProperty("id", out JsonElement id))
+                using JsonDocument doc = JsonDocument.Parse(body);
+                if (!doc.RootElement.TryGetProperty("data", out JsonElement data))
+                    return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, "Upstream response has no 'data' model array.");
+
+                foreach (JsonElement item in data.EnumerateArray())
                 {
-                    string? name = id.GetString();
-                    if (!string.IsNullOrWhiteSpace(name))
-                        models.Add(name);
+                    if (item.TryGetProperty("id", out JsonElement id))
+                    {
+                        string? name = id.GetString();
+                        if (!string.IsNullOrWhiteSpace(name))
+                            models.Add(name);
+                    }
                 }
             }
+            catch (JsonException)
+            {
+                return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, "Upstream returned an unparseable model list.");
+            }
 
-            return models;
+            return new UpstreamModelFetchResult(models, (int)resp.StatusCode, body, null);
         }
-        catch
+        catch (Exception ex)
         {
-            return [];
+            return new UpstreamModelFetchResult([], 0, null, $"{ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    /// <summary>Outcome of an upstream /v1/models discovery call, for request logging.</summary>
+    internal sealed record UpstreamModelFetchResult(
+        List<string> Models,
+        int StatusCode,
+        string? ResponseBody,
+        string? ErrorMessage);
 
     /// <summary>
     /// Shows the modal dialog for the supplied <paramref name="mapping"/>. The dialog is
@@ -773,6 +857,8 @@ internal sealed class ModelMappingDialog : Form
         IEnumerable<StoredCredential> credentials,
         IEnumerable<string> existingModelItems,
         IEnumerable<string> existingUpstreamUrls,
+        AppSettings settings,
+        StatisticsService? stats,
         out List<string> updatedModelItems)
     {
         ArgumentNullException.ThrowIfNull(mapping);
@@ -780,8 +866,11 @@ internal sealed class ModelMappingDialog : Form
         ArgumentNullException.ThrowIfNull(credentials);
         ArgumentNullException.ThrowIfNull(existingModelItems);
         ArgumentNullException.ThrowIfNull(existingUpstreamUrls);
+        ArgumentNullException.ThrowIfNull(settings);
 
         using ModelMappingDialog dlg = new();
+        dlg._settings = settings;
+        dlg._stats = stats;
         dlg.PopulateInstructionSets(instructionSets);
         dlg.PopulateCredentials(credentials);
         dlg.PopulateUpstreamTypes(mapping.UpstreamType);
