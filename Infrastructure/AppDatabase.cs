@@ -96,7 +96,10 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     summarization_retries,
                     original_message_count,
-                    summarized_message_count
+                    summarized_message_count,
+                    total_tokens,
+                    cached_prompt_tokens,
+                    reasoning_tokens
                 )
                 VALUES (
                     $timestampUtc,
@@ -119,7 +122,10 @@ internal sealed class AppDatabase : IDisposable
                     $responseBytes,
                     $summarizationRetries,
                     $originalMessageCount,
-                    $summarizedMessageCount
+                    $summarizedMessageCount,
+                    $totalTokens,
+                    $cachedPromptTokens,
+                    $reasoningTokens
                 );
                 """;
 
@@ -623,7 +629,10 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     summarization_retries,
                     original_message_count,
-                    summarized_message_count
+                    summarized_message_count,
+                    total_tokens,
+                    cached_prompt_tokens,
+                    reasoning_tokens
                 FROM requests
                 ORDER BY timestamp_utc DESC
                 LIMIT $count;
@@ -671,7 +680,10 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     summarization_retries,
                     original_message_count,
-                    summarized_message_count
+                    summarized_message_count,
+                    total_tokens,
+                    cached_prompt_tokens,
+                    reasoning_tokens
                 FROM (
                     SELECT
                         timestamp_utc,
@@ -692,7 +704,10 @@ internal sealed class AppDatabase : IDisposable
                         response_bytes,
                         summarization_retries,
                         original_message_count,
-                        summarized_message_count
+                        summarized_message_count,
+                        total_tokens,
+                        cached_prompt_tokens,
+                        reasoning_tokens
                     FROM requests
                     ORDER BY timestamp_utc DESC
                     LIMIT $count
@@ -746,7 +761,10 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     summarization_retries,
                     original_message_count,
-                    summarized_message_count
+                    summarized_message_count,
+                    total_tokens,
+                    cached_prompt_tokens,
+                    reasoning_tokens
                 FROM requests
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -909,7 +927,10 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes INTEGER NOT NULL,
                     summarization_retries INTEGER NOT NULL,
                     original_message_count INTEGER NULL,
-                    summarized_message_count INTEGER NULL
+                    summarized_message_count INTEGER NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -979,6 +1000,45 @@ internal sealed class AppDatabase : IDisposable
 
             MigrateRuntimeSettingsTable(connection);
             MigrateModelMappingsTable(connection);
+            MigrateRequestsTable(connection);
+        }
+    }
+
+    /// <summary>
+    /// Adds the token-detail columns to pre-existing <c>requests</c> tables that were created
+    /// before they were introduced: <c>total_tokens</c>, <c>cached_prompt_tokens</c>, and
+    /// <c>reasoning_tokens</c>.
+    /// </summary>
+    private static void MigrateRequestsTable(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "requests"))
+            return;
+
+        if (!ColumnExists(connection, "requests", "total_tokens"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE requests ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated requests table: added total_tokens column.");
+        }
+
+        if (!ColumnExists(connection, "requests", "cached_prompt_tokens"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated requests table: added cached_prompt_tokens column.");
+        }
+
+        if (!ColumnExists(connection, "requests", "reasoning_tokens"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE requests ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated requests table: added reasoning_tokens column.");
         }
     }
 
@@ -1243,10 +1303,13 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$responseBody", DbValue(entry.ResponseBody));
         command.Parameters.AddWithValue("$requestBytes", entry.RequestBytes);
         command.Parameters.AddWithValue("$responseBytes", entry.ResponseBytes);
-        command.Parameters.AddWithValue("$summarizationRetries", entry.SummarizationRetries);
-        command.Parameters.AddWithValue("$originalMessageCount", entry.OriginalMessageCount.HasValue ? entry.OriginalMessageCount.Value : DBNull.Value);
-        command.Parameters.AddWithValue("$summarizedMessageCount", entry.SummarizedMessageCount.HasValue ? entry.SummarizedMessageCount.Value : DBNull.Value);
-    }
+            command.Parameters.AddWithValue("$summarizationRetries", entry.SummarizationRetries);
+            command.Parameters.AddWithValue("$originalMessageCount", entry.OriginalMessageCount.HasValue ? entry.OriginalMessageCount.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$summarizedMessageCount", entry.SummarizedMessageCount.HasValue ? entry.SummarizedMessageCount.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$totalTokens", entry.TotalTokens);
+            command.Parameters.AddWithValue("$cachedPromptTokens", entry.CachedPromptTokens);
+            command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
+        }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
     {
@@ -1331,6 +1394,9 @@ internal sealed class AppDatabase : IDisposable
         SummarizationRetries = reader.GetInt32(18),
         OriginalMessageCount = reader.IsDBNull(19) ? null : reader.GetInt32(19),
         SummarizedMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
+        TotalTokens = reader.GetInt32(21),
+        CachedPromptTokens = reader.GetInt32(22),
+        ReasoningTokens = reader.GetInt32(23),
     };
 
     /// <summary>
@@ -1363,6 +1429,9 @@ internal sealed class AppDatabase : IDisposable
         SummarizationRetries = reader.GetInt32(16),
         OriginalMessageCount = reader.IsDBNull(17) ? null : reader.GetInt32(17),
         SummarizedMessageCount = reader.IsDBNull(18) ? null : reader.GetInt32(18),
+        TotalTokens = reader.GetInt32(19),
+        CachedPromptTokens = reader.GetInt32(20),
+        ReasoningTokens = reader.GetInt32(21),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()

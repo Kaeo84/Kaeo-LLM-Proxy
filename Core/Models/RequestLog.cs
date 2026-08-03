@@ -32,6 +32,24 @@ internal sealed class RequestLog
     public double TokensPerSecond { get; set; }
 
     /// <summary>
+    /// Total tokens reported by the upstream <c>usage</c> block (prompt + completion).
+    /// Zero when the upstream did not report usage.
+    /// </summary>
+    public int TotalTokens { get; set; }
+
+    /// <summary>
+    /// Prompt tokens served from cache (<c>usage.prompt_tokens_details.cached_tokens</c>).
+    /// Zero when the upstream did not report the detail block.
+    /// </summary>
+    public int CachedPromptTokens { get; set; }
+
+    /// <summary>
+    /// Completion tokens spent on reasoning (<c>usage.completion_tokens_details.reasoning_tokens</c>).
+    /// Zero when the upstream did not report the detail block.
+    /// </summary>
+    public int ReasoningTokens { get; set; }
+
+    /// <summary>
     /// When set, references the <see cref="ExceptionDetail.Id"/> stored in the exceptions
     /// collection for the full stack trace and inner exception chain.
     /// </summary>

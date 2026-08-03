@@ -613,6 +613,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (_settings.CollectRequestDetails)
                     log.RequestBody = RedactRequestBodyForLog(bodyText, originalModel);
                 isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
+                log.Streaming = isStreamingRequest;
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
                 upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
@@ -703,6 +704,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
+            if (_settings.CollectResponseDetails && log.ResponseBody is null)
+                log.ResponseBody = errorBody;
 
             if (headersPreCommitted)
             {
@@ -735,11 +738,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ? activeMapping.ThinkingMode
             : ThinkingMode.Off;
 
+        // Capture the terminal usage chunk (prompt/completion/cached/reasoning tokens) on every
+        // passthrough path without buffering the forwarded body.
+        Action<LlamaCppUsage> onUsage = usage => FillTokenStats(log, usage);
+        bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
+            || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
+
         if (_settings.CollectResponseDetails)
         {
-            using ResponseCaptureStream captureStream = new(countingStream);
             if (isServerSentEvents)
             {
+                using ResponseCaptureStream captureStream = new(countingStream);
                 if (shouldMirrorReasoningContent)
                 {
                     await CopyOpenAiChatCompletionSseStreamAsync(
@@ -749,7 +758,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         ShouldEmitHeartbeats(originalModel),
                         _settings.StreamingHeartbeatIntervalSeconds,
                         ct,
-                        () => _stats.IncrementHeartbeat(originalModel));
+                        () => _stats.IncrementHeartbeat(originalModel),
+                        onUsage);
                 }
                 else
                 {
@@ -759,15 +769,31 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         ShouldEmitHeartbeats(originalModel),
                         _settings.StreamingHeartbeatIntervalSeconds,
                         ct,
-                        () => _stats.IncrementHeartbeat(originalModel));
+                        () => _stats.IncrementHeartbeat(originalModel),
+                        onUsage);
                 }
+
+                log.ResponseBody = RedactResponseBodyForLog(captureStream.GetCapturedText(), originalModel);
+            }
+            else if (isCompletionPath)
+            {
+                await CopyNonStreamingChatResponseAsync(
+                    upstreamStream,
+                    countingStream,
+                    thinkingMode,
+                    ct,
+                    body =>
+                    {
+                        FillTokenStats(log, TryParseUsage(body));
+                        log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
+                    });
             }
             else
             {
+                using ResponseCaptureStream captureStream = new(countingStream);
                 await CopyNonStreamingChatResponseAsync(upstreamStream, captureStream, thinkingMode, ct);
+                log.ResponseBody = RedactResponseBodyForLog(captureStream.GetCapturedText(), originalModel);
             }
-
-            log.ResponseBody = RedactResponseBodyForLog(captureStream.GetCapturedText(), originalModel);
         }
         else if (isServerSentEvents)
         {
@@ -780,7 +806,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     ShouldEmitHeartbeats(originalModel),
                     _settings.StreamingHeartbeatIntervalSeconds,
                     ct,
-                    () => _stats.IncrementHeartbeat(originalModel));
+                    () => _stats.IncrementHeartbeat(originalModel),
+                    onUsage);
             }
             else
             {
@@ -790,8 +817,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     ShouldEmitHeartbeats(originalModel),
                     _settings.StreamingHeartbeatIntervalSeconds,
                     ct,
-                    () => _stats.IncrementHeartbeat(originalModel));
+                    () => _stats.IncrementHeartbeat(originalModel),
+                    onUsage);
             }
+        }
+        else if (isCompletionPath)
+        {
+            await CopyNonStreamingChatResponseAsync(
+                upstreamStream,
+                countingStream,
+                thinkingMode,
+                ct,
+                body => FillTokenStats(log, TryParseUsage(body)));
         }
         else
         {
@@ -827,9 +864,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Stream source,
         Stream destination,
         ThinkingMode thinkingMode,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action<string>? onBody = null)
     {
-        if (thinkingMode != ThinkingMode.ExtractThinkTags)
+        if (thinkingMode != ThinkingMode.ExtractThinkTags && onBody is null)
         {
             await source.CopyToAsync(destination, ct);
             return;
@@ -837,8 +875,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         string body = await reader.ReadToEndAsync(ct);
-        string transformed = TransformNonStreamingChatBody(body);
-        byte[] bytes = Encoding.UTF8.GetBytes(transformed);
+        string outgoing = thinkingMode == ThinkingMode.ExtractThinkTags
+            ? TransformNonStreamingChatBody(body)
+            : body;
+        onBody?.Invoke(outgoing);
+        byte[] bytes = Encoding.UTF8.GetBytes(outgoing);
         await destination.WriteAsync(bytes, ct);
     }
 
@@ -932,11 +973,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
         CancellationToken ct,
-        Action? onHeartbeatSent = null)
+        Action? onHeartbeatSent = null,
+        Action<LlamaCppUsage>? onUsage = null)
     {
         byte[] buffer = new byte[81920];
         byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
         TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
+        SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
         while (!ct.IsCancellationRequested)
         {
@@ -959,9 +1002,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (bytesRead == 0)
                 break;
 
+            usageSniffer?.Feed(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+
             await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
             await destination.FlushAsync(ct);
         }
+
+        usageSniffer?.Flush();
     }
 
     private static async Task CopyOpenAiChatCompletionSseStreamAsync(
@@ -971,12 +1018,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
         CancellationToken ct,
-        Action? onHeartbeatSent = null)
+        Action? onHeartbeatSent = null,
+        Action<LlamaCppUsage>? onUsage = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
         TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
         OpenAiSseRewriter rewriter = new(thinkingMode);
+        SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
         while (!ct.IsCancellationRequested)
         {
@@ -998,6 +1047,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (line is null)
                 break;
 
+            usageSniffer?.Feed(line + "\n");
+
             // Upstream framing uses "data: {...}\n\n". ReadLineAsync strips the line
             // terminator and surfaces the blank terminator line as an empty string.
             // Because a single inbound "data:" line may expand into multiple outbound
@@ -1015,6 +1066,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             await destination.FlushAsync(ct);
         }
+
+        usageSniffer?.Flush();
     }
 
     /// <summary>
@@ -1139,6 +1192,67 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
 
             return 0;
+        }
+    }
+
+    /// <summary>
+    /// Incrementally scans a forwarded SSE byte/text stream for the terminal
+    /// <c>usage</c> chunk without buffering the whole body. Only lines that start with
+    /// <c>data:</c> and contain the literal <c>"usage"</c> are JSON-parsed; everything else
+    /// passes through untouched. A trailing partial line is held until the next
+    /// <see cref="Feed"/> call or <see cref="Flush"/> at end of stream.
+    /// </summary>
+    private sealed class SseUsageSniffer(Action<LlamaCppUsage> onUsage)
+    {
+        private readonly StringBuilder _pending = new();
+
+        public void Feed(string text)
+        {
+            if (text.Length == 0)
+                return;
+
+            _pending.Append(text);
+
+            while (true)
+            {
+                string buffered = _pending.ToString();
+                int newline = buffered.IndexOf('\n');
+                if (newline < 0)
+                    break;
+
+                _pending.Remove(0, newline + 1);
+                ProcessLine(buffered[..newline]);
+            }
+        }
+
+        public void Flush()
+        {
+            if (_pending.Length > 0)
+                ProcessLine(_pending.ToString());
+
+            _pending.Clear();
+        }
+
+        private void ProcessLine(string line)
+        {
+            string trimmed = line.TrimStart();
+            if (!trimmed.StartsWith("data:", StringComparison.Ordinal))
+                return;
+
+            string data = trimmed["data:".Length..].Trim();
+            if (data.Length == 0 || !data.Contains("\"usage\"", StringComparison.Ordinal))
+                return;
+
+            try
+            {
+                LlamaCppStreamChunk? chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(data, _jsonOptions);
+                if (chunk?.Usage is not null)
+                    onUsage(chunk.Usage);
+            }
+            catch (JsonException ex)
+            {
+                Log.Debug(ex, "Skipping unparseable SSE data frame while sniffing usage");
+            }
         }
     }
 
@@ -1695,9 +1809,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 .Select(CreateOllamaModelEntry)],
         };
 
+        string tagsJson = JsonSerializer.Serialize(tags, _jsonOptions);
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = tagsJson;
+
         log.StatusCode = 200;
         log.Status = RequestStatus.Success;
-        await WriteJsonAsync(resp, tags, ct);
+        await WriteJsonRawAsync(resp, tagsJson, ct);
     }
 
     // ── /api/ps → running model stub ────────────────────────────────────────
@@ -1725,8 +1843,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             })
             .ToList();
 
+        string psJson = JsonSerializer.Serialize(new { models = running }, _jsonOptions);
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = psJson;
+
         log.Status = RequestStatus.Success;
-        await WriteJsonAsync(resp, new { models = running }, ct);
+        await WriteJsonRawAsync(resp, psJson, ct);
     }
 
     // /api/show → answered entirely from local mapping config, no upstream call
@@ -1767,8 +1889,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Capabilities = BuildCapabilities(mapping, modelName),
         };
 
+        string showJson = JsonSerializer.Serialize(showResp, _jsonOptions);
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = showJson;
+
         log.Status = mapping is not null ? RequestStatus.Success : RequestStatus.Error;
-        await WriteJsonAsync(resp, showResp, ct);
+        await WriteJsonRawAsync(resp, showJson, ct);
     }
 
     private async Task<LlamaCppModel?> TryFindModelFromListAsync(
@@ -1991,6 +2117,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
+            if (_settings.CollectResponseDetails && log.ResponseBody is null)
+                log.ResponseBody = errorBody;
             resp.StatusCode = (int)upstreamResp.StatusCode;
             resp.Close();
             return;
@@ -2148,6 +2276,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     {
                         log.Status = RequestStatus.Error;
                         log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: Context overflow, summarization did not help";
+                        if (_settings.CollectResponseDetails)
+                            log.ResponseBody = errorBody;
                         log.SummarizationRetries = retryCount;
                         log.OriginalMessageCount = originalMessageCount;
                         resp.StatusCode = (int)upstreamResp.StatusCode;
@@ -2170,6 +2300,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.ErrorMessage = isContextOverflow
                     ? $"Upstream {(int)upstreamResp.StatusCode}: Context overflow after {retryCount} summarization attempts"
                     : $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
+                if (_settings.CollectResponseDetails)
+                    log.ResponseBody = errorBody;
 
                 if (retryCount > 0)
                 {
@@ -2323,6 +2455,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         FillTokenStats(log, llamaResp?.Usage);
 
         log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
+        if (_settings.CollectResponseDetails)
+        {
+            // Embedding vectors are huge; the per-mapping redaction (marker by default) keeps
+            // them out of the database unless the user explicitly opts in per model.
+            log.ResponseBody = upstreamResp.IsSuccessStatusCode
+                ? RedactResponseBodyForLog(JsonSerializer.Serialize(ollamaResp, _jsonOptions), ollamaReq.Model)
+                : respBody;
+        }
+
         await WriteJsonAsync(resp, ollamaResp, ct);
     }
 
@@ -3528,6 +3669,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (usage is null) return;
         log.PromptTokens = usage.PromptTokens;
         log.CompletionTokens = usage.CompletionTokens;
+        log.TotalTokens = usage.TotalTokens;
+        log.CachedPromptTokens = usage.PromptTokensDetails?.CachedTokens ?? 0;
+        log.ReasoningTokens = usage.CompletionTokensDetails?.ReasoningTokens ?? 0;
+    }
+
+    /// <summary>Parses a complete (non-streaming) chat/completion JSON body for its usage block; null when absent or unparseable.</summary>
+    private static LlamaCppUsage? TryParseUsage(string body)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<LlamaCppStreamChunk>(body, _jsonOptions)?.Usage;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>Wraps a write-only stream and counts the bytes written through it.</summary>

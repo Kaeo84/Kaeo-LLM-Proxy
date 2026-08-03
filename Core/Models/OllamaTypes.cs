@@ -335,6 +335,22 @@ internal sealed class LlamaCppUsage
     [JsonPropertyName("prompt_tokens")] public int PromptTokens { get; set; }
     [JsonPropertyName("completion_tokens")] public int CompletionTokens { get; set; }
     [JsonPropertyName("total_tokens")] public int TotalTokens { get; set; }
+    [JsonPropertyName("prompt_tokens_details")] public LlamaCppPromptTokensDetails? PromptTokensDetails { get; set; }
+    [JsonPropertyName("completion_tokens_details")] public LlamaCppCompletionTokensDetails? CompletionTokensDetails { get; set; }
+}
+
+/// <summary>OpenAI-style prompt token breakdown (e.g. Qwen Cloud reports cached/text tokens).</summary>
+internal sealed class LlamaCppPromptTokensDetails
+{
+    [JsonPropertyName("cached_tokens")] public int CachedTokens { get; set; }
+    [JsonPropertyName("text_tokens")] public int TextTokens { get; set; }
+}
+
+/// <summary>OpenAI-style completion token breakdown (e.g. Qwen Cloud reports reasoning/text tokens).</summary>
+internal sealed class LlamaCppCompletionTokensDetails
+{
+    [JsonPropertyName("reasoning_tokens")] public int ReasoningTokens { get; set; }
+    [JsonPropertyName("text_tokens")] public int TextTokens { get; set; }
 }
 
 internal sealed class LlamaCppEmbeddingsRequest

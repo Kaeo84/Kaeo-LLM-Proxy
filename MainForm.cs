@@ -321,7 +321,8 @@ internal partial class MainForm : Form
         sb.AppendLine($"Status    : {log.Status} ({log.StatusCode})");
         sb.AppendLine($"Streaming : {log.Streaming}");
         sb.AppendLine($"Duration  : {log.DurationMs:F1} ms");
-        sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion");
+        sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion (total {log.TotalTokens})");
+        sb.AppendLine($"            {log.CachedPromptTokens} cached prompt, {log.ReasoningTokens} reasoning");
         sb.AppendLine($"Bytes     : {FormatBytes(log.RequestBytes, log.ResponseBytes)} (request / response)");
 
         if (!string.IsNullOrEmpty(log.ErrorMessage))
