@@ -602,7 +602,7 @@ internal sealed class ModelMappingDialog : Form
         _btnOk.AutoSize = true;
         _btnOk.Click += BtnOk_Click;
         _btnOk.MinimumSize = new Size(80, 28);
-        _btnOk.Text = "OK";
+        _btnOk.Text = "Save";
 
         _btnCancel.AutoSize = true;
         _btnCancel.DialogResult = DialogResult.Cancel;

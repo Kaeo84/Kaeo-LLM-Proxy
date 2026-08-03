@@ -27,6 +27,10 @@ internal partial class MainForm : Form
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
     private IReadOnlyList<RequestLog> _logCache = [];
 
+    // Set while LoadSettingsToForm populates controls so the immediate-save event handlers
+    // do not persist values that are merely being loaded.
+    private bool _loadingSettings;
+
     internal event EventHandler? MinimizedToTray;
 
     private const string TestConsoleHeartbeatMarker = "__kaeo_test_console_heartbeat__";
@@ -54,6 +58,24 @@ internal partial class MainForm : Form
         _server.StatusChanged += OnServerStatusChanged;
         _perfService.Sampled += OnPerfSampled;
         _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
+
+        // Settings on the Settings tab persist immediately when changed; only the Listener
+        // group (port/address) requires an explicit save because it needs a proxy restart.
+        _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
+        _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkAutoSummarization.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
+        _cmbMinLevel.SelectedIndexChanged += (_, _) => SaveLoggingSettings();
+        _txtAppLogSize.Validated += (_, _) => SaveLoggingSettings();
+        _txtAppLogRetain.Validated += (_, _) => SaveLoggingSettings();
+        _txtReqLogSize.Validated += (_, _) => SaveLoggingSettings();
+        _txtRequestDbPath.Validated += (_, _) => SaveLoggingSettings();
+        _txtLogRetention.Validated += (_, _) => SaveLoggingSettings();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -735,6 +757,9 @@ internal partial class MainForm : Form
 
     private void LoadSettingsToForm()
     {
+        _loadingSettings = true;
+        try
+        {
         _txtListenPort.Text = _settings.ListenPort.ToString();
         PopulateListenAddressOptions();
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
@@ -802,9 +827,19 @@ internal partial class MainForm : Form
         _txtLogRetention.Text = _settings.Logging.LogRetentionHours.ToString();
 
         UpdateApiExplorerUrlLabel();
+        }
+        finally
+        {
+            _loadingSettings = false;
+        }
     }
 
-    private void BtnSaveSettings_Click(object? sender, EventArgs e)
+    /// <summary>
+    /// Saves the Listener group (port/address). These settings need an explicit save because a
+    /// proxy restart is required for them to take effect; everything else on the Settings tab
+    /// persists immediately when changed.
+    /// </summary>
+    private void BtnSaveListener_Click(object? sender, EventArgs e)
     {
         if (!int.TryParse(_txtListenPort.Text, out int port) || port < 1 || port > 65535)
         {
@@ -813,66 +848,30 @@ internal partial class MainForm : Form
             return;
         }
 
-        if (!int.TryParse(_txtMaxLogs.Text, out int maxLogs) || maxLogs < 1)
-        {
-            MessageBox.Show("Max log entries must be a positive number.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(_txtLogDir.Text))
-        {
-            MessageBox.Show("Log directory cannot be empty.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(_txtRequestDbPath.Text))
-        {
-            MessageBox.Show("Application database file path cannot be empty.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        string requestDbPath = _txtRequestDbPath.Text.Trim();
-        string? requestDbDirectory = Path.GetDirectoryName(requestDbPath);
-        if (string.IsNullOrWhiteSpace(requestDbDirectory))
-        {
-            MessageBox.Show("Application database file path must include a directory.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!int.TryParse(_txtAppLogSize.Text, out int appLogSize) || appLogSize < 1)
-        {
-            MessageBox.Show("App log file size limit must be a positive number.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!int.TryParse(_txtAppLogRetain.Text, out int appLogRetain) || appLogRetain < 1)
-        {
-            MessageBox.Show("App log files to keep must be a positive number.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!int.TryParse(_txtReqLogSize.Text, out int reqLogSize) || reqLogSize < 1)
-        {
-            MessageBox.Show("Application database file size limit must be a positive number.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!int.TryParse(_txtLogRetention.Text, out int logRetentionHours) || logRetentionHours < 0)
-        {
-            MessageBox.Show("Log retention must be 0 (keep forever) or a positive number of hours.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
         _settings.ListenPort = port;
         _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
+
+        PersistSettingsCore();
+
+        MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
+            "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+        RefreshStatus();
+        UpdateApiExplorerUrlLabel();
+    }
+
+    /// <summary>
+    /// Persists the immediately-saved general Settings tab options (everything except the
+    /// listener group, model mappings, and logging group, which are saved separately).
+    /// </summary>
+    private void SaveGeneralSettings()
+    {
+        if (_loadingSettings)
+            return;
+
+        if (!int.TryParse(_txtMaxLogs.Text, out int maxLogs) || maxLogs < 1)
+            return;
+
         _settings.MaxLogEntries = maxLogs;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
@@ -882,6 +881,42 @@ internal partial class MainForm : Form
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
         _settings.EnableAutoSummarization = _chkAutoSummarization.Checked;
 
+        _stats.UpdateMaxEntries(maxLogs);
+        _perfService.SetEnabled(_settings.EnablePerformanceSampling);
+
+        PersistSettingsCore();
+    }
+
+    /// <summary>
+    /// Persists the logging group values immediately when they change. Invalid or incomplete
+    /// input is ignored (the control also keeps focus after a failed validation) so a partially
+    /// typed value is never persisted.
+    /// </summary>
+    private void SaveLoggingSettings()
+    {
+        if (_loadingSettings)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_txtLogDir.Text))
+            return;
+
+        string requestDbPath = _txtRequestDbPath.Text.Trim();
+        if (string.IsNullOrWhiteSpace(requestDbPath)
+            || string.IsNullOrWhiteSpace(Path.GetDirectoryName(requestDbPath)))
+            return;
+
+        if (!int.TryParse(_txtAppLogSize.Text, out int appLogSize) || appLogSize < 1)
+            return;
+
+        if (!int.TryParse(_txtAppLogRetain.Text, out int appLogRetain) || appLogRetain < 1)
+            return;
+
+        if (!int.TryParse(_txtReqLogSize.Text, out int reqLogSize) || reqLogSize < 1)
+            return;
+
+        if (!int.TryParse(_txtLogRetention.Text, out int logRetentionHours) || logRetentionHours < 0)
+            return;
+
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";
         _settings.Logging.AppLogFileSizeLimitMb = appLogSize;
@@ -890,68 +925,20 @@ internal partial class MainForm : Form
         _settings.Logging.ApplicationDatabasePath = requestDbPath;
         _settings.Logging.LogRetentionHours = logRetentionHours;
 
-        _settings.ModelMappings.Clear();
-        HashSet<string> seenProxyNames = new(StringComparer.OrdinalIgnoreCase);
-        foreach (DataGridViewRow row in _dgvMappings.Rows)
-        {
-            string? proxyName  = row.Cells[_colProxyName.Name].Value?.ToString();
-            string? modelName  = row.Cells[_colModelName.Name].Value?.ToString();
-            string? upstreamUrl = row.Cells[_colUpstreamUrl.Name].Value?.ToString() ?? string.Empty;
-            string? upstreamStr = row.Cells[_colUpstreamType.Name].Value?.ToString();
+        _stats.UpdateRetentionHours(logRetentionHours);
 
-            // Advanced per-model settings live on the row Tag and are edited via the Configure dialog.
-            ModelMapping? advanced = row.Tag as ModelMapping;
+        // Re-apply logging config immediately so the new level/size/dir is active.
+        AppLogger.Initialize(_settings.Logging);
 
-            if (!string.IsNullOrWhiteSpace(proxyName) && !string.IsNullOrWhiteSpace(modelName))
-            {
-                string trimmedProxy = proxyName.Trim();
+        PersistSettingsCore();
+    }
 
-                if (!seenProxyNames.Add(trimmedProxy))
-                {
-                    MessageBox.Show(
-                        $"Duplicate proxy model name '{trimmedProxy}'. Proxy names must be unique.",
-                        "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                // Validate upstream URL is required
-                if (string.IsNullOrWhiteSpace(upstreamUrl) ||
-                    !Uri.TryCreate(upstreamUrl, UriKind.Absolute, out _))
-                {
-                    MessageBox.Show($"Model mapping '{trimmedProxy}' requires a valid upstream URL.", "Validation",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                UpstreamType upstream = UpstreamTypeExtensions.FromDisplayName(upstreamStr);
-
-                _settings.ModelMappings.Add(new ModelMapping
-                {
-                    ProxyName              = trimmedProxy,
-                    ModelName              = modelName.Trim(),
-                    IsEnabled              = advanced?.IsEnabled ?? true,
-                    EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
-                    ThinkingMode           = advanced?.ThinkingMode ?? ThinkingMode.Off,
-                    SupportsVision         = advanced?.SupportsVision,
-                    EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
-                    CredentialName         = advanced?.CredentialName,
-                    UpstreamUrl            = upstreamUrl.Trim(),
-                    UpstreamTimeoutSeconds = advanced?.UpstreamTimeoutSeconds ?? 300,
-                    ContextWindowTokens    = advanced?.ContextWindowTokens ?? 0,
-                    RepeatPenalty          = advanced?.RepeatPenalty ?? 1.0,
-                    Temperature            = advanced?.Temperature ?? 0.7,
-                    UpstreamType           = upstream,
-                    EnableAutoSummarization = advanced?.EnableAutoSummarization ?? true,
-                    PreserveRecentMessageCount = advanced?.PreserveRecentMessageCount ?? 4,
-                    MaxSummarizationRetries = advanced?.MaxSummarizationRetries ?? 2,
-                    InstructionSetName     = advanced?.InstructionSetName,
-                    RedactRequestBodies    = advanced?.RedactRequestBodies ?? true,
-                    RedactResponseBodies   = advanced?.RedactResponseBodies ?? true,
-                    RedactSensitiveJsonFields = advanced?.RedactSensitiveJsonFields ?? true,
-                });
-            }
-        }
-
+    /// <summary>
+    /// Writes the current in-memory settings, credentials, mappings, and instruction sets to
+    /// their stores. Shared by the immediate-save paths and the listener save button.
+    /// </summary>
+    private void PersistSettingsCore()
+    {
         // Encrypt credential secrets for persistence while keeping plaintext in memory for the
         // running proxy. Model mappings only reference credentials by name and carry no secrets.
         if (!TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials))
@@ -962,19 +949,98 @@ internal partial class MainForm : Form
         _database.SaveInstructionSets(_settings.InstructionSets);
         _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
         _settings.Save();
-        _stats.UpdateMaxEntries(maxLogs);
-        _stats.UpdateRetentionHours(logRetentionHours);
         _handler.UpdateSettings(_settings);
-        _perfService.SetEnabled(_settings.EnablePerformanceSampling);
+    }
 
-        // Re-apply logging config immediately so the new level/size/dir is active.
-        AppLogger.Initialize(_settings.Logging);
+    /// <summary>
+    /// Rebuilds <see cref="AppSettings.ModelMappings"/> from the mappings grid and persists the
+    /// change immediately. Called whenever a mapping row is added, removed, duplicated, or
+    /// edited. Shows a warning and leaves the previous mappings in place when the grid is invalid.
+    /// </summary>
+    private void CommitMappingsFromGrid()
+    {
+        if (_loadingSettings)
+            return;
 
-        MessageBox.Show("Settings saved. Restart the app for application database file path changes to take effect. Restart the proxy for port changes to take effect.",
-            "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        if (!TryCommitMappings(out string? error))
+        {
+            MessageBox.Show(error, "Model Mappings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
-        RefreshStatus();
-        UpdateApiExplorerUrlLabel();
+        PersistSettingsCore();
+    }
+
+    /// <summary>
+    /// Validates the mappings grid and, when valid, rebuilds
+    /// <see cref="AppSettings.ModelMappings"/> from the rows. Returns false with an error message
+    /// when a proxy name is duplicated or a mapping lacks a valid upstream URL.
+    /// </summary>
+    private bool TryCommitMappings(out string? error)
+    {
+        error = null;
+        List<ModelMapping> committed = [];
+        HashSet<string> seenProxyNames = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            string? proxyName  = row.Cells[_colProxyName.Name].Value?.ToString();
+            string? modelName  = row.Cells[_colModelName.Name].Value?.ToString();
+            string? upstreamUrl = row.Cells[_colUpstreamUrl.Name].Value?.ToString() ?? string.Empty;
+            string? upstreamStr = row.Cells[_colUpstreamType.Name].Value?.ToString();
+
+            // Advanced per-model settings live on the row Tag and are edited via the Configure dialog.
+            ModelMapping? advanced = row.Tag as ModelMapping;
+
+            if (string.IsNullOrWhiteSpace(proxyName) || string.IsNullOrWhiteSpace(modelName))
+                continue;
+
+            string trimmedProxy = proxyName.Trim();
+
+            if (!seenProxyNames.Add(trimmedProxy))
+            {
+                error = $"Duplicate proxy model name '{trimmedProxy}'. Proxy names must be unique.";
+                return false;
+            }
+
+            // Validate upstream URL is required
+            if (string.IsNullOrWhiteSpace(upstreamUrl) ||
+                !Uri.TryCreate(upstreamUrl, UriKind.Absolute, out _))
+            {
+                error = $"Model mapping '{trimmedProxy}' requires a valid upstream URL.";
+                return false;
+            }
+
+            UpstreamType upstream = UpstreamTypeExtensions.FromDisplayName(upstreamStr);
+
+            committed.Add(new ModelMapping
+            {
+                ProxyName              = trimmedProxy,
+                ModelName              = modelName.Trim(),
+                IsEnabled              = advanced?.IsEnabled ?? true,
+                EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
+                ThinkingMode           = advanced?.ThinkingMode ?? ThinkingMode.Off,
+                SupportsVision         = advanced?.SupportsVision,
+                EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
+                CredentialName         = advanced?.CredentialName,
+                UpstreamUrl            = upstreamUrl.Trim(),
+                UpstreamTimeoutSeconds = advanced?.UpstreamTimeoutSeconds ?? 300,
+                ContextWindowTokens    = advanced?.ContextWindowTokens ?? 0,
+                RepeatPenalty          = advanced?.RepeatPenalty ?? 1.0,
+                Temperature            = advanced?.Temperature ?? 0.7,
+                UpstreamType           = upstream,
+                EnableAutoSummarization = advanced?.EnableAutoSummarization ?? true,
+                PreserveRecentMessageCount = advanced?.PreserveRecentMessageCount ?? 4,
+                MaxSummarizationRetries = advanced?.MaxSummarizationRetries ?? 2,
+                InstructionSetName     = advanced?.InstructionSetName,
+                RedactRequestBodies    = advanced?.RedactRequestBodies ?? true,
+                RedactResponseBodies   = advanced?.RedactResponseBodies ?? true,
+                RedactSensitiveJsonFields = advanced?.RedactSensitiveJsonFields ?? true,
+            });
+        }
+
+        _settings.ModelMappings = committed;
+        return true;
     }
 
     /// <summary>
@@ -1089,6 +1155,8 @@ internal partial class MainForm : Form
 
         _dgvMappings.ClearSelection();
         row.Selected = true;
+
+        CommitMappingsFromGrid();
     }
 
     private void BtnConfigureMapping_Click(object? sender, EventArgs e)
@@ -1139,6 +1207,8 @@ internal partial class MainForm : Form
             row.Cells[_colModelName.Name].Value = mapping.ModelName;
             row.Cells[_colUpstreamUrl.Name].Value = mapping.UpstreamUrl;
             row.Cells[_colUpstreamType.Name].Value = mapping.UpstreamType.ToDisplayName();
+
+            CommitMappingsFromGrid();
         }
     }
 
@@ -1181,6 +1251,8 @@ internal partial class MainForm : Form
             if (!row.IsNewRow)
                 _dgvMappings.Rows.Remove(row);
         }
+
+        CommitMappingsFromGrid();
     }
 
     // ── Instruction Sets ──────────────────────────────────────────────────────
@@ -1217,6 +1289,8 @@ internal partial class MainForm : Form
 
         _dgvMappings.ClearSelection();
         newRow.Selected = true;
+
+        CommitMappingsFromGrid();
     }
 
     private string GenerateUniqueProxyName(string baseName)

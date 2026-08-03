@@ -98,7 +98,9 @@ partial class MainForm
         _colModelName = new DataGridViewTextBoxColumn();
         _colUpstreamUrl = new DataGridViewTextBoxColumn();
         _colUpstreamType = new DataGridViewTextBoxColumn();
-        _btnSaveSettings = new Button();
+        _grpListener = new GroupBox();
+        _tlpListener = new TableLayoutPanel();
+        _btnSaveListener = new Button();
         _flpMappingButtons = new FlowLayoutPanel();
         _btnAddMapping = new Button();
         _btnRemoveMapping = new Button();
@@ -192,6 +194,8 @@ partial class MainForm
         _btnResetHeartbeats = new Button();
         _btnSaveHeartbeats = new Button();
 
+        _grpListener.SuspendLayout();
+        _tlpListener.SuspendLayout();
         _grpLogging.SuspendLayout();
         _tlpLogging.SuspendLayout();
         _grpPerf.SuspendLayout();
@@ -612,41 +616,63 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 16;
+        _tlpSettings.RowCount = 14;
         _tlpSettings.Size = new Size(660, 460);
 
-        _tlpSettings.Controls.Add(_lblListenPort, 0, 0);
-        _tlpSettings.Controls.Add(_txtListenPort, 1, 0);
-        _tlpSettings.Controls.Add(_lblListenAddress, 0, 1);
-        _tlpSettings.Controls.Add(_cmbListenAddress, 1, 1);
-        _tlpSettings.Controls.Add(_lblMaxLogs, 0, 2);
-        _tlpSettings.Controls.Add(_txtMaxLogs, 1, 2);
+        _tlpSettings.SetColumnSpan(_grpListener, 2);
+        _tlpSettings.Controls.Add(_grpListener, 0, 0);
+        _tlpSettings.Controls.Add(_lblMaxLogs, 0, 1);
+        _tlpSettings.Controls.Add(_txtMaxLogs, 1, 1);
         _tlpSettings.SetColumnSpan(_chkAutoStart, 2);
-        _tlpSettings.Controls.Add(_chkAutoStart, 0, 3);
+        _tlpSettings.Controls.Add(_chkAutoStart, 0, 2);
         _tlpSettings.SetColumnSpan(_chkStartWithDashboard, 2);
-        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 4);
+        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 3);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 5);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 4);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 6);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 5);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 7);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 6);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 7);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 8);
         _tlpSettings.SetColumnSpan(_chkAutoSummarization, 2);
-        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 10);
+        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 9);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 10);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 11);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 12);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
-        _tlpSettings.SetColumnSpan(_btnSaveSettings, 2);
-        _tlpSettings.Controls.Add(_btnSaveSettings, 0, 15);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 13);
+
+        // _grpListener
+        _grpListener.AutoSize = true;
+        _grpListener.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpListener.Controls.Add(_tlpListener);
+        _grpListener.Dock = DockStyle.Fill;
+        _grpListener.Margin = new Padding(4, 4, 4, 4);
+        _grpListener.Name = "_grpListener";
+        _grpListener.Text = "Listener";
+
+        // _tlpListener
+        _tlpListener.AutoSize = true;
+        _tlpListener.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpListener.ColumnCount = 2;
+        _tlpListener.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpListener.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpListener.Dock = DockStyle.Fill;
+        _tlpListener.Margin = new Padding(4);
+        _tlpListener.Name = "_tlpListener";
+        _tlpListener.RowCount = 3;
+        _tlpListener.Controls.Add(_lblListenPort, 0, 0);
+        _tlpListener.Controls.Add(_txtListenPort, 1, 0);
+        _tlpListener.Controls.Add(_lblListenAddress, 0, 1);
+        _tlpListener.Controls.Add(_cmbListenAddress, 1, 1);
+        _tlpListener.SetColumnSpan(_btnSaveListener, 2);
+        _tlpListener.Controls.Add(_btnSaveListener, 0, 2);
 
         _lblListenPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblListenPort.AutoSize = true;
@@ -816,12 +842,12 @@ partial class MainForm
         _btnConfigureMapping.Text = "Configure Selected…";
         _btnConfigureMapping.Click += BtnConfigureMapping_Click;
 
-        _btnSaveSettings.Anchor = AnchorStyles.Right;
-        _btnSaveSettings.AutoSize = true;
-        _btnSaveSettings.Margin = new Padding(4, 8, 4, 4);
-        _btnSaveSettings.Name = "_btnSaveSettings";
-        _btnSaveSettings.Text = "Save Settings";
-        _btnSaveSettings.Click += BtnSaveSettings_Click;
+        _btnSaveListener.Anchor = AnchorStyles.Right;
+        _btnSaveListener.AutoSize = true;
+        _btnSaveListener.Margin = new Padding(4, 8, 4, 4);
+        _btnSaveListener.Name = "_btnSaveListener";
+        _btnSaveListener.Text = "Save";
+        _btnSaveListener.Click += BtnSaveListener_Click;
 
         // _grpLogging
         _grpLogging.AutoSize = true;
@@ -1397,6 +1423,10 @@ partial class MainForm
         _tlpTestTop.ResumeLayout(false);
         _tlpTestTop.PerformLayout();
         _tabHeartbeats.ResumeLayout(false);
+        _grpListener.ResumeLayout(false);
+        _grpListener.PerformLayout();
+        _tlpListener.ResumeLayout(false);
+        _tlpListener.PerformLayout();
         _tlpHeartbeats.ResumeLayout(false);
         _tlpHeartbeats.PerformLayout();
         _flpHeartbeatButtons.ResumeLayout(false);
@@ -1476,7 +1506,9 @@ partial class MainForm
     private Button _btnRemoveMapping;
     private Button _btnDuplicateMapping;
     private Button _btnConfigureMapping;
-    private Button _btnSaveSettings;
+    private GroupBox _grpListener;
+    private TableLayoutPanel _tlpListener;
+    private Button _btnSaveListener;
     private CheckBox _chkAutoStart;
     private CheckBox _chkStartWithDashboard;
     private CheckBox _chkCollectDetails;
