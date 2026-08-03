@@ -19,7 +19,14 @@ internal enum UpstreamType
 /// </summary>
 internal enum ThinkingMode
 {
-    /// <summary>Pass the upstream response through unchanged (default).</summary>
+    /// <summary>
+    /// Leave thinking text exactly where the upstream placed it (default). Inline
+    /// <c>&lt;think&gt;...&lt;/think&gt;</c> blocks stay in the visible answer, and a native
+    /// <c>reasoning_content</c> field is mirrored into <c>content</c> when the latter is empty.
+    /// </summary>
+    LeaveInline = 0,
+
+    /// <summary>Legacy alias for <see cref="LeaveInline"/>.</summary>
     Off = 0,
 
     /// <summary>
@@ -28,6 +35,17 @@ internal enum ThinkingMode
     /// providers such as Qwen Cloud that return reasoning inline in the older response format.
     /// </summary>
     ExtractThinkTags = 1,
+
+    /// <summary>Alias for <see cref="ExtractThinkTags"/>.</summary>
+    MoveToReasoningContent = 1,
+
+    /// <summary>
+    /// Remove <c>&lt;think&gt;...&lt;/think&gt;</c> blocks from the client-facing answer entirely
+    /// without re-emitting them as <c>reasoning_content</c>. The unmodified upstream body (including
+    /// the thinking text) is still available in captured request logs when response detail
+    /// collection is enabled.
+    /// </summary>
+    StripFromOutput = 2,
 }
 
 internal static class UpstreamTypeExtensions
@@ -167,12 +185,14 @@ internal sealed class ModelMapping
     /// (e.g. Qwen Cloud's older response format) embed reasoning inside the normal <c>content</c>
     /// field wrapped in <c>&lt;think&gt;...&lt;/think&gt;</c> tags, which modern clients such as
     /// Visual Studio cannot roll into a dedicated thinking box. When set to
-    /// <see cref="ThinkingMode.ExtractThinkTags"/>, the proxy strips those tags out of
+    /// <see cref="ThinkingMode.MoveToReasoningContent"/>, the proxy strips those tags out of
     /// <c>content</c> and re-emits the enclosed text as <c>reasoning_content</c> (for both
     /// streaming and non-streaming responses) so clients can render a collapsible thinking panel.
-    /// Defaults to <see cref="ThinkingMode.Off"/> (pass responses through unchanged).
+    /// <see cref="ThinkingMode.StripFromOutput"/> drops the thinking text from the client-facing
+    /// answer entirely (it remains in captured logs). Defaults to
+    /// <see cref="ThinkingMode.LeaveInline"/> (pass responses through unchanged).
     /// </summary>
-    public ThinkingMode ThinkingMode { get; set; } = ThinkingMode.Off;
+    public ThinkingMode ThinkingMode { get; set; } = ThinkingMode.LeaveInline;
 
     /// <summary>
     /// Optional name of a centrally stored <see cref="StoredCredential"/> whose secret is used as

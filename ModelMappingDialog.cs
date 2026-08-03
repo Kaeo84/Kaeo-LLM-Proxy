@@ -46,7 +46,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly NumericUpDown _nudRepeatPenalty = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
-    private readonly CheckBox _chkExtractThinkTags = new();
+    private readonly Label _lblThinkingHandling = new();
+    private readonly ComboBox _cmbThinkingHandling = new();
     private readonly CheckBox _chkSupportsVision = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
@@ -172,8 +173,20 @@ internal sealed class ModelMappingDialog : Form
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private ThinkingMode ThinkingMode
     {
-        get => _chkExtractThinkTags.Checked ? ThinkingMode.ExtractThinkTags : ThinkingMode.Off;
-        set => _chkExtractThinkTags.Checked = value == ThinkingMode.ExtractThinkTags;
+        get => (_cmbThinkingHandling.SelectedItem as ThinkingModeOption)?.Mode ?? ThinkingMode.LeaveInline;
+        set
+        {
+            for (int i = 0; i < _cmbThinkingHandling.Items.Count; i++)
+            {
+                if (((ThinkingModeOption)_cmbThinkingHandling.Items[i]!).Mode == value)
+                {
+                    _cmbThinkingHandling.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            _cmbThinkingHandling.SelectedIndex = 0;
+        }
     }
 
     private static decimal ClampDecimal(double value, decimal min, decimal max, decimal fallback)
@@ -345,8 +358,9 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkIsEnabled, 0, 10);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
         _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 11);
-        _tlpMain.SetColumnSpan(_chkExtractThinkTags, 3);
-        _tlpMain.Controls.Add(_chkExtractThinkTags, 0, 12);
+        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 12);
+        _tlpMain.SetColumnSpan(_cmbThinkingHandling, 2);
+        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 12);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
         _tlpMain.Controls.Add(_chkSupportsVision, 0, 13);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
@@ -489,13 +503,27 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
 
-        _chkExtractThinkTags.AutoSize = true;
-        _chkExtractThinkTags.Margin = new Padding(0, 2, 0, 2);
-        _chkExtractThinkTags.Text = "Extract <think> tags into reasoning_content (Qwen Cloud compatibility)";
+        _lblThinkingHandling.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblThinkingHandling.AutoSize = true;
+        _lblThinkingHandling.Margin = new Padding(0, 8, 8, 4);
+        _lblThinkingHandling.Text = "Thinking Handling:";
+
+        _cmbThinkingHandling.Dock = DockStyle.Fill;
+        _cmbThinkingHandling.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbThinkingHandling.Margin = new Padding(0, 4, 0, 4);
+        _cmbThinkingHandling.Items.AddRange(
+        [
+            new ThinkingModeOption(ThinkingMode.LeaveInline, "Leave thinking in the visible answer"),
+            new ThinkingModeOption(ThinkingMode.MoveToReasoningContent, "Move thinking into reasoning_content (Qwen Cloud compatibility)"),
+            new ThinkingModeOption(ThinkingMode.StripFromOutput, "Remove thinking from client output (kept in logs)"),
+        ]);
+        _cmbThinkingHandling.SelectedIndex = 0;
         _toolTip.SetToolTip(
-            _chkExtractThinkTags,
-            "When checked, <think>...</think> blocks are removed from visible content and\n"
-            + "re-emitted as reasoning_content for collapsible thinking panels in clients like VS.");
+            _cmbThinkingHandling,
+            "Controls how upstream <think> reasoning is surfaced to clients.\n"
+            + "Leave inline keeps it in the visible answer; moving it to reasoning_content lets\n"
+            + "clients like VS render a collapsible thinking panel; removing it hides it from\n"
+            + "clients entirely while captured logs still retain the original upstream body.");
 
         _chkSupportsVision.AutoSize = true;
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
@@ -817,5 +845,11 @@ internal sealed class ModelMappingDialog : Form
         _cmbUpstreamType.Items.Clear();
         _cmbUpstreamType.Items.Add(UpstreamType.OpenAI.ToDisplayName());
         _cmbUpstreamType.SelectedItem = selected.ToDisplayName();
+    }
+
+    /// <summary>Display wrapper binding a friendly label to a <see cref="ThinkingMode"/> value.</summary>
+    private sealed record ThinkingModeOption(ThinkingMode Mode, string Label)
+    {
+        public override string ToString() => Label;
     }
 }
