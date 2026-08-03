@@ -21,6 +21,7 @@ internal sealed class ModelMappingDialog : Form
 {
     private const string NoneLabel = "(None)";
 
+    private readonly Panel _pnlScroll = new();
     private readonly TableLayoutPanel _tlpMain = new();
     private readonly Label _lblProxyName = new();
     private readonly TextBox _txtProxyName = new();
@@ -290,13 +291,14 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        // Every row sizes to its content except row 20, a flexible filler that absorbs leftover
-        // vertical space so the button row stays anchored near the bottom of the dialog.
-        _tlpMain.RowCount = 23;
+        // Every row sizes to its content. The table lives inside a scrollable panel so all
+        // settings stay reachable when the content is taller than the dialog.
+        _tlpMain.RowCount = 22;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpMain.RowStyles[20] = new RowStyle(SizeType.Percent, 100F);
-        _tlpMain.Dock = DockStyle.Fill;
+        _tlpMain.AutoSize = true;
+        _tlpMain.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpMain.Dock = DockStyle.Top;
         _tlpMain.Padding = new Padding(8);
 
         _tlpMain.Controls.Add(_lblProxyName, 0, 0);
@@ -365,8 +367,6 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 20);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
         _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 21);
-        _tlpMain.SetColumnSpan(_flpButtons, 3);
-        _tlpMain.Controls.Add(_flpButtons, 0, 22);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -563,9 +563,9 @@ internal sealed class ModelMappingDialog : Form
         _flpButtons.AutoSize = true;
         _flpButtons.Controls.Add(_btnCancel);
         _flpButtons.Controls.Add(_btnOk);
-        _flpButtons.Dock = DockStyle.Fill;
+        _flpButtons.Dock = DockStyle.Bottom;
         _flpButtons.FlowDirection = FlowDirection.RightToLeft;
-        _flpButtons.Margin = new Padding(0, 8, 0, 0);
+        _flpButtons.Padding = new Padding(8);
 
         _btnOk.AutoSize = true;
         _btnOk.Click += BtnOk_Click;
@@ -583,8 +583,13 @@ internal sealed class ModelMappingDialog : Form
         AutoScaleMode = AutoScaleMode.Font;
         CancelButton = _btnCancel;
         ClientSize = new Size(600, 640);
-        Controls.Add(_tlpMain);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        _pnlScroll.AutoScroll = true;
+        _pnlScroll.Dock = DockStyle.Fill;
+        _pnlScroll.Controls.Add(_tlpMain);
+        Controls.Add(_flpButtons);
+        Controls.Add(_pnlScroll);
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MinimumSize = new Size(480, 420);
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
