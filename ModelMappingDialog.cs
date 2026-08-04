@@ -47,8 +47,10 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblRepeatPenalty = new();
     private readonly NumericUpDown _nudRepeatPenalty = new();
     private readonly CheckBox _chkIsEnabled = new();
-    private readonly CheckBox _chkSendTemperature = new();
-    private readonly CheckBox _chkSendRepeatPenalty = new();
+    private readonly Label _lblTempPriority = new();
+    private readonly ComboBox _cmbTempPriority = new();
+    private readonly Label _lblRepeatPenaltyPriority = new();
+    private readonly ComboBox _cmbRepeatPenaltyPriority = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
     private readonly Label _lblThinkingHandling = new();
     private readonly ComboBox _cmbThinkingHandling = new();
@@ -142,17 +144,31 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool SendTemperature
+    private SamplingPriority TemperaturePriority
     {
-        get => _chkSendTemperature.Checked;
-        set => _chkSendTemperature.Checked = value;
+        get => (_cmbTempPriority.SelectedItem as SamplingPriorityOption)?.Priority ?? SamplingPriority.ClientApp;
+        set => SelectSamplingPriority(_cmbTempPriority, value);
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool SendRepeatPenalty
+    private SamplingPriority RepeatPenaltyPriority
     {
-        get => _chkSendRepeatPenalty.Checked;
-        set => _chkSendRepeatPenalty.Checked = value;
+        get => (_cmbRepeatPenaltyPriority.SelectedItem as SamplingPriorityOption)?.Priority ?? SamplingPriority.ClientApp;
+        set => SelectSamplingPriority(_cmbRepeatPenaltyPriority, value);
+    }
+
+    private static void SelectSamplingPriority(ComboBox combo, SamplingPriority value)
+    {
+        for (int i = 0; i < combo.Items.Count; i++)
+        {
+            if (((SamplingPriorityOption)combo.Items[i]!).Priority == value)
+            {
+                combo.SelectedIndex = i;
+                return;
+            }
+        }
+
+        combo.SelectedIndex = 0;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -366,18 +382,21 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_txtContextWindow, 2);
         _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 8);
+        _tlpMain.Controls.Add(_lblTempPriority, 0, 8);
+        _tlpMain.SetColumnSpan(_cmbTempPriority, 2);
+        _tlpMain.Controls.Add(_cmbTempPriority, 1, 8);
+
+        _tlpMain.Controls.Add(_lblTemperature, 0, 9);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 8);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 9);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 9);
+        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 10);
+        _tlpMain.SetColumnSpan(_cmbRepeatPenaltyPriority, 2);
+        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 10);
+
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 11);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 9);
-
-        _tlpMain.SetColumnSpan(_chkSendTemperature, 3);
-        _tlpMain.Controls.Add(_chkSendTemperature, 0, 10);
-        _tlpMain.SetColumnSpan(_chkSendRepeatPenalty, 3);
-        _tlpMain.Controls.Add(_chkSendRepeatPenalty, 0, 11);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 11);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
         _tlpMain.Controls.Add(_chkIsEnabled, 0, 12);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
@@ -518,17 +537,41 @@ internal sealed class ModelMappingDialog : Form
         _nudRepeatPenalty.Size = new Size(90, 25);
         _nudRepeatPenalty.Value = 1.0M;
 
-        _chkSendTemperature.AutoSize = true;
-        _chkSendTemperature.Margin = new Padding(0, 8, 0, 2);
-        _chkSendTemperature.Text = "Send temperature to upstream (uncheck to keep the provider's platform setting)";
-        _chkSendTemperature.Checked = true;
-        _chkSendTemperature.CheckedChanged += (_, _) => _nudTemperature.Enabled = _chkSendTemperature.Checked;
+        _lblTempPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblTempPriority.AutoSize = true;
+        _lblTempPriority.Margin = new Padding(0, 8, 8, 4);
+        _lblTempPriority.Text = "Temperature Priority:";
 
-        _chkSendRepeatPenalty.AutoSize = true;
-        _chkSendRepeatPenalty.Margin = new Padding(0, 2, 0, 2);
-        _chkSendRepeatPenalty.Text = "Send repeat penalty to upstream (uncheck to keep the provider's platform setting)";
-        _chkSendRepeatPenalty.Checked = true;
-        _chkSendRepeatPenalty.CheckedChanged += (_, _) => _nudRepeatPenalty.Enabled = _chkSendRepeatPenalty.Checked;
+        _cmbTempPriority.Dock = DockStyle.Fill;
+        _cmbTempPriority.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbTempPriority.Margin = new Padding(0, 4, 0, 4);
+        _cmbTempPriority.Items.AddRange([.. SamplingPriorityOptions()]);
+        _cmbTempPriority.SelectedIndex = 0;
+        _cmbTempPriority.SelectedIndexChanged += (_, _) =>
+            _nudTemperature.Enabled = TemperaturePriority != SamplingPriority.Provider;
+        _toolTip.SetToolTip(
+            _cmbTempPriority,
+            "Client App Priority passes the client's temperature through; Proxy Priority always\n"
+            + "sends the configured Temperature (overriding the client); Provider Priority omits the\n"
+            + "field so the provider's platform setting wins.");
+
+        _lblRepeatPenaltyPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblRepeatPenaltyPriority.AutoSize = true;
+        _lblRepeatPenaltyPriority.Margin = new Padding(0, 8, 8, 4);
+        _lblRepeatPenaltyPriority.Text = "Repeat Penalty Priority:";
+
+        _cmbRepeatPenaltyPriority.Dock = DockStyle.Fill;
+        _cmbRepeatPenaltyPriority.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbRepeatPenaltyPriority.Margin = new Padding(0, 4, 0, 4);
+        _cmbRepeatPenaltyPriority.Items.AddRange([.. SamplingPriorityOptions()]);
+        _cmbRepeatPenaltyPriority.SelectedIndex = 0;
+        _cmbRepeatPenaltyPriority.SelectedIndexChanged += (_, _) =>
+            _nudRepeatPenalty.Enabled = RepeatPenaltyPriority != SamplingPriority.Provider;
+        _toolTip.SetToolTip(
+            _cmbRepeatPenaltyPriority,
+            "Client App Priority passes the client's repeat penalty through; Proxy Priority always\n"
+            + "sends the configured Repeat Penalty (overriding the client); Provider Priority omits\n"
+            + "the field so the provider's platform setting wins.");
 
         _chkIsEnabled.AutoSize = true;
         _chkIsEnabled.Margin = new Padding(0, 8, 0, 2);
@@ -913,8 +956,8 @@ internal sealed class ModelMappingDialog : Form
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
-        dlg.SendTemperature = mapping.SendTemperature;
-        dlg.SendRepeatPenalty = mapping.SendRepeatPenalty;
+        dlg.TemperaturePriority = mapping.TemperaturePriority;
+        dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
         dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.SupportsVision = mapping.SupportsVision ?? false;
@@ -945,8 +988,8 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
-        mapping.SendTemperature = dlg.SendTemperature;
-        mapping.SendRepeatPenalty = dlg.SendRepeatPenalty;
+        mapping.TemperaturePriority = dlg.TemperaturePriority;
+        mapping.RepeatPenaltyPriority = dlg.RepeatPenaltyPriority;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
         mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.SupportsVision = dlg.SupportsVision;
@@ -977,4 +1020,17 @@ internal sealed class ModelMappingDialog : Form
     {
         public override string ToString() => Label;
     }
+
+    /// <summary>Display wrapper binding a friendly label to a <see cref="SamplingPriority"/> value.</summary>
+    private sealed record SamplingPriorityOption(SamplingPriority Priority, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private static SamplingPriorityOption[] SamplingPriorityOptions() =>
+    [
+        new(SamplingPriority.ClientApp, "Client App Priority (client value wins)"),
+        new(SamplingPriority.Proxy, "Proxy Priority (configured value overrides client)"),
+        new(SamplingPriority.Provider, "Provider Priority (field omitted, platform setting wins)"),
+    ];
 }

@@ -795,8 +795,8 @@ internal partial class MainForm : Form
                 ModelName = mapping.ModelName,
                 EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
                 ThinkingMode = mapping.ThinkingMode,
-                SendTemperature = mapping.SendTemperature,
-                SendRepeatPenalty = mapping.SendRepeatPenalty,
+                TemperaturePriority = mapping.TemperaturePriority,
+                RepeatPenaltyPriority = mapping.RepeatPenaltyPriority,
                 EnableHeartbeats = mapping.EnableHeartbeats,
                 CredentialName = mapping.CredentialName,
                 UpstreamUrl = mapping.UpstreamUrl,
@@ -1023,8 +1023,8 @@ internal partial class MainForm : Form
                 IsEnabled              = advanced?.IsEnabled ?? true,
                 EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
                 ThinkingMode           = advanced?.ThinkingMode ?? ThinkingMode.Off,
-                SendTemperature        = advanced?.SendTemperature ?? true,
-                SendRepeatPenalty      = advanced?.SendRepeatPenalty ?? true,
+                TemperaturePriority    = advanced?.TemperaturePriority ?? SamplingPriority.ClientApp,
+                RepeatPenaltyPriority   = advanced?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
                 SupportsVision         = advanced?.SupportsVision,
                 EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
                 CredentialName         = advanced?.CredentialName,
@@ -1719,10 +1719,17 @@ internal partial class MainForm : Form
             ["stream"] = true,
             ["messages"] = messagesArray,
         };
-        if (mapping.SendTemperature)
+        // The Test Console is itself the client app: its values win under Client App Priority,
+        // the configured proxy values win under Proxy Priority, and Provider Priority omits them.
+        if (mapping.TemperaturePriority == SamplingPriority.ClientApp)
             payload["temperature"] = (double)_nudTestTemp.Value;
-        if (mapping.SendRepeatPenalty)
+        else if (mapping.TemperaturePriority == SamplingPriority.Proxy)
+            payload["temperature"] = mapping.Temperature;
+
+        if (mapping.RepeatPenaltyPriority == SamplingPriority.ClientApp)
             payload["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value;
+        else if (mapping.RepeatPenaltyPriority == SamplingPriority.Proxy)
+            payload["repeat_penalty"] = mapping.RepeatPenalty;
         string requestBody = payload.ToJsonString(_indentedJsonOptions);
 
         var log = new RequestLog
@@ -1835,13 +1842,13 @@ internal partial class MainForm : Form
             return;
 
         _nudTestTemp.Value = ClampDecimal(mapping.Temperature, _nudTestTemp.Minimum, _nudTestTemp.Maximum, _nudTestTemp.Value);
-        _nudTestTemp.Enabled = mapping.SendTemperature;
+        _nudTestTemp.Enabled = mapping.TemperaturePriority != SamplingPriority.Provider;
         _nudTestRepeatPenalty.Value = ClampDecimal(
             mapping.RepeatPenalty,
             _nudTestRepeatPenalty.Minimum,
             _nudTestRepeatPenalty.Maximum,
             _nudTestRepeatPenalty.Value);
-        _nudTestRepeatPenalty.Enabled = mapping.SendRepeatPenalty;
+        _nudTestRepeatPenalty.Enabled = mapping.RepeatPenaltyPriority != SamplingPriority.Provider;
     }
 
     private static decimal ClampDecimal(double value, decimal min, decimal max, decimal fallback)

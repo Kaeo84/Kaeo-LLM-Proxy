@@ -220,6 +220,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Resolves which sampling value to send upstream per the per-model priority: the client's
+    /// value wins (<see cref="SamplingPriority.ClientApp"/>), the proxy's configured value
+    /// overrides (<see cref="SamplingPriority.Proxy"/>), or the field is omitted entirely
+    /// (<see cref="SamplingPriority.Provider"/>).
+    /// </summary>
+    private static float? ResolveSamplingValue(SamplingPriority priority, float? clientValue, float proxyValue) =>
+        priority switch
+        {
+            SamplingPriority.Provider => null,
+            SamplingPriority.Proxy => proxyValue,
+            _ => clientValue,
+        };
+
+    /// <summary>
     /// Returns whether heartbeats should be emitted for the given model, combining the
     /// global toggle with the per-mapping <see cref="ModelMapping.EnableHeartbeats"/> flag.
     /// </summary>
@@ -1553,9 +1567,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     ///         separated by a blank line, so that strict Jinja templates (e.g. Qwen3)
     ///         that only allow one system message do not raise an exception.</item>
     ///   <item>Removes a trailing assistant response-prefill message, because some upstreams reject it when thinking mode is enabled.</item>
-    ///   <item>Drops client-supplied <c>temperature</c>/<c>repeat_penalty</c> when the mapping's
-    ///         SendTemperature/SendRepeatPenalty flags are disabled, so hosted providers keep
-    ///         their platform-configured values.</item>
+    ///   <item>Applies the per-model sampling priorities: <c>Provider</c> drops client-supplied
+    ///         <c>temperature</c>/<c>repeat_penalty</c> so hosted providers keep their platform
+    ///         values; <c>Proxy</c> overwrites (or injects) the configured proxy values.</item>
     /// </list>
     /// Returns the original text unchanged if the body isn't valid JSON.
     /// </summary>
@@ -1576,8 +1590,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(original) ?? true;
             string? injectedInstructions = GetInstructionTextForModel(original);
             ModelMapping? normalizeMapping = _settings.FindModelMapping(original);
-            bool dropTemperature = normalizeMapping is not null && !normalizeMapping.SendTemperature;
-            bool dropRepeatPenalty = normalizeMapping is not null && !normalizeMapping.SendRepeatPenalty;
+            SamplingPriority tempPriority = normalizeMapping?.TemperaturePriority ?? SamplingPriority.ClientApp;
+            SamplingPriority repeatPriority = normalizeMapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp;
+            double proxyTemperature = normalizeMapping?.Temperature ?? 0.7;
+            double proxyRepeatPenalty = normalizeMapping?.RepeatPenalty ?? 1.0;
 
             // Check whether the messages array has consecutive leading system messages.
             bool hasConsecutiveSystemMessages = false;
@@ -1610,8 +1626,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 && !hasConsecutiveSystemMessages
                 && !hasTrailingAssistantPrefill
                 && !shouldInjectInstructions
-                && !dropTemperature
-                && !dropRepeatPenalty)
+                && tempPriority == SamplingPriority.ClientApp
+                && repeatPriority == SamplingPriority.ClientApp)
                 return json;
 
             using var ms = new System.IO.MemoryStream();
@@ -1619,15 +1635,32 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             writer.WriteStartObject();
 
+            bool clientHadTemperature = false;
+            bool clientHadRepeatPenalty = false;
+
             foreach (JsonProperty prop in root.EnumerateObject())
             {
-                if (dropTemperature && prop.Name.Equals("temperature", StringComparison.OrdinalIgnoreCase))
+                if (prop.Name.Equals("temperature", StringComparison.OrdinalIgnoreCase))
                 {
-                    continue;
+                    clientHadTemperature = true;
+                    if (tempPriority == SamplingPriority.Provider)
+                        continue;
+
+                    if (tempPriority == SamplingPriority.Proxy)
+                        writer.WriteNumber("temperature", proxyTemperature);
+                    else
+                        prop.WriteTo(writer);
                 }
-                else if (dropRepeatPenalty && prop.Name.Equals("repeat_penalty", StringComparison.OrdinalIgnoreCase))
+                else if (prop.Name.Equals("repeat_penalty", StringComparison.OrdinalIgnoreCase))
                 {
-                    continue;
+                    clientHadRepeatPenalty = true;
+                    if (repeatPriority == SamplingPriority.Provider)
+                        continue;
+
+                    if (repeatPriority == SamplingPriority.Proxy)
+                        writer.WriteNumber("repeat_penalty", proxyRepeatPenalty);
+                    else
+                        prop.WriteTo(writer);
                 }
                 else if (prop.Name.Equals("model", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1699,6 +1732,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     prop.WriteTo(writer);
                 }
             }
+
+            // Proxy priority injects the configured value when the client did not send one.
+            if (tempPriority == SamplingPriority.Proxy && !clientHadTemperature)
+                writer.WriteNumber("temperature", proxyTemperature);
+            if (repeatPriority == SamplingPriority.Proxy && !clientHadRepeatPenalty)
+                writer.WriteNumber("repeat_penalty", proxyRepeatPenalty);
 
             writer.WriteEndObject();
             writer.Flush();
@@ -2137,7 +2176,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Prompt = prompt,
                 Stream = ollamaReq.Stream,
                 ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
-                Temperature = mapping?.SendTemperature ?? true ? ollamaReq.Options?.Temperature : null,
+                Temperature = ResolveSamplingValue(
+                    mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
+                    ollamaReq.Options?.Temperature,
+                    (float)(mapping?.Temperature ?? 0.7)),
                 TopP = ollamaReq.Options?.TopP,
                 TopK = ollamaReq.Options?.TopK,
                 MinP = ollamaReq.Options?.MinP,
@@ -2146,7 +2188,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Seed = ollamaReq.Options?.Seed,
                 PresencePenalty = ollamaReq.Options?.PresencePenalty,
                 FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
-                RepeatPenalty = mapping?.SendRepeatPenalty ?? true ? ollamaReq.Options?.RepeatPenalty : null,
+                RepeatPenalty = ResolveSamplingValue(
+                    mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
+                    ollamaReq.Options?.RepeatPenalty,
+                    (float)(mapping?.RepeatPenalty ?? 1.0)),
             };
 
         using StringContent genContent = new(JsonSerializer.Serialize(llamaReq, _jsonOptions), Encoding.UTF8, "application/json");
@@ -2270,7 +2315,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Stream = ollamaReq.Stream,
                 Tools = MapTools(ollamaReq.Tools),
                 ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
-                Temperature = mapping?.SendTemperature ?? true ? ollamaReq.Options?.Temperature : null,
+                Temperature = ResolveSamplingValue(
+                    mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
+                    ollamaReq.Options?.Temperature,
+                    (float)(mapping?.Temperature ?? 0.7)),
                 TopP = ollamaReq.Options?.TopP,
                 TopK = ollamaReq.Options?.TopK,
                 MinP = ollamaReq.Options?.MinP,
@@ -2279,10 +2327,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Seed = ollamaReq.Options?.Seed,
                 PresencePenalty = ollamaReq.Options?.PresencePenalty,
                 FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
-                RepeatPenalty = mapping?.SendRepeatPenalty ?? true
-                    ? ollamaReq.Options?.RepeatPenalty
-                        ?? (mapping is not null && mapping.RepeatPenalty != 1.0 ? (float)mapping.RepeatPenalty : null)
-                    : null,
+                RepeatPenalty = ResolveSamplingValue(
+                    mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
+                    ollamaReq.Options?.RepeatPenalty,
+                    (float)(mapping?.RepeatPenalty ?? 1.0)),
                 Mirostat = ollamaReq.Options?.Mirostat,
                 MirostatTau = ollamaReq.Options?.MirostatTau,
                 MirostatEta = ollamaReq.Options?.MirostatEta,
@@ -3895,8 +3943,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             UpstreamUrl = mapping.UpstreamUrl,
             UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds,
             RepeatPenalty = mapping.RepeatPenalty,
-            SendTemperature = mapping.SendTemperature,
-            SendRepeatPenalty = mapping.SendRepeatPenalty,
+            TemperaturePriority = mapping.TemperaturePriority,
+            RepeatPenaltyPriority = mapping.RepeatPenaltyPriority,
             Temperature = mapping.Temperature,
             EnableAutoSummarization = mapping.EnableAutoSummarization,
             PreserveRecentMessageCount = mapping.PreserveRecentMessageCount,

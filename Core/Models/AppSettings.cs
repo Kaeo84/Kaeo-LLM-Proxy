@@ -15,6 +15,22 @@ internal enum UpstreamType
 }
 
 /// <summary>
+/// Determines which configured value wins for a sampling parameter (temperature / repeat penalty)
+/// in upstream requests for a model mapping.
+/// </summary>
+internal enum SamplingPriority
+{
+    /// <summary>The client app's value wins and is passed through; omitted when the client sent none.</summary>
+    ClientApp = 0,
+
+    /// <summary>The proxy's per-model configured value always wins, overriding any client-supplied value.</summary>
+    Proxy = 1,
+
+    /// <summary>The field is omitted entirely so the provider's platform-configured value applies.</summary>
+    Provider = 2,
+}
+
+/// <summary>
 /// Controls how upstream reasoning/"thinking" text is transformed before being returned to clients.
 /// </summary>
 internal enum ThinkingMode
@@ -213,24 +229,31 @@ internal sealed class ModelMapping
     public int UpstreamTimeoutSeconds { get; set; } = 300;
 
     /// <summary>
-    /// Repeat penalty to send to compatible upstreams. 1.0 is neutral/no penalty.
-    /// Only forwarded when <see cref="SendRepeatPenalty"/> is true.
+    /// Repeat penalty for compatible upstreams. 1.0 is neutral/no penalty. Used when
+    /// <see cref="RepeatPenaltyPriority"/> is <see cref="SamplingPriority.Proxy"/> and as the
+    /// Test Console default.
     /// </summary>
     public double RepeatPenalty { get; set; } = 1.0;
 
     /// <summary>
-    /// When true (default), <c>temperature</c> is included in upstream requests for this model
-    /// (client-supplied value, or the Test Console value). When false, the field is omitted
-    /// entirely so hosted providers keep whatever temperature is configured on their platform.
+    /// Controls which temperature wins in upstream requests for this model.
+    /// <see cref="SamplingPriority.ClientApp"/> passes the client's value through (omitted when
+    /// the client sent none); <see cref="SamplingPriority.Proxy"/> always sends
+    /// <see cref="Temperature"/>, overriding the client; <see cref="SamplingPriority.Provider"/>
+    /// omits the field entirely so hosted providers keep their platform-configured value.
+    /// Defaults to <see cref="SamplingPriority.ClientApp"/>.
     /// </summary>
-    public bool SendTemperature { get; set; } = true;
+    public SamplingPriority TemperaturePriority { get; set; } = SamplingPriority.ClientApp;
 
     /// <summary>
-    /// When true (default), <c>repeat_penalty</c> is included in upstream requests for this model
-    /// (client-supplied value, or <see cref="RepeatPenalty"/> when the client sends none). When
-    /// false, the field is omitted entirely so hosted providers keep their platform default.
+    /// Controls which repeat penalty wins in upstream requests for this model.
+    /// <see cref="SamplingPriority.ClientApp"/> passes the client's value through (omitted when
+    /// the client sent none); <see cref="SamplingPriority.Proxy"/> always sends
+    /// <see cref="RepeatPenalty"/>, overriding the client; <see cref="SamplingPriority.Provider"/>
+    /// omits the field entirely so hosted providers keep their platform default.
+    /// Defaults to <see cref="SamplingPriority.ClientApp"/>.
     /// </summary>
-    public bool SendRepeatPenalty { get; set; } = true;
+    public SamplingPriority RepeatPenaltyPriority { get; set; } = SamplingPriority.ClientApp;
 
     /// <summary>
     /// Default temperature to use for this model in the Test Console. Upstream proxy requests keep their client-supplied value.
@@ -326,8 +349,8 @@ internal sealed class ModelMapping
         UpstreamUrl = UpstreamUrl,
         UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
         RepeatPenalty = RepeatPenalty,
-        SendTemperature = SendTemperature,
-        SendRepeatPenalty = SendRepeatPenalty,
+        TemperaturePriority = TemperaturePriority,
+        RepeatPenaltyPriority = RepeatPenaltyPriority,
         Temperature = Temperature,
         EnableAutoSummarization = EnableAutoSummarization,
         PreserveRecentMessageCount = PreserveRecentMessageCount,
