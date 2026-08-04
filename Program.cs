@@ -38,7 +38,11 @@ internal static class Program
         };
 
         AppSettings settings = AppSettings.Load();
-        AppDatabase database = new(settings.Logging);
+
+        // Program owns the single shared AppDatabase for the whole process. It is passed into
+        // TrayApplicationContext rather than created there so a second connection to the same
+        // file can never exist.
+        using AppDatabase database = new(settings.Logging);
         settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
 
         if (!settings.AllowMultipleInstances)

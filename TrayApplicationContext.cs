@@ -21,24 +21,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private MainForm? _mainForm;
     private bool _disposed;
 
-    public TrayApplicationContext() : this(AppSettings.Load()) { }
-
-    public TrayApplicationContext(AppSettings settings) : this(settings, new AppDatabase(settings.Logging)) { }
-
+    /// <summary>
+    /// Creates the tray context. <paramref name="settings"/> must already have runtime settings,
+    /// model mappings, and credentials applied (see <c>Program.Main</c>). The caller owns the
+    /// supplied <paramref name="database"/> — exactly one shared instance exists per process.
+    /// </summary>
     public TrayApplicationContext(AppSettings settings, AppDatabase database)
     {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(database);
+
         _settings = settings;
         _database = database;
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
-        _settings.ApplyRuntimeSettings(_database.LoadRuntimeSettings());
-
-        // Program.Main loads and decrypts model mappings before constructing this context so the
-        // passphrase prompt can run before the proxy starts. Only load from the database when they
-        // have not already been populated (e.g. when this context is created directly in tests).
-        if (_settings.ModelMappings.Count == 0)
-            _settings.ModelMappings = [.. _database.LoadModelMappings()];
 
         _settings.InstructionSets = [.. _database.LoadInstructionSets()];
 
@@ -269,8 +266,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _server.Dispose();
             _handler.Dispose();
             _stats.Dispose();
-            _database.Dispose();
             _perfService.Dispose();
+            // The database is owned by Program.Main (created and disposed there); only one
+            // shared instance exists per process, so it must not be disposed here.
             AppLogger.Shutdown();
         }
         base.Dispose(disposing);
