@@ -149,7 +149,7 @@ internal sealed class RuntimeSettings
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
-    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
+    /// When true, the proxy serves a Scalar API explorer at /swagger and an OpenAPI
     /// specification at /swagger/v1/swagger.json. Default: false.
     /// </summary>
     public bool EnableApiExplorer { get; set; } = false;
@@ -548,9 +548,10 @@ internal sealed class AppSettings
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
-    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
+    /// When true, the proxy serves a Scalar API explorer at /swagger and an OpenAPI
     /// specification at /swagger/v1/swagger.json, allowing browser-based exploration of all
-    /// proxy endpoints. Default: false.
+    /// proxy endpoints. Documents reported by loaded modules appear in the same explorer
+    /// dropdown. Default: false.
     /// </summary>
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;

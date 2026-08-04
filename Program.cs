@@ -4,6 +4,7 @@ using System.Security.Principal;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Modules;
 
 namespace Kaeo.LlmProxy;
 
@@ -71,7 +72,12 @@ internal static class Program
         settings.Credentials = [.. database.LoadCredentials()];
         ResolvePassphrase(settings);
 
-        Application.Run(new TrayApplicationContext(settings, database));
+        // Load user-registered modules (browse-to-import registry). A module that fails to load
+        // records its error in the registry and never blocks startup of the host or other modules.
+        ModuleHost moduleHost = new(database, settings);
+        moduleHost.LoadRegisteredModules();
+
+        Application.Run(new TrayApplicationContext(settings, database, moduleHost));
     }
 
     /// <summary>

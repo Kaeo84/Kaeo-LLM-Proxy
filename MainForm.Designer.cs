@@ -22,6 +22,7 @@ partial class MainForm
         _tabSettings = new TabPage();
         _tabInstructions = new TabPage();
         _tabCredentials = new TabPage();
+        _tabModules = new TabPage();
         _tabTest = new TabPage();
         _tabHeartbeats = new TabPage();
 
@@ -158,6 +159,20 @@ partial class MainForm
         _btnEditCredential = new Button();
         _btnRemoveCredential = new Button();
 
+        // Modules tab controls
+        _tlpModules = new TableLayoutPanel();
+        _lblModulesNote = new Label();
+        _lstModules = new ListView();
+        _colModuleName = new ColumnHeader();
+        _colModuleVersion = new ColumnHeader();
+        _colModuleState = new ColumnHeader();
+        _colModulePath = new ColumnHeader();
+        _lblModuleStatus = new Label();
+        _flpModuleButtons = new FlowLayoutPanel();
+        _btnImportModule = new Button();
+        _btnToggleModule = new Button();
+        _btnRemoveModule = new Button();
+
         // Test Console controls
         _tlpTestOuter = new TableLayoutPanel();
         _tlpTestTop = new TableLayoutPanel();
@@ -211,6 +226,9 @@ partial class MainForm
         _tabCredentials.SuspendLayout();
         _tlpCredentials.SuspendLayout();
         _flpCredentialButtons.SuspendLayout();
+        _tabModules.SuspendLayout();
+        _tlpModules.SuspendLayout();
+        _flpModuleButtons.SuspendLayout();
         _tabTest.SuspendLayout();
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
@@ -231,6 +249,7 @@ partial class MainForm
         _tabControl.Controls.Add(_tabSettings);
         _tabControl.Controls.Add(_tabInstructions);
         _tabControl.Controls.Add(_tabCredentials);
+        _tabControl.Controls.Add(_tabModules);
         _tabControl.Controls.Add(_tabTest);
         _tabControl.Controls.Add(_tabHeartbeats);
         _tabControl.Dock = DockStyle.Fill;
@@ -733,7 +752,7 @@ partial class MainForm
         _chkApiExplorer.AutoSize = true;
         _chkApiExplorer.Margin = new Padding(4, 4, 4, 4);
         _chkApiExplorer.Name = "_chkApiExplorer";
-        _chkApiExplorer.Text = "Enable API Explorer (Swagger UI at /swagger)";
+        _chkApiExplorer.Text = "Enable API Explorer (Scalar at /swagger)";
 
         _lblApiExplorerUrl.AutoSize = true;
         _lblApiExplorerUrl.Margin = new Padding(4, 0, 4, 8);
@@ -1127,6 +1146,95 @@ partial class MainForm
         _btnRemoveCredential.Text = "Remove";
         _btnRemoveCredential.Click += BtnRemoveCredential_Click;
 
+        // ── Modules tab ───────────────────────────────────────────────────
+
+        // _tabModules
+        _tabModules.Controls.Add(_tlpModules);
+        _tabModules.Dock = DockStyle.Fill;
+        _tabModules.Name = "_tabModules";
+        _tabModules.Padding = new Padding(8);
+        _tabModules.Text = "Modules";
+
+        // _tlpModules — 1 column, 4 rows: note | list | status | buttons
+        _tlpModules.ColumnCount = 1;
+        _tlpModules.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpModules.Controls.Add(_lblModulesNote, 0, 0);
+        _tlpModules.Controls.Add(_lstModules, 0, 1);
+        _tlpModules.Controls.Add(_lblModuleStatus, 0, 2);
+        _tlpModules.Controls.Add(_flpModuleButtons, 0, 3);
+        _tlpModules.Dock = DockStyle.Fill;
+        _tlpModules.Name = "_tlpModules";
+        _tlpModules.RowCount = 4;
+        _tlpModules.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModules.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _tlpModules.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModules.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _lblModulesNote.AutoSize = true;
+        _lblModulesNote.Margin = new Padding(0, 0, 0, 8);
+        _lblModulesNote.Name = "_lblModulesNote";
+        _lblModulesNote.Text = "Extend the proxy with optional modules. Import a module assembly (.dll) built against the Kaeo LLM Proxy Modules contracts library.";
+
+        // _lstModules
+        _lstModules.Columns.Add(_colModuleName);
+        _lstModules.Columns.Add(_colModuleVersion);
+        _lstModules.Columns.Add(_colModuleState);
+        _lstModules.Columns.Add(_colModulePath);
+        _lstModules.Dock = DockStyle.Fill;
+        _lstModules.FullRowSelect = true;
+        _lstModules.GridLines = true;
+        _lstModules.Margin = new Padding(0, 0, 0, 8);
+        _lstModules.MultiSelect = false;
+        _lstModules.Name = "_lstModules";
+        _lstModules.View = View.Details;
+        _lstModules.SelectedIndexChanged += LstModules_SelectedIndexChanged;
+
+        _colModuleName.Text = "Name";
+        _colModuleName.Width = 180;
+        _colModuleVersion.Text = "Version";
+        _colModuleVersion.Width = 80;
+        _colModuleState.Text = "State";
+        _colModuleState.Width = 80;
+        _colModulePath.Text = "Path";
+        _colModulePath.Width = 360;
+
+        // _lblModuleStatus — shows the selected module's last error or path
+        _lblModuleStatus.AutoSize = true;
+        _lblModuleStatus.ForeColor = SystemColors.GrayText;
+        _lblModuleStatus.Margin = new Padding(0, 0, 0, 8);
+        _lblModuleStatus.Name = "_lblModuleStatus";
+
+        // _flpModuleButtons
+        _flpModuleButtons.AutoSize = true;
+        _flpModuleButtons.Controls.Add(_btnImportModule);
+        _flpModuleButtons.Controls.Add(_btnToggleModule);
+        _flpModuleButtons.Controls.Add(_btnRemoveModule);
+        _flpModuleButtons.Dock = DockStyle.Fill;
+        _flpModuleButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpModuleButtons.Margin = new Padding(0);
+        _flpModuleButtons.Name = "_flpModuleButtons";
+        _flpModuleButtons.WrapContents = false;
+
+        _btnImportModule.AutoSize = true;
+        _btnImportModule.Margin = new Padding(0, 0, 8, 0);
+        _btnImportModule.Name = "_btnImportModule";
+        _btnImportModule.Text = "Import Module...";
+        _btnImportModule.Click += BtnImportModule_Click;
+
+        _btnToggleModule.AutoSize = true;
+        _btnToggleModule.Enabled = false;
+        _btnToggleModule.Margin = new Padding(0, 0, 8, 0);
+        _btnToggleModule.Name = "_btnToggleModule";
+        _btnToggleModule.Text = "Enable/Disable";
+        _btnToggleModule.Click += BtnToggleModule_Click;
+
+        _btnRemoveModule.AutoSize = true;
+        _btnRemoveModule.Enabled = false;
+        _btnRemoveModule.Margin = new Padding(0, 0, 8, 0);
+        _btnRemoveModule.Name = "_btnRemoveModule";
+        _btnRemoveModule.Text = "Remove";
+        _btnRemoveModule.Click += BtnRemoveModule_Click;
+
         // ── Test Console tab ──────────────────────────────────────────────────
 
         // _tabTest
@@ -1411,6 +1519,10 @@ partial class MainForm
         _tlpCredentials.ResumeLayout(false);
         _tlpCredentials.PerformLayout();
         _flpCredentialButtons.ResumeLayout(false);
+        _tabModules.ResumeLayout(false);
+        _tlpModules.ResumeLayout(false);
+        _tlpModules.PerformLayout();
+        _flpModuleButtons.ResumeLayout(false);
         _flpStatusButtons.ResumeLayout(false);
         _flpStatusButtons.PerformLayout();
         _pnlStatus.ResumeLayout(false);
@@ -1565,6 +1677,21 @@ partial class MainForm
     private Button _btnAddCredential;
     private Button _btnEditCredential;
     private Button _btnRemoveCredential;
+
+    // Modules tab
+    private TabPage _tabModules;
+    private TableLayoutPanel _tlpModules;
+    private Label _lblModulesNote;
+    private ListView _lstModules;
+    private ColumnHeader _colModuleName;
+    private ColumnHeader _colModuleVersion;
+    private ColumnHeader _colModuleState;
+    private ColumnHeader _colModulePath;
+    private Label _lblModuleStatus;
+    private FlowLayoutPanel _flpModuleButtons;
+    private Button _btnImportModule;
+    private Button _btnToggleModule;
+    private Button _btnRemoveModule;
 
     // Test Console
     private TabPage _tabTest;

@@ -11,6 +11,7 @@ using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy;
@@ -23,6 +24,11 @@ internal partial class MainForm : Form
     private readonly OllamaProxyHandler _handler;
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
+    private readonly ModuleHost _moduleHost;
+
+    // Tabs injected by loaded modules, keyed by module id so they can be removed again when a
+    // module is disabled or unregistered while the dashboard is open.
+    private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
 
     // Cached snapshot of log summaries backing the virtual-mode ListView. Only visible rows
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
@@ -42,7 +48,7 @@ internal partial class MainForm : Form
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost)
     {
         _settings = settings;
         _stats = stats;
@@ -50,9 +56,15 @@ internal partial class MainForm : Form
         _handler = handler;
         _perfService = perfService;
         _database = database;
+        _moduleHost = moduleHost;
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
+
+        // Inject configuration tabs for already-loaded modules and track module registry
+        // changes so imports, enables, disables, and removals update the tabs live.
+        _moduleHost.ModulesChanged += OnModulesChanged;
+        AddModuleTabs();
 
         // Virtual mode materializes only the visible rows (plus a small buffer) instead of
         // creating a ListViewItem for every log entry on each refresh.
@@ -92,6 +104,7 @@ internal partial class MainForm : Form
         RefreshLogs();
         RefreshHeartbeats();
         RefreshCredentials();
+        RefreshModules();
         _stats.HeartbeatsChanged += OnHeartbeatsChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
@@ -118,6 +131,7 @@ internal partial class MainForm : Form
         _stats.HeartbeatsChanged -= OnHeartbeatsChanged;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
+        _moduleHost.ModulesChanged -= OnModulesChanged;
         base.OnFormClosed(e);
     }
 
@@ -1562,6 +1576,224 @@ internal partial class MainForm : Form
             if (string.Equals(mapping.CredentialName, oldName, StringComparison.OrdinalIgnoreCase))
                 mapping.CredentialName = newName;
         }
+    }
+
+    // ── Modules ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Keeps the module list and injected module tabs in sync with the module registry after
+    /// any import, enable, disable, or remove operation.
+    /// </summary>
+    private void OnModulesChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed)
+            return;
+
+        RefreshModules();
+        AddModuleTabs();
+        RemoveStaleModuleTabs();
+    }
+
+    /// <summary>
+    /// Appends the configuration tab of every loaded module that does not have one yet.
+    /// Modules build and own their entire tab page; the host only appends it.
+    /// </summary>
+    private void AddModuleTabs()
+    {
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            string moduleId = loaded.Entry.ModuleId ?? loaded.Entry.AssemblyPath;
+            if (_moduleTabs.ContainsKey(moduleId))
+                continue;
+
+            TabPage page;
+            try
+            {
+                page = loaded.Module.CreateConfigPage();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Module {Name} failed to build its configuration page", loaded.Entry.Name);
+                continue;
+            }
+
+            page.Tag = moduleId;
+            _tabControl.TabPages.Add(page);
+            _moduleTabs[moduleId] = page;
+        }
+    }
+
+    /// <summary>Removes tabs belonging to modules that are no longer loaded.</summary>
+    private void RemoveStaleModuleTabs()
+    {
+        HashSet<string> loadedIds = [.. _moduleHost.LoadedModules
+            .Select(m => m.Entry.ModuleId ?? m.Entry.AssemblyPath)];
+
+        foreach ((string moduleId, TabPage page) in _moduleTabs
+            .Where(kvp => !loadedIds.Contains(kvp.Key))
+            .ToList())
+        {
+            _tabControl.TabPages.Remove(page);
+            page.Dispose();
+            _moduleTabs.Remove(moduleId);
+        }
+    }
+
+    private void RefreshModules()
+    {
+        _lstModules.BeginUpdate();
+
+        try
+        {
+            _lstModules.Items.Clear();
+
+            foreach (ModuleRegistryEntry entry in _moduleHost.GetRegistryEntries())
+            {
+                string state;
+                if (!entry.IsEnabled)
+                {
+                    state = "Disabled";
+                }
+                else if (!string.IsNullOrWhiteSpace(entry.LastError))
+                {
+                    state = "Error";
+                }
+                else
+                {
+                    state = _moduleHost.LoadedModules.Any(m => m.Entry.Id == entry.Id)
+                        ? "Loaded"
+                        : "Enabled";
+                }
+
+                ListViewItem item = new(entry.Name ?? Path.GetFileName(entry.AssemblyPath));
+                item.SubItems.Add(entry.Version ?? string.Empty);
+                item.SubItems.Add(state);
+                item.SubItems.Add(entry.AssemblyPath);
+                item.Tag = entry;
+                _lstModules.Items.Add(item);
+            }
+        }
+        finally
+        {
+            _lstModules.EndUpdate();
+        }
+
+        UpdateModuleStatusLabel();
+        UpdateModuleButtons();
+    }
+
+    private void UpdateModuleStatusLabel()
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            _lblModuleStatus.Text = string.Empty;
+            _lblModuleStatus.ForeColor = SystemColors.GrayText;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.LastError))
+        {
+            _lblModuleStatus.ForeColor = Color.Red;
+            _lblModuleStatus.Text = $"Last error: {entry.LastError}";
+            return;
+        }
+
+        _lblModuleStatus.ForeColor = SystemColors.GrayText;
+        _lblModuleStatus.Text = entry.AssemblyPath;
+    }
+
+    private void UpdateModuleButtons()
+    {
+        bool selected = _lstModules.SelectedItems.Count > 0;
+        _btnToggleModule.Enabled = selected;
+        _btnRemoveModule.Enabled = selected;
+    }
+
+    private void LstModules_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        UpdateModuleStatusLabel();
+        UpdateModuleButtons();
+    }
+
+    private void BtnImportModule_Click(object? sender, EventArgs e)
+    {
+        using OpenFileDialog dialog = new()
+        {
+            Title = "Import Kaeo LLM Proxy Module",
+            Filter = "Kaeo LLM Proxy modules (*.dll)|*.dll",
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.FileName))
+            return;
+
+        try
+        {
+            _moduleHost.Import(dialog.FileName);
+            RefreshModules();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to import module {Path}", dialog.FileName);
+            MessageBox.Show(this,
+                $"Failed to import module:\n\n{ex.Message}",
+                "Import Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private async void BtnToggleModule_Click(object? sender, EventArgs e)
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            return;
+        }
+
+        try
+        {
+            await _moduleHost.SetEnabledAsync(entry, !entry.IsEnabled);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to change enabled state for module {Path}", entry.AssemblyPath);
+            MessageBox.Show(this,
+                $"Failed to change module state:\n\n{ex.Message}",
+                "Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshModules();
+    }
+
+    private async void BtnRemoveModule_Click(object? sender, EventArgs e)
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            return;
+        }
+
+        DialogResult result = MessageBox.Show(this,
+            $"Remove module '{entry.Name ?? entry.AssemblyPath}' from the registry?\n\n" +
+            "The module file itself is not deleted.",
+            "Remove Module", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+
+        if (result != DialogResult.OK)
+            return;
+
+        try
+        {
+            await _moduleHost.RemoveAsync(entry);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to remove module {Path}", entry.AssemblyPath);
+            MessageBox.Show(this,
+                $"Failed to remove module:\n\n{ex.Message}",
+                "Remove Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshModules();
     }
 
     // ── Test Console ──────────────────────────────────────────────────────────

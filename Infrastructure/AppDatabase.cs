@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
@@ -1100,6 +1101,17 @@ internal sealed class AppDatabase : IDisposable
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
                     enable_auto_summarization INTEGER NOT NULL DEFAULT 1
                 );
+
+                CREATE TABLE IF NOT EXISTS module_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assembly_path TEXT NOT NULL UNIQUE,
+                    module_id TEXT NULL,
+                    name TEXT NULL,
+                    version TEXT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    registered_utc TEXT NOT NULL,
+                    last_error TEXT NULL
+                );
                 """;
             command.ExecuteNonQuery();
 
@@ -1655,6 +1667,247 @@ internal sealed class AppDatabase : IDisposable
     private static int ToSqliteBoolean(bool value) => value ? 1 : 0;
 
     private static object DbValue(string? value) => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value;
+
+    // ── Module registry + module database gateway support ───────────────────
+
+    /// <summary>Loads all registered modules ordered by registration.</summary>
+    public IReadOnlyList<ModuleRegistryEntry> LoadModuleRegistry()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    id,
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                FROM module_registry
+                ORDER BY id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ModuleRegistryEntry> entries = [];
+
+            while (reader.Read())
+            {
+                entries.Add(new ModuleRegistryEntry
+                {
+                    Id = reader.GetInt32(0),
+                    AssemblyPath = reader.GetString(1),
+                    ModuleId = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    Name = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Version = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    IsEnabled = ReadBoolean(reader, 5),
+                    RegisteredUtc = ReadUtc(reader, 6),
+                    LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                });
+            }
+
+            return entries;
+        }
+    }
+
+    /// <summary>Finds a registered module by its assembly path, or null when not registered.</summary>
+    public ModuleRegistryEntry? FindModuleRegistryByPath(string assemblyPath)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    id,
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                FROM module_registry
+                WHERE assembly_path = $assemblyPath;
+                """;
+            command.Parameters.AddWithValue("$assemblyPath", assemblyPath);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return null;
+
+            return new ModuleRegistryEntry
+            {
+                Id = reader.GetInt32(0),
+                AssemblyPath = reader.GetString(1),
+                ModuleId = reader.IsDBNull(2) ? null : reader.GetString(2),
+                Name = reader.IsDBNull(3) ? null : reader.GetString(3),
+                Version = reader.IsDBNull(4) ? null : reader.GetString(4),
+                IsEnabled = ReadBoolean(reader, 5),
+                RegisteredUtc = ReadUtc(reader, 6),
+                LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+            };
+        }
+    }
+
+    /// <summary>Registers a new module. The generated row id is written back to <paramref name="entry"/>.</summary>
+    public void InsertModuleRegistry(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO module_registry (
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                )
+                VALUES (
+                    $assemblyPath,
+                    $moduleId,
+                    $name,
+                    $version,
+                    $isEnabled,
+                    $registeredUtc,
+                    $lastError
+                );
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$assemblyPath", entry.AssemblyPath);
+            command.Parameters.AddWithValue("$moduleId", DbValue(entry.ModuleId));
+            command.Parameters.AddWithValue("$name", DbValue(entry.Name));
+            command.Parameters.AddWithValue("$version", DbValue(entry.Version));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
+            command.Parameters.AddWithValue("$registeredUtc", ToUtcText(entry.RegisteredUtc));
+            command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+
+            object? scalar = command.ExecuteScalar();
+            entry.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates mutable registry fields (metadata, enabled state, last error) for a module.</summary>
+    public void UpdateModuleRegistry(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE module_registry
+                SET
+                    module_id = $moduleId,
+                    name = $name,
+                    version = $version,
+                    is_enabled = $isEnabled,
+                    last_error = $lastError
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", entry.Id);
+            command.Parameters.AddWithValue("$moduleId", DbValue(entry.ModuleId));
+            command.Parameters.AddWithValue("$name", DbValue(entry.Name));
+            command.Parameters.AddWithValue("$version", DbValue(entry.Version));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
+            command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Removes a module from the registry.</summary>
+    public void DeleteModuleRegistry(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM module_registry WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Executes a module-provided baseline schema script (DDL) against the application
+    /// database. Scripts must be idempotent (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF
+    /// NOT EXISTS). Called through <c>ModuleDatabaseGateway</c>.
+    /// </summary>
+    internal void ExecuteModuleSchemaScript(string script)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(script);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = script;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Executes a module-provided non-query command. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal int ExecuteModuleNonQuery(string commandText, Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+            return command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Executes a module-provided scalar command. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal object? ExecuteModuleScalar(string commandText, Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+            return command.ExecuteScalar();
+        }
+    }
+
+    /// <summary>Executes a module-provided query and maps every row. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal IReadOnlyList<T> ExecuteModuleQuery<T>(
+        string commandText,
+        Func<DbDataReader, T> map,
+        Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<T> results = [];
+
+            while (reader.Read())
+                results.Add(map(reader));
+
+            return results;
+        }
+    }
 
     public void Dispose()
     {

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.Mcp</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy MCP</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWindowsForms>true</UseWindowsForms>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="ModelContextProtocol" Version="2.0.0" />
+		<!-- Matches the host so the module's Serilog binds to the host's shared copy and logs
+				 land in the application log. -->
+		<PackageReference Include="Serilog" Version="4.4.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<EmbeddedResource Include="Infrastructure\mcp_schema.sql" />
+	</ItemGroup>
+
+</Project>

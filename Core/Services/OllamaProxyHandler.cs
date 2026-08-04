@@ -7,6 +7,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Modules;
+using Kaeo.LlmProxy.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Core.Services;
@@ -15,7 +17,7 @@ namespace Kaeo.LlmProxy.Core.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats) : IDisposable
+internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -36,6 +38,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private int _inFlightRequests;
 
     private readonly StatisticsService _stats = stats;
+    private readonly ModuleHost _moduleHost = moduleHost;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Called from the Settings UI after the user saves new settings.</summary>
@@ -431,12 +434,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Swagger UI API explorer — served only when explicitly enabled in settings.
+        // Scalar API explorer — served only when explicitly enabled in settings.
         if (_settings.EnableApiExplorer && method == "GET")
         {
             if (path is "/swagger" or "/swagger/")
             {
-                await WriteHtmlAsync(resp, SwaggerHtml, ct);
+                await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
                 return;
             }
 
@@ -3393,34 +3396,167 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         resp.Close();
     }
 
-    // ── Swagger UI / OpenAPI ────────────────────────────────────────────────
+    // ── API Explorer (Scalar) / OpenAPI ─────────────────────────────────────
 
-    private const string SwaggerHtml = """
+    // Short-lived client used only to fetch OpenAPI documents reported by loaded modules when
+    // rendering the explorer page. Only module-reported URLs are ever fetched (never user input).
+    private static readonly HttpClient _explorerSpecClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    private const string ApiExplorerHtmlTemplate = """
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <title>Kaeo LLM Proxy — API Explorer</title>
-            <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
             <style>
                 body { margin: 0; padding: 0; }
-                .topbar { display: none; }
+                #kaeo-doc-selector {
+                    position: fixed;
+                    top: 10px;
+                    right: 14px;
+                    z-index: 10000;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                }
+                #kaeo-doc-select { padding: 4px 8px; }
             </style>
         </head>
         <body>
-            <div id="swagger-ui"></div>
-            <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+            <div id="kaeo-doc-selector" hidden>
+                <select id="kaeo-doc-select" aria-label="API document"></select>
+            </div>
+            <div id="kaeo-api-reference"></div>
             <script>
-                SwaggerUIBundle({
-                    url: '/swagger/v1/swagger.json',
-                    dom_id: '#swagger-ui',
-                    presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-                    layout: 'BaseLayout',
-                });
+                var kaeoDocuments = /*DOCUMENTS*/[];
+            </script>
+            <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1"></script>
+            <script>
+                (function () {
+                    var mount = document.getElementById('kaeo-api-reference');
+                    var select = document.getElementById('kaeo-doc-select');
+                    var selector = document.getElementById('kaeo-doc-selector');
+                    var instance = null;
+
+                    function configurationFor(doc) {
+                        return { spec: { content: doc.spec } };
+                    }
+
+                    function loadDocument(index) {
+                        var config = configurationFor(kaeoDocuments[index]);
+                        if (instance && typeof instance.updateConfig === 'function') {
+                            instance.updateConfig(config);
+                            return;
+                        }
+                        mount.innerHTML = '';
+                        instance = Scalar.createApiReference(mount, config);
+                    }
+
+                    kaeoDocuments.forEach(function (doc, i) {
+                        var option = document.createElement('option');
+                        option.value = String(i);
+                        option.textContent = doc.label;
+                        select.appendChild(option);
+                    });
+
+                    if (kaeoDocuments.length > 1) {
+                        selector.hidden = false;
+                        select.addEventListener('change', function () {
+                            loadDocument(Number(select.value));
+                        });
+                    }
+
+                    if (kaeoDocuments.length > 0) loadDocument(0);
+                })();
             </script>
         </body>
         </html>
         """;
+
+    /// <summary>
+    /// Builds the Scalar explorer page at render time. The proxy's own OpenAPI document is
+    /// embedded inline; documents reported by loaded modules (<see cref="IApiExplorerDocumentsProvider"/>)
+    /// are fetched server-side and embedded too, so the browser never needs cross-origin access.
+    /// Unreachable module documents are omitted gracefully.
+    /// </summary>
+    private async Task<string> BuildApiExplorerHtmlAsync(CancellationToken ct)
+    {
+        List<(string Label, string SpecJson)> documents = [("Kaeo LLM Proxy", OpenApiSpec)];
+
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            if (loaded.Module is not IApiExplorerDocumentsProvider provider)
+                continue;
+
+            IReadOnlyList<ExplorerDocument> moduleDocuments;
+            try
+            {
+                moduleDocuments = provider.GetExplorerDocuments();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Module {Name} failed to report explorer documents", loaded.Entry.Name);
+                continue;
+            }
+
+            foreach (ExplorerDocument document in moduleDocuments)
+            {
+                string? specJson = await TryFetchExplorerSpecAsync(document.SpecUrl, ct).ConfigureAwait(false);
+                if (specJson is null)
+                {
+                    Log.Information(
+                        "API explorer: skipping '{Label}' ({Url}); the document is not reachable",
+                        document.Label, document.SpecUrl);
+                    continue;
+                }
+
+                documents.Add((document.Label, specJson));
+            }
+        }
+
+        var documentsJson = new StringBuilder("[");
+        for (int i = 0; i < documents.Count; i++)
+        {
+            if (i > 0)
+                documentsJson.Append(',');
+
+            // Spec content is embedded as validated raw JSON; "</" is escaped so an embedded
+            // string value can never terminate the enclosing <script> block early.
+            documentsJson
+                .Append("{\"label\":")
+                .Append(JsonSerializer.Serialize(documents[i].Label))
+                .Append(",\"spec\":")
+                .Append(documents[i].SpecJson.Replace("</", "<\\/"))
+                .Append('}');
+        }
+        documentsJson.Append(']');
+
+        return ApiExplorerHtmlTemplate.Replace("/*DOCUMENTS*/[]", documentsJson.ToString());
+    }
+
+    /// <summary>
+    /// Fetches a module-reported OpenAPI document and validates that it is JSON. Returns null
+    /// when the document is unreachable, empty, or not valid JSON.
+    /// </summary>
+    private static async Task<string?> TryFetchExplorerSpecAsync(string specUrl, CancellationToken ct)
+    {
+        try
+        {
+            using HttpResponseMessage response = await _explorerSpecClient.GetAsync(specUrl, ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            string content = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(content))
+                return null;
+
+            // Validate and normalize to compact JSON before embedding into the explorer page.
+            using JsonDocument parsed = JsonDocument.Parse(content);
+            return parsed.RootElement.GetRawText();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException)
+        {
+            return null;
+        }
+    }
 
     private const string OpenApiSpec = """
         {

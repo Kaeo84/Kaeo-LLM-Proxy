@@ -1,3 +1,6 @@
-<Solution>
+﻿<Solution>
   <Project Path="Kaeo LLM Proxy.csproj" Type="C#" />
+  <Project Path="Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" Type="C#" />
+  <Project Path="Kaeo LLM Proxy MCP\Kaeo LLM Proxy MCP.csproj" Type="C#" />
 </Solution>
+
