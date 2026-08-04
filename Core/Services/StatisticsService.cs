@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Microsoft.Data.Sqlite;
 using Serilog;
 using System.Diagnostics;
 
@@ -110,7 +111,10 @@ internal sealed class StatisticsService : IDisposable
             {
                 try
                 {
-                    _store!.Insert(item.Entry, item.Exception);
+                    if (item.Entry is { } entry)
+                        _store!.Insert(entry, item.Exception);
+                    else
+                        _store!.ClearLogs();
                 }
                 catch (Exception storeEx)
                 {
@@ -270,6 +274,33 @@ internal sealed class StatisticsService : IDisposable
     }
 
     /// <summary>
+    /// Clears the in-memory log queue, aggregate counters, and snapshot cache, then wipes all
+    /// persisted request logs and linked exceptions from the store. The database wipe is routed
+    /// through the persistence channel so it runs after entries still queued have been written;
+    /// otherwise they would land in the database after the wipe and reappear.
+    /// </summary>
+    public void ClearLogs()
+    {
+        Reset();
+
+        if (_store is null || _persistChannel is null)
+            return;
+
+        if (_persistChannel.Writer.TryWrite(PersistEntry.ClearLogs))
+            return;
+
+        // Channel full or completed — wipe directly so the clear still reaches the database.
+        try
+        {
+            _store.ClearLogs();
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            Log.Warning(ex, "Failed to clear request logs from the database");
+        }
+    }
+
+    /// <summary>
     /// Records one heartbeat frame emitted for the given model. Thread-safe; non-blocking.
     /// Safe to call from the streaming pipeline.
     /// </summary>
@@ -401,7 +432,15 @@ internal sealed class StatisticsService : IDisposable
 }
 
 /// <summary>A request log entry plus its optional exception, queued for background persistence.</summary>
-internal sealed record PersistEntry(RequestLog Entry, Exception? Exception);
+internal sealed record PersistEntry(RequestLog? Entry, Exception? Exception)
+{
+    /// <summary>
+    /// Sentinel that instructs the persistence writer to wipe the store instead of inserting.
+    /// Routing the wipe through the channel guarantees it executes after every previously
+    /// queued entry has been persisted.
+    /// </summary>
+    public static PersistEntry ClearLogs { get; } = new(null, null);
+}
 
 /// <summary>Mutable counter holder used internally by <see cref="StatisticsService"/>.</summary>
 internal sealed class HeartbeatStat

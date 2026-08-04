@@ -851,6 +851,72 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Deletes all request log entries and their linked exception records, and resets the
+    /// auto-increment counters so ids restart at 1. SQLite has no TRUNCATE statement; an
+    /// unfiltered DELETE FROM is the equivalent. Returns the number of request rows deleted.
+    /// </summary>
+    public int ClearLogs()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            int deleted;
+
+            using (SqliteCommand deleteRequests = connection.CreateCommand())
+            {
+                deleteRequests.Transaction = transaction;
+                deleteRequests.CommandText = "DELETE FROM requests;";
+                deleted = deleteRequests.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand deleteExceptions = connection.CreateCommand())
+            {
+                deleteExceptions.Transaction = transaction;
+                deleteExceptions.CommandText = "DELETE FROM exceptions;";
+                deleteExceptions.ExecuteNonQuery();
+            }
+
+            // sqlite_sequence holds the AUTOINCREMENT counters; clearing the rows restarts ids
+            // at 1 like a truncate would. The table only exists once an AUTOINCREMENT table has
+            // been created, so verify it is present before deleting from it.
+            bool sequenceTableExists;
+            using (SqliteCommand checkSequence = connection.CreateCommand())
+            {
+                checkSequence.Transaction = transaction;
+                checkSequence.CommandText =
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'sqlite_sequence'
+                    );
+                    """;
+                sequenceTableExists = Convert.ToInt64(checkSequence.ExecuteScalar()) != 0;
+            }
+
+            if (sequenceTableExists)
+            {
+                using SqliteCommand resetSequence = connection.CreateCommand();
+                resetSequence.Transaction = transaction;
+                resetSequence.CommandText =
+                    """
+                    DELETE FROM sqlite_sequence
+                    WHERE name IN ('requests', 'exceptions');
+                    """;
+                resetSequence.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+
+            if (deleted > 0)
+                Log.Debug("AppDatabase cleared {Count} request entries", deleted);
+
+            return deleted;
+        }
+    }
+
     /// <summary>Returns aggregate stats from the active database file.</summary>
     public (long total, long errors, long promptTokens, long completionTokens) QueryTotals()
     {

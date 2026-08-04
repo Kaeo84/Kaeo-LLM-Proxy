@@ -293,7 +293,7 @@ internal partial class MainForm : Form
 
     private void BtnClearLogs_Click(object? sender, EventArgs e)
     {
-        _stats.Reset();
+        _stats.ClearLogs();
         _logCache = [];
         _lstLogs.VirtualListSize = 0;
         _lstLogs.Invalidate();
