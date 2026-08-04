@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
@@ -794,6 +795,8 @@ internal partial class MainForm : Form
                 ModelName = mapping.ModelName,
                 EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
                 ThinkingMode = mapping.ThinkingMode,
+                SendTemperature = mapping.SendTemperature,
+                SendRepeatPenalty = mapping.SendRepeatPenalty,
                 EnableHeartbeats = mapping.EnableHeartbeats,
                 CredentialName = mapping.CredentialName,
                 UpstreamUrl = mapping.UpstreamUrl,
@@ -1020,6 +1023,8 @@ internal partial class MainForm : Form
                 IsEnabled              = advanced?.IsEnabled ?? true,
                 EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
                 ThinkingMode           = advanced?.ThinkingMode ?? ThinkingMode.Off,
+                SendTemperature        = advanced?.SendTemperature ?? true,
+                SendRepeatPenalty      = advanced?.SendRepeatPenalty ?? true,
                 SupportsVision         = advanced?.SupportsVision,
                 EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
                 CredentialName         = advanced?.CredentialName,
@@ -1702,18 +1707,23 @@ internal partial class MainForm : Form
             messages.Add(new { role = "system", content = instructionSet.Instructions });
         messages.Add(new { role = "user", content = prompt });
 
-        double temperature = (double)_nudTestTemp.Value;
-        double repeatPenalty = (double)_nudTestRepeatPenalty.Value;
+        // Honor the per-model sampling overrides: when disabled, the field is omitted entirely
+        // so hosted providers keep their platform-configured values.
+        JsonArray messagesArray = [];
+        foreach (object message in messages)
+            messagesArray.Add(JsonSerializer.SerializeToNode(message));
 
-        var payload = new
+        JsonObject payload = new()
         {
-            model = upstreamModel,
-            stream = true,
-            temperature,
-            repeat_penalty = repeatPenalty,
-            messages,
+            ["model"] = upstreamModel,
+            ["stream"] = true,
+            ["messages"] = messagesArray,
         };
-        string requestBody = JsonSerializer.Serialize(payload, _indentedJsonOptions);
+        if (mapping.SendTemperature)
+            payload["temperature"] = (double)_nudTestTemp.Value;
+        if (mapping.SendRepeatPenalty)
+            payload["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value;
+        string requestBody = payload.ToJsonString(_indentedJsonOptions);
 
         var log = new RequestLog
         {
@@ -1825,11 +1835,13 @@ internal partial class MainForm : Form
             return;
 
         _nudTestTemp.Value = ClampDecimal(mapping.Temperature, _nudTestTemp.Minimum, _nudTestTemp.Maximum, _nudTestTemp.Value);
+        _nudTestTemp.Enabled = mapping.SendTemperature;
         _nudTestRepeatPenalty.Value = ClampDecimal(
             mapping.RepeatPenalty,
             _nudTestRepeatPenalty.Minimum,
             _nudTestRepeatPenalty.Maximum,
             _nudTestRepeatPenalty.Value);
+        _nudTestRepeatPenalty.Enabled = mapping.SendRepeatPenalty;
     }
 
     private static decimal ClampDecimal(double value, decimal min, decimal max, decimal fallback)

@@ -214,8 +214,23 @@ internal sealed class ModelMapping
 
     /// <summary>
     /// Repeat penalty to send to compatible upstreams. 1.0 is neutral/no penalty.
+    /// Only forwarded when <see cref="SendRepeatPenalty"/> is true.
     /// </summary>
     public double RepeatPenalty { get; set; } = 1.0;
+
+    /// <summary>
+    /// When true (default), <c>temperature</c> is included in upstream requests for this model
+    /// (client-supplied value, or the Test Console value). When false, the field is omitted
+    /// entirely so hosted providers keep whatever temperature is configured on their platform.
+    /// </summary>
+    public bool SendTemperature { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), <c>repeat_penalty</c> is included in upstream requests for this model
+    /// (client-supplied value, or <see cref="RepeatPenalty"/> when the client sends none). When
+    /// false, the field is omitted entirely so hosted providers keep their platform default.
+    /// </summary>
+    public bool SendRepeatPenalty { get; set; } = true;
 
     /// <summary>
     /// Default temperature to use for this model in the Test Console. Upstream proxy requests keep their client-supplied value.
@@ -311,6 +326,8 @@ internal sealed class ModelMapping
         UpstreamUrl = UpstreamUrl,
         UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
         RepeatPenalty = RepeatPenalty,
+        SendTemperature = SendTemperature,
+        SendRepeatPenalty = SendRepeatPenalty,
         Temperature = Temperature,
         EnableAutoSummarization = EnableAutoSummarization,
         PreserveRecentMessageCount = PreserveRecentMessageCount,

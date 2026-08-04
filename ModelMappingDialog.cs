@@ -47,6 +47,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblRepeatPenalty = new();
     private readonly NumericUpDown _nudRepeatPenalty = new();
     private readonly CheckBox _chkIsEnabled = new();
+    private readonly CheckBox _chkSendTemperature = new();
+    private readonly CheckBox _chkSendRepeatPenalty = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
     private readonly Label _lblThinkingHandling = new();
     private readonly ComboBox _cmbThinkingHandling = new();
@@ -137,6 +139,20 @@ internal sealed class ModelMappingDialog : Form
     {
         get => _chkRedactSensitiveJsonFields.Checked;
         set => _chkRedactSensitiveJsonFields.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool SendTemperature
+    {
+        get => _chkSendTemperature.Checked;
+        set => _chkSendTemperature.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool SendRepeatPenalty
+    {
+        get => _chkSendRepeatPenalty.Checked;
+        set => _chkSendRepeatPenalty.Checked = value;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -310,7 +326,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 22;
+        _tlpMain.RowCount = 24;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -358,33 +374,37 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
         _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 9);
 
+        _tlpMain.SetColumnSpan(_chkSendTemperature, 3);
+        _tlpMain.Controls.Add(_chkSendTemperature, 0, 10);
+        _tlpMain.SetColumnSpan(_chkSendRepeatPenalty, 3);
+        _tlpMain.Controls.Add(_chkSendRepeatPenalty, 0, 11);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 10);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 12);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 11);
-        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 12);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 13);
+        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 14);
         _tlpMain.SetColumnSpan(_cmbThinkingHandling, 2);
-        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 12);
+        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 14);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
-        _tlpMain.Controls.Add(_chkSupportsVision, 0, 13);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 15);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 14);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
         _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
-        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 15);
+        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 17);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 16);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 17);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 18);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 19);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 17);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 18);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 19);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 20);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 18);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 20);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 19);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 21);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 20);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 22);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 21);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 23);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -497,6 +517,18 @@ internal sealed class ModelMappingDialog : Form
         _nudRepeatPenalty.Minimum = 0.5M;
         _nudRepeatPenalty.Size = new Size(90, 25);
         _nudRepeatPenalty.Value = 1.0M;
+
+        _chkSendTemperature.AutoSize = true;
+        _chkSendTemperature.Margin = new Padding(0, 8, 0, 2);
+        _chkSendTemperature.Text = "Send temperature to upstream (uncheck to keep the provider's platform setting)";
+        _chkSendTemperature.Checked = true;
+        _chkSendTemperature.CheckedChanged += (_, _) => _nudTemperature.Enabled = _chkSendTemperature.Checked;
+
+        _chkSendRepeatPenalty.AutoSize = true;
+        _chkSendRepeatPenalty.Margin = new Padding(0, 2, 0, 2);
+        _chkSendRepeatPenalty.Text = "Send repeat penalty to upstream (uncheck to keep the provider's platform setting)";
+        _chkSendRepeatPenalty.Checked = true;
+        _chkSendRepeatPenalty.CheckedChanged += (_, _) => _nudRepeatPenalty.Enabled = _chkSendRepeatPenalty.Checked;
 
         _chkIsEnabled.AutoSize = true;
         _chkIsEnabled.Margin = new Padding(0, 8, 0, 2);
@@ -881,6 +913,8 @@ internal sealed class ModelMappingDialog : Form
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
+        dlg.SendTemperature = mapping.SendTemperature;
+        dlg.SendRepeatPenalty = mapping.SendRepeatPenalty;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
         dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.SupportsVision = mapping.SupportsVision ?? false;
@@ -911,6 +945,8 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
+        mapping.SendTemperature = dlg.SendTemperature;
+        mapping.SendRepeatPenalty = dlg.SendRepeatPenalty;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
         mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.SupportsVision = dlg.SupportsVision;
