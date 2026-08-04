@@ -38,6 +38,10 @@ internal partial class MainForm : Form
 
     private static readonly JsonSerializerOptions _indentedJsonOptions = new() { WriteIndented = true };
 
+    // Shared client for the test console. Creating a new HttpClient per test send causes socket
+    // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
+    private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+
     public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database)
     {
         _settings = settings;
@@ -1953,13 +1957,6 @@ internal partial class MainForm : Form
         // and naive concatenation can duplicate a trailing "/v1" segment - both cause a 404.
         Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/chat/completions");
 
-        // Use Timeout.InfiniteTimeSpan so HttpClient doesn't pre-empt our own per-read
-        // cancellation; we manage timeouts ourselves below.
-        using var client = new HttpClient
-        {
-            Timeout = Timeout.InfiniteTimeSpan,
-        };
-
         using var reqMsg = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
             Content = new StringContent(requestBodyJson, Encoding.UTF8, "application/json"),
@@ -1976,7 +1973,7 @@ internal partial class MainForm : Form
         System.Diagnostics.Debug.WriteLine(
             $"[TestConsole] POST {requestUri} model={model}");
 
-        HttpResponseMessage resp = await SendTestConsoleRequestAsync(client, reqMsg, timeout, ct, requestCts.Token);
+        HttpResponseMessage resp = await SendTestConsoleRequestAsync(_testConsoleClient, reqMsg, timeout, ct, requestCts.Token);
 
         using (resp)
         {

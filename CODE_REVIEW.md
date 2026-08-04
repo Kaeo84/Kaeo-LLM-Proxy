@@ -186,16 +186,18 @@ Dead code. Remove it.
 
 ---
 
-### 15. `RedactSensitiveJsonFields` redacts "content", "messages", "prompt"
+### 15. [RESOLVED] `RedactSensitiveJsonFields` redacts "content", "messages", "prompt"
 **File:** `OllamaProxyHandler.cs` (lines 1274–1289)
 
 When `RedactSensitiveJsonFields` is true but `RedactRequestBodies` is false, the actual LLM prompt/response content is replaced with `[REDACTED]`. This makes the log useless for debugging the very thing the user opted to collect. Consider limiting redaction to truly sensitive fields (keys, tokens, passwords) and leaving content fields intact.
+
+**Fix:** `IsSensitiveJsonProperty` now only matches credentials/secrets (authorization, api_key/apikey, access_token, token, secret, password); content fields (`prompt`, `system`, `messages`, `input`, `content`) are left intact. Doc comment on `ModelMapping.RedactSensitiveJsonFields` updated to match.
 
 ---
 
 ## Minor Issues / Code Smells
 
-### 16. Indentation error in `HandleChatAsync`
+### 16. [RESOLVED] Indentation error in `HandleChatAsync`
 **File:** `OllamaProxyHandler.cs` (line 1650)
 
 ```csharp
@@ -205,9 +207,11 @@ When `RedactSensitiveJsonFields` is true but `RedactRequestBodies` is false, the
 
 Extra indentation on the `var` line.
 
+**Fix:** Indentation corrected.
+
 ---
 
-### 17. `BuildHttpClient` accepts an unused parameter
+### 17. [RESOLVED] `BuildHttpClient` accepts an unused parameter
 **File:** `OllamaProxyHandler.cs` (line 278)
 
 ```csharp
@@ -216,16 +220,20 @@ private static HttpClient BuildHttpClient(AppSettings _) =>
 
 The `settings` parameter is discarded. Either use it (e.g., to configure `MaxConnectionsPerServer` from settings) or remove the parameter.
 
+**Fix:** Already resolved in code — `BuildHttpClient()` no longer takes a parameter.
+
 ---
 
-### 18. `ModelMappingDialog.cs` — explicit `using` directives
+### 18. [RESOLVED] `ModelMappingDialog.cs` — explicit `using` directives
 **File:** `ModelMappingDialog.cs` (lines 1–9)
 
 This file has explicit `using System;`, `using System.Collections.Generic;`, etc., while the rest of the codebase relies on global usings. Inconsistent style.
 
+**Fix:** Removed the redundant directives covered by implicit/global usings; kept only `System.Text`, `System.Text.Json`, and project namespaces.
+
 ---
 
-### 19. `PerformanceService.Sample` — empty catch-all
+### 19. [RESOLVED] `PerformanceService.Sample` — empty catch-all
 **File:** `PerformanceService.cs` (lines 54–57)
 
 ```csharp
@@ -237,9 +245,11 @@ catch
 
 Swallows all exceptions silently. At minimum, log at `Debug` level.
 
+**Fix:** Catch now captures the exception and logs it at `Debug` level via Serilog.
+
 ---
 
-### 20. `MainForm` test console creates a new `HttpClient` per request
+### 20. [RESOLVED] `MainForm` test console creates a new `HttpClient` per request
 **File:** `MainForm.cs` (line 1513)
 
 ```csharp
@@ -248,26 +258,34 @@ using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
 
 While this is the test console (not the hot proxy path), it still causes socket churn on repeated test sends. Consider reusing a shared client.
 
+**Fix:** The test console now uses a shared static `HttpClient` (`_testConsoleClient`). Sibling case `ModelMappingDialog.FetchUpstreamModelsAsync` also switched to a shared static client (`_modelFetchClient`, 10 s timeout).
+
 ---
 
-### 21. `AppDatabase` — `PRAGMA journal_mode = WAL` set on every connection open
+### 21. [RESOLVED] `AppDatabase` — `PRAGMA journal_mode = WAL` set on every connection open
 **File:** `AppDatabase.cs` (line 721)
 
 WAL mode is persistent once set on the database file. Setting it on every `InitializeDatabase` call is harmless but redundant.
 
+**Fix:** WAL setup moved out of the schema batch into `EnsureWalJournalMode`, which queries the current journal mode and only sets WAL when it differs. Failures (e.g., sharing violations from a concurrent instance) are logged and tolerated.
+
 ---
 
-### 22. `StatisticsService.AddLog` — soft race on `_logs.Count > _maxEntries`
+### 22. [RESOLVED] `StatisticsService.AddLog` — soft race on `_logs.Count > _maxEntries`
 **File:** `StatisticsService.cs` (lines 97–98)
 
 `ConcurrentQueue.Count` is a snapshot. Between the check and `TryDequeue`, another thread may have already dequeued, causing one extra entry to be removed. Not critical for a soft cap, but worth noting.
 
+**Fix:** Accepted by design (lock-free hot path; SQLite store stays authoritative) and documented with an explanatory comment at the trim loop.
+
 ---
 
-### 23. `ProxyServer.StopAsync` — calls both `Stop()` and `Close()`
+### 23. [RESOLVED] `ProxyServer.StopAsync` — calls both `Stop()` and `Close()`
 **File:** `ProxyServer.cs` (lines 86–87)
 
 `Close()` already stops the listener. Calling `Stop()` first is redundant.
+
+**Fix:** Removed the redundant `Stop()` call; `StopAsync` now only calls `Close()`, consistent with `Dispose`.
 
 ---
 

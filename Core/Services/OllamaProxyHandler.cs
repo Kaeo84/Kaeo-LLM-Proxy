@@ -321,7 +321,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         new(new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            MaxConnectionsPerServer = 64,
+            // Single-user proxy: 8 upstream sockets per host is ample and keeps pooled native
+            // socket buffers bounded. A local upstream rarely serves more than a handful of
+            // parallel requests.
+            MaxConnectionsPerServer = 8,
         })
         {
             // Timeout is managed per-request via a linked CancellationTokenSource
@@ -1862,19 +1865,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private static bool IsSensitiveJsonProperty(string propertyName)
     {
+        // Credentials and secrets only. Prompt/message content fields are intentionally
+        // left intact — when body capture is enabled the content is exactly what the
+        // user opted to inspect, and redacting it would make the logs useless.
         return propertyName.Equals("authorization", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("api_key", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("apikey", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("apiKey", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("access_token", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("token", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("secret", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("password", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("prompt", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("system", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("messages", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("input", StringComparison.OrdinalIgnoreCase)
-            || propertyName.Equals("content", StringComparison.OrdinalIgnoreCase);
+            || propertyName.Equals("password", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAssistantResponsePrefill(LlamaCppMessage message) =>
@@ -2272,7 +2272,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
-            var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
+        var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
 
         // Get model mapping for context management settings. Auto-summarization requires both the
         // global master switch (_settings.EnableAutoSummarization) and the per-mapping flag.

@@ -40,7 +40,10 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
         // Configure timeouts for long-running AI requests (e.g., extended thinking)
         // These need to be set BEFORE calling Start()
-        _listener.TimeoutManager.IdleConnection = TimeSpan.FromMinutes(30);
+        // IdleConnection only applies to keep-alive connections BETWEEN requests (long-running
+        // requests are governed by the other timeouts), so a short value recycles idle client
+        // sockets quickly instead of holding them for 30 minutes.
+        _listener.TimeoutManager.IdleConnection = TimeSpan.FromMinutes(2);
         _listener.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
         _listener.TimeoutManager.EntityBody = TimeSpan.FromMinutes(30);
         _listener.TimeoutManager.DrainEntityBody = TimeSpan.FromMinutes(5);
@@ -115,7 +118,7 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
         cts?.Cancel();
 
-        listener?.Stop();
+        // Close() alone stops the listener and releases its resources; a separate Stop() is redundant.
         listener?.Close();
 
         if (listenTask is not null)

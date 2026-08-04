@@ -101,9 +101,10 @@ internal sealed class PerformanceService : IDisposable
 
             Sampled?.Invoke(this, EventArgs.Empty);
         }
-        catch
+        catch (Exception ex)
         {
             // Non-fatal: sampling can fail if the process is exiting.
+            Log.Debug(ex, "Performance sampling failed; skipping this interval");
         }
     }
 

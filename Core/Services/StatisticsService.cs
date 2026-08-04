@@ -158,6 +158,9 @@ internal sealed class StatisticsService : IDisposable
         Interlocked.Add(ref _totalPromptTokens, entry.PromptTokens);
         Interlocked.Add(ref _totalCompletionTokens, entry.CompletionTokens);
 
+        // Intentionally lock-free soft cap: Count is a snapshot, so concurrent AddLog calls may
+        // trim one extra entry. Precision does not matter for this display-only in-memory cap
+        // (the SQLite store stays authoritative), and locking here would hit the request hot path.
         while (_logs.Count > _maxEntries)
             _logs.TryDequeue(out _);
 

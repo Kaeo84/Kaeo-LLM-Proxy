@@ -1,13 +1,6 @@
-using System;
-using System.Collections.Generic;
 using System.ComponentModel;
-using System.Drawing;
-using System.Linq;
-using System.Net.Http;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
-using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
@@ -22,6 +15,10 @@ namespace Kaeo.LlmProxy;
 internal sealed class ModelMappingDialog : Form
 {
     private const string NoneLabel = "(None)";
+
+    // Shared client for upstream model discovery. Avoids socket churn when model lists are
+    // fetched repeatedly; the fixed 10 s timeout applies to discovery calls only.
+    private static readonly HttpClient _modelFetchClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     private readonly Panel _pnlScroll = new();
     private readonly TableLayoutPanel _tlpMain = new();
@@ -864,17 +861,12 @@ internal sealed class ModelMappingDialog : Form
     {
         try
         {
-            using var client = new HttpClient
-            {
-                Timeout = TimeSpan.FromSeconds(10),
-            };
-
             Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models");
             using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
             if (!string.IsNullOrWhiteSpace(apiKey))
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 
-            using HttpResponseMessage resp = await client.SendAsync(request);
+            using HttpResponseMessage resp = await _modelFetchClient.SendAsync(request);
             string body = await resp.Content.ReadAsStringAsync();
 
             if (!resp.IsSuccessStatusCode)

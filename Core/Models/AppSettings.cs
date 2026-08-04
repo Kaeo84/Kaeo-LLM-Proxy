@@ -299,8 +299,9 @@ internal sealed class ModelMapping
     public bool RedactResponseBodies { get; set; } = true;
 
     /// <summary>
-    /// When true, known sensitive JSON fields such as authorization, api keys, prompts, and messages are redacted.
-    /// Applies when body-level redaction is disabled but detail capture is enabled.
+    /// When true, known sensitive JSON fields such as authorization, API keys, tokens, secrets, and
+    /// passwords are redacted. Prompt/message content is left intact so captured bodies remain useful
+    /// for diagnostics. Applies when body-level redaction is disabled but detail capture is enabled.
     /// </summary>
     public bool RedactSensitiveJsonFields { get; set; } = true;
 

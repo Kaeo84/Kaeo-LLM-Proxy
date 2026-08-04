@@ -36,11 +36,13 @@ internal sealed class AppDatabase : IDisposable
 
         PrepareDatabaseFile();
 
+        // Private cache (default): shared-cache mode is discouraged by SQLite and, combined with
+        // connection pooling, pins a shared page cache for the entire process lifetime. Cross-instance
+        // concurrency is handled by WAL, not shared cache.
         SqliteConnectionStringBuilder builder = new()
         {
             DataSource = _configuredDbPath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
         };
 
         _connectionString = builder.ToString();
@@ -879,18 +881,46 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Enables WAL journal mode if it is not already active. WAL mode is persistent on the
+    /// database file across connections, so the pragma only runs when the mode differs,
+    /// avoiding a redundant write on every startup.
+    /// </summary>
+    private static void EnsureWalJournalMode(SqliteConnection connection)
+    {
+        try
+        {
+            using SqliteCommand query = connection.CreateCommand();
+            query.CommandText = "PRAGMA journal_mode;";
+            string currentMode = query.ExecuteScalar() as string ?? string.Empty;
+            if (currentMode.Equals("wal", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            using SqliteCommand setWal = connection.CreateCommand();
+            setWal.CommandText = "PRAGMA journal_mode = WAL;";
+            setWal.ExecuteNonQuery();
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            // Switching journal modes needs brief exclusive access; a concurrent instance or
+            // sharing violation must not block startup. The database works with any journal mode.
+            Log.Warning(ex, "Could not enable WAL journal mode; continuing with the current mode");
+        }
+    }
+
     private void InitializeDatabase()
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
 
+            EnsureWalJournalMode(connection);
+
             MigrateLegacyModelMappingsTable(connection);
 
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                PRAGMA journal_mode = WAL;
                 PRAGMA foreign_keys = OFF;
 
                 CREATE TABLE IF NOT EXISTS exceptions (
