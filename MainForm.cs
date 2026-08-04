@@ -790,34 +790,10 @@ internal partial class MainForm : Form
 
             DataGridViewRow row = _dgvMappings.Rows[idx];
 
-            // Carry per-row advanced configuration (instruction set + redaction)
-            // on the row Tag — these fields are edited in the modal Configure dialog.
-            row.Tag = new ModelMapping
-            {
-                IsEnabled = mapping.IsEnabled,
-                ProxyName = mapping.ProxyName,
-                ModelName = mapping.ModelName,
-                EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
-                ThinkingMode = mapping.ThinkingMode,
-                TemperaturePriority = mapping.TemperaturePriority,
-                RepeatPenaltyPriority = mapping.RepeatPenaltyPriority,
-                EnableHeartbeats = mapping.EnableHeartbeats,
-                CredentialName = mapping.CredentialName,
-                UpstreamUrl = mapping.UpstreamUrl,
-                UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds,
-                ContextWindowTokens = mapping.ContextWindowTokens,
-                RepeatPenalty = mapping.RepeatPenalty,
-                Temperature = mapping.Temperature,
-                UpstreamType = mapping.UpstreamType,
-                EnableAutoSummarization = mapping.EnableAutoSummarization,
-                PreserveRecentMessageCount = mapping.PreserveRecentMessageCount,
-                MaxSummarizationRetries = mapping.MaxSummarizationRetries,
-                InstructionSetName = mapping.InstructionSetName,
-                RedactRequestBodies = mapping.RedactRequestBodies,
-                RedactResponseBodies = mapping.RedactResponseBodies,
-                RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields,
-            };
-
+            // Carry the full per-row advanced configuration on the row Tag — these fields are
+            // edited in the modal Configure dialog. Clone so no property is dropped when the
+            // grid is rebuilt (e.g. after instruction-set edits).
+            row.Tag = mapping.Clone();
         }
 
         // Load instructions list
@@ -1020,32 +996,15 @@ internal partial class MainForm : Form
 
             UpstreamType upstream = UpstreamTypeExtensions.FromDisplayName(upstreamStr);
 
-            committed.Add(new ModelMapping
-            {
-                ProxyName              = trimmedProxy,
-                ModelName              = modelName.Trim(),
-                IsEnabled              = advanced?.IsEnabled ?? true,
-                EnableThinkingCompatibility = advanced?.EnableThinkingCompatibility ?? true,
-                ThinkingMode           = advanced?.ThinkingMode ?? ThinkingMode.Off,
-                TemperaturePriority    = advanced?.TemperaturePriority ?? SamplingPriority.ClientApp,
-                RepeatPenaltyPriority   = advanced?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
-                SupportsVision         = advanced?.SupportsVision,
-                EnableHeartbeats       = advanced?.EnableHeartbeats ?? true,
-                CredentialName         = advanced?.CredentialName,
-                UpstreamUrl            = upstreamUrl.Trim(),
-                UpstreamTimeoutSeconds = advanced?.UpstreamTimeoutSeconds ?? 300,
-                ContextWindowTokens    = advanced?.ContextWindowTokens ?? 0,
-                RepeatPenalty          = advanced?.RepeatPenalty ?? 1.0,
-                Temperature            = advanced?.Temperature ?? 0.7,
-                UpstreamType           = upstream,
-                EnableAutoSummarization = advanced?.EnableAutoSummarization ?? true,
-                PreserveRecentMessageCount = advanced?.PreserveRecentMessageCount ?? 4,
-                MaxSummarizationRetries = advanced?.MaxSummarizationRetries ?? 2,
-                InstructionSetName     = advanced?.InstructionSetName,
-                RedactRequestBodies    = advanced?.RedactRequestBodies ?? true,
-                RedactResponseBodies   = advanced?.RedactResponseBodies ?? true,
-                RedactSensitiveJsonFields = advanced?.RedactSensitiveJsonFields ?? true,
-            });
+            // Clone the advanced configuration carried on the row Tag so every per-model
+            // property survives the commit; only the grid-editable fields are overridden.
+            ModelMapping committedMapping = advanced?.Clone() ?? new ModelMapping();
+            committedMapping.ProxyName = trimmedProxy;
+            committedMapping.ModelName = modelName.Trim();
+            committedMapping.UpstreamUrl = upstreamUrl.Trim();
+            committedMapping.UpstreamType = upstream;
+
+            committed.Add(committedMapping);
         }
 
         _settings.ModelMappings = committed;
