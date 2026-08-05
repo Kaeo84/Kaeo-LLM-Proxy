@@ -24,6 +24,8 @@ partial class MainForm
         _tabCredentials = new TabPage();
         _tabModules = new TabPage();
         _tabMcp = new TabPage();
+        _mcpSubTabs = new TabControl();
+        _mcpServerPage = new TabPage();
         _tlpMcp = new TableLayoutPanel();
         _chkMcpEnabled = new CheckBox();
         _lblMcpListenAddress = new Label();
@@ -243,6 +245,8 @@ partial class MainForm
         _tabModules.SuspendLayout();
         _tlpModules.SuspendLayout();
         _flpModuleButtons.SuspendLayout();
+        _mcpSubTabs.SuspendLayout();
+        _mcpServerPage.SuspendLayout();
         _tabMcp.SuspendLayout();
         _tlpMcp.SuspendLayout();
         _flpMcpButtons.SuspendLayout();
@@ -267,7 +271,6 @@ partial class MainForm
         _tabControl.Controls.Add(_tabSettings);
         _tabControl.Controls.Add(_tabInstructions);
         _tabControl.Controls.Add(_tabCredentials);
-        _tabControl.Controls.Add(_tabModules);
         _tabControl.Controls.Add(_tabMcp);
         _tabControl.Controls.Add(_tabTest);
         _tabControl.Controls.Add(_tabHeartbeats);
@@ -1263,12 +1266,24 @@ partial class MainForm
 
         // ── MCP tab ─────────────────────────────────────────────────────────
 
-        // _tabMcp
-        _tabMcp.Controls.Add(_tlpMcp);
+        // _tabMcp — hosts the nested MCP sub-tabs (server settings, module registry, module pages)
+        _tabMcp.Controls.Add(_mcpSubTabs);
         _tabMcp.Dock = DockStyle.Fill;
         _tabMcp.Name = "_tabMcp";
-        _tabMcp.Padding = new Padding(8);
         _tabMcp.Text = "MCP";
+
+        // _mcpSubTabs
+        _mcpSubTabs.Controls.Add(_mcpServerPage);
+        _mcpSubTabs.Controls.Add(_tabModules);
+        _mcpSubTabs.Dock = DockStyle.Fill;
+        _mcpSubTabs.Name = "_mcpSubTabs";
+
+        // _mcpServerPage
+        _mcpServerPage.Controls.Add(_tlpMcp);
+        _mcpServerPage.Dock = DockStyle.Fill;
+        _mcpServerPage.Name = "_mcpServerPage";
+        _mcpServerPage.Padding = new Padding(8);
+        _mcpServerPage.Text = "Server";
 
         // _tlpMcp — 2 columns: caption AutoSize | content Percent
         _tlpMcp.ColumnCount = 2;
@@ -1645,6 +1660,8 @@ partial class MainForm
         _tlpModules.ResumeLayout(false);
         _tlpModules.PerformLayout();
         _flpModuleButtons.ResumeLayout(false);
+        _mcpServerPage.ResumeLayout(false);
+        _mcpSubTabs.ResumeLayout(false);
         ((System.ComponentModel.ISupportInitialize)_nudMcpPort).EndInit();
         _tabMcp.ResumeLayout(false);
         _tlpMcp.ResumeLayout(false);
@@ -1824,6 +1841,8 @@ partial class MainForm
 
     // MCP tab
     private TabPage _tabMcp;
+    private TabControl _mcpSubTabs;
+    private TabPage _mcpServerPage;
     private TableLayoutPanel _tlpMcp;
     private CheckBox _chkMcpEnabled;
     private Label _lblMcpListenAddress;

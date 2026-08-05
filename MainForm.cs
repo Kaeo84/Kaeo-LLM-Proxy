@@ -1721,7 +1721,7 @@ internal partial class MainForm : Form
             }
 
             page.Tag = moduleId;
-            _tabControl.TabPages.Add(page);
+            _mcpSubTabs.TabPages.Add(page);
             _moduleTabs[moduleId] = page;
         }
     }
@@ -1736,7 +1736,7 @@ internal partial class MainForm : Form
             .Where(kvp => !loadedIds.Contains(kvp.Key))
             .ToList())
         {
-            _tabControl.TabPages.Remove(page);
+            _mcpSubTabs.TabPages.Remove(page);
             page.Dispose();
             _moduleTabs.Remove(moduleId);
         }

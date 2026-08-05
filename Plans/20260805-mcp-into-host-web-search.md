@@ -89,3 +89,13 @@ so output is one DLL. Delete Kaeo LLM Proxy MCP and update slnx/host globs.
 - Remaining manual GUI verification: remove the stale "Kaeo LLM Proxy MCP" registry entry, import
   Kaeo LLM Proxy Web Search.dll via the Modules tab, confirm the injected Web Search tab and the
   web_search/web_fetch tools, and exercise the host MCP tab apply/restart.
+
+## Follow-up: Modules and module GUIs live under the MCP tab
+- User feedback after verification: the Modules registry and the config tabs injected by modules
+  belong under the MCP tab, not at the top level.
+- The MCP tab now hosts a nested TabControl (_mcpSubTabs): "Server" (the existing MCP server
+  settings on _mcpServerPage), "Modules" (the former top-level Modules tab page, moved as-is),
+  and one sub-page per loaded module (CreateConfigPage output).
+- MainForm.Designer.cs: _tabMcp contains _mcpSubTabs; _tabModules removed from the top-level
+  _tabControl; new _mcpSubTabs/_mcpServerPage controls with suspend/resume and backing fields.
+- MainForm.cs: AddModuleTabs/RemoveStaleModuleTabs add/remove module pages on _mcpSubTabs.
