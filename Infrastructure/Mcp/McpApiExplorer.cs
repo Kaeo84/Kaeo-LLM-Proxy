@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Modules;
 
-namespace Kaeo.LlmProxy.Mcp.Infrastructure;
+namespace Kaeo.LlmProxy.Infrastructure.Mcp;
 
 /// <summary>
 /// The module's API explorer: serves a hand-written OpenAPI document describing the module's

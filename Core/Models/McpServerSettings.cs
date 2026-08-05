@@ -1,7 +1,7 @@
-namespace Kaeo.LlmProxy.Mcp.Core.Models;
+namespace Kaeo.LlmProxy.Core.Models;
 
 /// <summary>
-/// Persisted settings for the MCP server endpoint (mcp_server_settings table).
+/// Persisted settings for the built-in MCP server endpoint (mcp_server_settings table).
 /// </summary>
 internal sealed class McpServerSettings
 {
@@ -19,7 +19,7 @@ internal sealed class McpServerSettings
     public int ListenPort { get; set; } = DefaultPort;
 
     /// <summary>
-    /// Name of a host credential store entry whose secret is required as a bearer token.
+    /// Name of a credential store entry whose secret is required as a bearer token.
     /// Null/empty disables authentication.
     /// </summary>
     public string? AuthCredentialName { get; set; }

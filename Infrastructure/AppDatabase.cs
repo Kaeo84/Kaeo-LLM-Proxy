@@ -490,7 +490,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization
+                    enable_auto_summarization,
+                    run_as_administrator
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -513,6 +514,7 @@ internal sealed class AppDatabase : IDisposable
                 EnablePerformanceSampling = ReadBoolean(reader, 8),
                 EnableApiExplorer = ReadBoolean(reader, 9),
                 EnableAutoSummarization = ReadBoolean(reader, 10),
+                RunAsAdministrator = ReadBoolean(reader, 11),
             };
         }
     }
@@ -539,7 +541,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization
+                    enable_auto_summarization,
+                    run_as_administrator
                 )
                 VALUES (
                     $id,
@@ -553,7 +556,8 @@ internal sealed class AppDatabase : IDisposable
                     $streamingHeartbeatIntervalSeconds,
                     $enablePerformanceSampling,
                     $enableApiExplorer,
-                    $enableAutoSummarization
+                    $enableAutoSummarization,
+                    $runAsAdministrator
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -566,7 +570,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
-                    enable_auto_summarization = excluded.enable_auto_summarization;
+                    enable_auto_summarization = excluded.enable_auto_summarization,
+                    run_as_administrator = excluded.run_as_administrator;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -581,6 +586,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$enableAutoSummarization", ToSqliteBoolean(settings.EnableAutoSummarization));
+            command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
             command.ExecuteNonQuery();
         }
     }
@@ -1099,7 +1105,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
-                    enable_auto_summarization INTEGER NOT NULL DEFAULT 1
+                    enable_auto_summarization INTEGER NOT NULL DEFAULT 1,
+                    run_as_administrator INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1111,6 +1118,11 @@ internal sealed class AppDatabase : IDisposable
                     is_enabled INTEGER NOT NULL DEFAULT 1,
                     registered_utc TEXT NOT NULL,
                     last_error TEXT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mcp_server_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 """;
             command.ExecuteNonQuery();
@@ -1162,7 +1174,7 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Adds columns to pre-existing runtime_settings tables that were created before they
     /// were introduced: <c>enable_performance_sampling</c>, <c>enable_api_explorer</c>,
-    /// and <c>enable_auto_summarization</c>.
+    /// <c>enable_auto_summarization</c>, and <c>run_as_administrator</c>.
     /// </summary>
     private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
     {
@@ -1197,6 +1209,16 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated runtime_settings table: added enable_auto_summarization column.");
+        }
+
+        if (!ColumnExists(connection, "runtime_settings", "run_as_administrator"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN run_as_administrator INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added run_as_administrator column.");
         }
     }
 

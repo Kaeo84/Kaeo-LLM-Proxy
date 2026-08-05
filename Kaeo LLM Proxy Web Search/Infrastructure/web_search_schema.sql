@@ -1,12 +1,6 @@
--- Kaeo LLM Proxy MCP module baseline schema.
+-- Kaeo LLM Proxy Web Search module baseline schema.
 -- Applied through IModuleDatabase.ExecuteSchemaScript during module initialization.
 -- Idempotent: safe to run on every startup.
-
--- Key/value settings for the MCP server host (enabled, listen address, port, auth).
-CREATE TABLE IF NOT EXISTS mcp_server_settings (
-	key TEXT PRIMARY KEY,
-	value TEXT NOT NULL
-);
 
 -- Web search provider catalog with per-provider settings.
 -- Exactly one row per provider kind; enabled flag toggles participation in queries.

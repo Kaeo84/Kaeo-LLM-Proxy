@@ -1,20 +1,16 @@
 using System.Data.Common;
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 using Kaeo.LlmProxy.Modules;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
-/// Loads and persists all MCP module settings through the shared application database gateway.
-/// Keys are stored in small key/value tables; the provider catalog and domain rules in row tables.
+/// Loads and persists the Web Search feature settings through the shared application database
+/// gateway. Keys are stored in small key/value tables; the provider catalog and domain rules in
+/// row tables.
 /// </summary>
-internal sealed class McpSettingsRepository(IModuleDatabase database)
+internal sealed class WebSearchRepository(IModuleDatabase database)
 {
-    private const string ServerEnabledKey = "enabled";
-    private const string ServerListenAddressKey = "listen_address";
-    private const string ServerListenPortKey = "listen_port";
-    private const string ServerAuthCredentialKey = "auth_credential_name";
-
     private const string WebSearchEnabledKey = "web_search_enabled";
     private const string WebFetchEnabledKey = "web_fetch_enabled";
     private const string MaxResultsKey = "max_results";
@@ -23,31 +19,6 @@ internal sealed class McpSettingsRepository(IModuleDatabase database)
     private const string AllowLocalNetworksKey = "allow_local_networks";
 
     private readonly IModuleDatabase _database = database;
-
-    // ── Server settings ─────────────────────────────────────────────────────
-
-    public McpServerSettings LoadServerSettings()
-    {
-        Dictionary<string, string> values = LoadKeyValueTable("mcp_server_settings");
-
-        return new McpServerSettings
-        {
-            Enabled = ReadBool(values, ServerEnabledKey, false),
-            ListenAddress = ReadString(values, ServerListenAddressKey, "localhost"),
-            ListenPort = ClampPort(ReadInt(values, ServerListenPortKey, McpServerSettings.DefaultPort)),
-            AuthCredentialName = ReadOptionalString(values, ServerAuthCredentialKey),
-        };
-    }
-
-    public void SaveServerSettings(McpServerSettings settings)
-    {
-        ArgumentNullException.ThrowIfNull(settings);
-
-        UpsertKeyValue("mcp_server_settings", ServerEnabledKey, settings.Enabled ? "1" : "0");
-        UpsertKeyValue("mcp_server_settings", ServerListenAddressKey, settings.ListenAddress);
-        UpsertKeyValue("mcp_server_settings", ServerListenPortKey, ClampPort(settings.ListenPort).ToString());
-        UpsertKeyValue("mcp_server_settings", ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty);
-    }
 
     // ── Web Search settings ─────────────────────────────────────────────────
 
@@ -186,8 +157,6 @@ internal sealed class McpSettingsRepository(IModuleDatabase database)
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private static int ClampPort(int port) => Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort);
-
     private Dictionary<string, string> LoadKeyValueTable(string table)
     {
         IReadOnlyList<KeyValuePair<string, string>> rows = _database.Query(
@@ -227,6 +196,4 @@ internal sealed class McpSettingsRepository(IModuleDatabase database)
     private static string ReadString(Dictionary<string, string> values, string key, string fallback) =>
         values.TryGetValue(key, out string? raw) && !string.IsNullOrWhiteSpace(raw) ? raw : fallback;
 
-    private static string? ReadOptionalString(Dictionary<string, string> values, string key) =>
-        values.TryGetValue(key, out string? raw) && !string.IsNullOrWhiteSpace(raw) ? raw : null;
-}
+    }

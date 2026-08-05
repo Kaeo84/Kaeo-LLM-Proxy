@@ -1,6 +1,6 @@
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
 /// Enforces the allow/deny domain rules for <c>web_search</c> links and <c>web_fetch</c>.
@@ -8,9 +8,9 @@ namespace Kaeo.LlmProxy.Mcp.Core.Services;
 /// Semantics: deny rules always win; when at least one allow rule exists, only hosts matching
 /// an allow rule pass; with no allow rules everything not denied passes.
 /// </summary>
-internal sealed class DomainPolicyService(McpSettingsRepository repository)
+internal sealed class DomainPolicyService(WebSearchRepository repository)
 {
-    private readonly McpSettingsRepository _repository = repository;
+    private readonly WebSearchRepository _repository = repository;
 
     public bool IsAllowed(Uri uri)
     {

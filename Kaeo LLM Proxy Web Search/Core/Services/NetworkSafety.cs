@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
 /// SSRF guard for outbound web requests: enforces http/https only and blocks private/loopback

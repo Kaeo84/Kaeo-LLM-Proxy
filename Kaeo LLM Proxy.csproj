@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -19,11 +19,11 @@
        default glob so each library compiles only its own files. -->
   <ItemGroup>
     <Compile Remove="Kaeo LLM Proxy Modules\**" />
-    <Compile Remove="Kaeo LLM Proxy MCP\**" />
+    <Compile Remove="Kaeo LLM Proxy Web Search\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Modules\**" />
-    <EmbeddedResource Remove="Kaeo LLM Proxy MCP\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy Web Search\**" />
     <None Remove="Kaeo LLM Proxy Modules\**" />
-    <None Remove="Kaeo LLM Proxy MCP\**" />
+    <None Remove="Kaeo LLM Proxy Web Search\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -31,6 +31,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <!-- Override transitive SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q) -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Serilog" Version="4.4.0" />

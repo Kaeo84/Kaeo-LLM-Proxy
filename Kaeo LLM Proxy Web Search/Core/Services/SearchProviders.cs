@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
 /// Parses DuckDuckGo's keyless <c>/html/</c> endpoint. The endpoint returns a full HTML page;

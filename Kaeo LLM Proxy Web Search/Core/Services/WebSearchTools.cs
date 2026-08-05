@@ -1,9 +1,9 @@
 using System.ComponentModel;
 using System.Text;
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 using ModelContextProtocol.Server;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
 /// The MCP tools exposed by the Web Search feature. Tool enablement and limits are read from
@@ -11,10 +11,10 @@ namespace Kaeo.LlmProxy.Mcp.Core.Services;
 /// server. Disabled tools report themselves rather than vanishing mid-session.
 /// </summary>
 [McpServerToolType]
-internal sealed class WebSearchTools(WebSearchService service, McpSettingsRepository repository)
+internal sealed class WebSearchTools(WebSearchService service, WebSearchRepository repository)
 {
     private readonly WebSearchService _service = service;
-    private readonly McpSettingsRepository _repository = repository;
+    private readonly WebSearchRepository _repository = repository;
 
     [McpServerTool(Name = "web_search"), Description(
         "Searches the web using the configured search providers and returns matching pages with " +
@@ -27,7 +27,7 @@ internal sealed class WebSearchTools(WebSearchService service, McpSettingsReposi
     {
         WebSearchSettings settings = _repository.LoadWebSearchSettings();
         if (!settings.WebSearchToolEnabled)
-            return "The web_search tool is disabled in the Kaeo LLM Proxy MCP module settings.";
+            return "The web_search tool is disabled in the Web Search module settings.";
 
         if (string.IsNullOrWhiteSpace(query))
             return "The query must not be empty.";
@@ -75,7 +75,7 @@ internal sealed class WebSearchTools(WebSearchService service, McpSettingsReposi
     {
         WebSearchSettings settings = _repository.LoadWebSearchSettings();
         if (!settings.WebFetchToolEnabled)
-            return "The web_fetch tool is disabled in the Kaeo LLM Proxy MCP module settings.";
+            return "The web_fetch tool is disabled in the Web Search module settings.";
 
         if (string.IsNullOrWhiteSpace(url))
             return "The URL must not be empty.";

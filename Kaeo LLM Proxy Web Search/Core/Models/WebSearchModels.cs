@@ -1,4 +1,4 @@
-namespace Kaeo.LlmProxy.Mcp.Core.Models;
+namespace Kaeo.LlmProxy.WebSearch.Core.Models;
 
 /// <summary>Allow/deny rule kinds for the Web Search domain policy.</summary>
 internal enum DomainRuleType

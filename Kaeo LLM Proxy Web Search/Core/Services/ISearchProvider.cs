@@ -1,6 +1,6 @@
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>One result item from a web search provider.</summary>
 internal sealed record SearchResult(string Title, string Url, string Snippet);

@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Modules;
 using Serilog;
@@ -17,7 +18,7 @@ namespace Kaeo.LlmProxy.Core.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost) : IDisposable
+internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -39,6 +40,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private readonly StatisticsService _stats = stats;
     private readonly ModuleHost _moduleHost = moduleHost;
+    private readonly McpServerService _mcpServer = mcpServer;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Called from the Settings UI after the user saves new settings.</summary>
@@ -3480,6 +3482,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private async Task<string> BuildApiExplorerHtmlAsync(CancellationToken ct)
     {
         List<(string Label, string SpecJson)> documents = [("Kaeo LLM Proxy", OpenApiSpec)];
+
+        // The built-in MCP server's document is embedded directly (same process, no fetch needed).
+        if (_mcpServer.IsRunning && _mcpServer.ApiExplorer is { } mcpExplorer)
+            documents.Add(("Kaeo LLM Proxy MCP", mcpExplorer.BuildSpecJson()));
 
         foreach (LoadedModule loaded in _moduleHost.LoadedModules)
         {

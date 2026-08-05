@@ -1,30 +1,18 @@
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 
-namespace Kaeo.LlmProxy.Mcp.UI;
+namespace Kaeo.LlmProxy.WebSearch.UI;
 
 /// <summary>
-/// The module's configuration tab page injected into the host dashboard. Two sub-tabs:
-/// <c>Server</c> (enable/disable, endpoint, authentication, status) and <c>Web Search</c>
-/// (tool toggles, providers, domain rules, limits). All edits save immediately; endpoint and
-/// authentication changes restart the running server on the fly.
+/// The module's configuration tab page injected into the host dashboard: web_search/web_fetch
+/// tool toggles, search providers, domain rules, and limits. All edits save immediately and
+/// apply to new MCP tool invocations without restarting the server.
 /// </summary>
-internal sealed class McpConfigPage : TabPage
+internal sealed class WebSearchConfigPage : TabPage
 {
-    private readonly McpModule _module;
+    private readonly WebSearchModule _module;
     private bool _loading;
 
-    // Server sub-tab
-    private CheckBox _chkEnabled = null!;
-    private TextBox _txtListenAddress = null!;
-    private TextBox _txtPort = null!;
-    private ComboBox _cmbAuthCredential = null!;
-    private Label _lblEndpoint = null!;
-    private Label _lblScalar = null!;
-    private Label _lblStatus = null!;
-    private Button _btnStart = null!;
-    private Button _btnStop = null!;
-
-    // Web Search sub-tab
+    // Web Search controls
     private CheckBox _chkWebSearchTool = null!;
     private CheckBox _chkWebFetchTool = null!;
     private ListView _lstProviders = null!;
@@ -39,123 +27,20 @@ internal sealed class McpConfigPage : TabPage
     private NumericUpDown _nudMaxBytes = null!;
     private CheckBox _chkAllowLocal = null!;
 
-    public McpConfigPage(McpModule module)
+    public WebSearchConfigPage(WebSearchModule module)
     {
         _module = module ?? throw new ArgumentNullException(nameof(module));
 
-        Text = "MCP Config";
+        Text = "Web Search";
         Padding = new Padding(8);
 
-        TabControl tabs = new() { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(BuildServerTab());
-        tabs.TabPages.Add(BuildWebSearchTab());
-        Controls.Add(tabs);
+        Controls.Add(BuildWebSearchContent());
 
-        _module.StatusChanged += OnModuleStatusChanged;
         LoadSettingsToUi();
-        RefreshStatusLabels();
     }
 
-    protected override void Dispose(bool disposing)
+    private TableLayoutPanel BuildWebSearchContent()
     {
-        if (disposing)
-            _module.StatusChanged -= OnModuleStatusChanged;
-
-        base.Dispose(disposing);
-    }
-
-    // ── Server sub-tab ──────────────────────────────────────────────────────
-
-    private TabPage BuildServerTab()
-    {
-        TabPage page = new() { Text = "Server", Padding = new Padding(8) };
-
-        TableLayoutPanel layout = new()
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 8,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        _chkEnabled = new CheckBox
-        {
-            Text = "Enable MCP server (starts automatically with the application)",
-            AutoSize = true,
-            Margin = new Padding(0, 4, 0, 8),
-        };
-        _chkEnabled.CheckedChanged += ChkEnabled_CheckedChanged;
-        layout.Controls.Add(_chkEnabled, 0, 0);
-        layout.SetColumnSpan(_chkEnabled, 2);
-
-        layout.Controls.Add(MakeCaption("Listen address:"), 0, 1);
-        _txtListenAddress = new TextBox { Width = 180, Margin = new Padding(0, 2, 0, 6) };
-        _txtListenAddress.Validated += ServerEndpoint_Validated;
-        _txtListenAddress.KeyDown += TextBoxEnterApplies;
-        layout.Controls.Add(_txtListenAddress, 1, 1);
-
-        layout.Controls.Add(MakeCaption("Port:"), 0, 2);
-        _txtPort = new TextBox { Width = 90, Margin = new Padding(0, 2, 0, 6) };
-        _txtPort.Validated += ServerEndpoint_Validated;
-        _txtPort.KeyDown += TextBoxEnterApplies;
-        layout.Controls.Add(_txtPort, 1, 2);
-
-        layout.Controls.Add(MakeCaption("Auth credential:"), 0, 3);
-        _cmbAuthCredential = new ComboBox
-        {
-            Width = 220,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Margin = new Padding(0, 2, 0, 6),
-        };
-        _cmbAuthCredential.SelectedIndexChanged += CmbAuthCredential_SelectedIndexChanged;
-        layout.Controls.Add(_cmbAuthCredential, 1, 3);
-
-        _lblEndpoint = new Label { AutoSize = true, Margin = new Padding(0, 6, 0, 2) };
-        layout.Controls.Add(_lblEndpoint, 0, 4);
-        layout.SetColumnSpan(_lblEndpoint, 2);
-
-        _lblScalar = new Label { AutoSize = true, Margin = new Padding(0, 0, 0, 2), ForeColor = SystemColors.GrayText };
-        layout.Controls.Add(_lblScalar, 0, 5);
-        layout.SetColumnSpan(_lblScalar, 2);
-
-        _lblStatus = new Label
-        {
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8),
-            Font = new Font(Font, FontStyle.Bold),
-        };
-        layout.Controls.Add(_lblStatus, 0, 6);
-        layout.SetColumnSpan(_lblStatus, 2);
-
-        FlowLayoutPanel buttons = new() { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        _btnStart = new Button { Text = "Start", Width = 90 };
-        _btnStart.Click += BtnStart_Click;
-        _btnStop = new Button { Text = "Stop", Width = 90 };
-        _btnStop.Click += BtnStop_Click;
-        buttons.Controls.Add(_btnStart);
-        buttons.Controls.Add(_btnStop);
-        layout.Controls.Add(buttons, 0, 7);
-        layout.SetColumnSpan(buttons, 2);
-
-        page.Controls.Add(layout);
-        return page;
-    }
-
-    // ── Web Search sub-tab ──────────────────────────────────────────────────
-
-    private TabPage BuildWebSearchTab()
-    {
-        TabPage page = new() { Text = "Web Search", Padding = new Padding(8) };
-
         TableLayoutPanel layout = new()
         {
             Dock = DockStyle.Fill,
@@ -195,8 +80,7 @@ internal sealed class McpConfigPage : TabPage
         };
         layout.Controls.Add(note, 0, 4);
 
-        page.Controls.Add(layout);
-        return page;
+        return layout;
     }
 
     private GroupBox BuildProvidersGroup()
@@ -317,22 +201,6 @@ internal sealed class McpConfigPage : TabPage
 
         try
         {
-            McpServerSettings server = _module.Repository.LoadServerSettings();
-            _chkEnabled.Checked = server.Enabled;
-            _txtListenAddress.Text = server.ListenAddress;
-            _txtPort.Text = server.ListenPort.ToString();
-
-            _cmbAuthCredential.Items.Clear();
-            _cmbAuthCredential.Items.Add("(None)");
-            int selectedIndex = 0;
-            foreach (string credential in _module.Secrets.ListCredentialNames())
-            {
-                _cmbAuthCredential.Items.Add(credential);
-                if (string.Equals(credential, server.AuthCredentialName, StringComparison.OrdinalIgnoreCase))
-                    selectedIndex = _cmbAuthCredential.Items.Count - 1;
-            }
-            _cmbAuthCredential.SelectedIndex = selectedIndex;
-
             WebSearchSettings web = _module.Repository.LoadWebSearchSettings();
             _chkWebSearchTool.Checked = web.WebSearchToolEnabled;
             _chkWebFetchTool.Checked = web.WebFetchToolEnabled;
@@ -412,93 +280,7 @@ internal sealed class McpConfigPage : TabPage
         });
     }
 
-    private void SaveServerSettings()
-    {
-        string address = _txtListenAddress.Text.Trim();
-        int port = int.TryParse(_txtPort.Text.Trim(), out int parsed) ? parsed : McpServerSettings.DefaultPort;
-
-        _module.Repository.SaveServerSettings(new McpServerSettings
-        {
-            Enabled = _chkEnabled.Checked,
-            ListenAddress = address.Length == 0 ? "localhost" : address,
-            ListenPort = Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort),
-            AuthCredentialName = _cmbAuthCredential.SelectedIndex <= 0
-                ? null
-                : _cmbAuthCredential.SelectedItem as string,
-        });
-
-        _txtPort.Text = Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort).ToString();
-    }
-
     // ── Event handlers ──────────────────────────────────────────────────────
-
-    private async void ChkEnabled_CheckedChanged(object? sender, EventArgs e)
-    {
-        if (_loading)
-            return;
-
-        SaveServerSettings();
-        await ApplyServerSettingsSafeAsync();
-    }
-
-    private async void ServerEndpoint_Validated(object? sender, EventArgs e)
-    {
-        if (_loading)
-            return;
-
-        SaveServerSettings();
-        await ApplyServerSettingsSafeAsync();
-    }
-
-    private void TextBoxEnterApplies(object? sender, KeyEventArgs e)
-    {
-        if (e.KeyCode != Keys.Enter)
-            return;
-
-        e.SuppressKeyPress = true;
-        ((Control)sender!).Focus(); // triggers Validated
-        _chkEnabled.Focus();
-    }
-
-    private async void CmbAuthCredential_SelectedIndexChanged(object? sender, EventArgs e)
-    {
-        if (_loading)
-            return;
-
-        SaveServerSettings();
-        await ApplyServerSettingsSafeAsync();
-    }
-
-    private void BtnStart_Click(object? sender, EventArgs e)
-    {
-        if (!_chkEnabled.Checked)
-            _chkEnabled.Checked = true; // handler applies
-        else
-            _ = ApplyServerSettingsSafeAsync();
-    }
-
-    private void BtnStop_Click(object? sender, EventArgs e)
-    {
-        if (_chkEnabled.Checked)
-            _chkEnabled.Checked = false; // handler applies
-    }
-
-    private async Task ApplyServerSettingsSafeAsync()
-    {
-        try
-        {
-            await _module.ApplyServerSettingsAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"Failed to apply MCP server settings:\n\n{ex.Message}",
-                "MCP Server", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        finally
-        {
-            RefreshStatusLabels();
-        }
-    }
 
     private void WebSetting_Changed(object? sender, EventArgs e) => SaveWebSettings();
 
@@ -589,21 +371,6 @@ internal sealed class McpConfigPage : TabPage
 
         _module.Repository.RemoveDomainRule(rule.Id);
         RefreshDomainRules();
-    }
-
-    private void OnModuleStatusChanged(object? sender, string status)
-    {
-        if (IsDisposed || !IsHandleCreated)
-            return;
-
-        BeginInvoke(RefreshStatusLabels);
-    }
-
-    private void RefreshStatusLabels()
-    {
-        _lblStatus.Text = $"Status: {_module.Status}";
-        _lblEndpoint.Text = $"MCP endpoint: {_module.EndpointUrl ?? "(stopped)"}";
-        _lblScalar.Text = $"API explorer: {_module.ScalarUrl ?? "(stopped)"}";
     }
 
     // ── Small helpers ───────────────────────────────────────────────────────

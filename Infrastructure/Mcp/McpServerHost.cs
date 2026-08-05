@@ -4,14 +4,14 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Modules;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Serilog;
 
-namespace Kaeo.LlmProxy.Mcp.Infrastructure;
+namespace Kaeo.LlmProxy.Infrastructure.Mcp;
 
 /// <summary>
 /// One active MCP Streamable HTTP session: the transport carrying JSON-RPC messages and the

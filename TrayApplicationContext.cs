@@ -1,6 +1,7 @@
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Modules;
 using Serilog;
@@ -21,6 +22,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ProxyServer _server;
     private readonly AppDatabase _database;
     private readonly ModuleHost _moduleHost;
+    private readonly McpServerService _mcpServer;
     private MainForm? _mainForm;
     private bool _disposed;
 
@@ -38,6 +40,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _settings = settings;
         _database = database;
         _moduleHost = moduleHost;
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost);
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
@@ -49,7 +52,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
-        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost);
+        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
         _handler.StartHeartbeatMonitors();
         _server = new ProxyServer(_handler);
 
@@ -68,9 +71,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
             StartProxy();
 
         StartModules();
+        _ = StartMcpServerAsync();
 
         if (_settings.StartWithDashboardOpen)
             ShowMainForm();
+    }
+
+    /// <summary>
+    /// Starts the built-in MCP server after the modules. It gates itself on the persisted
+    /// enabled flag; a bind failure logs a warning and never blocks host startup.
+    /// </summary>
+    private async Task StartMcpServerAsync()
+    {
+        try
+        {
+            await _mcpServer.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "MCP server failed to start");
+        }
     }
 
     /// <summary>
@@ -179,7 +199,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost);
+            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost, _mcpServer);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }
@@ -274,6 +294,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         Log.Information("Kaeo LLM Proxy shutting down");
         _trayIcon.Visible = false;
+        try
+        {
+            await _mcpServer.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping MCP server during shutdown");
+        }
         try
         {
             await _moduleHost.StopAllAsync();

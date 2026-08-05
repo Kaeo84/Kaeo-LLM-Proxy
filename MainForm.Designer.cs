@@ -23,6 +23,19 @@ partial class MainForm
         _tabInstructions = new TabPage();
         _tabCredentials = new TabPage();
         _tabModules = new TabPage();
+        _tabMcp = new TabPage();
+        _tlpMcp = new TableLayoutPanel();
+        _chkMcpEnabled = new CheckBox();
+        _lblMcpListenAddress = new Label();
+        _txtMcpListenAddress = new TextBox();
+        _lblMcpPort = new Label();
+        _nudMcpPort = new NumericUpDown();
+        _lblMcpAuthCredential = new Label();
+        _cboMcpAuthCredential = new ComboBox();
+        _lblMcpStatusCaption = new Label();
+        _lblMcpStatus = new Label();
+        _flpMcpButtons = new FlowLayoutPanel();
+        _btnMcpApply = new Button();
         _tabTest = new TabPage();
         _tabHeartbeats = new TabPage();
 
@@ -109,6 +122,7 @@ partial class MainForm
         _btnConfigureMapping = new Button();
         _chkAutoStart = new CheckBox();
         _chkStartWithDashboard = new CheckBox();
+        _chkRunAsAdmin = new CheckBox();
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
         _chkPerformanceSampling = new CheckBox();
@@ -229,6 +243,10 @@ partial class MainForm
         _tabModules.SuspendLayout();
         _tlpModules.SuspendLayout();
         _flpModuleButtons.SuspendLayout();
+        _tabMcp.SuspendLayout();
+        _tlpMcp.SuspendLayout();
+        _flpMcpButtons.SuspendLayout();
+        ((System.ComponentModel.ISupportInitialize)_nudMcpPort).BeginInit();
         _tabTest.SuspendLayout();
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
@@ -250,6 +268,7 @@ partial class MainForm
         _tabControl.Controls.Add(_tabInstructions);
         _tabControl.Controls.Add(_tabCredentials);
         _tabControl.Controls.Add(_tabModules);
+        _tabControl.Controls.Add(_tabMcp);
         _tabControl.Controls.Add(_tabTest);
         _tabControl.Controls.Add(_tabHeartbeats);
         _tabControl.Dock = DockStyle.Fill;
@@ -635,7 +654,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 14;
+        _tlpSettings.RowCount = 15;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -646,26 +665,28 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkAutoStart, 0, 2);
         _tlpSettings.SetColumnSpan(_chkStartWithDashboard, 2);
         _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 3);
+        _tlpSettings.SetColumnSpan(_chkRunAsAdmin, 2);
+        _tlpSettings.Controls.Add(_chkRunAsAdmin, 0, 4);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 4);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 5);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 5);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 6);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 6);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 7);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 7);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 8);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
         _tlpSettings.SetColumnSpan(_chkAutoSummarization, 2);
-        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 9);
+        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 10);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 10);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 11);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 12);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 13);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -733,6 +754,11 @@ partial class MainForm
         _chkStartWithDashboard.Margin = new Padding(4, 4, 4, 8);
         _chkStartWithDashboard.Name = "_chkStartWithDashboard";
         _chkStartWithDashboard.Text = "Open dashboard window on startup";
+
+        _chkRunAsAdmin.AutoSize = true;
+        _chkRunAsAdmin.Margin = new Padding(4, 4, 4, 4);
+        _chkRunAsAdmin.Name = "_chkRunAsAdmin";
+        _chkRunAsAdmin.Text = "Run as administrator on launch (required to listen on addresses other than localhost)";
 
         _chkCollectDetails.AutoSize = true;
         _chkCollectDetails.Margin = new Padding(4, 4, 4, 4);
@@ -1235,6 +1261,102 @@ partial class MainForm
         _btnRemoveModule.Text = "Remove";
         _btnRemoveModule.Click += BtnRemoveModule_Click;
 
+        // ── MCP tab ─────────────────────────────────────────────────────────
+
+        // _tabMcp
+        _tabMcp.Controls.Add(_tlpMcp);
+        _tabMcp.Dock = DockStyle.Fill;
+        _tabMcp.Name = "_tabMcp";
+        _tabMcp.Padding = new Padding(8);
+        _tabMcp.Text = "MCP";
+
+        // _tlpMcp — 2 columns: caption AutoSize | content Percent
+        _tlpMcp.ColumnCount = 2;
+        _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpMcp.Controls.Add(_chkMcpEnabled, 0, 0);
+        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 1);
+        _tlpMcp.Controls.Add(_txtMcpListenAddress, 1, 1);
+        _tlpMcp.Controls.Add(_lblMcpPort, 0, 2);
+        _tlpMcp.Controls.Add(_nudMcpPort, 1, 2);
+        _tlpMcp.Controls.Add(_lblMcpAuthCredential, 0, 3);
+        _tlpMcp.Controls.Add(_cboMcpAuthCredential, 1, 3);
+        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 4);
+        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 4);
+        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 6);
+        _tlpMcp.Dock = DockStyle.Fill;
+        _tlpMcp.Name = "_tlpMcp";
+        _tlpMcp.RowCount = 7;
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.SetColumnSpan(_chkMcpEnabled, 2);
+        _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
+
+        _chkMcpEnabled.AccessibleName = "Enable MCP server";
+        _chkMcpEnabled.AutoSize = true;
+        _chkMcpEnabled.Margin = new Padding(0, 0, 0, 8);
+        _chkMcpEnabled.Name = "_chkMcpEnabled";
+        _chkMcpEnabled.Text = "Enable MCP server (Streamable HTTP at /mcp)";
+
+        _lblMcpListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpListenAddress.AutoSize = true;
+        _lblMcpListenAddress.Name = "_lblMcpListenAddress";
+        _lblMcpListenAddress.Text = "Listen address";
+
+        _txtMcpListenAddress.AccessibleName = "MCP listen address";
+        _txtMcpListenAddress.Dock = DockStyle.Fill;
+        _txtMcpListenAddress.Margin = new Padding(0, 0, 0, 8);
+        _txtMcpListenAddress.Name = "_txtMcpListenAddress";
+
+        _lblMcpPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpPort.AutoSize = true;
+        _lblMcpPort.Name = "_lblMcpPort";
+        _lblMcpPort.Text = "Port";
+
+        _nudMcpPort.AccessibleName = "MCP port";
+        _nudMcpPort.Anchor = AnchorStyles.Left;
+        _nudMcpPort.Margin = new Padding(0, 0, 0, 8);
+        _nudMcpPort.Maximum = 65535;
+        _nudMcpPort.Minimum = 1;
+        _nudMcpPort.Name = "_nudMcpPort";
+
+        _lblMcpAuthCredential.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpAuthCredential.AutoSize = true;
+        _lblMcpAuthCredential.Name = "_lblMcpAuthCredential";
+        _lblMcpAuthCredential.Text = "Auth credential";
+
+        _cboMcpAuthCredential.AccessibleName = "MCP auth credential";
+        _cboMcpAuthCredential.Dock = DockStyle.Fill;
+        _cboMcpAuthCredential.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cboMcpAuthCredential.Margin = new Padding(0, 0, 0, 8);
+        _cboMcpAuthCredential.Name = "_cboMcpAuthCredential";
+
+        _lblMcpStatusCaption.AutoSize = true;
+        _lblMcpStatusCaption.Name = "_lblMcpStatusCaption";
+        _lblMcpStatusCaption.Text = "Status";
+
+        _lblMcpStatus.AutoSize = true;
+        _lblMcpStatus.Name = "_lblMcpStatus";
+        _lblMcpStatus.Text = "Stopped";
+
+        _flpMcpButtons.AutoSize = true;
+        _flpMcpButtons.Controls.Add(_btnMcpApply);
+        _flpMcpButtons.Dock = DockStyle.Fill;
+        _flpMcpButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpMcpButtons.Margin = new Padding(0);
+        _flpMcpButtons.Name = "_flpMcpButtons";
+        _flpMcpButtons.WrapContents = false;
+
+        _btnMcpApply.AccessibleName = "Apply and restart MCP server";
+        _btnMcpApply.AutoSize = true;
+        _btnMcpApply.Name = "_btnMcpApply";
+        _btnMcpApply.Text = "Apply && Restart";
+
         // ── Test Console tab ──────────────────────────────────────────────────
 
         // _tabTest
@@ -1523,6 +1645,12 @@ partial class MainForm
         _tlpModules.ResumeLayout(false);
         _tlpModules.PerformLayout();
         _flpModuleButtons.ResumeLayout(false);
+        ((System.ComponentModel.ISupportInitialize)_nudMcpPort).EndInit();
+        _tabMcp.ResumeLayout(false);
+        _tlpMcp.ResumeLayout(false);
+        _tlpMcp.PerformLayout();
+        _flpMcpButtons.ResumeLayout(false);
+        _flpMcpButtons.PerformLayout();
         _flpStatusButtons.ResumeLayout(false);
         _flpStatusButtons.PerformLayout();
         _pnlStatus.ResumeLayout(false);
@@ -1623,6 +1751,7 @@ partial class MainForm
     private Button _btnSaveListener;
     private CheckBox _chkAutoStart;
     private CheckBox _chkStartWithDashboard;
+    private CheckBox _chkRunAsAdmin;
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
     private CheckBox _chkPerformanceSampling;
@@ -1692,6 +1821,21 @@ partial class MainForm
     private Button _btnImportModule;
     private Button _btnToggleModule;
     private Button _btnRemoveModule;
+
+    // MCP tab
+    private TabPage _tabMcp;
+    private TableLayoutPanel _tlpMcp;
+    private CheckBox _chkMcpEnabled;
+    private Label _lblMcpListenAddress;
+    private TextBox _txtMcpListenAddress;
+    private Label _lblMcpPort;
+    private NumericUpDown _nudMcpPort;
+    private Label _lblMcpAuthCredential;
+    private ComboBox _cboMcpAuthCredential;
+    private Label _lblMcpStatusCaption;
+    private Label _lblMcpStatus;
+    private FlowLayoutPanel _flpMcpButtons;
+    private Button _btnMcpApply;
 
     // Test Console
     private TabPage _tabTest;

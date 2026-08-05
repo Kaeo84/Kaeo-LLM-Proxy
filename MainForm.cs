@@ -11,6 +11,7 @@ using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Serilog;
 
@@ -25,6 +26,9 @@ internal partial class MainForm : Form
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
     private readonly ModuleHost _moduleHost;
+    private readonly McpServerService _mcpServer;
+
+    private const string NoneCredential = "(none)";
 
     // Tabs injected by loaded modules, keyed by module id so they can be removed again when a
     // module is disabled or unregistered while the dashboard is open.
@@ -48,7 +52,7 @@ internal partial class MainForm : Form
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer)
     {
         _settings = settings;
         _stats = stats;
@@ -57,6 +61,7 @@ internal partial class MainForm : Form
         _perfService = perfService;
         _database = database;
         _moduleHost = moduleHost;
+        _mcpServer = mcpServer;
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
@@ -81,6 +86,13 @@ internal partial class MainForm : Form
         _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
+#if DEBUG
+        // Debug builds never force elevation so the running instance stays attachable;
+        // disable the control so it does not suggest otherwise.
+        _chkRunAsAdmin.Enabled = false;
+        _chkRunAsAdmin.Text += " (disabled in debug builds)";
+#endif
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -93,6 +105,14 @@ internal partial class MainForm : Form
         _txtReqLogSize.Validated += (_, _) => SaveLoggingSettings();
         _txtRequestDbPath.Validated += (_, _) => SaveLoggingSettings();
         _txtLogRetention.Validated += (_, _) => SaveLoggingSettings();
+
+        // MCP tab settings persist and restart the server immediately, like the Settings tab.
+        _mcpServer.StatusChanged += OnMcpStatusChanged;
+        _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _txtMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
+        _nudMcpPort.Validated += (_, _) => OnMcpSettingChanged();
+        _cboMcpAuthCredential.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
+        _btnMcpApply.Click += (_, _) => OnMcpSettingChanged();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -105,6 +125,8 @@ internal partial class MainForm : Form
         RefreshHeartbeats();
         RefreshCredentials();
         RefreshModules();
+        LoadMcpSettingsToForm();
+        UpdateMcpStatusLabel();
         _stats.HeartbeatsChanged += OnHeartbeatsChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
@@ -132,8 +154,87 @@ internal partial class MainForm : Form
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
+        _mcpServer.StatusChanged -= OnMcpStatusChanged;
         base.OnFormClosed(e);
     }
+
+    // ── MCP tab ─────────────────────────────────────────────────────────────
+
+    private void LoadMcpSettingsToForm()
+    {
+        _loadingSettings = true;
+        try
+        {
+            McpServerSettings settings = _mcpServer.LoadSettings();
+
+            _chkMcpEnabled.Checked = settings.Enabled;
+            _txtMcpListenAddress.Text = settings.ListenAddress;
+            _nudMcpPort.Value = Math.Clamp(settings.ListenPort, (int)_nudMcpPort.Minimum, (int)_nudMcpPort.Maximum);
+
+            _cboMcpAuthCredential.Items.Clear();
+            _cboMcpAuthCredential.Items.Add(NoneCredential);
+            foreach (string name in _mcpServer.ListCredentialNames())
+                _cboMcpAuthCredential.Items.Add(name);
+
+            _cboMcpAuthCredential.SelectedItem =
+                string.IsNullOrWhiteSpace(settings.AuthCredentialName)
+                    ? NoneCredential
+                    : settings.AuthCredentialName;
+        }
+        finally
+        {
+            _loadingSettings = false;
+        }
+    }
+
+    private void SaveMcpSettingsFromForm()
+    {
+        McpServerSettings settings = new()
+        {
+            Enabled = _chkMcpEnabled.Checked,
+            ListenAddress = _txtMcpListenAddress.Text.Trim(),
+            ListenPort = (int)_nudMcpPort.Value,
+            AuthCredentialName =
+                _cboMcpAuthCredential.SelectedItem is string selected && selected != NoneCredential
+                    ? selected
+                    : null,
+        };
+
+        _mcpServer.SaveSettings(settings);
+    }
+
+    private void OnMcpSettingChanged()
+    {
+        if (_loadingSettings)
+            return;
+
+        SaveMcpSettingsFromForm();
+        ApplyMcpServerSettingsAsync();
+    }
+
+    private async void ApplyMcpServerSettingsAsync()
+    {
+        try
+        {
+            await _mcpServer.ApplySettingsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to apply MCP server settings");
+        }
+
+        UpdateMcpStatusLabel();
+    }
+
+    private void OnMcpStatusChanged(object? sender, string status)
+    {
+        if (IsHandleCreated)
+            BeginInvoke(UpdateMcpStatusLabel);
+        else
+            UpdateMcpStatusLabel();
+    }
+
+    private void UpdateMcpStatusLabel() => _lblMcpStatus.Text = _mcpServer.Status;
 
     // ── Status ──────────────────────────────────────────────────────────────
 
@@ -784,6 +885,7 @@ internal partial class MainForm : Form
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
+        _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
@@ -872,6 +974,7 @@ internal partial class MainForm : Form
         _settings.MaxLogEntries = maxLogs;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
+        _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;

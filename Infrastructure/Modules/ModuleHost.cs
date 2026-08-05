@@ -38,6 +38,33 @@ internal sealed class ModuleHost
     public IReadOnlyList<ModuleRegistryEntry> GetRegistryEntries() => _database.LoadModuleRegistry();
 
     /// <summary>
+    /// Collects the MCP tool target instances contributed by loaded modules implementing
+    /// <see cref="IMcpToolModule"/>. A module that fails to produce targets is logged and skipped
+    /// so one bad module never breaks the MCP server.
+    /// </summary>
+    public IReadOnlyList<object> GetMcpToolTargets()
+    {
+        List<object> targets = [];
+
+        foreach (LoadedModule loaded in _loadedModules)
+        {
+            if (loaded.Module is not IMcpToolModule toolModule)
+                continue;
+
+            try
+            {
+                targets.AddRange(toolModule.CreateMcpToolTargets());
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Module {Name} failed to create MCP tool targets", loaded.Entry.Name);
+            }
+        }
+
+        return targets;
+    }
+
+    /// <summary>
     /// Loads all enabled modules from the registry. A module that fails to load records its
     /// error on the registry entry and never blocks host startup or other modules.
     /// </summary>

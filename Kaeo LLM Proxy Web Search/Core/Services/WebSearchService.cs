@@ -1,10 +1,10 @@
 using System.Text;
 using System.Text.Json;
-using Kaeo.LlmProxy.Mcp.Core.Models;
+using Kaeo.LlmProxy.WebSearch.Core.Models;
 using Kaeo.LlmProxy.Modules;
 using Serilog;
 
-namespace Kaeo.LlmProxy.Mcp.Core.Services;
+namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 
 /// <summary>
 /// Orchestrates the Web Search feature: runs a query across the enabled search providers until
@@ -14,7 +14,7 @@ namespace Kaeo.LlmProxy.Mcp.Core.Services;
 /// </summary>
 internal sealed class WebSearchService
 {
-    private readonly McpSettingsRepository _repository;
+    private readonly WebSearchRepository _repository;
     private readonly ISecretProvider _secrets;
     private readonly DomainPolicyService _domainPolicy;
 
@@ -29,7 +29,7 @@ internal sealed class WebSearchService
     // Shared pooled client; per-operation timeouts are applied with CancellationTokenSources.
     private static readonly HttpClient SharedClient = CreateHttpClient();
 
-    public WebSearchService(McpSettingsRepository repository, ISecretProvider secrets)
+    public WebSearchService(WebSearchRepository repository, ISecretProvider secrets)
     {
         _repository = repository;
         _secrets = secrets;
@@ -49,7 +49,7 @@ internal sealed class WebSearchService
             Timeout = System.Threading.Timeout.InfiniteTimeSpan,
         };
 
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; KaeoLlmProxyMcp/1.0)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (compatible; KaeoLlmProxyWebSearch/1.0)");
         client.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8");
         return client;
     }

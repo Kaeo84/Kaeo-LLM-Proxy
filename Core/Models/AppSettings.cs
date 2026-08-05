@@ -126,6 +126,13 @@ internal sealed class RuntimeSettings
 
     public bool AllowMultipleInstances { get; set; } = false;
 
+    /// <summary>
+    /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
+    /// accepts non-localhost listener bindings without a manual "Run as administrator".
+    /// Ignored in debug builds. Default: false.
+    /// </summary>
+    public bool RunAsAdministrator { get; set; } = false;
+
     public bool ShowCloseToTrayNotification { get; set; } = true;
 
     public bool CollectRequestDetails { get; set; } =
@@ -496,6 +503,14 @@ internal sealed class AppSettings
     public bool AllowMultipleInstances { get; set; } = false;
 
     /// <summary>
+    /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
+    /// accepts non-localhost listener bindings (e.g. 0.0.0.0) without a manual "Run as
+    /// administrator". Ignored in debug builds. Takes effect on the next launch. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool RunAsAdministrator { get; set; } = false;
+
+    /// <summary>
     /// When true, show a notification dialog the first time the main window is closed to the tray.
     /// Users can disable it from that dialog. Default: true.
     /// </summary>
@@ -665,6 +680,7 @@ internal sealed class AppSettings
         AutoStartProxy = AutoStartProxy,
         StartWithDashboardOpen = StartWithDashboardOpen,
         AllowMultipleInstances = AllowMultipleInstances,
+        RunAsAdministrator = RunAsAdministrator,
         ShowCloseToTrayNotification = ShowCloseToTrayNotification,
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
@@ -682,6 +698,7 @@ internal sealed class AppSettings
         AutoStartProxy = runtimeSettings.AutoStartProxy;
         StartWithDashboardOpen = runtimeSettings.StartWithDashboardOpen;
         AllowMultipleInstances = runtimeSettings.AllowMultipleInstances;
+        RunAsAdministrator = runtimeSettings.RunAsAdministrator;
         ShowCloseToTrayNotification = runtimeSettings.ShowCloseToTrayNotification;
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
