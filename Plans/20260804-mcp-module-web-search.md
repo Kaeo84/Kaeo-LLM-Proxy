@@ -13,7 +13,7 @@ retired on the proxy side).
 - [x] 2. Add host module hosting
 - [x] 3. Add host "Modules" tab
 - [x] 4. Inject module tabs into `MainForm`
-- [ ] 5. Wire module lifecycle — start `IRunnableModule`s in `TrayApplicationContext` after proxy start (honoring persisted enabled state), stop on exit/dispose; tolerate bind/IOException failures with log + status surface.
+- [x] 5. Wire module lifecycle — start `IRunnableModule`s in `TrayApplicationContext` after proxy start (honoring persisted enabled state), stop on exit/dispose; tolerate bind/IOException failures with log + status surface.
 - [x] 6. Replace Swagger with Scalar on the proxy
 - [x] 7. Create MCP module project `Kaeo LLM Proxy MCP`
 - [x] 8. Implement MCP server host
@@ -52,3 +52,16 @@ retired on the proxy side).
   404s for unknown/deleted sessions, bearer-token 401/200 on restart.
 - Remaining manual checks (need GUI): import the module DLL via the Modules tab, confirm the
   injected MCP Config tab, browse /swagger + /scalar dropdowns in a browser.
+
+## Follow-up fix (20260805): module import failed with missing ModelContextProtocol.Core
+- Symptom: Import Module reported "Could not load file or assembly 'ModelContextProtocol.Core,
+  Version=2.0.0.0 ... The system cannot find the file specified."
+- Root cause: class library builds do not copy NuGet package assemblies to bin, so the module
+  folder was not self-contained and ModuleAssemblyLoadContext could not resolve MCP dependencies.
+- Fix: set CopyLocalLockFileAssemblies=true in Kaeo LLM Proxy MCP.csproj so the module output
+  ships its own dependencies; shared assemblies (contracts, Serilog, SQLite) still unify with the
+  host because the load context defers to the host directory first.
+- Verified with a throwaway ALC probe replicating ModuleAssemblyLoadContext: 95 types loaded,
+  exactly one IKaeoModule implementation (kaeo.mcp) instantiated. Full solution build clean.
+- Note: a failed import keeps the module DLL locked until the app exits (collectible ALC unload
+  completes with GC), so close and relaunch the app before re-importing.

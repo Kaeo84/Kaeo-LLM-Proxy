@@ -7,6 +7,10 @@
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWindowsForms>true</UseWindowsForms>
+		<!-- Modules are loaded as plugins from their own folder, so their output must be
+				 self-contained: copy NuGet assemblies (ModelContextProtocol, etc.) next to the
+				 module DLL. Assemblies shared with the host still unify via the host directory. -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 	</PropertyGroup>
 
 	<ItemGroup>
