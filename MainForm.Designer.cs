@@ -42,6 +42,7 @@ partial class MainForm
         _helpTabs = new TabControl();
 
         // Dashboard controls
+        _dashScrollPanel = new Panel();
         _tlpDashboard = new TableLayoutPanel();
         _grpStatus = new GroupBox();
         _tlpStatus = new TableLayoutPanel();
@@ -90,10 +91,6 @@ partial class MainForm
         _lblMcpTotalRequestsValue = new Label();
         _lblMcpTotalErrorsCaption = new Label();
         _lblMcpTotalErrorsValue = new Label();
-        _lblMcpPromptTokensCaption = new Label();
-        _lblMcpPromptTokensValue = new Label();
-        _lblMcpCompletionTokensCaption = new Label();
-        _lblMcpCompletionTokensValue = new Label();
         _lblMcpRpsCaption = new Label();
         _lblMcpRpsValue = new Label();
         _btnResetMcpStats = new Button();
@@ -268,6 +265,7 @@ partial class MainForm
         _grpPerf.SuspendLayout();
         _tlpPerf.SuspendLayout();
         _tlpMcpStats.SuspendLayout();
+        _dashScrollPanel.SuspendLayout();
         _tlpDashboard.SuspendLayout();
         _tabControl.SuspendLayout();
         _tabDashboard.SuspendLayout();
@@ -324,20 +322,27 @@ partial class MainForm
         _tabControl.SelectedIndex = 0;
 
         // _tabDashboard
-        _tabDashboard.Controls.Add(_tlpDashboard);
+        _tabDashboard.Controls.Add(_dashScrollPanel);
         _tabDashboard.Dock = DockStyle.Fill;
         _tabDashboard.Name = "_tabDashboard";
         _tabDashboard.Padding = new Padding(8);
         _tabDashboard.Text = "Dashboard";
 
+        // _dashScrollPanel — scrolls the dashboard groups when they exceed the visible area
+        _dashScrollPanel.AutoScroll = true;
+        _dashScrollPanel.Controls.Add(_tlpDashboard);
+        _dashScrollPanel.Dock = DockStyle.Fill;
+        _dashScrollPanel.Name = "_dashScrollPanel";
+
         // _tlpDashboard
-        _tlpDashboard.AutoScroll = true;
+        _tlpDashboard.AutoSize = true;
+        _tlpDashboard.AutoSizeMode = AutoSizeMode.GrowOnly;
         _tlpDashboard.ColumnCount = 1;
         _tlpDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpDashboard.Controls.Add(_grpPerf, 0, 0);
         _tlpDashboard.Controls.Add(_grpStatus, 0, 1);
         _tlpDashboard.Controls.Add(_grpDashMcp, 0, 2);
-        _tlpDashboard.Dock = DockStyle.Fill;
+        _tlpDashboard.Dock = DockStyle.Top;
         _tlpDashboard.Name = "_tlpDashboard";
         _tlpDashboard.RowCount = 4;
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -632,13 +637,9 @@ partial class MainForm
         _tlpMcpStats.Controls.Add(_lblMcpTotalRequestsValue, 1, 0);
         _tlpMcpStats.Controls.Add(_lblMcpTotalErrorsCaption, 2, 0);
         _tlpMcpStats.Controls.Add(_lblMcpTotalErrorsValue, 3, 0);
-        _tlpMcpStats.Controls.Add(_lblMcpPromptTokensCaption, 0, 1);
-        _tlpMcpStats.Controls.Add(_lblMcpPromptTokensValue, 1, 1);
-        _tlpMcpStats.Controls.Add(_lblMcpCompletionTokensCaption, 2, 1);
-        _tlpMcpStats.Controls.Add(_lblMcpCompletionTokensValue, 3, 1);
-        _tlpMcpStats.Controls.Add(_lblMcpRpsCaption, 0, 2);
-        _tlpMcpStats.Controls.Add(_lblMcpRpsValue, 1, 2);
-        _tlpMcpStats.Controls.Add(_btnResetMcpStats, 3, 2);
+        _tlpMcpStats.Controls.Add(_lblMcpRpsCaption, 0, 1);
+        _tlpMcpStats.Controls.Add(_lblMcpRpsValue, 1, 1);
+        _tlpMcpStats.Controls.Add(_btnResetMcpStats, 3, 1);
         _tlpMcpStats.Dock = DockStyle.Fill;
         _tlpMcpStats.Margin = new Padding(4, 8, 4, 4);
         _tlpMcpStats.Name = "_tlpMcpStats";
@@ -667,30 +668,6 @@ partial class MainForm
         _lblMcpTotalErrorsValue.Margin = new Padding(4, 6, 4, 4);
         _lblMcpTotalErrorsValue.Name = "_lblMcpTotalErrorsValue";
         _lblMcpTotalErrorsValue.Text = "0";
-
-        _lblMcpPromptTokensCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblMcpPromptTokensCaption.AutoSize = true;
-        _lblMcpPromptTokensCaption.Margin = new Padding(4, 6, 4, 4);
-        _lblMcpPromptTokensCaption.Name = "_lblMcpPromptTokensCaption";
-        _lblMcpPromptTokensCaption.Text = "Prompt Tokens:";
-
-        _lblMcpPromptTokensValue.AutoSize = true;
-        _lblMcpPromptTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
-        _lblMcpPromptTokensValue.Margin = new Padding(4, 6, 4, 4);
-        _lblMcpPromptTokensValue.Name = "_lblMcpPromptTokensValue";
-        _lblMcpPromptTokensValue.Text = "0";
-
-        _lblMcpCompletionTokensCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblMcpCompletionTokensCaption.AutoSize = true;
-        _lblMcpCompletionTokensCaption.Margin = new Padding(12, 6, 4, 4);
-        _lblMcpCompletionTokensCaption.Name = "_lblMcpCompletionTokensCaption";
-        _lblMcpCompletionTokensCaption.Text = "Completion Tokens:";
-
-        _lblMcpCompletionTokensValue.AutoSize = true;
-        _lblMcpCompletionTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
-        _lblMcpCompletionTokensValue.Margin = new Padding(4, 6, 4, 4);
-        _lblMcpCompletionTokensValue.Name = "_lblMcpCompletionTokensValue";
-        _lblMcpCompletionTokensValue.Text = "0";
 
         _btnResetMcpStats.Anchor = AnchorStyles.Right;
         _btnResetMcpStats.AutoSize = true;
@@ -1914,6 +1891,7 @@ partial class MainForm
         _tlpMcpStats.PerformLayout();
         _tlpDashboard.ResumeLayout(false);
         _tlpDashboard.PerformLayout();
+        _dashScrollPanel.ResumeLayout(false);
         _tabControl.ResumeLayout(false);
         _tabDashboard.ResumeLayout(false);
         _logProxyPage.ResumeLayout(false);
@@ -1983,6 +1961,7 @@ partial class MainForm
     private TabPage _tabDashboard;
     private TabPage _tabLogs;
     private TabPage _tabSettings;
+    private Panel _dashScrollPanel;
     private TableLayoutPanel _tlpDashboard;
     private GroupBox _grpStatus;
     private TableLayoutPanel _tlpStatus;
@@ -2025,10 +2004,6 @@ partial class MainForm
     private Label _lblMcpTotalRequestsValue;
     private Label _lblMcpTotalErrorsCaption;
     private Label _lblMcpTotalErrorsValue;
-    private Label _lblMcpPromptTokensCaption;
-    private Label _lblMcpPromptTokensValue;
-    private Label _lblMcpCompletionTokensCaption;
-    private Label _lblMcpCompletionTokensValue;
     private Label _lblMcpRpsCaption;
     private Label _lblMcpRpsValue;
     private Button _btnResetMcpStats;

@@ -432,8 +432,6 @@ internal partial class MainForm : Form
     {
         _lblMcpTotalRequestsValue.Text = _mcpStats.TotalRequests.ToString("N0");
         _lblMcpTotalErrorsValue.Text = _mcpStats.TotalErrors.ToString("N0");
-        _lblMcpPromptTokensValue.Text = _mcpStats.TotalPromptTokens.ToString("N0");
-        _lblMcpCompletionTokensValue.Text = _mcpStats.TotalCompletionTokens.ToString("N0");
         _lblMcpRpsValue.Text = _mcpStats.RequestsPerSecond.ToString("F2");
     }
 

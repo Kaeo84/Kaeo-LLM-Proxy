@@ -195,12 +195,20 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     private async Task AcceptLoopAsync(HttpListener listener, CancellationToken ct)
     {
+        // Tracks the in-flight GetContextAsync task so we can observe its exception if the loop
+        // exits while it is still pending. When cancellation wins the WaitAsync race, the inner
+        // GetContextAsync task later faults (listener stop aborts the I/O); without observation
+        // that surfaces as an UnobservedTaskException from the finalizer thread.
+        Task<HttpListenerContext>? pendingGetContext = null;
+
         while (!ct.IsCancellationRequested && listener.IsListening)
         {
             HttpListenerContext context;
             try
             {
-                context = await listener.GetContextAsync().WaitAsync(ct);
+                pendingGetContext = listener.GetContextAsync();
+                context = await pendingGetContext.WaitAsync(ct);
+                pendingGetContext = null;
             }
             catch (OperationCanceledException)
             {
@@ -213,6 +221,18 @@ internal sealed class McpServerHost : IAsyncDisposable
 
             // Each request runs independently; all exceptions are observed inside the handler.
             _ = HandleRequestSafeAsync(context, ct);
+        }
+
+        // If the loop exited while GetContextAsync was still pending (e.g. cancellation won the
+        // race against WaitAsync), the original task will eventually fault with an aborted-I/O
+        // exception when the listener stops. Observe it here so it never reaches the finalizer.
+        if (pendingGetContext is not null)
+        {
+            _ = pendingGetContext.ContinueWith(
+                static t => { _ = t.Exception; },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
     }
 
