@@ -31,5 +31,5 @@ The Dashboard tab's Proxy Status GroupBox is broken (a Dock=Fill Panel inside an
   - [x] RefreshStatus uses `_server.ListenAddress/ListenPort` and proxy-group buttons only
   - [x] add RefreshMcpDashboardStatus + async MCP Start/Stop/Restart handlers
   - [x] hook refresh into OnMcpStatusChanged and OnLoad
-- [ ] 6. Build the solution and fix any compile errors
-- [ ] 7. Git commit the change with a descriptive message
+- [x] 6. Build the solution and fix any compile errors
+- [x] 7. Git commit the change with a descriptive message (commit 0e29a00)
