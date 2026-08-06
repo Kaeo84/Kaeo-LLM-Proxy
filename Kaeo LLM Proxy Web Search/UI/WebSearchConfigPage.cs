@@ -26,6 +26,7 @@ internal sealed class WebSearchConfigPage : TabPage
     private NumericUpDown _nudTimeout = null!;
     private NumericUpDown _nudMaxBytes = null!;
     private CheckBox _chkAllowLocal = null!;
+    private Button _btnSafetyInfo = null!;
 
     public WebSearchConfigPage(WebSearchModule module)
     {
@@ -54,8 +55,9 @@ internal sealed class WebSearchConfigPage : TabPage
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        TableLayoutPanel toggles = new() { AutoSize = true, ColumnCount = 1, RowCount = 2 };
+        TableLayoutPanel toggles = new() { AutoSize = true, ColumnCount = 2, RowCount = 2 };
         toggles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        toggles.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         toggles.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         toggles.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
@@ -65,6 +67,22 @@ internal sealed class WebSearchConfigPage : TabPage
         _chkWebFetchTool.CheckedChanged += WebSetting_Changed;
         toggles.Controls.Add(_chkWebSearchTool, 0, 0);
         toggles.Controls.Add(_chkWebFetchTool, 0, 1);
+
+        // Info icon (Segoe UI Symbol) opening the safety-precautions reference dialog.
+        _btnSafetyInfo = new Button
+        {
+            Text = "\u2139",
+            Font = new Font("Segoe UI Symbol", 11F),
+            FlatStyle = FlatStyle.Flat,
+            Size = new Size(34, 34),
+            AccessibleName = "Web search safety precautions",
+            AccessibleDescription = "Opens a dialog explaining every precaution that protects web search.",
+            Margin = new Padding(0, 2, 0, 2),
+        };
+        _btnSafetyInfo.FlatAppearance.BorderSize = 0;
+        _btnSafetyInfo.Click += BtnSafetyInfo_Click;
+        toggles.Controls.Add(_btnSafetyInfo, 1, 0);
+        toggles.SetRowSpan(_btnSafetyInfo, 2);
         layout.Controls.Add(toggles, 0, 0);
 
         layout.Controls.Add(BuildProvidersGroup(), 0, 1);
@@ -191,6 +209,12 @@ internal sealed class WebSearchConfigPage : TabPage
 
         group.Controls.Add(inner);
         return group;
+    }
+
+    private void BtnSafetyInfo_Click(object? sender, EventArgs e)
+    {
+        using WebSearchSafetyDialog dialog = new();
+        dialog.ShowDialog(FindForm());
     }
 
     // ── Load / save ─────────────────────────────────────────────────────────

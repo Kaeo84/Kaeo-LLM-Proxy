@@ -111,3 +111,10 @@ so output is one DLL. Delete Kaeo LLM Proxy MCP and update slnx/host globs.
 - WebSearchService: automatic redirects removed; FetchWithValidatedRedirectsAsync follows up to
   5 hops, re-running the SSRF guard and domain policy on EVERY hop so a public URL cannot bounce
   the fetch into private networks or blocked domains (metadata-endpoint SSRF closed).
+
+## Follow-up: GUI safety documentation
+- Web Search config page gains an info icon (U+2139 rendered from Segoe UI Symbol, accessible
+  name/description set) that opens WebSearchSafetyDialog: a modal documenting every precaution
+  (deny-first domain policy, SSRF guard, per-hop redirect validation, size/time limits,
+  covert-channel stripping, untrusted-content framing, no-cookie client, least-privilege tools)
+  with a what-it-is / how-it-works explanation for each.
