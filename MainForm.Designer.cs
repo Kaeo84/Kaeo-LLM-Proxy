@@ -84,6 +84,20 @@ partial class MainForm
         _lblRpsValue = new Label();
         _btnResetStats = new Button();
 
+        // MCP stats panel
+        _tlpMcpStats = new TableLayoutPanel();
+        _lblMcpTotalRequestsCaption = new Label();
+        _lblMcpTotalRequestsValue = new Label();
+        _lblMcpTotalErrorsCaption = new Label();
+        _lblMcpTotalErrorsValue = new Label();
+        _lblMcpPromptTokensCaption = new Label();
+        _lblMcpPromptTokensValue = new Label();
+        _lblMcpCompletionTokensCaption = new Label();
+        _lblMcpCompletionTokensValue = new Label();
+        _lblMcpRpsCaption = new Label();
+        _lblMcpRpsValue = new Label();
+        _btnResetMcpStats = new Button();
+
         // Performance panel
         _grpPerf = new GroupBox();
         _tlpPerf = new TableLayoutPanel();
@@ -104,6 +118,16 @@ partial class MainForm
         _colDuration = new ColumnHeader();
         _colTokens = new ColumnHeader();
         _colBytes = new ColumnHeader();
+        _logSubTabs = new TabControl();
+        _logProxyPage = new TabPage();
+        _logMcpPage = new TabPage();
+        _lstMcpLogs = new ListView();
+        _colMcpTime = new ColumnHeader();
+        _colMcpMethod = new ColumnHeader();
+        _colMcpPath = new ColumnHeader();
+        _colMcpStatus = new ColumnHeader();
+        _colMcpDuration = new ColumnHeader();
+        _colMcpBytes = new ColumnHeader();
         _chkAutoRefresh = new CheckBox();
         _lblRefreshInterval = new Label();
         _cmbRefreshInterval = new ComboBox();
@@ -243,10 +267,14 @@ partial class MainForm
         _tlpLogging.SuspendLayout();
         _grpPerf.SuspendLayout();
         _tlpPerf.SuspendLayout();
+        _tlpMcpStats.SuspendLayout();
         _tlpDashboard.SuspendLayout();
         _tabControl.SuspendLayout();
         _tabDashboard.SuspendLayout();
         _tabLogs.SuspendLayout();
+        _logSubTabs.SuspendLayout();
+        _logProxyPage.SuspendLayout();
+        _logMcpPage.SuspendLayout();
         _tlpLogs.SuspendLayout();
         _flpLogsButtons.SuspendLayout();
         _tabSettings.SuspendLayout();
@@ -309,11 +337,9 @@ partial class MainForm
         _tlpDashboard.Controls.Add(_grpPerf, 0, 0);
         _tlpDashboard.Controls.Add(_grpStatus, 0, 1);
         _tlpDashboard.Controls.Add(_grpDashMcp, 0, 2);
-        _tlpDashboard.Controls.Add(_tlpStats, 0, 3);
         _tlpDashboard.Dock = DockStyle.Fill;
         _tlpDashboard.Name = "_tlpDashboard";
-        _tlpDashboard.RowCount = 5;
-        _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpDashboard.RowCount = 4;
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -342,9 +368,11 @@ partial class MainForm
         _tlpStatus.Controls.Add(_lblStatusPortCaption, 0, 2);
         _tlpStatus.Controls.Add(_lblStatusPortValue, 1, 2);
         _tlpStatus.Controls.Add(_flpStatusButtons, 0, 3);
+        _tlpStatus.Controls.Add(_tlpStats, 0, 4);
         _tlpStatus.Dock = DockStyle.Fill;
         _tlpStatus.Name = "_tlpStatus";
         _tlpStatus.SetColumnSpan(_flpStatusButtons, 2);
+        _tlpStatus.SetColumnSpan(_tlpStats, 2);
 
         // _flpStatusButtons — auto-sized to the button content
         _flpStatusButtons.AutoSize = true;
@@ -432,9 +460,11 @@ partial class MainForm
         _tlpDashMcp.Controls.Add(_lblDashMcpPortCaption, 0, 2);
         _tlpDashMcp.Controls.Add(_lblDashMcpPortValue, 1, 2);
         _tlpDashMcp.Controls.Add(_flpDashMcpButtons, 0, 3);
+        _tlpDashMcp.Controls.Add(_tlpMcpStats, 0, 4);
         _tlpDashMcp.Dock = DockStyle.Fill;
         _tlpDashMcp.Name = "_tlpDashMcp";
         _tlpDashMcp.SetColumnSpan(_flpDashMcpButtons, 2);
+        _tlpDashMcp.SetColumnSpan(_tlpMcpStats, 2);
 
         // _flpDashMcpButtons — auto-sized to the button content
         _flpDashMcpButtons.AutoSize = true;
@@ -519,7 +549,7 @@ partial class MainForm
         _tlpStats.Controls.Add(_lblRpsValue, 1, 2);
         _tlpStats.Controls.Add(_btnResetStats, 3, 2);
         _tlpStats.Dock = DockStyle.Fill;
-        _tlpStats.Margin = new Padding(0, 0, 0, 12);
+        _tlpStats.Margin = new Padding(4, 8, 4, 4);
         _tlpStats.Name = "_tlpStats";
         _tlpStats.Padding = new Padding(4);
 
@@ -590,6 +620,97 @@ partial class MainForm
         _lblRpsValue.Name = "_lblRpsValue";
         _lblRpsValue.Text = "0.00";
 
+        // _tlpMcpStats — MCP request counters shown inside the MCP Status group
+        _tlpMcpStats.AutoSize = true;
+        _tlpMcpStats.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpMcpStats.ColumnCount = 4;
+        _tlpMcpStats.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpMcpStats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+        _tlpMcpStats.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpMcpStats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+        _tlpMcpStats.Controls.Add(_lblMcpTotalRequestsCaption, 0, 0);
+        _tlpMcpStats.Controls.Add(_lblMcpTotalRequestsValue, 1, 0);
+        _tlpMcpStats.Controls.Add(_lblMcpTotalErrorsCaption, 2, 0);
+        _tlpMcpStats.Controls.Add(_lblMcpTotalErrorsValue, 3, 0);
+        _tlpMcpStats.Controls.Add(_lblMcpPromptTokensCaption, 0, 1);
+        _tlpMcpStats.Controls.Add(_lblMcpPromptTokensValue, 1, 1);
+        _tlpMcpStats.Controls.Add(_lblMcpCompletionTokensCaption, 2, 1);
+        _tlpMcpStats.Controls.Add(_lblMcpCompletionTokensValue, 3, 1);
+        _tlpMcpStats.Controls.Add(_lblMcpRpsCaption, 0, 2);
+        _tlpMcpStats.Controls.Add(_lblMcpRpsValue, 1, 2);
+        _tlpMcpStats.Controls.Add(_btnResetMcpStats, 3, 2);
+        _tlpMcpStats.Dock = DockStyle.Fill;
+        _tlpMcpStats.Margin = new Padding(4, 8, 4, 4);
+        _tlpMcpStats.Name = "_tlpMcpStats";
+        _tlpMcpStats.Padding = new Padding(4);
+
+        _lblMcpTotalRequestsCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpTotalRequestsCaption.AutoSize = true;
+        _lblMcpTotalRequestsCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpTotalRequestsCaption.Name = "_lblMcpTotalRequestsCaption";
+        _lblMcpTotalRequestsCaption.Text = "Total Requests:";
+
+        _lblMcpTotalRequestsValue.AutoSize = true;
+        _lblMcpTotalRequestsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpTotalRequestsValue.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpTotalRequestsValue.Name = "_lblMcpTotalRequestsValue";
+        _lblMcpTotalRequestsValue.Text = "0";
+
+        _lblMcpTotalErrorsCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpTotalErrorsCaption.AutoSize = true;
+        _lblMcpTotalErrorsCaption.Margin = new Padding(12, 6, 4, 4);
+        _lblMcpTotalErrorsCaption.Name = "_lblMcpTotalErrorsCaption";
+        _lblMcpTotalErrorsCaption.Text = "Errors:";
+
+        _lblMcpTotalErrorsValue.AutoSize = true;
+        _lblMcpTotalErrorsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpTotalErrorsValue.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpTotalErrorsValue.Name = "_lblMcpTotalErrorsValue";
+        _lblMcpTotalErrorsValue.Text = "0";
+
+        _lblMcpPromptTokensCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpPromptTokensCaption.AutoSize = true;
+        _lblMcpPromptTokensCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpPromptTokensCaption.Name = "_lblMcpPromptTokensCaption";
+        _lblMcpPromptTokensCaption.Text = "Prompt Tokens:";
+
+        _lblMcpPromptTokensValue.AutoSize = true;
+        _lblMcpPromptTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpPromptTokensValue.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpPromptTokensValue.Name = "_lblMcpPromptTokensValue";
+        _lblMcpPromptTokensValue.Text = "0";
+
+        _lblMcpCompletionTokensCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpCompletionTokensCaption.AutoSize = true;
+        _lblMcpCompletionTokensCaption.Margin = new Padding(12, 6, 4, 4);
+        _lblMcpCompletionTokensCaption.Name = "_lblMcpCompletionTokensCaption";
+        _lblMcpCompletionTokensCaption.Text = "Completion Tokens:";
+
+        _lblMcpCompletionTokensValue.AutoSize = true;
+        _lblMcpCompletionTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpCompletionTokensValue.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpCompletionTokensValue.Name = "_lblMcpCompletionTokensValue";
+        _lblMcpCompletionTokensValue.Text = "0";
+
+        _btnResetMcpStats.Anchor = AnchorStyles.Right;
+        _btnResetMcpStats.AutoSize = true;
+        _btnResetMcpStats.Margin = new Padding(4, 8, 4, 4);
+        _btnResetMcpStats.Name = "_btnResetMcpStats";
+        _btnResetMcpStats.Text = "Reset Stats";
+        _btnResetMcpStats.Click += BtnResetMcpStats_Click;
+
+        _lblMcpRpsCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMcpRpsCaption.AutoSize = true;
+        _lblMcpRpsCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpRpsCaption.Name = "_lblMcpRpsCaption";
+        _lblMcpRpsCaption.Text = "Req/s (60s avg):";
+
+        _lblMcpRpsValue.AutoSize = true;
+        _lblMcpRpsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpRpsValue.Margin = new Padding(4, 6, 4, 4);
+        _lblMcpRpsValue.Name = "_lblMcpRpsValue";
+        _lblMcpRpsValue.Text = "0.00";
+
         // _grpPerf
         _grpPerf.AutoSize = true;
         _grpPerf.AutoSizeMode = AutoSizeMode.GrowOnly;
@@ -649,13 +770,33 @@ partial class MainForm
         // _tlpLogs
         _tlpLogs.ColumnCount = 1;
         _tlpLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _tlpLogs.Controls.Add(_lstLogs, 0, 0);
+        _tlpLogs.Controls.Add(_logSubTabs, 0, 0);
         _tlpLogs.Controls.Add(_flpLogsButtons, 0, 1);
         _tlpLogs.Dock = DockStyle.Fill;
         _tlpLogs.Name = "_tlpLogs";
         _tlpLogs.RowCount = 2;
         _tlpLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         _tlpLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        // _logSubTabs — per-service request logs
+        _logSubTabs.Controls.Add(_logProxyPage);
+        _logSubTabs.Controls.Add(_logMcpPage);
+        _logSubTabs.Dock = DockStyle.Fill;
+        _logSubTabs.Name = "_logSubTabs";
+
+        // _logProxyPage
+        _logProxyPage.Controls.Add(_lstLogs);
+        _logProxyPage.Dock = DockStyle.Fill;
+        _logProxyPage.Name = "_logProxyPage";
+        _logProxyPage.Padding = new Padding(3);
+        _logProxyPage.Text = "Proxy";
+
+        // _logMcpPage
+        _logMcpPage.Controls.Add(_lstMcpLogs);
+        _logMcpPage.Dock = DockStyle.Fill;
+        _logMcpPage.Name = "_logMcpPage";
+        _logMcpPage.Padding = new Padding(3);
+        _logMcpPage.Text = "MCP";
 
         // _flpLogsButtons
         _flpLogsButtons.AutoSize = true;
@@ -747,6 +888,33 @@ partial class MainForm
         _colTokens.Width = 80;
         _colBytes.Text = "Bytes (req/resp)";
         _colBytes.Width = 110;
+
+        _lstMcpLogs.Columns.Add(_colMcpTime);
+        _lstMcpLogs.Columns.Add(_colMcpMethod);
+        _lstMcpLogs.Columns.Add(_colMcpPath);
+        _lstMcpLogs.Columns.Add(_colMcpStatus);
+        _lstMcpLogs.Columns.Add(_colMcpDuration);
+        _lstMcpLogs.Columns.Add(_colMcpBytes);
+        _lstMcpLogs.FullRowSelect = true;
+        _lstMcpLogs.GridLines = true;
+        _lstMcpLogs.Dock = DockStyle.Fill;
+        _lstMcpLogs.Margin = new Padding(0);
+        _lstMcpLogs.Name = "_lstMcpLogs";
+        _lstMcpLogs.View = View.Details;
+        _lstMcpLogs.DoubleClick += LstMcpLogs_DoubleClick;
+
+        _colMcpTime.Text = "Time";
+        _colMcpTime.Width = 80;
+        _colMcpMethod.Text = "Method";
+        _colMcpMethod.Width = 55;
+        _colMcpPath.Text = "Path";
+        _colMcpPath.Width = 220;
+        _colMcpStatus.Text = "Status";
+        _colMcpStatus.Width = 60;
+        _colMcpDuration.Text = "ms";
+        _colMcpDuration.Width = 60;
+        _colMcpBytes.Text = "Bytes (req/resp)";
+        _colMcpBytes.Width = 110;
 
         // _tabSettings
         _tabSettings.AutoScroll = true;
@@ -1742,10 +1910,15 @@ partial class MainForm
         _grpPerf.PerformLayout();
         _tlpPerf.ResumeLayout(false);
         _tlpPerf.PerformLayout();
+        _tlpMcpStats.ResumeLayout(false);
+        _tlpMcpStats.PerformLayout();
         _tlpDashboard.ResumeLayout(false);
         _tlpDashboard.PerformLayout();
         _tabControl.ResumeLayout(false);
         _tabDashboard.ResumeLayout(false);
+        _logProxyPage.ResumeLayout(false);
+        _logMcpPage.ResumeLayout(false);
+        _logSubTabs.ResumeLayout(false);
         _tabLogs.ResumeLayout(false);
         _tlpLogs.ResumeLayout(false);
         _tlpLogs.PerformLayout();
@@ -1847,6 +2020,18 @@ partial class MainForm
     private Label _lblRpsCaption;
     private Label _lblRpsValue;
     private Button _btnResetStats;
+    private TableLayoutPanel _tlpMcpStats;
+    private Label _lblMcpTotalRequestsCaption;
+    private Label _lblMcpTotalRequestsValue;
+    private Label _lblMcpTotalErrorsCaption;
+    private Label _lblMcpTotalErrorsValue;
+    private Label _lblMcpPromptTokensCaption;
+    private Label _lblMcpPromptTokensValue;
+    private Label _lblMcpCompletionTokensCaption;
+    private Label _lblMcpCompletionTokensValue;
+    private Label _lblMcpRpsCaption;
+    private Label _lblMcpRpsValue;
+    private Button _btnResetMcpStats;
     private GroupBox _grpPerf;
     private TableLayoutPanel _tlpPerf;
     private Label _lblCpuCaption;
@@ -1864,6 +2049,16 @@ partial class MainForm
     private ColumnHeader _colDuration;
     private ColumnHeader _colTokens;
     private ColumnHeader _colBytes;
+    private TabControl _logSubTabs;
+    private TabPage _logProxyPage;
+    private TabPage _logMcpPage;
+    private ListView _lstMcpLogs;
+    private ColumnHeader _colMcpTime;
+    private ColumnHeader _colMcpMethod;
+    private ColumnHeader _colMcpPath;
+    private ColumnHeader _colMcpStatus;
+    private ColumnHeader _colMcpDuration;
+    private ColumnHeader _colMcpBytes;
     private CheckBox _chkAutoRefresh;
     private Label _lblRefreshInterval;
     private ComboBox _cmbRefreshInterval;

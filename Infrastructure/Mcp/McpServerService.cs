@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Modules;
 using Serilog;
@@ -19,21 +20,24 @@ internal sealed class McpServerService : IAsyncDisposable
     private readonly ModuleSecretProvider _secrets;
     private readonly McpServerOptionsFactory _optionsFactory;
     private readonly HostInfo _hostInfo;
+    private readonly StatisticsService _statistics;
 
     private McpServerHost? _host;
     private McpApiExplorer? _apiExplorer;
     private string _status = "Stopped";
 
-    public McpServerService(AppDatabase database, AppSettings settings, ModuleHost moduleHost)
+    public McpServerService(AppDatabase database, AppSettings settings, ModuleHost moduleHost, StatisticsService statistics)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(moduleHost);
+        ArgumentNullException.ThrowIfNull(statistics);
 
         _repository = new McpServerSettingsRepository(database);
         _secrets = new ModuleSecretProvider(settings);
         _optionsFactory = new McpServerOptionsFactory(moduleHost);
         _hostInfo = moduleHost.BuildHostInfo();
+        _statistics = statistics;
     }
 
     public bool IsRunning => _host?.IsRunning == true;
@@ -52,6 +56,9 @@ internal sealed class McpServerService : IAsyncDisposable
 
     /// <summary>Current display status (also delivered via <see cref="StatusChanged"/>).</summary>
     public string Status => _status;
+
+    /// <summary>Aggregate statistics and request logs for the MCP server.</summary>
+    public StatisticsService Statistics => _statistics;
 
     public event EventHandler<string>? StatusChanged;
 
@@ -81,7 +88,7 @@ internal sealed class McpServerService : IAsyncDisposable
                 await _host.StopAsync();
 
             // Recreate the host so fresh endpoint/auth settings always apply.
-            _host = new McpServerHost(settings, _secrets, _optionsFactory.Build);
+            _host = new McpServerHost(settings, _secrets, _optionsFactory.Build, _statistics);
             _apiExplorer = new McpApiExplorer(_host, _hostInfo);
             _host.ApiExplorer = _apiExplorer;
 

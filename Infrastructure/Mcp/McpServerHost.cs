@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Modules;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -61,6 +63,7 @@ internal sealed class McpServerHost : IAsyncDisposable
     private readonly McpServerSettings _settings;
     private readonly ISecretProvider _secrets;
     private readonly Func<McpServerOptions> _serverOptionsFactory;
+    private readonly StatisticsService _statistics;
     private readonly ConcurrentDictionary<string, McpHttpSession> _sessions = new(StringComparer.Ordinal);
 
     private HttpListener? _listener;
@@ -77,11 +80,13 @@ internal sealed class McpServerHost : IAsyncDisposable
     public McpServerHost(
         McpServerSettings settings,
         ISecretProvider secrets,
-        Func<McpServerOptions> serverOptionsFactory)
+        Func<McpServerOptions> serverOptionsFactory,
+        StatisticsService statistics)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _secrets = secrets ?? throw new ArgumentNullException(nameof(secrets));
         _serverOptionsFactory = serverOptionsFactory ?? throw new ArgumentNullException(nameof(serverOptionsFactory));
+        _statistics = statistics ?? throw new ArgumentNullException(nameof(statistics));
     }
 
     public bool IsRunning { get; private set; }
@@ -213,16 +218,33 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     private async Task HandleRequestSafeAsync(HttpListenerContext context, CancellationToken ct)
     {
+        RequestLog log = new()
+        {
+            Method = context.Request.HttpMethod,
+            OllamaPath = context.Request.Url?.AbsolutePath ?? "/",
+            RequestBytes = Math.Max(0, context.Request.ContentLength64),
+        };
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
             await HandleRequestAsync(context, ct);
+            log.StatusCode = context.Response.StatusCode;
+            log.Status = log.StatusCode >= 400 ? RequestStatus.Error : RequestStatus.Success;
+            log.ResponseBytes = context.Response.ContentLength64 >= 0 ? context.Response.ContentLength64 : -1;
         }
         catch (Exception ex) when (ex is IOException or HttpListenerException or OperationCanceledException)
         {
-            // The client went away mid-request; nothing to report.
+            // The client went away mid-request; nothing to report beyond the cancelled status.
+            log.Status = RequestStatus.Cancelled;
+            log.StatusCode = 499;
         }
         catch (Exception ex)
         {
+            log.Status = RequestStatus.Error;
+            log.StatusCode = 500;
+            log.ErrorMessage = ex.Message;
+
             Log.Error(ex, "Unhandled error handling MCP request {Method} {Path}",
                 context.Request.HttpMethod, context.Request.Url?.AbsolutePath);
 
@@ -237,6 +259,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
         finally
         {
+            stopwatch.Stop();
+            log.DurationMs = stopwatch.Elapsed.TotalMilliseconds;
+            _statistics.AddLog(log);
+
             try
             {
                 context.Response.Close();

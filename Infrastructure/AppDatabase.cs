@@ -58,7 +58,7 @@ internal sealed class AppDatabase : IDisposable
     /// If <paramref name="ex"/> is provided, the full exception detail is stored in the
     /// exceptions table and the generated id is linked back onto <paramref name="entry"/>.
     /// </summary>
-    public void Insert(RequestLog entry, Exception? ex = null)
+    public void Insert(RequestLog entry, Exception? ex = null, LogSource source = LogSource.Proxy)
     {
         ArgumentNullException.ThrowIfNull(entry);
 
@@ -67,7 +67,9 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
             using SqliteTransaction transaction = connection.BeginTransaction();
 
-            if (ex is not null)
+            // Exception details are persisted only for proxy requests; MCP errors are
+            // HTTP-level and carried on the entry itself.
+            if (ex is not null && source == LogSource.Proxy)
             {
                 ExceptionDetail detail = ExceptionDetail.FromException(ex, entry);
                 detail.Id = InsertException(connection, transaction, detail);
@@ -77,8 +79,8 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText =
-                """
-                INSERT INTO requests (
+                $$"""
+                INSERT INTO {{RequestTable(source)}} (
                     timestamp_utc,
                     method,
                     ollama_path,
@@ -668,14 +670,14 @@ internal sealed class AppDatabase : IDisposable
     /// the supplied list, oldest first (so callers can enqueue them in chronological order).
     /// Used to seed the in-memory queue on startup.
     /// </summary>
-    public IReadOnlyList<RequestLog> LoadRecent(int count)
+    public IReadOnlyList<RequestLog> LoadRecent(int count, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -723,7 +725,7 @@ internal sealed class AppDatabase : IDisposable
                         total_tokens,
                         cached_prompt_tokens,
                         reasoning_tokens
-                    FROM requests
+                    FROM {{RequestTable(source)}}
                     ORDER BY timestamp_utc DESC
                     LIMIT $count
                 ) recent
@@ -747,14 +749,14 @@ internal sealed class AppDatabase : IDisposable
     /// no matching entry exists. When multiple rows share a timestamp, the most recently
     /// inserted row is returned.
     /// </summary>
-    public RequestLog? LoadFullLogEntry(DateTime localTimestamp)
+    public RequestLog? LoadFullLogEntry(DateTime localTimestamp, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -780,7 +782,7 @@ internal sealed class AppDatabase : IDisposable
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
-                FROM requests
+                FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
                 LIMIT 1;
@@ -797,7 +799,7 @@ internal sealed class AppDatabase : IDisposable
     /// <see cref="RequestLog.Timestamp"/> older than <paramref name="cutoff"/>.
     /// Returns the number of rows deleted.
     /// </summary>
-    public int DeleteOlderThan(DateTime cutoff)
+    public int DeleteOlderThan(DateTime cutoff, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
@@ -810,9 +812,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 selectCommand.Transaction = transaction;
                 selectCommand.CommandText =
-                    """
+                    $$"""
                     SELECT exception_id
-                    FROM requests
+                    FROM {{RequestTable(source)}}
                     WHERE timestamp_utc < $cutoffUtc
                       AND exception_id IS NOT NULL;
                     """;
@@ -829,8 +831,8 @@ internal sealed class AppDatabase : IDisposable
             {
                 deleteRequests.Transaction = transaction;
                 deleteRequests.CommandText =
-                    """
-                    DELETE FROM requests
+                    $$"""
+                    DELETE FROM {{RequestTable(source)}}
                     WHERE timestamp_utc < $cutoffUtc;
                     """;
                 deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
@@ -869,7 +871,7 @@ internal sealed class AppDatabase : IDisposable
     /// auto-increment counters so ids restart at 1. SQLite has no TRUNCATE statement; an
     /// unfiltered DELETE FROM is the equivalent. Returns the number of request rows deleted.
     /// </summary>
-    public int ClearLogs()
+    public int ClearLogs(LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
@@ -881,12 +883,13 @@ internal sealed class AppDatabase : IDisposable
             using (SqliteCommand deleteRequests = connection.CreateCommand())
             {
                 deleteRequests.Transaction = transaction;
-                deleteRequests.CommandText = "DELETE FROM requests;";
+                deleteRequests.CommandText = $"DELETE FROM {RequestTable(source)};";
                 deleted = deleteRequests.ExecuteNonQuery();
             }
 
-            using (SqliteCommand deleteExceptions = connection.CreateCommand())
+            if (source == LogSource.Proxy)
             {
+                using SqliteCommand deleteExceptions = connection.CreateCommand();
                 deleteExceptions.Transaction = transaction;
                 deleteExceptions.CommandText = "DELETE FROM exceptions;";
                 deleteExceptions.ExecuteNonQuery();
@@ -913,11 +916,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 using SqliteCommand resetSequence = connection.CreateCommand();
                 resetSequence.Transaction = transaction;
-                resetSequence.CommandText =
-                    """
-                    DELETE FROM sqlite_sequence
-                    WHERE name IN ('requests', 'exceptions');
-                    """;
+                resetSequence.CommandText = source == LogSource.Proxy
+                    ? "DELETE FROM sqlite_sequence WHERE name IN ('requests', 'exceptions');"
+                    : "DELETE FROM sqlite_sequence WHERE name = 'mcp_requests';";
                 resetSequence.ExecuteNonQuery();
             }
 
@@ -929,6 +930,10 @@ internal sealed class AppDatabase : IDisposable
             return deleted;
         }
     }
+
+    /// <summary>Maps a log source to its backing request log table.</summary>
+    private static string RequestTable(LogSource source) =>
+        source == LogSource.Mcp ? "mcp_requests" : "requests";
 
     /// <summary>Returns aggregate stats from the active database file.</summary>
     public (long total, long errors, long promptTokens, long completionTokens) QueryTotals()
@@ -1045,6 +1050,36 @@ internal sealed class AppDatabase : IDisposable
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
                 CREATE INDEX IF NOT EXISTS idx_requests_exception_id ON requests(exception_id);
                 CREATE INDEX IF NOT EXISTS idx_exceptions_timestamp_utc ON exceptions(timestamp_utc);
+
+                CREATE TABLE IF NOT EXISTS mcp_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    ollama_path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    streaming INTEGER NOT NULL,
+                    status INTEGER NOT NULL,
+                    error_message TEXT NULL,
+                    status_code INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    tokens_per_second REAL NOT NULL,
+                    exception_id INTEGER NULL,
+                    request_body TEXT NULL,
+                    response_body TEXT NULL,
+                    request_bytes INTEGER NOT NULL,
+                    response_bytes INTEGER NOT NULL,
+                    summarization_retries INTEGER NOT NULL,
+                    original_message_count INTEGER NULL,
+                    summarized_message_count INTEGER NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
 
                 CREATE TABLE IF NOT EXISTS model_mappings (
                     proxy_name TEXT PRIMARY KEY,

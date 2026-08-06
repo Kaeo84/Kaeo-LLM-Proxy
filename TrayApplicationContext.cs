@@ -17,6 +17,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly AppSettings _settings;
     private readonly StatisticsService _stats;
+    private readonly StatisticsService _mcpStats;
     private readonly PerformanceService _perfService;
     private readonly OllamaProxyHandler _handler;
     private readonly ProxyServer _server;
@@ -40,7 +41,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _settings = settings;
         _database = database;
         _moduleHost = moduleHost;
-        _mcpServer = new McpServerService(_database, _settings, _moduleHost);
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
@@ -51,6 +51,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _settings.ListenAddress, _settings.ListenPort, _settings.ModelMappings.Count);
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
+        _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp);
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
         _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
         _handler.StartHeartbeatMonitors();
@@ -337,6 +339,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _server.Dispose();
             _handler.Dispose();
             _stats.Dispose();
+            _mcpStats.Dispose();
             _perfService.Dispose();
             // The database is owned by Program.Main (created and disposed there); only one
             // shared instance exists per process, so it must not be disposed here.

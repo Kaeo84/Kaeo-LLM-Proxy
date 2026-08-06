@@ -28,6 +28,7 @@ internal partial class MainForm : Form
     private readonly AppDatabase _database;
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
+    private readonly StatisticsService _mcpStats;
 
     // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
@@ -39,6 +40,7 @@ internal partial class MainForm : Form
     // Cached snapshot of log summaries backing the virtual-mode ListView. Only visible rows
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
     private IReadOnlyList<RequestLog> _logCache = [];
+    private IReadOnlyList<RequestLog> _mcpLogCache = [];
 
     // Set while LoadSettingsToForm populates controls so the immediate-save event handlers
     // do not persist values that are merely being loaded.
@@ -64,6 +66,7 @@ internal partial class MainForm : Form
         _database = database;
         _moduleHost = moduleHost;
         _mcpServer = mcpServer;
+        _mcpStats = mcpServer.Statistics;
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
@@ -79,8 +82,11 @@ internal partial class MainForm : Form
         // creating a ListViewItem for every log entry on each refresh.
         _lstLogs.VirtualMode = true;
         _lstLogs.RetrieveVirtualItem += LstLogs_RetrieveVirtualItem;
+        _lstMcpLogs.VirtualMode = true;
+        _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
 
         _stats.StatsChanged += OnStatsChanged;
+        _mcpStats.StatsChanged += OnMcpStatsChanged;
         _server.StatusChanged += OnServerStatusChanged;
         _perfService.Sampled += OnPerfSampled;
         _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
@@ -125,7 +131,9 @@ internal partial class MainForm : Form
         LoadSettingsToForm();
         RefreshStatus();
         RefreshStats();
+        RefreshMcpStats();
         RefreshLogs();
+        RefreshMcpLogs();
         RefreshHeartbeats();
         RefreshCredentials();
         RefreshModules();
@@ -154,6 +162,7 @@ internal partial class MainForm : Form
     {
         _refreshTimer.Stop();
         _stats.StatsChanged -= OnStatsChanged;
+        _mcpStats.StatsChanged -= OnMcpStatsChanged;
         _stats.HeartbeatsChanged -= OnHeartbeatsChanged;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
@@ -419,6 +428,26 @@ internal partial class MainForm : Form
         RefreshStats();
     }
 
+    private void RefreshMcpStats()
+    {
+        _lblMcpTotalRequestsValue.Text = _mcpStats.TotalRequests.ToString("N0");
+        _lblMcpTotalErrorsValue.Text = _mcpStats.TotalErrors.ToString("N0");
+        _lblMcpPromptTokensValue.Text = _mcpStats.TotalPromptTokens.ToString("N0");
+        _lblMcpCompletionTokensValue.Text = _mcpStats.TotalCompletionTokens.ToString("N0");
+        _lblMcpRpsValue.Text = _mcpStats.RequestsPerSecond.ToString("F2");
+    }
+
+    private void OnMcpStatsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke(RefreshMcpStats);
+            return;
+        }
+        RefreshMcpStats();
+    }
+
     private void OnPerfSampled(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
@@ -443,6 +472,13 @@ internal partial class MainForm : Form
         RefreshLogs();
     }
 
+    private void BtnResetMcpStats_Click(object? sender, EventArgs e)
+    {
+        _mcpStats.Reset();
+        RefreshMcpStats();
+        RefreshMcpLogs();
+    }
+
     // ── Logs ─────────────────────────────────────────────────────────────────
 
     private void RefreshLogs()
@@ -450,6 +486,13 @@ internal partial class MainForm : Form
         _logCache = _stats.GetRecentLogs();
         _lstLogs.VirtualListSize = _logCache.Count;
         _lstLogs.Invalidate();
+    }
+
+    private void RefreshMcpLogs()
+    {
+        _mcpLogCache = _mcpStats.GetRecentLogs();
+        _lstMcpLogs.VirtualListSize = _mcpLogCache.Count;
+        _lstMcpLogs.Invalidate();
     }
 
     private void LstLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
@@ -481,45 +524,92 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
+    private void LstMcpLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _mcpLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        RequestLog log = _mcpLogCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
+    }
+
     private void BtnClearLogs_Click(object? sender, EventArgs e)
     {
+        if (_logSubTabs.SelectedTab == _logMcpPage)
+        {
+            _mcpStats.ClearLogs();
+            _mcpLogCache = [];
+            _lstMcpLogs.VirtualListSize = 0;
+            _lstMcpLogs.Invalidate();
+            return;
+        }
+
         _stats.ClearLogs();
         _logCache = [];
         _lstLogs.VirtualListSize = 0;
         _lstLogs.Invalidate();
     }
 
-    private void BtnRefreshLogs_Click(object? sender, EventArgs e) => RefreshLogs();
+    private void BtnRefreshLogs_Click(object? sender, EventArgs e)
+    {
+        RefreshLogs();
+        RefreshMcpLogs();
+    }
 
     private void BtnLogDetails_Click(object? sender, EventArgs e)
     {
-        if (_lstLogs.SelectedIndices.Count == 0)
+        if (_logSubTabs.SelectedTab == _logMcpPage)
+        {
+            ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
+            return;
+        }
+
+        ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
+    }
+
+    private void ShowSelectedLogDetails(ListView list, IReadOnlyList<RequestLog> cache, LogSource source)
+    {
+        if (list.SelectedIndices.Count == 0)
         {
             MessageBox.Show("Select a log entry first.", "No selection",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        int index = _lstLogs.SelectedIndices[0];
-        if (index >= 0 && index < _logCache.Count)
-            ShowLogDetails(_logCache[index]);
+        int index = list.SelectedIndices[0];
+        if (index >= 0 && index < cache.Count)
+            ShowLogDetails(cache[index], source);
     }
 
-    private void LstLogs_DoubleClick(object? sender, EventArgs e)
-    {
-        if (_lstLogs.SelectedIndices.Count == 0)
-            return;
+    private void LstLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
 
-        int index = _lstLogs.SelectedIndices[0];
-        if (index >= 0 && index < _logCache.Count)
-            ShowLogDetails(_logCache[index]);
-    }
+    private void LstMcpLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
 
-    private void ShowLogDetails(RequestLog log)
+    private void ShowLogDetails(RequestLog log, LogSource source)
     {
         // The in-memory entry is a lightweight summary without request/response bodies.
         // Load the full entry from SQLite on demand so large bodies stay out of memory.
-        RequestLog? full = _database.LoadFullLogEntry(log.Timestamp);
+        RequestLog? full = _database.LoadFullLogEntry(log.Timestamp, source);
         if (full is null)
         {
             MessageBox.Show("Log entry not found in the database. It may have been pruned.",
@@ -533,13 +623,20 @@ internal partial class MainForm : Form
         sb.AppendLine($"Timestamp : {log.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         sb.AppendLine($"Method    : {log.Method}");
         sb.AppendLine($"Path      : {log.OllamaPath}");
-        sb.AppendLine($"Upstream  : {log.UpstreamPath}");
-        sb.AppendLine($"Model     : {log.Model}");
+        if (source == LogSource.Proxy)
+        {
+            sb.AppendLine($"Upstream  : {log.UpstreamPath}");
+            sb.AppendLine($"Model     : {log.Model}");
+        }
         sb.AppendLine($"Status    : {log.Status} ({log.StatusCode})");
-        sb.AppendLine($"Streaming : {log.Streaming}");
+        if (source == LogSource.Proxy)
+            sb.AppendLine($"Streaming : {log.Streaming}");
         sb.AppendLine($"Duration  : {log.DurationMs:F1} ms");
-        sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion (total {log.TotalTokens})");
-        sb.AppendLine($"            {log.CachedPromptTokens} cached prompt, {log.ReasoningTokens} reasoning");
+        if (source == LogSource.Proxy)
+        {
+            sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion (total {log.TotalTokens})");
+            sb.AppendLine($"            {log.CachedPromptTokens} cached prompt, {log.ReasoningTokens} reasoning");
+        }
         sb.AppendLine($"Bytes     : {FormatBytes(log.RequestBytes, log.ResponseBytes)} (request / response)");
 
         if (!string.IsNullOrEmpty(log.ErrorMessage))
@@ -729,7 +826,10 @@ internal partial class MainForm : Form
     private void RefreshTimer_Tick(object? sender, EventArgs e)
     {
         if (_tabControl.SelectedTab == _tabLogs && _chkAutoRefresh.Checked)
+        {
             RefreshLogs();
+            RefreshMcpLogs();
+        }
     }
 
     // ── Heartbeats tab ──────────────────────────────────────────────────────
@@ -1066,6 +1166,7 @@ internal partial class MainForm : Form
         _settings.EnableAutoSummarization = _chkAutoSummarization.Checked;
 
         _stats.UpdateMaxEntries(maxLogs);
+        _mcpStats.UpdateMaxEntries(maxLogs);
         _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
         PersistSettingsCore();
@@ -1110,6 +1211,7 @@ internal partial class MainForm : Form
         _settings.Logging.LogRetentionHours = logRetentionHours;
 
         _stats.UpdateRetentionHours(logRetentionHours);
+        _mcpStats.UpdateRetentionHours(logRetentionHours);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);

@@ -29,15 +29,15 @@ internal static class HelpPages
     }
 
     internal const string Dashboard = """
-        The Dashboard is the proxy's at-a-glance view: listener status, cumulative request and error counters, prompt/completion token totals, current requests per second, and live CPU/memory sampling.
+        The Dashboard is the at-a-glance view for both services: live CPU/memory sampling, the Proxy Status group (listener state, running listen IP/port, request counters, and Start / Stop / Restart), and the MCP Status group with the same controls and counters for the built-in MCP server.
 
-        Use Start / Stop / Restart here (or the tray menu) to control the listener. The recent-requests list at the bottom mirrors the Logs tab; double-click an entry to inspect its full captured detail.
+        Counters are tracked per service; each group's Reset Stats clears only that service's counters. The Logs tab keeps the matching per-service request lists.
         """;
 
     internal const string Logs = """
-        The Logs tab lists captured proxy requests: method, path, model, status, duration, tokens, and bytes transferred.
+        The Logs tab lists captured requests in two sub-tabs: Proxy (method, path, model, status, duration, tokens, and bytes transferred) and MCP (method, path, status, duration, and bytes).
 
-        Auto-refresh polls at the selected interval; Refresh forces an immediate update and Clear empties the in-memory list. When request/response detail collection is enabled, double-clicking an entry (or Log Details) opens the full captured bodies and any exception recorded for the request.
+        Auto-refresh polls at the selected interval; Refresh forces an immediate update of both lists and Clear empties the selected sub-tab's list. Double-clicking an entry (or Log Details) opens the full captured detail, including request/response bodies when detail collection is enabled.
         """;
 
     internal const string Settings = """
