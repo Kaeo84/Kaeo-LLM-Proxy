@@ -57,7 +57,7 @@ internal static class HelpPages
         """;
 
     internal const string McpServer = """
-        The Server page controls the built-in MCP Streamable HTTP endpoint (default http://localhost:8388/mcp): enable/disable, listen address and port, an optional bearer credential, and live status. Apply & Restart rebinds the listener with the current values.
+        The Server page controls the built-in MCP Streamable HTTP endpoint (default http://localhost:8388/mcp): enable/disable, port, listen address, and live status. Apply & Restart rebinds the listener with the current values. The listen address dropdown lists localhost, all interfaces (0.0.0.0), and the machine's current NIC addresses; non-localhost bindings require elevation or a URL reservation (see Settings).
 
         While running, the MCP OpenAPI document also appears in the proxy API explorer dropdown, and /scalar on the MCP port serves an interactive explorer. Loaded MCP sub-modules contribute their tools to this server automatically.
         """;

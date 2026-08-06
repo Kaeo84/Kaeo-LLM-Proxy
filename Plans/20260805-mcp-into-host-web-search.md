@@ -129,3 +129,13 @@ so output is one DLL. Delete Kaeo LLM Proxy MCP and update slnx/host globs.
   WebSearchSafetyDialog.SafetyText, so the same content is reachable from the config-page dialog
   and from Help > Modules. MainForm adds/removes module help pages on registry changes, with a
   placeholder page while no module provides help.
+
+## Follow-up: MCP Server page cleanup
+- Removed the Auth credential dropdown from MCP > Server (mixing the proxy's stored upstream
+  credentials into the MCP endpoint made no sense). Backend bearer support (auth_credential_name
+  in mcp_server_settings, enforced by McpServerHost) stays for future issued-credential
+  restriction; that UI belongs below the listener group.
+- Listen address is now a dropdown populated the same way as Settings (shared
+  PopulateListenAddressOptions helper), and the Port row sits above the Listen address row to
+  match the Settings listener group. McpServerService.ListCredentialNames removed; Help blurb
+  updated.

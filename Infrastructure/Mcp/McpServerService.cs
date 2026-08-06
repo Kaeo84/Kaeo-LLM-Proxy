@@ -53,8 +53,6 @@ internal sealed class McpServerService : IAsyncDisposable
 
     public void SaveSettings(McpServerSettings settings) => _repository.SaveServerSettings(settings);
 
-    public IReadOnlyList<string> ListCredentialNames() => _secrets.ListCredentialNames();
-
     /// <summary>Starts the server when the persisted enabled flag is set; otherwise a no-op.</summary>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {

@@ -29,11 +29,9 @@ partial class MainForm
         _tlpMcp = new TableLayoutPanel();
         _chkMcpEnabled = new CheckBox();
         _lblMcpListenAddress = new Label();
-        _txtMcpListenAddress = new TextBox();
+        _cboMcpListenAddress = new ComboBox();
         _lblMcpPort = new Label();
         _nudMcpPort = new NumericUpDown();
-        _lblMcpAuthCredential = new Label();
-        _cboMcpAuthCredential = new ComboBox();
         _lblMcpStatusCaption = new Label();
         _lblMcpStatus = new Label();
         _flpMcpButtons = new FlowLayoutPanel();
@@ -1295,19 +1293,16 @@ partial class MainForm
         _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMcp.Controls.Add(_chkMcpEnabled, 0, 0);
-        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 1);
-        _tlpMcp.Controls.Add(_txtMcpListenAddress, 1, 1);
-        _tlpMcp.Controls.Add(_lblMcpPort, 0, 2);
-        _tlpMcp.Controls.Add(_nudMcpPort, 1, 2);
-        _tlpMcp.Controls.Add(_lblMcpAuthCredential, 0, 3);
-        _tlpMcp.Controls.Add(_cboMcpAuthCredential, 1, 3);
-        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 4);
-        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 4);
-        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 6);
+        _tlpMcp.Controls.Add(_lblMcpPort, 0, 1);
+        _tlpMcp.Controls.Add(_nudMcpPort, 1, 1);
+        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 2);
+        _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 2);
+        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 3);
+        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 3);
+        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 5);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
-        _tlpMcp.RowCount = 7;
-        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowCount = 6;
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1328,10 +1323,11 @@ partial class MainForm
         _lblMcpListenAddress.Name = "_lblMcpListenAddress";
         _lblMcpListenAddress.Text = "Listen address";
 
-        _txtMcpListenAddress.AccessibleName = "MCP listen address";
-        _txtMcpListenAddress.Dock = DockStyle.Fill;
-        _txtMcpListenAddress.Margin = new Padding(0, 0, 0, 8);
-        _txtMcpListenAddress.Name = "_txtMcpListenAddress";
+        _cboMcpListenAddress.AccessibleName = "MCP listen address";
+        _cboMcpListenAddress.Dock = DockStyle.Fill;
+        _cboMcpListenAddress.DropDownStyle = ComboBoxStyle.DropDown;
+        _cboMcpListenAddress.Margin = new Padding(0, 0, 0, 8);
+        _cboMcpListenAddress.Name = "_cboMcpListenAddress";
 
         _lblMcpPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpPort.AutoSize = true;
@@ -1344,17 +1340,6 @@ partial class MainForm
         _nudMcpPort.Maximum = 65535;
         _nudMcpPort.Minimum = 1;
         _nudMcpPort.Name = "_nudMcpPort";
-
-        _lblMcpAuthCredential.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblMcpAuthCredential.AutoSize = true;
-        _lblMcpAuthCredential.Name = "_lblMcpAuthCredential";
-        _lblMcpAuthCredential.Text = "Auth credential";
-
-        _cboMcpAuthCredential.AccessibleName = "MCP auth credential";
-        _cboMcpAuthCredential.Dock = DockStyle.Fill;
-        _cboMcpAuthCredential.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cboMcpAuthCredential.Margin = new Padding(0, 0, 0, 8);
-        _cboMcpAuthCredential.Name = "_cboMcpAuthCredential";
 
         _lblMcpStatusCaption.AutoSize = true;
         _lblMcpStatusCaption.Name = "_lblMcpStatusCaption";
@@ -1864,11 +1849,10 @@ partial class MainForm
     private TableLayoutPanel _tlpMcp;
     private CheckBox _chkMcpEnabled;
     private Label _lblMcpListenAddress;
-    private TextBox _txtMcpListenAddress;
+    private ComboBox _cboMcpListenAddress;
     private Label _lblMcpPort;
     private NumericUpDown _nudMcpPort;
-    private Label _lblMcpAuthCredential;
-    private ComboBox _cboMcpAuthCredential;
+
     private Label _lblMcpStatusCaption;
     private Label _lblMcpStatus;
     private FlowLayoutPanel _flpMcpButtons;

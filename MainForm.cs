@@ -29,9 +29,7 @@ internal partial class MainForm : Form
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
 
-    private const string NoneCredential = "(none)";
-
-    // Tabs injected by loaded modules, keyed by module id so they can be removed again when a
+    // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
     private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TabPage> _moduleHelpPages = new(StringComparer.OrdinalIgnoreCase);
@@ -115,9 +113,9 @@ internal partial class MainForm : Form
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
-        _txtMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
         _nudMcpPort.Validated += (_, _) => OnMcpSettingChanged();
-        _cboMcpAuthCredential.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
+        _cboMcpListenAddress.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
+        _cboMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
         _btnMcpApply.Click += (_, _) => OnMcpSettingChanged();
     }
 
@@ -174,18 +172,8 @@ internal partial class MainForm : Form
             McpServerSettings settings = _mcpServer.LoadSettings();
 
             _chkMcpEnabled.Checked = settings.Enabled;
-            _txtMcpListenAddress.Text = settings.ListenAddress;
             _nudMcpPort.Value = Math.Clamp(settings.ListenPort, (int)_nudMcpPort.Minimum, (int)_nudMcpPort.Maximum);
-
-            _cboMcpAuthCredential.Items.Clear();
-            _cboMcpAuthCredential.Items.Add(NoneCredential);
-            foreach (string name in _mcpServer.ListCredentialNames())
-                _cboMcpAuthCredential.Items.Add(name);
-
-            _cboMcpAuthCredential.SelectedItem =
-                string.IsNullOrWhiteSpace(settings.AuthCredentialName)
-                    ? NoneCredential
-                    : settings.AuthCredentialName;
+            PopulateListenAddressOptions(_cboMcpListenAddress, settings.ListenAddress);
         }
         finally
         {
@@ -198,12 +186,9 @@ internal partial class MainForm : Form
         McpServerSettings settings = new()
         {
             Enabled = _chkMcpEnabled.Checked,
-            ListenAddress = _txtMcpListenAddress.Text.Trim(),
             ListenPort = (int)_nudMcpPort.Value,
-            AuthCredentialName =
-                _cboMcpAuthCredential.SelectedItem is string selected && selected != NoneCredential
-                    ? selected
-                    : null,
+            ListenAddress = _cboMcpListenAddress.Text.Trim(),
+            AuthCredentialName = null,
         };
 
         _mcpServer.SaveSettings(settings);
@@ -841,11 +826,20 @@ internal partial class MainForm : Form
     /// the value that matches the current setting (or adds it as a custom entry if it's an
     /// address the dropdown doesn't otherwise enumerate, e.g. a specific NIC IP that changed).
     /// </summary>
-    private void PopulateListenAddressOptions()
+    private void PopulateListenAddressOptions() =>
+        PopulateListenAddressOptions(_cmbListenAddress, _settings.ListenAddress);
+
+    /// <summary>
+    /// Fills a listen-address dropdown with "all interfaces" (0.0.0.0), "localhost", and every
+    /// non-loopback IPv4/IPv6 address currently assigned to the machine, then selects the given
+    /// current value (adding it as a custom entry when not otherwise enumerated, e.g. a specific
+    /// NIC IP that changed).
+    /// </summary>
+    private static void PopulateListenAddressOptions(ComboBox combo, string currentValue)
     {
-        _cmbListenAddress.Items.Clear();
-        _cmbListenAddress.Items.Add("0.0.0.0");
-        _cmbListenAddress.Items.Add("localhost");
+        combo.Items.Clear();
+        combo.Items.Add("0.0.0.0");
+        combo.Items.Add("localhost");
 
         try
         {
@@ -864,8 +858,8 @@ internal partial class MainForm : Form
                         continue;
 
                     string ip = addr.Address.ToString();
-                    if (!_cmbListenAddress.Items.Contains(ip))
-                        _cmbListenAddress.Items.Add(ip);
+                    if (!combo.Items.Contains(ip))
+                        combo.Items.Add(ip);
                 }
             }
         }
@@ -874,11 +868,11 @@ internal partial class MainForm : Form
             Log.Warning(ex, "Failed to enumerate local network interfaces for the Listen Address dropdown");
         }
 
-        string current = string.IsNullOrWhiteSpace(_settings.ListenAddress) ? "localhost" : _settings.ListenAddress.Trim();
-        if (!_cmbListenAddress.Items.Contains(current))
-            _cmbListenAddress.Items.Add(current);
+        string current = string.IsNullOrWhiteSpace(currentValue) ? "localhost" : currentValue.Trim();
+        if (!combo.Items.Contains(current))
+            combo.Items.Add(current);
 
-        _cmbListenAddress.Text = current;
+        combo.Text = current;
     }
 
     private void LoadSettingsToForm()
