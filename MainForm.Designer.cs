@@ -28,6 +28,8 @@ partial class MainForm
         _mcpServerPage = new TabPage();
         _tlpMcp = new TableLayoutPanel();
         _chkMcpEnabled = new CheckBox();
+        _chkMcpApiExplorer = new CheckBox();
+        _lblMcpApiExplorerUrl = new Label();
         _lblMcpListenAddress = new Label();
         _cboMcpListenAddress = new ComboBox();
         _lblMcpPort = new Label();
@@ -366,6 +368,12 @@ partial class MainForm
         _tlpStatus.ColumnCount = 2;
         _tlpStatus.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpStatus.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpStatus.RowCount = 5;
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpStatus.Controls.Add(_lblStatus, 0, 0);
         _tlpStatus.Controls.Add(_lblStatusValue, 1, 0);
         _tlpStatus.Controls.Add(_lblStatusAddressCaption, 0, 1);
@@ -1037,6 +1045,7 @@ partial class MainForm
         _chkApiExplorer.Text = "Enable API Explorer (Scalar at /swagger)";
 
         _lblApiExplorerUrl.AutoSize = true;
+        _lblApiExplorerUrl.Cursor = Cursors.Hand;
         _lblApiExplorerUrl.Margin = new Padding(4, 0, 4, 8);
         _lblApiExplorerUrl.Name = "_lblApiExplorerUrl";
         _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
@@ -1543,16 +1552,20 @@ partial class MainForm
         _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpMcp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpMcp.Controls.Add(_chkMcpEnabled, 0, 0);
-        _tlpMcp.Controls.Add(_lblMcpPort, 0, 1);
-        _tlpMcp.Controls.Add(_nudMcpPort, 1, 1);
-        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 2);
-        _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 2);
-        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 3);
-        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 3);
-        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 5);
+        _tlpMcp.Controls.Add(_chkMcpApiExplorer, 0, 1);
+        _tlpMcp.Controls.Add(_lblMcpApiExplorerUrl, 0, 2);
+        _tlpMcp.Controls.Add(_lblMcpPort, 0, 3);
+        _tlpMcp.Controls.Add(_nudMcpPort, 1, 3);
+        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 4);
+        _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 4);
+        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 5);
+        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 5);
+        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 7);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
-        _tlpMcp.RowCount = 6;
+        _tlpMcp.RowCount = 8;
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1560,6 +1573,8 @@ partial class MainForm
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.SetColumnSpan(_chkMcpEnabled, 2);
+        _tlpMcp.SetColumnSpan(_chkMcpApiExplorer, 2);
+        _tlpMcp.SetColumnSpan(_lblMcpApiExplorerUrl, 2);
         _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
 
         _chkMcpEnabled.AccessibleName = "Enable MCP server";
@@ -1567,6 +1582,18 @@ partial class MainForm
         _chkMcpEnabled.Margin = new Padding(0, 0, 0, 8);
         _chkMcpEnabled.Name = "_chkMcpEnabled";
         _chkMcpEnabled.Text = "Enable MCP server (Streamable HTTP at /mcp)";
+
+        _chkMcpApiExplorer.AccessibleName = "Enable MCP API Explorer";
+        _chkMcpApiExplorer.AutoSize = true;
+        _chkMcpApiExplorer.Margin = new Padding(0, 0, 0, 4);
+        _chkMcpApiExplorer.Name = "_chkMcpApiExplorer";
+        _chkMcpApiExplorer.Text = "Enable API Explorer (Scalar at /scalar)";
+
+        _lblMcpApiExplorerUrl.AutoSize = true;
+        _lblMcpApiExplorerUrl.ForeColor = SystemColors.GrayText;
+        _lblMcpApiExplorerUrl.Margin = new Padding(0, 0, 0, 8);
+        _lblMcpApiExplorerUrl.Name = "_lblMcpApiExplorerUrl";
+        _lblMcpApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
 
         _lblMcpListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpListenAddress.AutoSize = true;
@@ -2141,6 +2168,8 @@ partial class MainForm
     private TabPage _mcpServerPage;
     private TableLayoutPanel _tlpMcp;
     private CheckBox _chkMcpEnabled;
+    private CheckBox _chkMcpApiExplorer;
+    private Label _lblMcpApiExplorerUrl;
     private Label _lblMcpListenAddress;
     private ComboBox _cboMcpListenAddress;
     private Label _lblMcpPort;

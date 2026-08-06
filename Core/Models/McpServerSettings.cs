@@ -19,6 +19,12 @@ internal sealed class McpServerSettings
     public int ListenPort { get; set; } = DefaultPort;
 
     /// <summary>
+    /// When true, the MCP server serves the Scalar API explorer at /scalar and its OpenAPI
+    /// specification at /openapi/v1/openapi.json. Default: false.
+    /// </summary>
+    public bool EnableApiExplorer { get; set; }
+
+    /// <summary>
     /// Name of a credential store entry whose secret is required as a bearer token.
     /// Null/empty disables authentication.
     /// </summary>

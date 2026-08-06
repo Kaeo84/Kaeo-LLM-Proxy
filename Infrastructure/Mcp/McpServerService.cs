@@ -87,9 +87,10 @@ internal sealed class McpServerService : IAsyncDisposable
             if (_host is { IsRunning: true })
                 await _host.StopAsync();
 
-            // Recreate the host so fresh endpoint/auth settings always apply.
+            // Recreate the host so fresh endpoint/auth settings always apply. The explorer is
+            // only attached when enabled; the host 404s the spec/scalar paths without it.
             _host = new McpServerHost(settings, _secrets, _optionsFactory.Build, _statistics);
-            _apiExplorer = new McpApiExplorer(_host, _hostInfo);
+            _apiExplorer = settings.EnableApiExplorer ? new McpApiExplorer(_host, _hostInfo) : null;
             _host.ApiExplorer = _apiExplorer;
 
             await _host.StartAsync(cancellationToken);
@@ -111,6 +112,7 @@ internal sealed class McpServerService : IAsyncDisposable
         if (_host is { IsRunning: true })
             await _host.StopAsync();
 
+        _apiExplorer = null;
         ListenAddress = string.Empty;
         ListenPort = 0;
         RaiseStatus("Stopped");

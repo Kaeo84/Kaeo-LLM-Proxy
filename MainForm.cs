@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -90,6 +91,8 @@ internal partial class MainForm : Form
         _server.StatusChanged += OnServerStatusChanged;
         _perfService.Sampled += OnPerfSampled;
         _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
+        _lblApiExplorerUrl.Click += LblApiExplorerUrl_Click;
+        _lblMcpApiExplorerUrl.Click += LblMcpApiExplorerUrl_Click;
 
         // Settings on the Settings tab persist immediately when changed; only the Listener
         // group (port/address) requires an explicit save because it needs a proxy restart.
@@ -119,6 +122,8 @@ internal partial class MainForm : Form
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _chkMcpApiExplorer.CheckedChanged += (_, _) => UpdateMcpApiExplorerUrlLabel();
+        _chkMcpApiExplorer.CheckedChanged += (_, _) => OnMcpSettingChanged();
         _nudMcpPort.Validated += (_, _) => OnMcpSettingChanged();
         _cboMcpListenAddress.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
         _cboMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
@@ -181,8 +186,10 @@ internal partial class MainForm : Form
             McpServerSettings settings = _mcpServer.LoadSettings();
 
             _chkMcpEnabled.Checked = settings.Enabled;
+            _chkMcpApiExplorer.Checked = settings.EnableApiExplorer;
             _nudMcpPort.Value = Math.Clamp(settings.ListenPort, (int)_nudMcpPort.Minimum, (int)_nudMcpPort.Maximum);
             PopulateListenAddressOptions(_cboMcpListenAddress, settings.ListenAddress);
+            UpdateMcpApiExplorerUrlLabel();
         }
         finally
         {
@@ -197,6 +204,7 @@ internal partial class MainForm : Form
             Enabled = _chkMcpEnabled.Checked,
             ListenPort = (int)_nudMcpPort.Value,
             ListenAddress = _cboMcpListenAddress.Text.Trim(),
+            EnableApiExplorer = _chkMcpApiExplorer.Checked,
             AuthCredentialName = null,
         };
 
@@ -208,6 +216,7 @@ internal partial class MainForm : Form
         if (_loadingSettings)
             return;
 
+        UpdateMcpApiExplorerUrlLabel();
         SaveMcpSettingsFromForm();
         ApplyMcpServerSettingsAsync();
     }
@@ -271,7 +280,45 @@ internal partial class MainForm : Form
         _btnDashMcpRestart.Enabled = running;
     }
 
-    // ── Status ──────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Builds the MCP API Explorer (Scalar) URL from the form's listen address and port,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildMcpApiExplorerUrl()
+    {
+        string host = _cboMcpListenAddress.Text.Trim();
+        if (host is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
+            host = "localhost";
+
+        return $"http://{host}:{(int)_nudMcpPort.Value}{McpServerHost.ScalarPath}";
+    }
+
+    /// <summary>
+    /// Updates the MCP API Explorer URL note label based on the current enable state,
+    /// listen address, and port.
+    /// </summary>
+    private void UpdateMcpApiExplorerUrlLabel()
+    {
+        if (!_chkMcpApiExplorer.Checked)
+        {
+            _lblMcpApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+            _lblMcpApiExplorerUrl.ForeColor = SystemColors.GrayText;
+            _lblMcpApiExplorerUrl.Cursor = Cursors.Default;
+            return;
+        }
+
+        _lblMcpApiExplorerUrl.Text = $"API Explorer URL: {BuildMcpApiExplorerUrl()}";
+        _lblMcpApiExplorerUrl.ForeColor = SystemColors.Highlight;
+        _lblMcpApiExplorerUrl.Cursor = Cursors.Hand;
+    }
+
+    private void LblMcpApiExplorerUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkMcpApiExplorer.Checked)
+            OpenUrlInBrowser(BuildMcpApiExplorerUrl());
+    }
+
+    // ── Status ──────────────────────────────────────────────────────────
 
     /// <summary>
     /// Refreshes the dashboard Proxy Status group: shows the status plus the address and port
@@ -291,6 +338,19 @@ internal partial class MainForm : Form
     }
 
     /// <summary>
+    /// Builds the proxy API Explorer (Scalar) URL from the persisted listener settings,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildApiExplorerUrl()
+    {
+        string host = _settings.ListenAddress.Trim();
+        if (host is "0.0.0.0" or "+" or "")
+            host = "localhost";
+
+        return $"http://{host}:{_settings.ListenPort}/swagger";
+    }
+
+    /// <summary>
     /// Updates the API Explorer URL note label based on the current enable state,
     /// listen address, and port.
     /// </summary>
@@ -300,15 +360,34 @@ internal partial class MainForm : Form
         {
             _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
             _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
+            _lblApiExplorerUrl.Cursor = Cursors.Default;
             return;
         }
 
-        string host = _settings.ListenAddress.Trim();
-        if (host is "0.0.0.0" or "+" or "")
-            host = "localhost";
-
-        _lblApiExplorerUrl.Text = $"API Explorer URL: http://{host}:{_settings.ListenPort}/swagger";
+        _lblApiExplorerUrl.Text = $"API Explorer URL: {BuildApiExplorerUrl()}";
         _lblApiExplorerUrl.ForeColor = SystemColors.Highlight;
+        _lblApiExplorerUrl.Cursor = Cursors.Hand;
+    }
+
+    private void LblApiExplorerUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkApiExplorer.Checked)
+            OpenUrlInBrowser(BuildApiExplorerUrl());
+    }
+
+    /// <summary>Opens the given URL in the system's default browser.</summary>
+    private static void OpenUrlInBrowser(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            Log.Warning(ex, "Failed to open the default browser for {Url}", url);
+            MessageBox.Show($"Could not open the default browser: {ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void OnServerStatusChanged(object? sender, string status)

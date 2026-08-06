@@ -12,6 +12,7 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
     private const string ServerEnabledKey = "enabled";
     private const string ServerListenAddressKey = "listen_address";
     private const string ServerListenPortKey = "listen_port";
+    private const string ServerApiExplorerKey = "enable_api_explorer";
     private const string ServerAuthCredentialKey = "auth_credential_name";
 
     private readonly AppDatabase _database = database;
@@ -25,6 +26,7 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
             Enabled = ReadBool(values, ServerEnabledKey, false),
             ListenAddress = ReadString(values, ServerListenAddressKey, "localhost"),
             ListenPort = ClampPort(ReadInt(values, ServerListenPortKey, McpServerSettings.DefaultPort)),
+            EnableApiExplorer = ReadBool(values, ServerApiExplorerKey, false),
             AuthCredentialName = ReadOptionalString(values, ServerAuthCredentialKey),
         };
     }
@@ -36,6 +38,7 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
         UpsertKeyValue(ServerEnabledKey, settings.Enabled ? "1" : "0");
         UpsertKeyValue(ServerListenAddressKey, settings.ListenAddress);
         UpsertKeyValue(ServerListenPortKey, ClampPort(settings.ListenPort).ToString());
+        UpsertKeyValue(ServerApiExplorerKey, settings.EnableApiExplorer ? "1" : "0");
         UpsertKeyValue(ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty);
     }
 
