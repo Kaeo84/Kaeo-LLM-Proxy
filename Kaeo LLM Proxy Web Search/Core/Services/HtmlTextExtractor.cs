@@ -21,16 +21,34 @@ internal static partial class HtmlTextExtractor
     [GeneratedRegex("</(p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|pre|br)\\s*>", RegexOptions.IgnoreCase)]
     private static partial Regex BlockCloseRegex();
 
+    // HTML comments: a classic hiding place for injected instructions that never render for humans.
+    private static readonly Regex CommentRegex = new("<!--.*?-->", RegexOptions.Singleline | RegexOptions.Compiled);
+
+    // Best-effort removal of elements hidden from humans (hidden attribute, display:none,
+    // visibility:hidden, aria-hidden="true") — the primary covert channel for indirect
+    // prompt-injection payloads. Nested same-name tags may truncate the match; acceptable for a
+    // sanitization layer.
+    private static readonly Regex HiddenElementRegex = new(
+        "<([a-zA-Z][a-zA-Z0-9]*)((?:(?!</?\\1[\\s>]).)*?(?:\\shidden(?=[\\s=>/])|aria-hidden\\s*=\\s*[\"']?true[\"']?|style\\s*=\\s*[\"'][^\"']*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden))[^>]*)>.*?</\\1\\s*>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    // Zero-width / directional / soft-hyphen characters: invisible to humans, visible to models.
+    private static readonly Regex InvisibleUnicodeRegex = new(
+        "[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]", RegexOptions.Compiled);
+
     /// <summary>Converts a full HTML document to readable plain text (block structure preserved).</summary>
     public static string ToText(string html)
     {
         if (string.IsNullOrWhiteSpace(html))
             return string.Empty;
 
-        string text = ScriptStyleRegex().Replace(html, "\n");
+        string text = CommentRegex.Replace(html, "\n");
+        text = HiddenElementRegex.Replace(text, "\n");
+        text = ScriptStyleRegex().Replace(text, "\n");
         text = BlockCloseRegex().Replace(text, "\n");
         text = TagRegex().Replace(text, " ");
         text = DecodeEntities(text);
+        text = InvisibleUnicodeRegex.Replace(text, string.Empty);
 
         var output = new StringBuilder();
         foreach (string rawLine in text.Split('\n'))
@@ -44,8 +62,13 @@ internal static partial class HtmlTextExtractor
     }
 
     /// <summary>Strips tags and decodes entities in a small inline HTML fragment.</summary>
-    public static string Clean(string fragment) =>
-        WhitespaceRegex().Replace(DecodeEntities(TagRegex().Replace(fragment, " ")), " ").Trim();
+    public static string Clean(string fragment)
+    {
+        string text = CommentRegex.Replace(fragment, " ");
+        text = HiddenElementRegex.Replace(text, " ");
+        text = InvisibleUnicodeRegex.Replace(DecodeEntities(TagRegex().Replace(text, " ")), string.Empty);
+        return WhitespaceRegex().Replace(text, " ").Trim();
+    }
 
     /// <summary>Decodes the common named and numeric HTML entities.</summary>
     public static string DecodeEntities(string value)

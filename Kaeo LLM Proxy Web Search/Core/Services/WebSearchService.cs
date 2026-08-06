@@ -14,6 +14,8 @@ namespace Kaeo.LlmProxy.WebSearch.Core.Services;
 /// </summary>
 internal sealed class WebSearchService
 {
+    private const int MaxRedirects = 5;
+
     private readonly WebSearchRepository _repository;
     private readonly ISecretProvider _secrets;
     private readonly DomainPolicyService _domainPolicy;
@@ -38,10 +40,11 @@ internal sealed class WebSearchService
 
     private static HttpClient CreateHttpClient()
     {
+        // Redirects are followed manually in FetchAsync so every hop passes the SSRF guard and
+        // domain policy; automatic redirects would let a public URL bounce into private networks.
         var handler = new HttpClientHandler
         {
-            AllowAutoRedirect = true,
-            MaxAutomaticRedirections = 5,
+            AllowAutoRedirect = false,
         };
 
         HttpClient client = new(handler, disposeHandler: true)
@@ -138,16 +141,10 @@ internal sealed class WebSearchService
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
             throw new InvalidOperationException($"'{url}' is not a valid absolute URL.");
 
-        await NetworkSafety.ValidateAsync(uri, settings.AllowLocalNetworks, cancellationToken);
-
-        if (!_domainPolicy.IsAllowed(uri))
-            throw new InvalidOperationException(
-                $"Domain '{uri.Host}' is blocked by the configured allow/deny domain rules.");
-
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
 
-        using HttpResponseMessage response = await SharedClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+        using HttpResponseMessage response = await FetchWithValidatedRedirectsAsync(uri, settings, timeoutCts.Token);
         response.EnsureSuccessStatusCode();
 
         string contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
@@ -157,6 +154,40 @@ internal sealed class WebSearchService
             return HtmlTextExtractor.ToText(body);
 
         return body;
+    }
+
+    /// <summary>
+    /// GETs <paramref name="start"/> following up to <see cref="MaxRedirects"/> redirects,
+    /// validating EVERY hop against the SSRF guard and the domain policy before requesting it,
+    /// so a public URL cannot redirect the fetch into private networks or blocked domains.
+    /// </summary>
+    private async Task<HttpResponseMessage> FetchWithValidatedRedirectsAsync(
+        Uri start, WebSearchSettings settings, CancellationToken cancellationToken)
+    {
+        Uri current = start;
+
+        for (int hop = 0; ; hop++)
+        {
+            await NetworkSafety.ValidateAsync(current, settings.AllowLocalNetworks, cancellationToken);
+
+            if (!_domainPolicy.IsAllowed(current))
+                throw new InvalidOperationException(
+                    $"Domain '{current.Host}' is blocked by the configured allow/deny domain rules.");
+
+            HttpResponseMessage response = await SharedClient.GetAsync(
+                current, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if ((int)response.StatusCode is not (>= 300 and <= 308) || response.Headers.Location is null)
+                return response;
+
+            Uri next = new(current, response.Headers.Location);
+            response.Dispose();
+
+            if (hop == MaxRedirects)
+                throw new InvalidOperationException($"Too many redirects while fetching '{start}'.");
+
+            current = next;
+        }
     }
 
     private static async Task<string> ReadCappedAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
