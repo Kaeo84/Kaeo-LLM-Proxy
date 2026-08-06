@@ -27,6 +27,15 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
     public bool IsRunning { get; private set; }
 
+    /// <summary>
+    /// Display form of the address the listener bound to on the last successful start
+    /// (e.g. "localhost", "0.0.0.0", or a specific NIC IP). Empty until the first start.
+    /// </summary>
+    public string ListenAddress { get; private set; } = string.Empty;
+
+    /// <summary>Port the listener bound to on the last successful start. Zero until the first start.</summary>
+    public int ListenPort { get; private set; }
+
     public event EventHandler<string>? StatusChanged;
 
     public void Start(int port, string listenAddress = "localhost", int maxConcurrentRequests = 64)
@@ -96,6 +105,8 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
 
         // Display friendly address for status
         string displayHost = host == "+" ? "0.0.0.0" : host;
+        ListenAddress = displayHost;
+        ListenPort = port;
         StatusChanged?.Invoke(this, $"Listening on {displayHost}:{port}");
     }
 

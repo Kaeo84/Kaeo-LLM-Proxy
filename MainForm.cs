@@ -130,7 +130,7 @@ internal partial class MainForm : Form
         RefreshCredentials();
         RefreshModules();
         LoadMcpSettingsToForm();
-        UpdateMcpStatusLabel();
+        UpdateMcpStatusDisplays();
         _stats.HeartbeatsChanged += OnHeartbeatsChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
@@ -214,32 +214,71 @@ internal partial class MainForm : Form
             Log.Error(ex, "Failed to apply MCP server settings");
         }
 
-        UpdateMcpStatusLabel();
+        UpdateMcpStatusDisplays();
     }
 
     private void OnMcpStatusChanged(object? sender, string status)
     {
         if (IsHandleCreated)
-            BeginInvoke(UpdateMcpStatusLabel);
+            BeginInvoke(UpdateMcpStatusDisplays);
         else
-            UpdateMcpStatusLabel();
+            UpdateMcpStatusDisplays();
     }
 
     private void UpdateMcpStatusLabel() => _lblMcpStatus.Text = _mcpServer.Status;
 
+    /// <summary>
+    /// Updates the MCP tab's status label and the dashboard MCP Status group from the
+    /// service's current runtime state.
+    /// </summary>
+    private void UpdateMcpStatusDisplays()
+    {
+        UpdateMcpStatusLabel();
+        RefreshMcpDashboardStatus();
+    }
+
+    /// <summary>
+    /// Refreshes the dashboard MCP Status group: shows the status plus the address and port
+    /// the MCP server is currently running on (fixed until the service restarts) and
+    /// enables/disables the MCP control buttons accordingly.
+    /// </summary>
+    private void RefreshMcpDashboardStatus()
+    {
+        bool running = _mcpServer.IsRunning;
+        string status = _mcpServer.Status;
+
+        _lblDashMcpStatusValue.Text = running ? "Running" : status;
+        _lblDashMcpStatusValue.ForeColor = running
+            ? Color.Green
+            : status.StartsWith("Failed", StringComparison.OrdinalIgnoreCase)
+                ? Color.Red
+                : SystemColors.ControlText;
+
+        _lblDashMcpAddressValue.Text = running ? _mcpServer.ListenAddress : "-";
+        _lblDashMcpPortValue.Text = running ? _mcpServer.ListenPort.ToString() : "-";
+
+        _btnDashMcpStart.Enabled = !running;
+        _btnDashMcpStop.Enabled = running;
+        _btnDashMcpRestart.Enabled = running;
+    }
+
     // ── Status ──────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Refreshes the dashboard Proxy Status group: shows the status plus the address and port
+    /// the proxy is currently bound to (fixed until the proxy restarts) and enables/disables
+    /// the proxy control buttons accordingly.
+    /// </summary>
     private void RefreshStatus()
     {
         bool running = _server.IsRunning;
-        _lblStatusValue.Text = running ? $"Running ({_settings.ListenAddress}:{_settings.ListenPort})" : "Stopped";
+        _lblStatusValue.Text = running ? "Running" : "Stopped";
         _lblStatusValue.ForeColor = running ? Color.Green : Color.Red;
+        _lblStatusAddressValue.Text = running ? _server.ListenAddress : "-";
+        _lblStatusPortValue.Text = running ? _server.ListenPort.ToString() : "-";
         _btnStart.Enabled = !running;
         _btnStop.Enabled = running;
         _btnRestart.Enabled = running;
-        _btnDashStart.Enabled = !running;
-        _btnDashStop.Enabled = running;
-        _btnDashRestart.Enabled = running;
     }
 
     /// <summary>
@@ -311,6 +350,51 @@ internal partial class MainForm : Form
         {
             MessageBox.Show($"Error restarting: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private async void BtnDashMcpStart_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            await _mcpServer.StartAsync(forceStart: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to start the MCP server from the dashboard");
+            MessageBox.Show($"Failed to start the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        RefreshMcpDashboardStatus();
+    }
+
+    private async void BtnDashMcpStop_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            await _mcpServer.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to stop the MCP server from the dashboard");
+            MessageBox.Show($"Error stopping the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshMcpDashboardStatus();
+    }
+
+    private async void BtnDashMcpRestart_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            await _mcpServer.RestartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to restart the MCP server from the dashboard");
+            MessageBox.Show($"Error restarting the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshMcpDashboardStatus();
     }
 
     // ── Stats ────────────────────────────────────────────────────────────────

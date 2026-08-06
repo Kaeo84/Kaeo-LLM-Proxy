@@ -44,13 +44,31 @@ partial class MainForm
         // Dashboard controls
         _tlpDashboard = new TableLayoutPanel();
         _grpStatus = new GroupBox();
-        _pnlStatus = new Panel();
+        _tlpStatus = new TableLayoutPanel();
         _flpStatusButtons = new FlowLayoutPanel();
         _lblStatusValue = new Label();
         _lblStatus = new Label();
+        _lblStatusAddressCaption = new Label();
+        _lblStatusAddressValue = new Label();
+        _lblStatusPortCaption = new Label();
+        _lblStatusPortValue = new Label();
         _btnStart = new Button();
         _btnStop = new Button();
         _btnRestart = new Button();
+
+        // Dashboard MCP status controls
+        _grpDashMcp = new GroupBox();
+        _tlpDashMcp = new TableLayoutPanel();
+        _lblDashMcpStatusCaption = new Label();
+        _lblDashMcpStatusValue = new Label();
+        _lblDashMcpAddressCaption = new Label();
+        _lblDashMcpAddressValue = new Label();
+        _lblDashMcpPortCaption = new Label();
+        _lblDashMcpPortValue = new Label();
+        _flpDashMcpButtons = new FlowLayoutPanel();
+        _btnDashMcpStart = new Button();
+        _btnDashMcpStop = new Button();
+        _btnDashMcpRestart = new Button();
 
         // Stats panel
         _tlpStats = new TableLayoutPanel();
@@ -73,12 +91,6 @@ partial class MainForm
         _lblCpuValue = new Label();
         _lblRamCaption = new Label();
         _lblRamValue = new Label();
-
-        // Dashboard proxy-control buttons
-        _flpDashboardButtons = new FlowLayoutPanel();
-        _btnDashStart = new Button();
-        _btnDashStop = new Button();
-        _btnDashRestart = new Button();
 
         // Logs controls
         _tlpLogs = new TableLayoutPanel();
@@ -232,7 +244,6 @@ partial class MainForm
         _grpPerf.SuspendLayout();
         _tlpPerf.SuspendLayout();
         _tlpDashboard.SuspendLayout();
-        _flpDashboardButtons.SuspendLayout();
         _tabControl.SuspendLayout();
         _tabDashboard.SuspendLayout();
         _tabLogs.SuspendLayout();
@@ -262,7 +273,10 @@ partial class MainForm
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).BeginInit();
         ((System.ComponentModel.ISupportInitialize)_nudTestRepeatPenalty).BeginInit();
         _grpStatus.SuspendLayout();
-        _pnlStatus.SuspendLayout();
+        _tlpStatus.SuspendLayout();
+        _grpDashMcp.SuspendLayout();
+        _tlpDashMcp.SuspendLayout();
+        _flpDashMcpButtons.SuspendLayout();
         _flpStatusButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_dgvMappings).BeginInit();
         SuspendLayout();
@@ -289,63 +303,93 @@ partial class MainForm
         _tabDashboard.Text = "Dashboard";
 
         // _tlpDashboard
+        _tlpDashboard.AutoScroll = true;
         _tlpDashboard.ColumnCount = 1;
         _tlpDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _tlpDashboard.Controls.Add(_grpStatus, 0, 0);
-        _tlpDashboard.Controls.Add(_tlpStats, 0, 1);
-        _tlpDashboard.Controls.Add(_grpPerf, 0, 2);
-        _tlpDashboard.Controls.Add(_flpDashboardButtons, 0, 4);
+        _tlpDashboard.Controls.Add(_grpPerf, 0, 0);
+        _tlpDashboard.Controls.Add(_grpStatus, 0, 1);
+        _tlpDashboard.Controls.Add(_grpDashMcp, 0, 2);
+        _tlpDashboard.Controls.Add(_tlpStats, 0, 3);
         _tlpDashboard.Dock = DockStyle.Fill;
         _tlpDashboard.Name = "_tlpDashboard";
         _tlpDashboard.RowCount = 5;
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
         // _grpStatus
         _grpStatus.AutoSize = true;
         _grpStatus.AutoSizeMode = AutoSizeMode.GrowOnly;
-        _grpStatus.Controls.Add(_pnlStatus);
+        _grpStatus.Controls.Add(_tlpStatus);
         _grpStatus.Dock = DockStyle.Fill;
         _grpStatus.Margin = new Padding(0, 0, 0, 8);
         _grpStatus.Name = "_grpStatus";
         _grpStatus.Padding = new Padding(6, 2, 6, 4);
         _grpStatus.Text = "Proxy Status";
 
-        // _pnlStatus — dock Fill; contains buttons (Dock=Right), then labels (Left/Fill)
-        _pnlStatus.Dock = DockStyle.Fill;
-        _pnlStatus.Name = "_pnlStatus";
-        // Add in dock-priority order: Fill first (lowest priority), Left second, Right last (highest priority)
-        _pnlStatus.Controls.Add(_lblStatusValue);
-        _pnlStatus.Controls.Add(_lblStatus);
-        _pnlStatus.Controls.Add(_flpStatusButtons);
+        // _tlpStatus — 2 columns: caption AutoSize | value Percent; final row is the button strip
+        _tlpStatus.AutoSize = true;
+        _tlpStatus.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpStatus.ColumnCount = 2;
+        _tlpStatus.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpStatus.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpStatus.Controls.Add(_lblStatus, 0, 0);
+        _tlpStatus.Controls.Add(_lblStatusValue, 1, 0);
+        _tlpStatus.Controls.Add(_lblStatusAddressCaption, 0, 1);
+        _tlpStatus.Controls.Add(_lblStatusAddressValue, 1, 1);
+        _tlpStatus.Controls.Add(_lblStatusPortCaption, 0, 2);
+        _tlpStatus.Controls.Add(_lblStatusPortValue, 1, 2);
+        _tlpStatus.Controls.Add(_flpStatusButtons, 0, 3);
+        _tlpStatus.Dock = DockStyle.Fill;
+        _tlpStatus.Name = "_tlpStatus";
+        _tlpStatus.SetColumnSpan(_flpStatusButtons, 2);
 
-        // _flpStatusButtons — docked Right, auto-sized to button content
+        // _flpStatusButtons — auto-sized to the button content
         _flpStatusButtons.AutoSize = true;
         _flpStatusButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _flpStatusButtons.Dock = DockStyle.Right;
         _flpStatusButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpStatusButtons.Margin = new Padding(4, 8, 4, 4);
         _flpStatusButtons.Name = "_flpStatusButtons";
-        _flpStatusButtons.Padding = new Padding(0, 3, 0, 3);
         _flpStatusButtons.WrapContents = false;
         _flpStatusButtons.Controls.Add(_btnStart);
         _flpStatusButtons.Controls.Add(_btnStop);
         _flpStatusButtons.Controls.Add(_btnRestart);
 
-        _lblStatus.Dock = DockStyle.Left;
+        _lblStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblStatus.AutoSize = true;
+        _lblStatus.Margin = new Padding(4, 6, 4, 4);
         _lblStatus.Name = "_lblStatus";
-        _lblStatus.Padding = new Padding(4, 0, 6, 0);
         _lblStatus.Text = "Status:";
-        _lblStatus.TextAlign = ContentAlignment.MiddleLeft;
-        _lblStatus.Width = 52;
 
-        _lblStatusValue.Dock = DockStyle.Fill;
+        _lblStatusValue.AutoSize = true;
         _lblStatusValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblStatusValue.Margin = new Padding(4, 6, 4, 4);
         _lblStatusValue.Name = "_lblStatusValue";
         _lblStatusValue.Text = "Stopped";
-        _lblStatusValue.TextAlign = ContentAlignment.MiddleLeft;
+
+        _lblStatusAddressCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblStatusAddressCaption.AutoSize = true;
+        _lblStatusAddressCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblStatusAddressCaption.Name = "_lblStatusAddressCaption";
+        _lblStatusAddressCaption.Text = "Listen IP:";
+
+        _lblStatusAddressValue.AutoSize = true;
+        _lblStatusAddressValue.Margin = new Padding(4, 6, 4, 4);
+        _lblStatusAddressValue.Name = "_lblStatusAddressValue";
+        _lblStatusAddressValue.Text = "-";
+
+        _lblStatusPortCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblStatusPortCaption.AutoSize = true;
+        _lblStatusPortCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblStatusPortCaption.Name = "_lblStatusPortCaption";
+        _lblStatusPortCaption.Text = "Port:";
+
+        _lblStatusPortValue.AutoSize = true;
+        _lblStatusPortValue.Margin = new Padding(4, 6, 4, 4);
+        _lblStatusPortValue.Name = "_lblStatusPortValue";
+        _lblStatusPortValue.Text = "-";
 
         _btnStart.Margin = new Padding(2, 0, 2, 0);
         _btnStart.Name = "_btnStart";
@@ -364,6 +408,96 @@ partial class MainForm
         _btnRestart.Size = new Size(88, 28);
         _btnRestart.Text = "Restart";
         _btnRestart.Click += BtnRestart_Click;
+
+        // _grpDashMcp — runtime status of the built-in MCP server
+        _grpDashMcp.AutoSize = true;
+        _grpDashMcp.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpDashMcp.Controls.Add(_tlpDashMcp);
+        _grpDashMcp.Dock = DockStyle.Fill;
+        _grpDashMcp.Margin = new Padding(0, 0, 0, 8);
+        _grpDashMcp.Name = "_grpDashMcp";
+        _grpDashMcp.Padding = new Padding(6, 2, 6, 4);
+        _grpDashMcp.Text = "MCP Status";
+
+        // _tlpDashMcp — 2 columns: caption AutoSize | value Percent; final row is the button strip
+        _tlpDashMcp.AutoSize = true;
+        _tlpDashMcp.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpDashMcp.ColumnCount = 2;
+        _tlpDashMcp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpDashMcp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpDashMcp.Controls.Add(_lblDashMcpStatusCaption, 0, 0);
+        _tlpDashMcp.Controls.Add(_lblDashMcpStatusValue, 1, 0);
+        _tlpDashMcp.Controls.Add(_lblDashMcpAddressCaption, 0, 1);
+        _tlpDashMcp.Controls.Add(_lblDashMcpAddressValue, 1, 1);
+        _tlpDashMcp.Controls.Add(_lblDashMcpPortCaption, 0, 2);
+        _tlpDashMcp.Controls.Add(_lblDashMcpPortValue, 1, 2);
+        _tlpDashMcp.Controls.Add(_flpDashMcpButtons, 0, 3);
+        _tlpDashMcp.Dock = DockStyle.Fill;
+        _tlpDashMcp.Name = "_tlpDashMcp";
+        _tlpDashMcp.SetColumnSpan(_flpDashMcpButtons, 2);
+
+        // _flpDashMcpButtons — auto-sized to the button content
+        _flpDashMcpButtons.AutoSize = true;
+        _flpDashMcpButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpDashMcpButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpDashMcpButtons.Margin = new Padding(4, 8, 4, 4);
+        _flpDashMcpButtons.Name = "_flpDashMcpButtons";
+        _flpDashMcpButtons.WrapContents = false;
+        _flpDashMcpButtons.Controls.Add(_btnDashMcpStart);
+        _flpDashMcpButtons.Controls.Add(_btnDashMcpStop);
+        _flpDashMcpButtons.Controls.Add(_btnDashMcpRestart);
+
+        _lblDashMcpStatusCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashMcpStatusCaption.AutoSize = true;
+        _lblDashMcpStatusCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpStatusCaption.Name = "_lblDashMcpStatusCaption";
+        _lblDashMcpStatusCaption.Text = "Status:";
+
+        _lblDashMcpStatusValue.AutoSize = true;
+        _lblDashMcpStatusValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblDashMcpStatusValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpStatusValue.Name = "_lblDashMcpStatusValue";
+        _lblDashMcpStatusValue.Text = "Stopped";
+
+        _lblDashMcpAddressCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashMcpAddressCaption.AutoSize = true;
+        _lblDashMcpAddressCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpAddressCaption.Name = "_lblDashMcpAddressCaption";
+        _lblDashMcpAddressCaption.Text = "Listen IP:";
+
+        _lblDashMcpAddressValue.AutoSize = true;
+        _lblDashMcpAddressValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpAddressValue.Name = "_lblDashMcpAddressValue";
+        _lblDashMcpAddressValue.Text = "-";
+
+        _lblDashMcpPortCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashMcpPortCaption.AutoSize = true;
+        _lblDashMcpPortCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpPortCaption.Name = "_lblDashMcpPortCaption";
+        _lblDashMcpPortCaption.Text = "Port:";
+
+        _lblDashMcpPortValue.AutoSize = true;
+        _lblDashMcpPortValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashMcpPortValue.Name = "_lblDashMcpPortValue";
+        _lblDashMcpPortValue.Text = "-";
+
+        _btnDashMcpStart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashMcpStart.Name = "_btnDashMcpStart";
+        _btnDashMcpStart.Size = new Size(80, 28);
+        _btnDashMcpStart.Text = "Start";
+        _btnDashMcpStart.Click += BtnDashMcpStart_Click;
+
+        _btnDashMcpStop.Margin = new Padding(2, 0, 2, 0);
+        _btnDashMcpStop.Name = "_btnDashMcpStop";
+        _btnDashMcpStop.Size = new Size(80, 28);
+        _btnDashMcpStop.Text = "Stop";
+        _btnDashMcpStop.Click += BtnDashMcpStop_Click;
+
+        _btnDashMcpRestart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashMcpRestart.Name = "_btnDashMcpRestart";
+        _btnDashMcpRestart.Size = new Size(88, 28);
+        _btnDashMcpRestart.Text = "Restart";
+        _btnDashMcpRestart.Click += BtnDashMcpRestart_Click;
 
         // _tlpStats
         _tlpStats.AutoSize = true;
@@ -504,37 +638,6 @@ partial class MainForm
         _lblRamValue.Margin = new Padding(4, 8, 4, 8);
         _lblRamValue.Name = "_lblRamValue";
         _lblRamValue.Text = "0 MB";
-
-        // _flpDashboardButtons — bottom of dashboard, centred row of large proxy-control buttons
-        _flpDashboardButtons.AutoSize = true;
-        _flpDashboardButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _flpDashboardButtons.Dock = DockStyle.Fill;
-        _flpDashboardButtons.FlowDirection = FlowDirection.LeftToRight;
-        _flpDashboardButtons.Margin = new Padding(0);
-        _flpDashboardButtons.Name = "_flpDashboardButtons";
-        _flpDashboardButtons.Padding = new Padding(0, 6, 0, 6);
-        _flpDashboardButtons.WrapContents = false;
-        _flpDashboardButtons.Controls.Add(_btnDashStart);
-        _flpDashboardButtons.Controls.Add(_btnDashStop);
-        _flpDashboardButtons.Controls.Add(_btnDashRestart);
-
-        _btnDashStart.Margin = new Padding(0, 0, 6, 0);
-        _btnDashStart.Name = "_btnDashStart";
-        _btnDashStart.Size = new Size(110, 34);
-        _btnDashStart.Text = "▶  Start";
-        _btnDashStart.Click += BtnStart_Click;
-
-        _btnDashStop.Margin = new Padding(0, 0, 6, 0);
-        _btnDashStop.Name = "_btnDashStop";
-        _btnDashStop.Size = new Size(110, 34);
-        _btnDashStop.Text = "■  Stop";
-        _btnDashStop.Click += BtnStop_Click;
-
-        _btnDashRestart.Margin = new Padding(0, 0, 0, 0);
-        _btnDashRestart.Name = "_btnDashRestart";
-        _btnDashRestart.Size = new Size(110, 34);
-        _btnDashRestart.Text = "↺  Restart";
-        _btnDashRestart.Click += BtnRestart_Click;
 
         // _tabLogs
         _tabLogs.Controls.Add(_tlpLogs);
@@ -1671,10 +1774,16 @@ partial class MainForm
         _flpMcpButtons.PerformLayout();
         _flpStatusButtons.ResumeLayout(false);
         _flpStatusButtons.PerformLayout();
-        _pnlStatus.ResumeLayout(false);
+        _tlpStatus.ResumeLayout(false);
+        _tlpStatus.PerformLayout();
         _grpStatus.ResumeLayout(false);
         _grpStatus.PerformLayout();
-        _flpDashboardButtons.ResumeLayout(false);
+        _flpDashMcpButtons.ResumeLayout(false);
+        _flpDashMcpButtons.PerformLayout();
+        _tlpDashMcp.ResumeLayout(false);
+        _tlpDashMcp.PerformLayout();
+        _grpDashMcp.ResumeLayout(false);
+        _grpDashMcp.PerformLayout();
         _tabTest.ResumeLayout(false);
         _tlpTestOuter.ResumeLayout(false);
         _tlpTestOuter.PerformLayout();
@@ -1703,13 +1812,29 @@ partial class MainForm
     private TabPage _tabSettings;
     private TableLayoutPanel _tlpDashboard;
     private GroupBox _grpStatus;
-    private Panel _pnlStatus;
+    private TableLayoutPanel _tlpStatus;
     private FlowLayoutPanel _flpStatusButtons;
     private Label _lblStatus;
     private Label _lblStatusValue;
+    private Label _lblStatusAddressCaption;
+    private Label _lblStatusAddressValue;
+    private Label _lblStatusPortCaption;
+    private Label _lblStatusPortValue;
     private Button _btnStart;
     private Button _btnStop;
     private Button _btnRestart;
+    private GroupBox _grpDashMcp;
+    private TableLayoutPanel _tlpDashMcp;
+    private Label _lblDashMcpStatusCaption;
+    private Label _lblDashMcpStatusValue;
+    private Label _lblDashMcpAddressCaption;
+    private Label _lblDashMcpAddressValue;
+    private Label _lblDashMcpPortCaption;
+    private Label _lblDashMcpPortValue;
+    private FlowLayoutPanel _flpDashMcpButtons;
+    private Button _btnDashMcpStart;
+    private Button _btnDashMcpStop;
+    private Button _btnDashMcpRestart;
     private TableLayoutPanel _tlpStats;
     private Label _lblTotalRequestsCaption;
     private Label _lblTotalRequestsValue;
@@ -1728,10 +1853,6 @@ partial class MainForm
     private Label _lblCpuValue;
     private Label _lblRamCaption;
     private Label _lblRamValue;
-    private FlowLayoutPanel _flpDashboardButtons;
-    private Button _btnDashStart;
-    private Button _btnDashStop;
-    private Button _btnDashRestart;
     private TableLayoutPanel _tlpLogs;
     private FlowLayoutPanel _flpLogsButtons;
     private ListView _lstLogs;

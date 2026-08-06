@@ -38,6 +38,15 @@ internal sealed class McpServerService : IAsyncDisposable
 
     public bool IsRunning => _host?.IsRunning == true;
 
+    /// <summary>
+    /// Listen address the running host bound to (from the settings snapshot used at start).
+    /// Empty while not running.
+    /// </summary>
+    public string ListenAddress { get; private set; } = string.Empty;
+
+    /// <summary>Listen port the running host bound to. Zero while not running.</summary>
+    public int ListenPort { get; private set; }
+
     /// <summary>Client-facing MCP endpoint URL when running; otherwise null.</summary>
     public string? EndpointUrl => _host is { IsRunning: true } host ? host.EndpointUrl : null;
 
@@ -53,11 +62,14 @@ internal sealed class McpServerService : IAsyncDisposable
 
     public void SaveSettings(McpServerSettings settings) => _repository.SaveServerSettings(settings);
 
-    /// <summary>Starts the server when the persisted enabled flag is set; otherwise a no-op.</summary>
-    public async Task StartAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Starts the server when the persisted enabled flag is set, or unconditionally when
+    /// <paramref name="forceStart"/> is true (an explicit dashboard Start click). Otherwise a no-op.
+    /// </summary>
+    public async Task StartAsync(bool forceStart = false, CancellationToken cancellationToken = default)
     {
         McpServerSettings settings = _repository.LoadServerSettings();
-        if (!settings.Enabled)
+        if (!settings.Enabled && !forceStart)
         {
             RaiseStatus("Disabled");
             return;
@@ -74,6 +86,10 @@ internal sealed class McpServerService : IAsyncDisposable
             _host.ApiExplorer = _apiExplorer;
 
             await _host.StartAsync(cancellationToken);
+            ListenAddress = string.IsNullOrWhiteSpace(settings.ListenAddress)
+                ? "localhost"
+                : settings.ListenAddress.Trim();
+            ListenPort = settings.ListenPort;
             RaiseStatus($"Running at {_host.EndpointUrl}");
         }
         catch (Exception ex) when (ex is IOException or SocketException or HttpListenerException)
@@ -88,7 +104,18 @@ internal sealed class McpServerService : IAsyncDisposable
         if (_host is { IsRunning: true })
             await _host.StopAsync();
 
+        ListenAddress = string.Empty;
+        ListenPort = 0;
         RaiseStatus("Stopped");
+    }
+
+    /// <summary>Stops the server when running, then starts it again with the persisted settings.</summary>
+    public async Task RestartAsync(CancellationToken cancellationToken = default)
+    {
+        if (_host is { IsRunning: true })
+            await _host.StopAsync();
+
+        await StartAsync(forceStart: true, cancellationToken);
     }
 
     /// <summary>Re-reads persisted settings and restarts (or stops) the listener accordingly.</summary>
