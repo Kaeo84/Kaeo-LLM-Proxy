@@ -118,3 +118,14 @@ so output is one DLL. Delete Kaeo LLM Proxy MCP and update slnx/host globs.
   (deny-first domain policy, SSRF guard, per-hop redirect validation, size/time limits,
   covert-channel stripping, untrusted-content framing, no-cookie client, least-privilege tools)
   with a what-it-is / how-it-works explanation for each.
+
+## Follow-up: Help tab and Module Information button
+- Web Search config page: the icon became a "Module Information" button moved to the top-right
+  of the tab (toggles panel now spans the page width).
+- Host gains a top-level Help tab (Infrastructure/HelpPages.cs): introductory blurbs for
+  Dashboard, Logs, Settings, Instructions, Credentials, Test, and Heartbeats; an MCP page with
+  Server and Modules sub-tabs; and a Modules page that receives injected module help pages.
+- New contracts interface IHelpModule (CreateHelpPage); WebSearchModule implements it reusing
+  WebSearchSafetyDialog.SafetyText, so the same content is reachable from the config-page dialog
+  and from Help > Modules. MainForm adds/removes module help pages on registry changes, with a
+  placeholder page while no module provides help.

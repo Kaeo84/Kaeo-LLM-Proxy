@@ -52,7 +52,7 @@ internal sealed class WebSearchSafetyDialog : Form
         Controls.Add(footer);
     }
 
-    private const string SafetyText = """
+    internal const string SafetyText = """
         Web search runs against the public internet, so every layer below assumes fetched pages may be hostile — including pages that try to manipulate the AI itself. These are the precautions built into the code:
 
         1. Deny-first domain policy

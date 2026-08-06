@@ -13,6 +13,7 @@ using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
+using Kaeo.LlmProxy.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy;
@@ -33,6 +34,9 @@ internal partial class MainForm : Form
     // Tabs injected by loaded modules, keyed by module id so they can be removed again when a
     // module is disabled or unregistered while the dashboard is open.
     private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TabPage> _moduleHelpPages = new(StringComparer.OrdinalIgnoreCase);
+    private TabControl _helpModulesTabs = null!;
+    private TabPage _helpModulesPlaceholder = null!;
 
     // Cached snapshot of log summaries backing the virtual-mode ListView. Only visible rows
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
@@ -70,6 +74,8 @@ internal partial class MainForm : Form
         // changes so imports, enables, disables, and removals update the tabs live.
         _moduleHost.ModulesChanged += OnModulesChanged;
         AddModuleTabs();
+        BuildHelpContent();
+        AddModuleHelpPages();
 
         // Virtual mode materializes only the visible rows (plus a small buffer) instead of
         // creating a ListViewItem for every log entry on each refresh.
@@ -1695,6 +1701,8 @@ internal partial class MainForm : Form
         RefreshModules();
         AddModuleTabs();
         RemoveStaleModuleTabs();
+        AddModuleHelpPages();
+        RemoveStaleModuleHelpPages();
     }
 
     /// <summary>
@@ -1897,6 +1905,88 @@ internal partial class MainForm : Form
         }
 
         RefreshModules();
+    }
+
+    // ── Help ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds the host-owned Help pages: one blurb per dashboard tab, an MCP page with
+    /// Server/Modules sub-pages, and the Modules page that receives injected module help.
+    /// </summary>
+    private void BuildHelpContent()
+    {
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Dashboard", HelpPages.Dashboard));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Logs", HelpPages.Logs));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Settings", HelpPages.Settings));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Instructions", HelpPages.Instructions));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Credentials", HelpPages.Credentials));
+
+        TabPage mcpPage = new() { Text = "MCP", Padding = new Padding(8) };
+        TabControl mcpSub = new() { Dock = DockStyle.Fill };
+        mcpSub.TabPages.Add(HelpPages.TextPage("Server", HelpPages.McpServer));
+        mcpSub.TabPages.Add(HelpPages.TextPage("Modules", HelpPages.McpModules));
+        mcpPage.Controls.Add(mcpSub);
+        _helpTabs.TabPages.Add(mcpPage);
+
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Test", HelpPages.Test));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Heartbeats", HelpPages.Heartbeats));
+
+        _helpModulesPlaceholder = HelpPages.TextPage("Modules", HelpPages.ModulesPlaceholder);
+        _helpModulesTabs = new TabControl { Dock = DockStyle.Fill };
+        _helpModulesTabs.TabPages.Add(_helpModulesPlaceholder);
+
+        TabPage modulesPage = new() { Text = "Modules", Padding = new Padding(8) };
+        modulesPage.Controls.Add(_helpModulesTabs);
+        _helpTabs.TabPages.Add(modulesPage);
+    }
+
+    /// <summary>Appends the help page of every loaded IHelpModule module that lacks one.</summary>
+    private void AddModuleHelpPages()
+    {
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            string moduleId = loaded.Entry.ModuleId ?? loaded.Entry.AssemblyPath;
+            if (_moduleHelpPages.ContainsKey(moduleId))
+                continue;
+
+            if (loaded.Module is not IHelpModule helpModule)
+                continue;
+
+            TabPage page;
+            try
+            {
+                page = helpModule.CreateHelpPage();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Module {Name} failed to build its help page", loaded.Entry.Name);
+                continue;
+            }
+
+            page.Tag = moduleId;
+            _helpModulesTabs.TabPages.Remove(_helpModulesPlaceholder);
+            _helpModulesTabs.TabPages.Add(page);
+            _moduleHelpPages[moduleId] = page;
+        }
+    }
+
+    /// <summary>Removes help pages belonging to modules that are no longer loaded.</summary>
+    private void RemoveStaleModuleHelpPages()
+    {
+        HashSet<string> loadedIds = [.. _moduleHost.LoadedModules
+            .Select(m => m.Entry.ModuleId ?? m.Entry.AssemblyPath)];
+
+        foreach ((string moduleId, TabPage page) in _moduleHelpPages
+            .Where(kvp => !loadedIds.Contains(kvp.Key))
+            .ToList())
+        {
+            _helpModulesTabs.TabPages.Remove(page);
+            page.Dispose();
+            _moduleHelpPages.Remove(moduleId);
+        }
+
+        if (_moduleHelpPages.Count == 0 && !_helpModulesTabs.TabPages.Contains(_helpModulesPlaceholder))
+            _helpModulesTabs.TabPages.Add(_helpModulesPlaceholder);
     }
 
     // ── Test Console ──────────────────────────────────────────────────────────

@@ -40,6 +40,8 @@ partial class MainForm
         _btnMcpApply = new Button();
         _tabTest = new TabPage();
         _tabHeartbeats = new TabPage();
+        _tabHelp = new TabPage();
+        _helpTabs = new TabControl();
 
         // Dashboard controls
         _tlpDashboard = new TableLayoutPanel();
@@ -255,6 +257,8 @@ partial class MainForm
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
         _tabHeartbeats.SuspendLayout();
+        _tabHelp.SuspendLayout();
+        _helpTabs.SuspendLayout();
         _tlpHeartbeats.SuspendLayout();
         _flpHeartbeatButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).BeginInit();
@@ -274,6 +278,7 @@ partial class MainForm
         _tabControl.Controls.Add(_tabMcp);
         _tabControl.Controls.Add(_tabTest);
         _tabControl.Controls.Add(_tabHeartbeats);
+        _tabControl.Controls.Add(_tabHelp);
         _tabControl.Dock = DockStyle.Fill;
         _tabControl.Name = "_tabControl";
         _tabControl.SelectedIndex = 0;
@@ -1517,6 +1522,17 @@ partial class MainForm
         _tabHeartbeats.Padding = new Padding(8);
         _tabHeartbeats.Text = "Heartbeats";
 
+        // _tabHelp — pages built in code (MainForm.BuildHelpContent)
+        _tabHelp.Controls.Add(_helpTabs);
+        _tabHelp.Dock = DockStyle.Fill;
+        _tabHelp.Name = "_tabHelp";
+        _tabHelp.Padding = new Padding(8);
+        _tabHelp.Text = "Help";
+
+        // _helpTabs
+        _helpTabs.Dock = DockStyle.Fill;
+        _helpTabs.Name = "_helpTabs";
+
         _tlpHeartbeats.ColumnCount = 2;
         _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
@@ -1680,6 +1696,8 @@ partial class MainForm
         _tlpTestTop.ResumeLayout(false);
         _tlpTestTop.PerformLayout();
         _tabHeartbeats.ResumeLayout(false);
+        _helpTabs.ResumeLayout(false);
+        _tabHelp.ResumeLayout(false);
         _grpListener.ResumeLayout(false);
         _grpListener.PerformLayout();
         _tlpListener.ResumeLayout(false);
@@ -1875,6 +1893,8 @@ partial class MainForm
 
     // Heartbeats tab
     private TabPage _tabHeartbeats;
+    private TabPage _tabHelp;
+    private TabControl _helpTabs;
     private TableLayoutPanel _tlpHeartbeats;
     private Label _lblHeartbeatStats;
     private ListView _lstHeartbeats;
