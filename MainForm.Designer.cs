@@ -619,6 +619,7 @@ partial class MainForm
         _lblRpsCaption.Name = "_lblRpsCaption";
         _lblRpsCaption.Text = "Req/s (60s avg):";
 
+        _lblRpsValue.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblRpsValue.AutoSize = true;
         _lblRpsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
         _lblRpsValue.Margin = new Padding(4, 6, 4, 4);
@@ -682,6 +683,7 @@ partial class MainForm
         _lblMcpRpsCaption.Name = "_lblMcpRpsCaption";
         _lblMcpRpsCaption.Text = "Req/s (60s avg):";
 
+        _lblMcpRpsValue.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpRpsValue.AutoSize = true;
         _lblMcpRpsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
         _lblMcpRpsValue.Margin = new Padding(4, 6, 4, 4);
