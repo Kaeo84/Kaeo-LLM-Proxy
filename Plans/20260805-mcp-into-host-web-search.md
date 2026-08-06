@@ -139,3 +139,10 @@ so output is one DLL. Delete Kaeo LLM Proxy MCP and update slnx/host globs.
   PopulateListenAddressOptions helper), and the Port row sits above the Listen address row to
   match the Settings listener group. McpServerService.ListCredentialNames removed; Help blurb
   updated.
+
+## Follow-up: Web Search tab layout
+- Page scrolls vertically (TabPage AutoScroll + AutoSize/Dock.Top content stack) so overflow on
+  small windows never hides controls.
+- Limits group moved above Search providers; all non-table settings now sit above the tables.
+- Percent rows replaced with AutoSize rows; providers and domain-rules groups are fixed 180px so
+  each ListView shows header + at least 5 rows and scrolls natively beyond that.

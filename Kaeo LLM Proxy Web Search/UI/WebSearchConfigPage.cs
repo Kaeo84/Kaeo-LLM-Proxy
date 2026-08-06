@@ -34,6 +34,7 @@ internal sealed class WebSearchConfigPage : TabPage
 
         Text = "Web Search";
         Padding = new Padding(8);
+        AutoScroll = true;
 
         Controls.Add(BuildWebSearchContent());
 
@@ -42,20 +43,21 @@ internal sealed class WebSearchConfigPage : TabPage
 
     private TableLayoutPanel BuildWebSearchContent()
     {
+        // AutoSize + Dock.Top inside the AutoScroll page: the tab scrolls vertically whenever
+        // the stacked content overflows instead of crushing the tables.
         TableLayoutPanel layout = new()
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
             ColumnCount = 1,
             RowCount = 5,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 38F));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 32F));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 5; i++)
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        TableLayoutPanel toggles = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        TableLayoutPanel toggles = new() { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 2 };
         toggles.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         toggles.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         toggles.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -82,9 +84,10 @@ internal sealed class WebSearchConfigPage : TabPage
         toggles.SetRowSpan(_btnSafetyInfo, 2);
         layout.Controls.Add(toggles, 0, 0);
 
-        layout.Controls.Add(BuildProvidersGroup(), 0, 1);
-        layout.Controls.Add(BuildDomainRulesGroup(), 0, 2);
-        layout.Controls.Add(BuildLimitsGroup(), 0, 3);
+        // Non-table settings first, then the two tables.
+        layout.Controls.Add(BuildLimitsGroup(), 0, 1);
+        layout.Controls.Add(BuildProvidersGroup(), 0, 2);
+        layout.Controls.Add(BuildDomainRulesGroup(), 0, 3);
 
         Label note = new()
         {
@@ -100,7 +103,7 @@ internal sealed class WebSearchConfigPage : TabPage
 
     private GroupBox BuildProvidersGroup()
     {
-        GroupBox group = new() { Text = "Search providers", Dock = DockStyle.Fill, Padding = new Padding(6) };
+        GroupBox group = new() { Text = "Search providers", Dock = DockStyle.Fill, Height = 180, Padding = new Padding(6) };
 
         TableLayoutPanel inner = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
@@ -138,7 +141,7 @@ internal sealed class WebSearchConfigPage : TabPage
 
     private GroupBox BuildDomainRulesGroup()
     {
-        GroupBox group = new() { Text = "Domain rules", Dock = DockStyle.Fill, Padding = new Padding(6) };
+        GroupBox group = new() { Text = "Domain rules", Dock = DockStyle.Fill, Height = 180, Padding = new Padding(6) };
 
         TableLayoutPanel inner = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
@@ -177,7 +180,7 @@ internal sealed class WebSearchConfigPage : TabPage
 
     private GroupBox BuildLimitsGroup()
     {
-        GroupBox group = new() { Text = "Limits", AutoSize = true, Padding = new Padding(6) };
+        GroupBox group = new() { Text = "Limits", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(6) };
 
         TableLayoutPanel inner = new() { AutoSize = true, ColumnCount = 4, RowCount = 2 };
         for (int i = 0; i < 4; i++)
