@@ -173,7 +173,10 @@ internal sealed class AppDatabase : IDisposable
                     context_window_tokens,
                     synthesize_openai_metadata,
                     temperature_priority,
-                    repeat_penalty_priority
+                    repeat_penalty_priority,
+                    reasoning_effort_priority,
+                    reasoning_effort,
+                    reasoning_effort_values
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -234,7 +237,10 @@ internal sealed class AppDatabase : IDisposable
                         context_window_tokens,
                         synthesize_openai_metadata,
                         temperature_priority,
-                        repeat_penalty_priority
+                        repeat_penalty_priority,
+                        reasoning_effort_priority,
+                        reasoning_effort,
+                        reasoning_effort_values
                     )
                     VALUES (
                         $proxyName,
@@ -260,7 +266,10 @@ internal sealed class AppDatabase : IDisposable
                         $contextWindowTokens,
                         $synthesizeOpenAiMetadata,
                         $temperaturePriority,
-                        $repeatPenaltyPriority
+                        $repeatPenaltyPriority,
+                        $reasoningEffortPriority,
+                        $reasoningEffort,
+                        $reasoningEffortValues
                     );
                     """;
 
@@ -1105,7 +1114,10 @@ internal sealed class AppDatabase : IDisposable
                     context_window_tokens INTEGER NOT NULL DEFAULT 0,
                     synthesize_openai_metadata INTEGER NOT NULL DEFAULT 0,
                     temperature_priority INTEGER NOT NULL DEFAULT 0,
-                    repeat_penalty_priority INTEGER NOT NULL DEFAULT 0
+                    repeat_penalty_priority INTEGER NOT NULL DEFAULT 0,
+                    reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
+                    reasoning_effort TEXT NULL,
+                    reasoning_effort_values TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1261,7 +1273,9 @@ internal sealed class AppDatabase : IDisposable
     /// Adds columns to pre-existing <c>model_mappings</c> tables that were created before they
     /// were introduced: <c>supports_vision</c>, <c>credential_name</c>, <c>thinking_mode</c>,
     /// <c>context_window_tokens</c>, <c>synthesize_openai_metadata</c>,
-    /// <c>temperature_priority</c>, and <c>repeat_penalty_priority</c>.
+    /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
+    /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>, and
+    /// <c>reasoning_effort_values</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1329,6 +1343,33 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added repeat_penalty_priority column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_priority"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_priority INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort_priority column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_values"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_values TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort_values column.");
         }
     }
 
@@ -1533,6 +1574,11 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$synthesizeOpenAiMetadata", ToSqliteBoolean(mapping.SynthesizeOpenAiMetadata));
         command.Parameters.AddWithValue("$temperaturePriority", (int)mapping.TemperaturePriority);
         command.Parameters.AddWithValue("$repeatPenaltyPriority", (int)mapping.RepeatPenaltyPriority);
+        command.Parameters.AddWithValue("$reasoningEffortPriority", (int)mapping.ReasoningEffortPriority);
+        command.Parameters.AddWithValue("$reasoningEffort", DbValue(mapping.ReasoningEffort));
+        command.Parameters.AddWithValue("$reasoningEffortValues", mapping.ReasoningEffortValues.Count > 0
+            ? DbValue(string.Join(", ", mapping.ReasoningEffortValues))
+            : DBNull.Value);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1569,6 +1615,13 @@ internal sealed class AppDatabase : IDisposable
         RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(23))
             ? (SamplingPriority)reader.GetInt32(23)
             : SamplingPriority.ClientApp,
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(24))
+            ? (SamplingPriority)reader.GetInt32(24)
+            : SamplingPriority.ClientApp,
+        ReasoningEffort = reader.IsDBNull(25) ? null : reader.GetString(25),
+        ReasoningEffortValues = reader.IsDBNull(26)
+            ? []
+            : [.. reader.GetString(26).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()

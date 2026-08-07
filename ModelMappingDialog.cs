@@ -43,6 +43,12 @@ internal sealed class ModelMappingDialog : Form
     private readonly NumericUpDown _nudTemperature = new();
     private readonly Label _lblRepeatPenalty = new();
     private readonly NumericUpDown _nudRepeatPenalty = new();
+    private readonly Label _lblReasoningEffortPriority = new();
+    private readonly ComboBox _cmbReasoningEffortPriority = new();
+    private readonly Label _lblReasoningEffortValues = new();
+    private readonly TextBox _txtReasoningEffortValues = new();
+    private readonly Label _lblReasoningEffort = new();
+    private readonly ComboBox _cmbReasoningEffort = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly Label _lblTempPriority = new();
     private readonly ComboBox _cmbTempPriority = new();
@@ -71,6 +77,10 @@ internal sealed class ModelMappingDialog : Form
     private List<StoredCredential> _credentials = [];
     private AppSettings? _settings;
     private StatisticsService? _stats;
+
+    // Set while ShowConfigureDialog populates controls so model-name change events do not
+    // prefill reasoning effort values over the values being loaded.
+    private bool _suppressReasoningPrefill;
 
     public ModelMappingDialog()
     {
@@ -251,6 +261,86 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private SamplingPriority ReasoningEffortPriority
+    {
+        get => (_cmbReasoningEffortPriority.SelectedItem as SamplingPriorityOption)?.Priority ?? SamplingPriority.ClientApp;
+        set => SelectSamplingPriority(_cmbReasoningEffortPriority, value);
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private string? ReasoningEffort
+    {
+        get
+        {
+            string value = _cmbReasoningEffort.Text.Trim();
+            return value.Length == 0 ? null : value;
+        }
+        set => _cmbReasoningEffort.Text = value ?? string.Empty;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private List<string> ReasoningEffortValues
+    {
+        get => ParseReasoningEffortValues(_txtReasoningEffortValues.Text);
+        set => _txtReasoningEffortValues.Text = string.Join(", ", value);
+    }
+
+    private static List<string> ParseReasoningEffortValues(string raw) =>
+        [.. raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+    /// <summary>
+    /// Prefills the reasoning effort values and selection from a known model profile when the
+    /// values field is empty and the model name matches a known family (e.g. glm-5.x,
+    /// deepseek-v4, kimi-k3, qwen3.8-max).
+    /// </summary>
+    private void TryPrefillReasoningEffortProfile(string? modelName)
+    {
+        if (_suppressReasoningPrefill)
+            return;
+
+        if (_txtReasoningEffortValues.Text.Trim().Length > 0)
+            return;
+
+        if (!ReasoningEffortProfiles.TryGetProfile(modelName, out IReadOnlyList<string> values, out string defaultValue))
+            return;
+
+        _txtReasoningEffortValues.Text = string.Join(", ", values);
+        _cmbReasoningEffort.Text = defaultValue;
+    }
+
+    /// <summary>
+    /// Repopulates the reasoning effort selection dropdown with the configured values followed
+    /// by the standard provider values, preserving the current selection.
+    /// </summary>
+    private void PopulateReasoningEffortOptions()
+    {
+        string current = _cmbReasoningEffort.Text;
+        _cmbReasoningEffort.Items.Clear();
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string value in ParseReasoningEffortValues(_txtReasoningEffortValues.Text))
+        {
+            if (seen.Add(value))
+                _cmbReasoningEffort.Items.Add(value);
+        }
+
+        foreach (string value in ReasoningEffortProfiles.StandardValues)
+        {
+            if (seen.Add(value))
+                _cmbReasoningEffort.Items.Add(value);
+        }
+
+        _cmbReasoningEffort.Text = current;
+    }
+
+    private void UpdateReasoningEffortControlStates()
+    {
+        bool enabled = ReasoningEffortPriority != SamplingPriority.Provider;
+        _txtReasoningEffortValues.Enabled = enabled;
+        _cmbReasoningEffort.Enabled = enabled;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private bool EnableAutoSummarization
     {
         get => _chkEnableAutoSummarization.Checked;
@@ -339,7 +429,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 24;
+        _tlpMain.RowCount = 27;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -394,33 +484,42 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 11);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
         _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 11);
+        _tlpMain.Controls.Add(_lblReasoningEffortPriority, 0, 12);
+        _tlpMain.SetColumnSpan(_cmbReasoningEffortPriority, 2);
+        _tlpMain.Controls.Add(_cmbReasoningEffortPriority, 1, 12);
+        _tlpMain.Controls.Add(_lblReasoningEffortValues, 0, 13);
+        _tlpMain.SetColumnSpan(_txtReasoningEffortValues, 2);
+        _tlpMain.Controls.Add(_txtReasoningEffortValues, 1, 13);
+        _tlpMain.Controls.Add(_lblReasoningEffort, 0, 14);
+        _tlpMain.SetColumnSpan(_cmbReasoningEffort, 2);
+        _tlpMain.Controls.Add(_cmbReasoningEffort, 1, 14);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 12);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 15);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 13);
-        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 14);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 16);
+        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 17);
         _tlpMain.SetColumnSpan(_cmbThinkingHandling, 2);
-        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 14);
+        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 17);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
-        _tlpMain.Controls.Add(_chkSupportsVision, 0, 15);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 18);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 19);
         _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
-        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 17);
+        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 20);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 18);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 19);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 21);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 22);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 19);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 20);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 22);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 23);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 20);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 23);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 21);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 24);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 22);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 25);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 23);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 26);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -468,6 +567,7 @@ internal sealed class ModelMappingDialog : Form
 
         _cmbModelName.Dock = DockStyle.Fill;
         _cmbModelName.Margin = new Padding(0, 4, 4, 4);
+        _cmbModelName.TextChanged += (_, _) => TryPrefillReasoningEffortProfile(_cmbModelName.Text);
 
         _btnFetchModels.Anchor = AnchorStyles.Right;
         _btnFetchModels.AutoSize = true;
@@ -533,6 +633,50 @@ internal sealed class ModelMappingDialog : Form
         _nudRepeatPenalty.Minimum = 0.5M;
         _nudRepeatPenalty.Size = new Size(90, 25);
         _nudRepeatPenalty.Value = 1.0M;
+
+        _lblReasoningEffortPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblReasoningEffortPriority.AutoSize = true;
+        _lblReasoningEffortPriority.Margin = new Padding(0, 8, 8, 4);
+        _lblReasoningEffortPriority.Text = "Reasoning Effort Priority:";
+
+        _cmbReasoningEffortPriority.Dock = DockStyle.Fill;
+        _cmbReasoningEffortPriority.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbReasoningEffortPriority.Margin = new Padding(0, 4, 0, 4);
+        _cmbReasoningEffortPriority.Items.AddRange([.. SamplingPriorityOptions()]);
+        _cmbReasoningEffortPriority.SelectedIndex = 0;
+        _cmbReasoningEffortPriority.SelectedIndexChanged += (_, _) => UpdateReasoningEffortControlStates();
+        _toolTip.SetToolTip(
+            _cmbReasoningEffortPriority,
+            "Client App Priority passes the client's reasoning_effort through unchanged;\n"
+            + "Proxy Priority always sends the configured Reasoning Effort (overriding the client);\n"
+            + "Provider Priority omits the field so the provider's platform default wins.");
+
+        _lblReasoningEffortValues.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblReasoningEffortValues.AutoSize = true;
+        _lblReasoningEffortValues.Margin = new Padding(0, 8, 8, 4);
+        _lblReasoningEffortValues.Text = "Reasoning Effort Values:";
+
+        _txtReasoningEffortValues.Dock = DockStyle.Fill;
+        _txtReasoningEffortValues.Margin = new Padding(0, 4, 0, 4);
+        _txtReasoningEffortValues.PlaceholderText = "e.g. high, max";
+        _txtReasoningEffortValues.TextChanged += (_, _) => PopulateReasoningEffortOptions();
+        _toolTip.SetToolTip(
+            _txtReasoningEffortValues,
+            "Comma-separated reasoning effort values this model supports, in priority order\n"
+            + "(highest priority first). Known models are prefilled automatically.");
+
+        _lblReasoningEffort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblReasoningEffort.AutoSize = true;
+        _lblReasoningEffort.Margin = new Padding(0, 8, 8, 4);
+        _lblReasoningEffort.Text = "Reasoning Effort:";
+
+        _cmbReasoningEffort.Dock = DockStyle.Fill;
+        _cmbReasoningEffort.DropDownStyle = ComboBoxStyle.DropDown;
+        _cmbReasoningEffort.Margin = new Padding(0, 4, 0, 4);
+        _toolTip.SetToolTip(
+            _cmbReasoningEffort,
+            "The reasoning_effort value sent upstream when Reasoning Effort Priority is\n"
+            + "Proxy Priority. Leave empty to send nothing.");
 
         _lblTempPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTempPriority.AutoSize = true;
@@ -936,6 +1080,7 @@ internal sealed class ModelMappingDialog : Form
         ArgumentNullException.ThrowIfNull(settings);
 
         using ModelMappingDialog dlg = new();
+        dlg._suppressReasoningPrefill = true;
         dlg._settings = settings;
         dlg._stats = stats;
         dlg.PopulateInstructionSets(instructionSets);
@@ -959,6 +1104,13 @@ internal sealed class ModelMappingDialog : Form
         dlg.ContextWindowTokens = mapping.ContextWindowTokens;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
+        dlg.ReasoningEffortPriority = mapping.ReasoningEffortPriority;
+        dlg.ReasoningEffortValues = mapping.ReasoningEffortValues;
+        if (!string.IsNullOrWhiteSpace(mapping.ReasoningEffort))
+            dlg.ReasoningEffort = mapping.ReasoningEffort;
+        dlg.UpdateReasoningEffortControlStates();
+        dlg._suppressReasoningPrefill = false;
+        dlg.TryPrefillReasoningEffortProfile(mapping.ModelName);
         dlg.EnableAutoSummarization = mapping.EnableAutoSummarization;
         dlg.PreserveRecentMessageCount = mapping.PreserveRecentMessageCount;
         dlg.MaxSummarizationRetries = mapping.MaxSummarizationRetries;
@@ -991,6 +1143,9 @@ internal sealed class ModelMappingDialog : Form
         mapping.ContextWindowTokens = dlg.ContextWindowTokens;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
+        mapping.ReasoningEffortPriority = dlg.ReasoningEffortPriority;
+        mapping.ReasoningEffort = dlg.ReasoningEffort;
+        mapping.ReasoningEffortValues = dlg.ReasoningEffortValues;
         mapping.EnableAutoSummarization = dlg.EnableAutoSummarization;
         mapping.PreserveRecentMessageCount = dlg.PreserveRecentMessageCount;
         mapping.MaxSummarizationRetries = dlg.MaxSummarizationRetries;

@@ -268,6 +268,31 @@ internal sealed class ModelMapping
     public double Temperature { get; set; } = 0.7;
 
     /// <summary>
+    /// Controls which reasoning_effort wins in upstream requests for this model.
+    /// <see cref="SamplingPriority.ClientApp"/> passes the client's value through unchanged;
+    /// <see cref="SamplingPriority.Proxy"/> always sends <see cref="ReasoningEffort"/>,
+    /// overriding (or injecting for) the client; <see cref="SamplingPriority.Provider"/>
+    /// omits the field entirely so hosted providers keep their platform default.
+    /// Defaults to <see cref="SamplingPriority.ClientApp"/>.
+    /// </summary>
+    public SamplingPriority ReasoningEffortPriority { get; set; } = SamplingPriority.ClientApp;
+
+    /// <summary>
+    /// The reasoning_effort value sent to the upstream when <see cref="ReasoningEffortPriority"/>
+    /// is <see cref="SamplingPriority.Proxy"/>. Null/empty sends nothing (falls back to pass-through).
+    /// Should be one of <see cref="ReasoningEffortValues"/>.
+    /// </summary>
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
+    /// Reasoning effort values this model supports, in priority order (highest priority first).
+    /// Informational for upstreams that accept a list of available reasoning efforts; the value
+    /// actually sent is controlled by <see cref="ReasoningEffortPriority"/> and
+    /// <see cref="ReasoningEffort"/>. Empty disables reasoning effort handling.
+    /// </summary>
+    public List<string> ReasoningEffortValues { get; set; } = [];
+
+    /// <summary>
     /// Enable automatic context summarization when the model's context window is exceeded.
     /// When enabled, the proxy will automatically summarize older conversation history
     /// and retry the request with condensed context. Default: true.
@@ -360,6 +385,9 @@ internal sealed class ModelMapping
         TemperaturePriority = TemperaturePriority,
         RepeatPenaltyPriority = RepeatPenaltyPriority,
         Temperature = Temperature,
+        ReasoningEffortPriority = ReasoningEffortPriority,
+        ReasoningEffort = ReasoningEffort,
+        ReasoningEffortValues = [.. ReasoningEffortValues],
         EnableAutoSummarization = EnableAutoSummarization,
         PreserveRecentMessageCount = PreserveRecentMessageCount,
         MaxSummarizationRetries = MaxSummarizationRetries,

@@ -230,6 +230,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// overrides (<see cref="SamplingPriority.Proxy"/>), or the field is omitted entirely
     /// (<see cref="SamplingPriority.Provider"/>).
     /// </summary>
+    /// <summary>
+    /// Resolves the reasoning_effort to inject into a translated upstream chat request. Ollama
+    /// clients cannot send reasoning_effort, so only Proxy priority (which overrides) produces
+    /// a value; Client App and Provider priorities omit the field.
+    /// </summary>
+    private static string? ResolveReasoningEffort(ModelMapping? mapping) =>
+        mapping is { ReasoningEffortPriority: SamplingPriority.Proxy }
+            && !string.IsNullOrWhiteSpace(mapping.ReasoningEffort)
+                ? mapping.ReasoningEffort.Trim()
+                : null;
+
     private static float? ResolveSamplingValue(SamplingPriority priority, float? clientValue, float proxyValue) =>
         priority switch
         {
@@ -1602,6 +1613,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             SamplingPriority repeatPriority = normalizeMapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp;
             double proxyTemperature = normalizeMapping?.Temperature ?? 0.7;
             double proxyRepeatPenalty = normalizeMapping?.RepeatPenalty ?? 1.0;
+            SamplingPriority reasoningPriority = normalizeMapping?.ReasoningEffortPriority ?? SamplingPriority.ClientApp;
+            string proxyReasoningEffort = normalizeMapping?.ReasoningEffort?.Trim() ?? string.Empty;
+            bool proxyHasReasoningEffort = reasoningPriority == SamplingPriority.Proxy && proxyReasoningEffort.Length > 0;
+            // Provider drops the field; Proxy overrides/injects the configured value. Client App
+            // (and Proxy without a configured value) leave the client's field untouched.
+            bool rewriteReasoningEffort = reasoningPriority == SamplingPriority.Provider || proxyHasReasoningEffort;
 
             // Check whether the messages array has consecutive leading system messages.
             bool hasConsecutiveSystemMessages = false;
@@ -1635,7 +1652,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 && !hasTrailingAssistantPrefill
                 && !shouldInjectInstructions
                 && tempPriority == SamplingPriority.ClientApp
-                && repeatPriority == SamplingPriority.ClientApp)
+                && repeatPriority == SamplingPriority.ClientApp
+                && !rewriteReasoningEffort)
                 return json;
 
             using var ms = new System.IO.MemoryStream();
@@ -1645,6 +1663,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             bool clientHadTemperature = false;
             bool clientHadRepeatPenalty = false;
+            bool clientHadReasoningEffort = false;
 
             foreach (JsonProperty prop in root.EnumerateObject())
             {
@@ -1667,6 +1686,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                     if (repeatPriority == SamplingPriority.Proxy)
                         writer.WriteNumber("repeat_penalty", proxyRepeatPenalty);
+                    else
+                        prop.WriteTo(writer);
+                }
+                else if (prop.Name.Equals("reasoning_effort", StringComparison.OrdinalIgnoreCase))
+                {
+                    clientHadReasoningEffort = true;
+                    if (reasoningPriority == SamplingPriority.Provider)
+                        continue;
+
+                    if (proxyHasReasoningEffort)
+                        writer.WriteString("reasoning_effort", proxyReasoningEffort);
                     else
                         prop.WriteTo(writer);
                 }
@@ -1746,6 +1776,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 writer.WriteNumber("temperature", proxyTemperature);
             if (repeatPriority == SamplingPriority.Proxy && !clientHadRepeatPenalty)
                 writer.WriteNumber("repeat_penalty", proxyRepeatPenalty);
+            if (proxyHasReasoningEffort && !clientHadReasoningEffort)
+                writer.WriteString("reasoning_effort", proxyReasoningEffort);
 
             writer.WriteEndObject();
             writer.Flush();
@@ -2336,6 +2368,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
                     ollamaReq.Options?.RepeatPenalty,
                     (float)(mapping?.RepeatPenalty ?? 1.0)),
+                ReasoningEffort = ResolveReasoningEffort(mapping),
                 Mirostat = ollamaReq.Options?.Mirostat,
                 MirostatTau = ollamaReq.Options?.MirostatTau,
                 MirostatEta = ollamaReq.Options?.MirostatEta,
