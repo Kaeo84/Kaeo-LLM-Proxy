@@ -55,6 +55,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblRepeatPenaltyPriority = new();
     private readonly ComboBox _cmbRepeatPenaltyPriority = new();
     private readonly CheckBox _chkEnableThinkingCompatibility = new();
+    private readonly GroupBox _grpThinkingReasoning = new();
+    private readonly TableLayoutPanel _tlpThinkingReasoning = new();
     private readonly Label _lblThinkingHandling = new();
     private readonly ComboBox _cmbThinkingHandling = new();
     private readonly CheckBox _chkSupportsVision = new();
@@ -309,8 +311,8 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>
-    /// Repopulates the reasoning effort selection dropdown with the configured values followed
-    /// by the standard provider values, preserving the current selection.
+    /// Repopulates the reasoning effort selection dropdown with the values entered in the
+    /// comma-separated list, preserving the current selection.
     /// </summary>
     private void PopulateReasoningEffortOptions()
     {
@@ -319,12 +321,6 @@ internal sealed class ModelMappingDialog : Form
 
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
         foreach (string value in ParseReasoningEffortValues(_txtReasoningEffortValues.Text))
-        {
-            if (seen.Add(value))
-                _cmbReasoningEffort.Items.Add(value);
-        }
-
-        foreach (string value in ReasoningEffortProfiles.StandardValues)
         {
             if (seen.Add(value))
                 _cmbReasoningEffort.Items.Add(value);
@@ -339,6 +335,13 @@ internal sealed class ModelMappingDialog : Form
         _txtReasoningEffortValues.Enabled = enabled;
         _cmbReasoningEffort.Enabled = enabled;
     }
+
+    /// <summary>
+    /// Enables or disables the entire thinking/reasoning options group based on the
+    /// Enable thinking compatibility checkbox.
+    /// </summary>
+    private void UpdateThinkingReasoningGroupState() =>
+        _grpThinkingReasoning.Enabled = EnableThinkingCompatibility;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private bool EnableAutoSummarization
@@ -429,7 +432,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 27;
+        _tlpMain.RowCount = 24;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -484,42 +487,32 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 11);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
         _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 11);
-        _tlpMain.Controls.Add(_lblReasoningEffortPriority, 0, 12);
-        _tlpMain.SetColumnSpan(_cmbReasoningEffortPriority, 2);
-        _tlpMain.Controls.Add(_cmbReasoningEffortPriority, 1, 12);
-        _tlpMain.Controls.Add(_lblReasoningEffortValues, 0, 13);
-        _tlpMain.SetColumnSpan(_txtReasoningEffortValues, 2);
-        _tlpMain.Controls.Add(_txtReasoningEffortValues, 1, 13);
-        _tlpMain.Controls.Add(_lblReasoningEffort, 0, 14);
-        _tlpMain.SetColumnSpan(_cmbReasoningEffort, 2);
-        _tlpMain.Controls.Add(_cmbReasoningEffort, 1, 14);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 15);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 12);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 16);
-        _tlpMain.Controls.Add(_lblThinkingHandling, 0, 17);
-        _tlpMain.SetColumnSpan(_cmbThinkingHandling, 2);
-        _tlpMain.Controls.Add(_cmbThinkingHandling, 1, 17);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 13);
+        _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 14);
         _tlpMain.SetColumnSpan(_chkSupportsVision, 3);
-        _tlpMain.Controls.Add(_chkSupportsVision, 0, 18);
+        _tlpMain.Controls.Add(_chkSupportsVision, 0, 15);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 19);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
         _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
-        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 20);
+        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 17);
         _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 21);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 22);
+        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 18);
+        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 19);
         _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 22);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 23);
+        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 19);
+        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 20);
         _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 23);
+        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 20);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 24);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 21);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 25);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 22);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 26);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 23);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -658,12 +651,14 @@ internal sealed class ModelMappingDialog : Form
 
         _txtReasoningEffortValues.Dock = DockStyle.Fill;
         _txtReasoningEffortValues.Margin = new Padding(0, 4, 0, 4);
-        _txtReasoningEffortValues.PlaceholderText = "e.g. high, max";
+        _txtReasoningEffortValues.PlaceholderText =
+            $"Standard: {string.Join(", ", ReasoningEffortProfiles.StandardValues)}";
         _txtReasoningEffortValues.TextChanged += (_, _) => PopulateReasoningEffortOptions();
         _toolTip.SetToolTip(
             _txtReasoningEffortValues,
             "Comma-separated reasoning effort values this model supports, in priority order\n"
-            + "(highest priority first). Known models are prefilled automatically.");
+            + "(highest priority first). Standard values: low, medium, high, xhigh, max,\n"
+            + "minimal, none. Known models are prefilled automatically.");
 
         _lblReasoningEffort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblReasoningEffort.AutoSize = true;
@@ -722,6 +717,7 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
+        _chkEnableThinkingCompatibility.CheckedChanged += (_, _) => UpdateThinkingReasoningGroupState();
 
         _lblThinkingHandling.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblThinkingHandling.AutoSize = true;
@@ -744,6 +740,33 @@ internal sealed class ModelMappingDialog : Form
             + "Leave inline keeps it in the visible answer; moving it to reasoning_content lets\n"
             + "clients like VS render a collapsible thinking panel; removing it hides it from\n"
             + "clients entirely while captured logs still retain the original upstream body.");
+
+        _grpThinkingReasoning.AutoSize = true;
+        _grpThinkingReasoning.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpThinkingReasoning.Controls.Add(_tlpThinkingReasoning);
+        _grpThinkingReasoning.Dock = DockStyle.Fill;
+        _grpThinkingReasoning.Margin = new Padding(0, 4, 0, 8);
+        _grpThinkingReasoning.Text = "Thinking && Reasoning";
+
+        _tlpThinkingReasoning.AutoSize = true;
+        _tlpThinkingReasoning.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpThinkingReasoning.ColumnCount = 2;
+        _tlpThinkingReasoning.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpThinkingReasoning.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpThinkingReasoning.Dock = DockStyle.Fill;
+        _tlpThinkingReasoning.RowCount = 4;
+        _tlpThinkingReasoning.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpThinkingReasoning.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpThinkingReasoning.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpThinkingReasoning.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpThinkingReasoning.Controls.Add(_lblThinkingHandling, 0, 0);
+        _tlpThinkingReasoning.Controls.Add(_cmbThinkingHandling, 1, 0);
+        _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortPriority, 0, 1);
+        _tlpThinkingReasoning.Controls.Add(_cmbReasoningEffortPriority, 1, 1);
+        _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortValues, 0, 2);
+        _tlpThinkingReasoning.Controls.Add(_txtReasoningEffortValues, 1, 2);
+        _tlpThinkingReasoning.Controls.Add(_lblReasoningEffort, 0, 3);
+        _tlpThinkingReasoning.Controls.Add(_cmbReasoningEffort, 1, 3);
 
         _chkSupportsVision.AutoSize = true;
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
@@ -1109,6 +1132,7 @@ internal sealed class ModelMappingDialog : Form
         if (!string.IsNullOrWhiteSpace(mapping.ReasoningEffort))
             dlg.ReasoningEffort = mapping.ReasoningEffort;
         dlg.UpdateReasoningEffortControlStates();
+        dlg.UpdateThinkingReasoningGroupState();
         dlg._suppressReasoningPrefill = false;
         dlg.TryPrefillReasoningEffortProfile(mapping.ModelName);
         dlg.EnableAutoSummarization = mapping.EnableAutoSummarization;

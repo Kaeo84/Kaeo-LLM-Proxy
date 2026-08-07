@@ -29,3 +29,12 @@ when the model name matches and nothing is configured yet.
 	 Provider priority disables value controls; prefill on load and on model-name change
 6. [x] Build the solution and fix any errors
 7. [x] Save the plan file to Plans/ and commit to Git
+
+## UI Refinement (follow-up)
+- [x] Reasoning Effort dropdown now lists only the values entered in the comma-separated
+      field (standard values removed from it)
+- [x] Standard values (low, medium, high, xhigh, max, minimal, none) surfaced as the
+      placeholder/tooltip of the comma-separated values field
+- [x] Thinking Handling + the 3 reasoning fields moved into a "Thinking && Reasoning"
+      GroupBox directly under "Enable thinking compatibility"; unchecking the checkbox
+      disables the whole group
