@@ -47,6 +47,17 @@ internal partial class MainForm : Form
     // do not persist values that are merely being loaded.
     private bool _loadingSettings;
 
+    // Set while a dashboard start/stop/restart operation is in flight so rapid repeated clicks
+    // cannot start overlapping operations; the refresh methods keep the control buttons
+    // disabled for the duration.
+    private bool _proxyOperationInProgress;
+    private bool _mcpDashOperationInProgress;
+
+    // Coalesces concurrent MCP settings applies so rapid successive changes produce at most
+    // one in-flight apply plus one follow-up.
+    private bool _applyingMcpSettings;
+    private bool _mcpSettingsApplyPending;
+
     internal event EventHandler? MinimizedToTray;
 
     private const string TestConsoleHeartbeatMarker = "__kaeo_test_console_heartbeat__";
@@ -223,16 +234,37 @@ internal partial class MainForm : Form
 
     private async void ApplyMcpServerSettingsAsync()
     {
-        try
+        if (_applyingMcpSettings)
         {
-            await _mcpServer.ApplySettingsAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to apply MCP server settings");
+            _mcpSettingsApplyPending = true;
+            return;
         }
 
-        UpdateMcpStatusDisplays();
+        _applyingMcpSettings = true;
+        _btnMcpApply.Enabled = false;
+
+        try
+        {
+            do
+            {
+                _mcpSettingsApplyPending = false;
+
+                try
+                {
+                    await _mcpServer.ApplySettingsAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Failed to apply MCP server settings");
+                }
+            } while (_mcpSettingsApplyPending);
+        }
+        finally
+        {
+            _applyingMcpSettings = false;
+            _btnMcpApply.Enabled = true;
+            UpdateMcpStatusDisplays();
+        }
     }
 
     private void OnMcpStatusChanged(object? sender, string status)
@@ -275,9 +307,9 @@ internal partial class MainForm : Form
         _lblDashMcpAddressValue.Text = running ? _mcpServer.ListenAddress : "-";
         _lblDashMcpPortValue.Text = running ? _mcpServer.ListenPort.ToString() : "-";
 
-        _btnDashMcpStart.Enabled = !running;
-        _btnDashMcpStop.Enabled = running;
-        _btnDashMcpRestart.Enabled = running;
+        _btnDashMcpStart.Enabled = !running && !_mcpDashOperationInProgress;
+        _btnDashMcpStop.Enabled = running && !_mcpDashOperationInProgress;
+        _btnDashMcpRestart.Enabled = running && !_mcpDashOperationInProgress;
     }
 
     /// <summary>
@@ -332,9 +364,9 @@ internal partial class MainForm : Form
         _lblStatusValue.ForeColor = running ? Color.Green : Color.Red;
         _lblStatusAddressValue.Text = running ? _server.ListenAddress : "-";
         _lblStatusPortValue.Text = running ? _server.ListenPort.ToString() : "-";
-        _btnStart.Enabled = !running;
-        _btnStop.Enabled = running;
-        _btnRestart.Enabled = running;
+        _btnStart.Enabled = !running && !_proxyOperationInProgress;
+        _btnStop.Enabled = running && !_proxyOperationInProgress;
+        _btnRestart.Enabled = running && !_proxyOperationInProgress;
     }
 
     /// <summary>
@@ -401,47 +433,103 @@ internal partial class MainForm : Form
         RefreshStatus();
     }
 
+    /// <summary>
+    /// Runs a synchronous button operation with the button disabled so a click re-entering
+    /// through a MessageBox message pump cannot retrigger it.
+    /// </summary>
+    private void RunOnceWhileDisabled(Button button, Action operation)
+    {
+        if (!button.Enabled)
+            return;
+
+        button.Enabled = false;
+        try
+        {
+            operation();
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
     private void BtnStart_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Failed to start: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
     }
 
     private async void BtnStop_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             await _server.StopAsync();
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Error stopping: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
     }
 
     private async void BtnRestart_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Error restarting: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
     }
 
     private async void BtnDashMcpStart_Click(object? sender, EventArgs e)
     {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
         try
         {
             await _mcpServer.StartAsync(forceStart: true);
@@ -451,12 +539,21 @@ internal partial class MainForm : Form
             Log.Error(ex, "Failed to start the MCP server from the dashboard");
             MessageBox.Show($"Failed to start the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-
-        RefreshMcpDashboardStatus();
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
+        }
     }
 
     private async void BtnDashMcpStop_Click(object? sender, EventArgs e)
     {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
         try
         {
             await _mcpServer.StopAsync();
@@ -466,12 +563,21 @@ internal partial class MainForm : Form
             Log.Error(ex, "Failed to stop the MCP server from the dashboard");
             MessageBox.Show($"Error stopping the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-
-        RefreshMcpDashboardStatus();
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
+        }
     }
 
     private async void BtnDashMcpRestart_Click(object? sender, EventArgs e)
     {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
         try
         {
             await _mcpServer.RestartAsync();
@@ -481,8 +587,11 @@ internal partial class MainForm : Form
             Log.Error(ex, "Failed to restart the MCP server from the dashboard");
             MessageBox.Show($"Error restarting the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
-
-        RefreshMcpDashboardStatus();
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
+        }
     }
 
     // ── Stats ────────────────────────────────────────────────────────────────
@@ -542,19 +651,21 @@ internal partial class MainForm : Form
         _lblRamValue.Text = $"{_perfService.MemoryMb:F0} MB";
     }
 
-    private void BtnResetStats_Click(object? sender, EventArgs e)
-    {
-        _stats.Reset();
-        RefreshStats();
-        RefreshLogs();
-    }
+    private void BtnResetStats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetStats, () =>
+        {
+            _stats.Reset();
+            RefreshStats();
+            RefreshLogs();
+        });
 
-    private void BtnResetMcpStats_Click(object? sender, EventArgs e)
-    {
-        _mcpStats.Reset();
-        RefreshMcpStats();
-        RefreshMcpLogs();
-    }
+    private void BtnResetMcpStats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetMcpStats, () =>
+        {
+            _mcpStats.Reset();
+            RefreshMcpStats();
+            RefreshMcpLogs();
+        });
 
     // ── Logs ─────────────────────────────────────────────────────────────────
 
@@ -628,28 +739,30 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
-    private void BtnClearLogs_Click(object? sender, EventArgs e)
-    {
-        if (_logSubTabs.SelectedTab == _logMcpPage)
+    private void BtnClearLogs_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnClearLogs, () =>
         {
-            _mcpStats.ClearLogs();
-            _mcpLogCache = [];
-            _lstMcpLogs.VirtualListSize = 0;
-            _lstMcpLogs.Invalidate();
-            return;
-        }
+            if (_logSubTabs.SelectedTab == _logMcpPage)
+            {
+                _mcpStats.ClearLogs();
+                _mcpLogCache = [];
+                _lstMcpLogs.VirtualListSize = 0;
+                _lstMcpLogs.Invalidate();
+                return;
+            }
 
-        _stats.ClearLogs();
-        _logCache = [];
-        _lstLogs.VirtualListSize = 0;
-        _lstLogs.Invalidate();
-    }
+            _stats.ClearLogs();
+            _logCache = [];
+            _lstLogs.VirtualListSize = 0;
+            _lstLogs.Invalidate();
+        });
 
-    private void BtnRefreshLogs_Click(object? sender, EventArgs e)
-    {
-        RefreshLogs();
-        RefreshMcpLogs();
-    }
+    private void BtnRefreshLogs_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnRefreshLogs, () =>
+        {
+            RefreshLogs();
+            RefreshMcpLogs();
+        });
 
     private void BtnLogDetails_Click(object? sender, EventArgs e)
     {
@@ -1003,32 +1116,34 @@ internal partial class MainForm : Form
         _lstHeartbeats.EndUpdate();
     }
 
-    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e)
-    {
-        if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
-            || heartbeatIntervalSeconds < 5
-            || heartbeatIntervalSeconds > 300)
+    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveHeartbeats, () =>
         {
-            MessageBox.Show("Heartbeat interval must be a number between 5 and 300 seconds.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+            if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
+                || heartbeatIntervalSeconds < 5
+                || heartbeatIntervalSeconds > 300)
+            {
+                MessageBox.Show("Heartbeat interval must be a number between 5 and 300 seconds.", "Validation",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-        _settings.EnableStreamingHeartbeats = _chkStreamingHeartbeats.Checked;
-        _settings.StreamingHeartbeatIntervalSeconds = heartbeatIntervalSeconds;
-        _settings.Save();
-        _handler.UpdateSettings(_settings);
-        RefreshHeartbeats();
+            _settings.EnableStreamingHeartbeats = _chkStreamingHeartbeats.Checked;
+            _settings.StreamingHeartbeatIntervalSeconds = heartbeatIntervalSeconds;
+            _settings.Save();
+            _handler.UpdateSettings(_settings);
+            RefreshHeartbeats();
 
-        MessageBox.Show("Heartbeat settings saved.", "Saved",
-            MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
+            MessageBox.Show("Heartbeat settings saved.", "Saved",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
 
-    private void BtnResetHeartbeats_Click(object? sender, EventArgs e)
-    {
-        _stats.ResetHeartbeats();
-        RefreshHeartbeats();
-    }
+    private void BtnResetHeartbeats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetHeartbeats, () =>
+        {
+            _stats.ResetHeartbeats();
+            RefreshHeartbeats();
+        });
 
     private readonly struct HeartbeatDisplayRow
     {
@@ -1199,26 +1314,27 @@ internal partial class MainForm : Form
     /// proxy restart is required for them to take effect; everything else on the Settings tab
     /// persists immediately when changed.
     /// </summary>
-    private void BtnSaveListener_Click(object? sender, EventArgs e)
-    {
-        if (!int.TryParse(_txtListenPort.Text, out int port) || port < 1 || port > 65535)
+    private void BtnSaveListener_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveListener, () =>
         {
-            MessageBox.Show("Listen port must be a number between 1 and 65535.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+            if (!int.TryParse(_txtListenPort.Text, out int port) || port < 1 || port > 65535)
+            {
+                MessageBox.Show("Listen port must be a number between 1 and 65535.", "Validation",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-        _settings.ListenPort = port;
-        _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
+            _settings.ListenPort = port;
+            _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
 
-        PersistSettingsCore();
+            PersistSettingsCore();
 
-        MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
-            "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
+                "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-        RefreshStatus();
-        UpdateApiExplorerUrlLabel();
-    }
+            RefreshStatus();
+            UpdateApiExplorerUrlLabel();
+        });
 
     /// <summary>
     /// Persists the immediately-saved general Settings tab options (everything except the
