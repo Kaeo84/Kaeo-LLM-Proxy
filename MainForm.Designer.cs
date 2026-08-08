@@ -372,7 +372,7 @@ partial class MainForm
         _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
         _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
         _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
-        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
+        _tlpStatus.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpStatus.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpStatus.Controls.Add(_lblStatus, 0, 0);
         _tlpStatus.Controls.Add(_lblStatusValue, 1, 0);
