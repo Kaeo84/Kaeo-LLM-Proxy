@@ -14,5 +14,9 @@ public interface IMcpToolModule
     /// initialization, so implementations should be cheap and the targets should read their own
     /// enabled/disabled state live to support on-the-fly toggling.
     /// </summary>
-    IReadOnlyList<object> CreateMcpToolTargets();
+    /// <param name="session">
+    /// Information about the MCP session the targets are created for, including the calling
+    /// client's address. Targets may capture it to attribute activity to the session.
+    /// </param>
+    IReadOnlyList<object> CreateMcpToolTargets(McpSessionInfo session);
 }

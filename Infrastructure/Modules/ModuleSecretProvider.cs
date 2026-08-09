@@ -26,4 +26,18 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
             ? credential.Secret
             : null;
     }
+
+    public CredentialMaterial? ResolveCredential(string credentialName)
+    {
+        StoredCredential? credential = _settings.FindCredential(credentialName);
+        if (credential is null)
+            return null;
+
+        return new CredentialMaterial(
+            credential.Name,
+            string.IsNullOrWhiteSpace(credential.Username) ? null : credential.Username,
+            string.IsNullOrWhiteSpace(credential.Secret) ? null : credential.Secret,
+            string.IsNullOrWhiteSpace(credential.PrivateKey) ? null : credential.PrivateKey,
+            string.IsNullOrWhiteSpace(credential.Certificate) ? null : credential.Certificate);
+    }
 }

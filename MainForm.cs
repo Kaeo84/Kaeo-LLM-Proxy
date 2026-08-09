@@ -1535,13 +1535,13 @@ internal partial class MainForm : Form
 
     /// <summary>
     /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
-    /// the stored credentials with secrets encrypted for persistence. The in-memory
+    /// the stored credentials with secret material encrypted for persistence. The in-memory
     /// <see cref="AppSettings.Credentials"/> keep plaintext secrets so the running proxy can resolve
     /// them. Returns false — aborting the save — when the user cancels the passphrase prompt.
     /// </summary>
     private bool TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials)
     {
-        bool anySecret = _settings.Credentials.Any(c => !string.IsNullOrWhiteSpace(c.Secret));
+        bool anySecret = _settings.Credentials.Any(c => c.HasSecretMaterial);
 
         if (anySecret && string.IsNullOrEmpty(_settings.RuntimePassphrase))
         {
@@ -1560,9 +1560,7 @@ internal partial class MainForm : Form
 
         persistedCredentials = _settings.Credentials.Select(credential =>
         {
-            if (string.IsNullOrWhiteSpace(credential.Secret)
-                || string.IsNullOrEmpty(_settings.RuntimePassphrase)
-                || SecretProtector.IsEncrypted(credential.Secret))
+            if (!credential.HasSecretMaterial || string.IsNullOrEmpty(_settings.RuntimePassphrase))
             {
                 return credential;
             }
@@ -1571,11 +1569,28 @@ internal partial class MainForm : Form
             {
                 Name = credential.Name,
                 Description = credential.Description,
-                Secret = SecretProtector.Encrypt(credential.Secret, _settings.RuntimePassphrase),
+                Username = credential.Username,
+                Secret = EncryptForSave(credential.Secret, _settings.RuntimePassphrase) ?? string.Empty,
+                PrivateKey = EncryptForSave(credential.PrivateKey, _settings.RuntimePassphrase),
+                Certificate = EncryptForSave(credential.Certificate, _settings.RuntimePassphrase),
             };
         }).ToList();
 
         return true;
+    }
+
+    /// <summary>
+    /// Encrypts a secret-material value for persistence. Already-encrypted values pass through
+    /// unchanged; null or whitespace-only values return null.
+    /// </summary>
+    private static string? EncryptForSave(string? value, string passphrase)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return SecretProtector.IsEncrypted(value)
+            ? value
+            : SecretProtector.Encrypt(value, passphrase);
     }
 
     private void BtnBrowseRequestDb_Click(object? sender, EventArgs e)
@@ -1999,6 +2014,9 @@ internal partial class MainForm : Form
         existing.Name = edited.Name;
         existing.Secret = edited.Secret;
         existing.Description = edited.Description;
+        existing.Username = edited.Username;
+        existing.PrivateKey = edited.PrivateKey;
+        existing.Certificate = edited.Certificate;
 
         if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase))
             PropagateCredentialReferenceChange(oldName, edited.Name);

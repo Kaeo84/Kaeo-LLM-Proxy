@@ -1,5 +1,6 @@
 using System.Reflection;
 using Kaeo.LlmProxy.Infrastructure.Modules;
+using Kaeo.LlmProxy.Modules;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -18,7 +19,11 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
 
     private readonly ModuleHost _moduleHost = moduleHost;
 
-    public McpServerOptions Build()
+    /// <summary>
+    /// Builds options for the session described by <paramref name="session"/>, handing the
+    /// session info to each module so targets can attribute activity to the calling client.
+    /// </summary>
+    public McpServerOptions Build(McpSessionInfo session)
     {
         var options = new McpServerOptions
         {
@@ -27,7 +32,7 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                 "Provides tools contributed by loaded modules; use tools/list to discover them.",
         };
 
-        foreach (object target in _moduleHost.GetMcpToolTargets())
+        foreach (object target in _moduleHost.GetMcpToolTargets(session))
         {
             foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
             {

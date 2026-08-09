@@ -39,11 +39,14 @@ internal sealed class ModuleHost
 
     /// <summary>
     /// Collects the MCP tool target instances contributed by loaded modules implementing
-    /// <see cref="IMcpToolModule"/>. A module that fails to produce targets is logged and skipped
-    /// so one bad module never breaks the MCP server.
+    /// <see cref="IMcpToolModule"/> for the session described by <paramref name="session"/>.
+    /// A module that fails to produce targets is logged and skipped so one bad module never
+    /// breaks the MCP server.
     /// </summary>
-    public IReadOnlyList<object> GetMcpToolTargets()
+    public IReadOnlyList<object> GetMcpToolTargets(McpSessionInfo session)
     {
+        ArgumentNullException.ThrowIfNull(session);
+
         List<object> targets = [];
 
         foreach (LoadedModule loaded in _loadedModules)
@@ -53,7 +56,7 @@ internal sealed class ModuleHost
 
             try
             {
-                targets.AddRange(toolModule.CreateMcpToolTargets());
+                targets.AddRange(toolModule.CreateMcpToolTargets(session));
             }
             catch (Exception ex)
             {

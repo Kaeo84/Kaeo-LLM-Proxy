@@ -102,19 +102,39 @@ internal sealed class InstructionSet
 
 /// <summary>
 /// A named secret (e.g. an upstream API key) stored centrally so multiple model mappings can
-/// reference it by name instead of each carrying its own copy. The <see cref="Secret"/> is kept
-/// in plaintext in memory while the app runs but is encrypted at rest in the application database.
+/// reference it by name instead of each carrying its own copy. Secret material is kept in
+/// plaintext in memory while the app runs but is encrypted at rest in the application database.
+/// Besides a single <see cref="Secret"/> (API key / password), a credential may carry an
+/// SSH-style <see cref="Username"/>, <see cref="PrivateKey"/>, and <see cref="Certificate"/>.
 /// </summary>
 internal sealed class StoredCredential
 {
     /// <summary>Unique name for this credential, referenced by <see cref="ModelMapping.CredentialName"/>.</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>The secret value (e.g. bearer API key). Plaintext in memory, encrypted at rest.</summary>
+    /// <summary>
+    /// The secret value (e.g. bearer API key or SSH password). Plaintext in memory, encrypted
+    /// at rest. May be empty when the credential carries key/certificate material instead.
+    /// </summary>
     public string Secret { get; set; } = string.Empty;
 
     /// <summary>Optional description of what this credential is used for.</summary>
     public string? Description { get; set; }
+
+    /// <summary>Optional username (e.g. an SSH login user) stored alongside the secret material.</summary>
+    public string? Username { get; set; }
+
+    /// <summary>Optional SSH private key (PEM or OpenSSH format). Plaintext in memory, encrypted at rest.</summary>
+    public string? PrivateKey { get; set; }
+
+    /// <summary>Optional SSH certificate paired with <see cref="PrivateKey"/>. Plaintext in memory, encrypted at rest.</summary>
+    public string? Certificate { get; set; }
+
+    /// <summary>Whether any secret material (secret, private key, or certificate) is present.</summary>
+    public bool HasSecretMaterial =>
+        !string.IsNullOrWhiteSpace(Secret)
+        || !string.IsNullOrWhiteSpace(PrivateKey)
+        || !string.IsNullOrWhiteSpace(Certificate);
 }
 
 /// <summary>Mutable runtime settings stored in the application database.</summary>

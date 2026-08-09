@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -20,10 +20,13 @@
   <ItemGroup>
     <Compile Remove="Kaeo LLM Proxy Modules\**" />
     <Compile Remove="Kaeo LLM Proxy Web Search\**" />
+    <Compile Remove="Kaeo LLM Proxy SSH\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Modules\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Web Search\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy SSH\**" />
     <None Remove="Kaeo LLM Proxy Modules\**" />
     <None Remove="Kaeo LLM Proxy Web Search\**" />
+    <None Remove="Kaeo LLM Proxy SSH\**" />
   </ItemGroup>
 
   <ItemGroup>

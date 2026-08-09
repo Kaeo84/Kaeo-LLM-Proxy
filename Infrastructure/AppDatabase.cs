@@ -347,7 +347,7 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Loads all stored credentials. The <c>secret</c> values are returned exactly as stored
+    /// Loads all stored credentials. Secret values are returned exactly as stored
     /// (encrypted envelopes when a passphrase was used); decryption is handled by the caller.
     /// </summary>
     public IReadOnlyList<StoredCredential> LoadCredentials()
@@ -358,7 +358,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT name, secret, description
+                SELECT name, secret, description, username, private_key, certificate
                 FROM credentials
                 ORDER BY name;
                 """;
@@ -373,6 +373,9 @@ internal sealed class AppDatabase : IDisposable
                     Name = reader.GetString(0),
                     Secret = reader.GetString(1),
                     Description = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    Username = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    PrivateKey = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Certificate = reader.IsDBNull(5) ? null : reader.GetString(5),
                 });
             }
 
@@ -406,12 +409,15 @@ internal sealed class AppDatabase : IDisposable
                 insertCommand.Transaction = transaction;
                 insertCommand.CommandText =
                     """
-                    INSERT INTO credentials (name, secret, description)
-                    VALUES ($name, $secret, $description);
+                    INSERT INTO credentials (name, secret, description, username, private_key, certificate)
+                    VALUES ($name, $secret, $description, $username, $privateKey, $certificate);
                     """;
                 insertCommand.Parameters.AddWithValue("$name", credential.Name);
                 insertCommand.Parameters.AddWithValue("$secret", credential.Secret);
                 insertCommand.Parameters.AddWithValue("$description", DbValue(credential.Description));
+                insertCommand.Parameters.AddWithValue("$username", DbValue(credential.Username));
+                insertCommand.Parameters.AddWithValue("$privateKey", DbValue(credential.PrivateKey));
+                insertCommand.Parameters.AddWithValue("$certificate", DbValue(credential.Certificate));
                 insertCommand.ExecuteNonQuery();
             }
 
@@ -1131,7 +1137,10 @@ internal sealed class AppDatabase : IDisposable
                 CREATE TABLE IF NOT EXISTS credentials (
                     name TEXT PRIMARY KEY,
                     secret TEXT NOT NULL,
-                    description TEXT NULL
+                    description TEXT NULL,
+                    username TEXT NULL,
+                    private_key TEXT NULL,
+                    certificate TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS heartbeats (
@@ -1177,6 +1186,7 @@ internal sealed class AppDatabase : IDisposable
             MigrateRuntimeSettingsTable(connection);
             MigrateModelMappingsTable(connection);
             MigrateRequestsTable(connection);
+            MigrateCredentialsTable(connection);
         }
     }
 
@@ -1215,6 +1225,44 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated requests table: added reasoning_tokens column.");
+        }
+    }
+
+    /// <summary>
+    /// Adds the SSH-style credential columns to pre-existing <c>credentials</c> tables that were
+    /// created before they were introduced: <c>username</c>, <c>private_key</c>, and
+    /// <c>certificate</c>.
+    /// </summary>
+    private static void MigrateCredentialsTable(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "credentials"))
+            return;
+
+        if (!ColumnExists(connection, "credentials", "username"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN username TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added username column.");
+        }
+
+        if (!ColumnExists(connection, "credentials", "private_key"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN private_key TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added private_key column.");
+        }
+
+        if (!ColumnExists(connection, "credentials", "certificate"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN certificate TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added certificate column.");
         }
     }
 

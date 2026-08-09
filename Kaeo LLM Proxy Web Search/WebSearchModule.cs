@@ -69,8 +69,11 @@ public sealed class WebSearchModule : IKaeoModule, IMcpToolModule, IHelpModule
         return page;
     }
 
-    /// <summary>Tool targets for the host's MCP server; enablement is read live per call.</summary>
-    public IReadOnlyList<object> CreateMcpToolTargets() =>
+    /// <summary>
+    /// Tool targets for the host's MCP server; enablement is read live per call. The session
+    /// info is not needed by this module's targets.
+    /// </summary>
+    public IReadOnlyList<object> CreateMcpToolTargets(McpSessionInfo session) =>
         [new WebSearchTools(_webSearchService!, _repository!)];
 
     private static void ApplySchema(IModuleDatabase database)

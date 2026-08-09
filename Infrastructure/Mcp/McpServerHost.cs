@@ -62,7 +62,7 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     private readonly McpServerSettings _settings;
     private readonly ISecretProvider _secrets;
-    private readonly Func<McpServerOptions> _serverOptionsFactory;
+    private readonly Func<McpSessionInfo, McpServerOptions> _serverOptionsFactory;
     private readonly StatisticsService _statistics;
     private readonly ConcurrentDictionary<string, McpHttpSession> _sessions = new(StringComparer.Ordinal);
 
@@ -80,7 +80,7 @@ internal sealed class McpServerHost : IAsyncDisposable
     public McpServerHost(
         McpServerSettings settings,
         ISecretProvider secrets,
-        Func<McpServerOptions> serverOptionsFactory,
+        Func<McpSessionInfo, McpServerOptions> serverOptionsFactory,
         StatisticsService statistics)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -398,7 +398,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         McpHttpSession? session;
         if (message is JsonRpcRequest { Method: RequestMethods.Initialize } && string.IsNullOrEmpty(sessionIdHeader))
         {
-            session = CreateSession();
+            session = CreateSession(GetClientAddress(request.RemoteEndPoint));
             response.Headers[SessionIdHeader] = session.Id;
         }
         else if (string.IsNullOrEmpty(sessionIdHeader))
@@ -510,13 +510,14 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     // ── Sessions ────────────────────────────────────────────────────────────
 
-    private McpHttpSession CreateSession()
+    private McpHttpSession CreateSession(string? clientAddress)
     {
         string sessionId = GenerateSessionId();
         CancellationTokenSource lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token);
 
+        McpSessionInfo sessionInfo = new(sessionId, clientAddress);
         StreamableHttpServerTransport transport = new() { SessionId = sessionId };
-        McpServer server = McpServer.Create(transport, _serverOptionsFactory(), loggerFactory: null, serviceProvider: null);
+        McpServer server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
 
         McpHttpSession session = new()
         {
@@ -529,8 +530,24 @@ internal sealed class McpServerHost : IAsyncDisposable
         session.ServerRunTask = Task.Run(() => RunSessionServerAsync(session));
         _sessions[sessionId] = session;
 
-        Log.Debug("MCP session {SessionId} created", sessionId);
+        Log.Debug("MCP session {SessionId} created for client {ClientAddress}", sessionId, clientAddress ?? "unknown");
         return session;
+    }
+
+    /// <summary>
+    /// Extracts the client's IP address from <paramref name="remoteEndPoint"/> as a display
+    /// string. IPv4 is preferred: IPv4-mapped IPv6 addresses are reported as plain IPv4.
+    /// </summary>
+    private static string? GetClientAddress(IPEndPoint? remoteEndPoint)
+    {
+        if (remoteEndPoint is null)
+            return null;
+
+        IPAddress address = remoteEndPoint.Address;
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+
+        return address.ToString();
     }
 
     private async Task RunSessionServerAsync(McpHttpSession session)

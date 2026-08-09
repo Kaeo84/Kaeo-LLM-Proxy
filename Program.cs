@@ -141,7 +141,10 @@ internal static class Program
     /// </summary>
     private static void ResolvePassphrase(AppSettings settings)
     {
-        bool hasEncrypted = settings.Credentials.Any(c => SecretProtector.IsEncrypted(c.Secret));
+        bool hasEncrypted = settings.Credentials.Any(c =>
+            SecretProtector.IsEncrypted(c.Secret)
+            || SecretProtector.IsEncrypted(c.PrivateKey)
+            || SecretProtector.IsEncrypted(c.Certificate));
 
         if (!hasEncrypted)
         {
@@ -199,19 +202,22 @@ internal static class Program
     }
 
     /// <summary>
-    /// Verifies that every encrypted credential secret can be decrypted with
-    /// <paramref name="passphrase"/>, then applies the decryption in-place.
-    /// Returns false if any secret fails authentication.
+    /// Verifies that every encrypted secret-material field (secret, private key, certificate)
+    /// on every credential can be decrypted with <paramref name="passphrase"/>, then applies
+    /// the decryption in-place. Returns false if any secret fails authentication.
     /// </summary>
     private static bool TryDecryptAllSecrets(AppSettings settings, string passphrase)
     {
         // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).
         foreach (StoredCredential credential in settings.Credentials)
         {
-            if (SecretProtector.IsEncrypted(credential.Secret)
-                && !SecretProtector.TryDecrypt(credential.Secret, passphrase, out _))
+            foreach (string? value in SecretMaterialValues(credential))
             {
-                return false;
+                if (SecretProtector.IsEncrypted(value)
+                    && !SecretProtector.TryDecrypt(value, passphrase, out _))
+                {
+                    return false;
+                }
             }
         }
 
@@ -220,9 +226,23 @@ internal static class Program
         {
             if (SecretProtector.IsEncrypted(credential.Secret))
                 credential.Secret = SecretProtector.Decrypt(credential.Secret, passphrase);
+
+            if (SecretProtector.IsEncrypted(credential.PrivateKey))
+                credential.PrivateKey = SecretProtector.Decrypt(credential.PrivateKey, passphrase);
+
+            if (SecretProtector.IsEncrypted(credential.Certificate))
+                credential.Certificate = SecretProtector.Decrypt(credential.Certificate, passphrase);
         }
 
         return true;
+    }
+
+    /// <summary>Enumerates the secret-bearing fields of a credential (may contain nulls/empties).</summary>
+    private static IEnumerable<string?> SecretMaterialValues(StoredCredential credential)
+    {
+        yield return credential.Secret;
+        yield return credential.PrivateKey;
+        yield return credential.Certificate;
     }
 
     internal static Icon GetApplicationIcon()
