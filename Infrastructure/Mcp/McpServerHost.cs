@@ -301,6 +301,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         string path = request.Url?.AbsolutePath ?? "/";
         string method = request.HttpMethod;
 
+        // Some clients and copied URLs carry a trailing slash; route it like the exact path.
+        if (path.Length > 1 && path.EndsWith('/'))
+            path = path.TrimEnd('/');
+
         if (method == "GET" && path == HealthPath)
         {
             await WriteHealthAsync(response, ct);
@@ -356,7 +360,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
 
         response.StatusCode = 404;
-        await WriteTextAsync(response, "Not Found", ct);
+        await WriteTextAsync(response, $"Not Found. The MCP endpoint is served at {McpPath} (POST an initialize request to start a session).", ct);
     }
 
     // ── Streamable HTTP verbs ───────────────────────────────────────────────
@@ -410,9 +414,20 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
         else if (!_sessions.TryGetValue(sessionIdHeader, out session))
         {
-            response.StatusCode = 404;
-            await WriteTextAsync(response, "Session not found. Start a new session with an initialize request.", ct);
-            return;
+            // Lenient recovery path: clients that cached a session id across a server restart
+            // often resend initialize together with the stale header. Treat it as a fresh
+            // initialize instead of failing the reconnect with 404.
+            if (message is JsonRpcRequest { Method: RequestMethods.Initialize })
+            {
+                session = CreateSession(GetClientAddress(request.RemoteEndPoint));
+                response.Headers[SessionIdHeader] = session.Id;
+            }
+            else
+            {
+                response.StatusCode = 404;
+                await WriteTextAsync(response, "Session not found. Start a new session with an initialize request.", ct);
+                return;
+            }
         }
 
         session.Touch();
@@ -446,6 +461,18 @@ internal sealed class McpServerHost : IAsyncDisposable
         HttpListenerRequest request = context.Request;
         HttpListenerResponse response = context.Response;
 
+        string? sessionIdHeader = request.Headers[SessionIdHeader];
+        if (string.IsNullOrEmpty(sessionIdHeader))
+        {
+            // No established session yet: this is typically a client probing for SSE support.
+            // 405 is the spec-recommended signal; compliant clients fall back to POST-only mode.
+            response.StatusCode = 405;
+            response.Headers["Allow"] = "POST, DELETE";
+            await WriteTextAsync(response,
+                "GET requires an established MCP session. Send an initialize request via POST first.", ct);
+            return;
+        }
+
         string accept = request.Headers["Accept"] ?? string.Empty;
         if (!accept.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase))
         {
@@ -454,8 +481,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             return;
         }
 
-        string? sessionIdHeader = request.Headers[SessionIdHeader];
-        if (string.IsNullOrEmpty(sessionIdHeader) || !_sessions.TryGetValue(sessionIdHeader, out McpHttpSession? session))
+        if (!_sessions.TryGetValue(sessionIdHeader, out McpHttpSession? session))
         {
             response.StatusCode = 404;
             await WriteTextAsync(response, "Session not found.", ct);
