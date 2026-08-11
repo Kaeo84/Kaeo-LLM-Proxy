@@ -331,7 +331,9 @@ internal sealed class McpServerHost : IAsyncDisposable
             return;
         }
 
-        if (path == McpPath)
+        // Some clients (notably GitHub Copilot in Visual Studio) connect to the server's base
+        // URL and cannot be pointed at the /mcp suffix, so serve the endpoint on the root too.
+        if (path is McpPath or "/")
         {
             if (!IsAuthorized(request, out string? authError))
             {
@@ -360,7 +362,8 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
 
         response.StatusCode = 404;
-        await WriteTextAsync(response, $"Not Found. The MCP endpoint is served at {McpPath} (POST an initialize request to start a session).", ct);
+        await WriteTextAsync(response,
+            $"Not Found. The MCP endpoint is served at {McpPath} and at the server root (POST an initialize request to start a session).", ct);
     }
 
     // ── Streamable HTTP verbs ───────────────────────────────────────────────

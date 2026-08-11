@@ -116,7 +116,7 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
           "info": {
             "title": "Kaeo LLM Proxy MCP",
             "version": "1.0.0",
-            "description": "MCP (Model Context Protocol) server module for Kaeo LLM Proxy. Exposes the web_search and web_fetch tools over the MCP Streamable HTTP transport at /mcp. Clients speak JSON-RPC 2.0: POST an `initialize` request to open a session (the response carries the `Mcp-Session-Id` header), then send `tools/list`, `tools/call`, and notifications on the same session."
+            "description": "MCP (Model Context Protocol) server module for Kaeo LLM Proxy. Exposes the web_search and web_fetch tools over the MCP Streamable HTTP transport at /mcp (also served at the server root for clients that only accept a base URL). Clients speak JSON-RPC 2.0: POST an `initialize` request to open a session (the response carries the `Mcp-Session-Id` header), then send `tools/list`, `tools/call`, and notifications on the same session."
           },
           "servers": [
             { "url": "{{SERVER_URL}}" }
