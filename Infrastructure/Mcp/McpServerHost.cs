@@ -427,9 +427,13 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
             else
             {
-                response.StatusCode = 404;
-                await WriteTextAsync(response, "Session not found. Start a new session with an initialize request.", ct);
-                return;
+                // Other clients (notably GitHub Copilot in Visual Studio) keep sending requests
+                // on the stale id and never re-initialize after a 404. Recreate the session and
+                // replay the lifecycle handshake locally so the request executes anyway; the
+                // returned Mcp-Session-Id header lets the client switch to the new session.
+                session = CreateSession(GetClientAddress(request.RemoteEndPoint));
+                response.Headers[SessionIdHeader] = session.Id;
+                await ReplayLifecycleHandshakeAsync(session, ct);
             }
         }
 
@@ -561,6 +565,31 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         Log.Debug("MCP session {SessionId} created for client {ClientAddress}", sessionId, clientAddress ?? "unknown");
         return session;
+    }
+
+    private const string SyntheticInitializeJson = """
+        {"jsonrpc":"2.0","id":"synthetic-initialize","method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"kaeo-session-recovery","version":"1.0"}}}
+        """;
+
+    private const string SyntheticInitializedJson = """
+        {"jsonrpc":"2.0","method":"notifications/initialized"}
+        """;
+
+    /// <summary>
+    /// Replays the MCP lifecycle handshake (initialize request + initialized notification)
+    /// against a freshly created session so a request arriving with a stale session id can be
+    /// executed without the client re-initializing. Both responses are discarded; only the
+    /// session's protocol state advances.
+    /// </summary>
+    private static async Task ReplayLifecycleHandshakeAsync(McpHttpSession session, CancellationToken ct)
+    {
+        JsonRpcMessage? initialize = JsonSerializer.Deserialize(SyntheticInitializeJson, s_messageTypeInfo);
+        if (initialize is not null)
+            await session.Transport.HandlePostRequestAsync(initialize, Stream.Null, static _ => default, ct);
+
+        JsonRpcMessage? initialized = JsonSerializer.Deserialize(SyntheticInitializedJson, s_messageTypeInfo);
+        if (initialized is not null)
+            await session.Transport.HandlePostRequestAsync(initialized, Stream.Null, static _ => default, ct);
     }
 
     /// <summary>

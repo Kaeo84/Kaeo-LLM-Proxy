@@ -762,7 +762,9 @@ internal sealed class SshConnectionManager : IDisposable
     /// <summary>
     /// Builds the authentication methods for a request: private key (with optional certificate
     /// and passphrase) takes priority; a password is offered as a fallback method so the server
-    /// can pick whichever it accepts.
+    /// can pick whichever it accepts. When no material was supplied at all, an empty-password
+    /// method is offered so the handshake is still attempted and the server's real response
+    /// surfaces (SSH.NET also probes "none" authentication on its own).
     /// </summary>
     private static List<AuthenticationMethod> BuildAuthenticationMethods(SshConnectionRequest request)
     {
@@ -794,7 +796,7 @@ internal sealed class SshConnectionManager : IDisposable
             methods.Add(new PasswordAuthenticationMethod(request.Username, request.Password));
 
         if (methods.Count == 0)
-            throw new InvalidOperationException("No authentication material available: provide a password or a private key.");
+            methods.Add(new PasswordAuthenticationMethod(request.Username, string.Empty));
 
         return methods;
     }
@@ -1198,12 +1200,9 @@ internal sealed class SshTools(
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(resolvedPassword) && string.IsNullOrWhiteSpace(resolvedPrivateKey))
-        {
-            error = "No authentication material available: supply a credentialName, a password, or a private key.";
-            return false;
-        }
-
+        // No auth material is allowed: the attempt then offers only an empty-password method
+        // (see BuildAuthenticationMethods), surfacing the server's real response instead of a
+        // local validation error.
         if (resolvedPort is < 1 or > 65535)
         {
             error = "The port must be between 1 and 65535.";
