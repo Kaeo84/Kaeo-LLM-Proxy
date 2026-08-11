@@ -5,11 +5,12 @@ namespace Kaeo.LlmProxy.Modules;
 /// </summary>
 public sealed class ModuleContext
 {
-    public ModuleContext(IModuleDatabase database, ISecretProvider secrets, HostInfo host)
+    public ModuleContext(IModuleDatabase database, ISecretProvider secrets, HostInfo host, IMcpActivityLog activityLog)
     {
         Database = database ?? throw new ArgumentNullException(nameof(database));
         Secrets = secrets ?? throw new ArgumentNullException(nameof(secrets));
         Host = host ?? throw new ArgumentNullException(nameof(host));
+        ActivityLog = activityLog ?? throw new ArgumentNullException(nameof(activityLog));
     }
 
     /// <summary>Gateway to the shared application database for schema and module data access.</summary>
@@ -20,6 +21,12 @@ public sealed class ModuleContext
 
     /// <summary>Information about the host application and its endpoints.</summary>
     public HostInfo Host { get; }
+
+    /// <summary>
+    /// Sink for recording module activity into the host's MCP request log (Logs tab, MCP
+    /// sub-tab). Entries written here are persisted alongside the MCP server's HTTP rows.
+    /// </summary>
+    public IMcpActivityLog ActivityLog { get; }
 }
 
 /// <summary>

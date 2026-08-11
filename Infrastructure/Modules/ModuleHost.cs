@@ -18,6 +18,7 @@ internal sealed class ModuleHost
     private readonly AppSettings _settings;
     private readonly ModuleDatabaseGateway _databaseGateway;
     private readonly ModuleSecretProvider _secretProvider;
+    private readonly LateBoundActivityLog _activityLog = new();
     private readonly List<LoadedModule> _loadedModules = [];
 
     public ModuleHost(AppDatabase database, AppSettings settings)
@@ -27,6 +28,13 @@ internal sealed class ModuleHost
         _databaseGateway = new ModuleDatabaseGateway(database);
         _secretProvider = new ModuleSecretProvider(settings);
     }
+
+    /// <summary>
+    /// Binds the real MCP activity log sink once the host's MCP log store exists. Modules are
+    /// initialized before that store is created, so they receive a forwarding sink whose target
+    /// is set here.
+    /// </summary>
+    public void BindActivityLog(IMcpActivityLog target) => _activityLog.SetTarget(target);
 
     /// <summary>Modules currently loaded and initialized.</summary>
     public IReadOnlyList<LoadedModule> LoadedModules => _loadedModules;
@@ -148,7 +156,7 @@ internal sealed class ModuleHost
 
         try
         {
-            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo()));
+            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog));
         }
         catch
         {
@@ -253,7 +261,7 @@ internal sealed class ModuleHost
         {
             Assembly assembly = loadContext.LoadFromAssemblyPath(entry.AssemblyPath);
             module = CreateModuleInstance(assembly);
-            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo()));
+            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog));
         }
         catch
         {

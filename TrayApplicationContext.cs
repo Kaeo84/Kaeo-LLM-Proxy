@@ -52,6 +52,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
         _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp);
+
+        // Modules were initialized with a forwarding sink; point it at the real MCP log store
+        // so module activity (e.g. SSH connections) appears in the MCP logs.
+        _moduleHost.BindActivityLog(new McpActivityLogAdapter(_mcpStats));
+
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
         _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);

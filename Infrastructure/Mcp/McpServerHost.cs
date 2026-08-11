@@ -4,6 +4,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Services;
@@ -248,7 +249,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
-            await HandleRequestAsync(context, ct);
+            await HandleRequestAsync(context, log, ct);
             log.StatusCode = context.Response.StatusCode;
             log.Status = log.StatusCode >= 400 ? RequestStatus.Error : RequestStatus.Success;
             log.ResponseBytes = context.Response.ContentLength64 >= 0 ? context.Response.ContentLength64 : -1;
@@ -294,7 +295,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
     }
 
-    private async Task HandleRequestAsync(HttpListenerContext context, CancellationToken ct)
+    private async Task HandleRequestAsync(HttpListenerContext context, RequestLog log, CancellationToken ct)
     {
         HttpListenerRequest request = context.Request;
         HttpListenerResponse response = context.Response;
@@ -345,7 +346,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             switch (method)
             {
                 case "POST":
-                    await HandleMcpPostAsync(context, ct);
+                    await HandleMcpPostAsync(context, log, ct);
                     return;
                 case "GET":
                     await HandleMcpGetAsync(context, ct);
@@ -368,7 +369,7 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     // ── Streamable HTTP verbs ───────────────────────────────────────────────
 
-    private async Task HandleMcpPostAsync(HttpListenerContext context, CancellationToken ct)
+    private async Task HandleMcpPostAsync(HttpListenerContext context, RequestLog log, CancellationToken ct)
     {
         HttpListenerRequest request = context.Request;
         HttpListenerResponse response = context.Response;
@@ -397,6 +398,19 @@ internal sealed class McpServerHost : IAsyncDisposable
             await WriteJsonRpcErrorAsync(response, 400, default, (int)McpErrorCode.InvalidRequest,
                 "Bad Request: The POST body did not contain a valid JSON-RPC message.", ct);
             return;
+        }
+
+        // Annotate the request log row with the JSON-RPC message this POST carried; otherwise
+        // every MCP row would just read "POST /mcp" regardless of what happened.
+        if (message is JsonRpcRequest rpcRequest)
+        {
+            string? toolName = rpcRequest.Method == RequestMethods.ToolsCall
+                ? ExtractToolName(rpcRequest)
+                : null;
+
+            log.OllamaPath = toolName is null
+                ? $"{log.OllamaPath} {rpcRequest.Method}"
+                : $"{log.OllamaPath} {rpcRequest.Method} {toolName}";
         }
 
         RequestId requestId = message is JsonRpcRequest idRequest ? idRequest.Id : default;
@@ -737,6 +751,30 @@ internal sealed class McpServerHost : IAsyncDisposable
         response.StatusCode = 200;
         response.ContentType = "application/json";
         await JsonSerializer.SerializeAsync(response.OutputStream, health, cancellationToken: ct);
+    }
+
+    /// <summary>
+    /// Extracts the tool name from a <c>tools/call</c> request's parameters for log annotation.
+    /// Returns null when absent; annotation must never break request handling.
+    /// </summary>
+    private static string? ExtractToolName(JsonRpcRequest request)
+    {
+        try
+        {
+            if (request.Params is JsonObject parameters
+                && parameters.TryGetPropertyValue("name", out JsonNode? name)
+                && name is JsonValue value
+                && value.TryGetValue(out string? toolName))
+            {
+                return toolName;
+            }
+        }
+        catch (Exception)
+        {
+            // Purely cosmetic; fall through and log without the tool name.
+        }
+
+        return null;
     }
 
     private static async Task WriteJsonRpcErrorAsync(

@@ -1,6 +1,8 @@
 using Kaeo.LlmProxy.Modules;
 using System.Data.Common;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net.Sockets;
 using System.Text;
 using Renci.SshNet;
 using Serilog;
@@ -23,6 +25,7 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
     private ModuleContext? _context;
     private SshRepository? _repository;
     private SshConnectionManager? _manager;
+    private SshActivityLogger? _activity;
 
     public string Id => "kaeo.ssh";
 
@@ -40,6 +43,9 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
     internal SshConnectionManager Manager =>
         _manager ?? throw new InvalidOperationException("Module not initialized.");
 
+    internal SshActivityLogger Activity =>
+        _activity ?? throw new InvalidOperationException("Module not initialized.");
+
     internal ISecretProvider Secrets =>
         _context?.Secrets ?? throw new InvalidOperationException("Module not initialized.");
 
@@ -51,14 +57,15 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
         ApplySchema(context.Database);
 
         _repository = new SshRepository(context.Database);
-        _manager = new SshConnectionManager(_repository);
+        _activity = new SshActivityLogger(context.ActivityLog, () => _repository.LoadSettings().McpLogLevel);
+        _manager = new SshConnectionManager(_repository, _activity);
     }
 
     public System.Windows.Forms.TabPage CreateConfigPage() => new SshConfigPage(this);
 
     /// <summary>Tool targets for the host's MCP server; the session info carries the client address.</summary>
     public IReadOnlyList<object> CreateMcpToolTargets(McpSessionInfo session) =>
-        [new SshTools(Manager, Repository, Secrets, session)];
+        [new SshTools(Manager, Repository, Secrets, session, Activity)];
 
     // ── IRunnableModule ─────────────────────────────────────────────────────
     // "Running" means the idle sweep is active; open connections are tracked either way.
@@ -145,6 +152,13 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
         are present, the secret is used as the key passphrase. Inline password/key parameters
         work but are discouraged because parameter values may appear in logs.
 
+        MCP LOGGING
+        SSH activity can be recorded into the host's MCP request log (Logs tab, MCP sub-tab).
+        "Connectivity & errors" (the default) records connection opens, reuses, and closes
+        plus any tool error or timeout. "Full (verbose)" additionally records every tool call
+        with its arguments and complete result, including full command output. Set the level
+        under Tools & Limits; changes apply to subsequent tool calls without a restart.
+
         SECURITY NOTES
         - Remote host keys are accepted as presented; verify you trust the target host.
         - Command output is treated as untrusted data and framed as such for the model.
@@ -214,6 +228,16 @@ internal sealed class SshStoredConnection
     public int IdleTimeoutSeconds { get; set; }
 }
 
+/// <summary>How much SSH activity the module records into the host's MCP request log.</summary>
+internal enum SshMcpLogLevel
+{
+    /// <summary>Connection lifecycle events (open/reuse/close) and any tool errors.</summary>
+    Connectivity,
+
+    /// <summary>Additionally every tool call with its arguments and full result, including command output.</summary>
+    Full,
+}
+
 /// <summary>Feature settings for the SSH module, persisted in the <c>mcp_ssh_settings</c> table.</summary>
 internal sealed class SshSettings
 {
@@ -240,6 +264,9 @@ internal sealed class SshSettings
 
     /// <summary>Maximum characters of command output returned to the model.</summary>
     public int MaxOutputChars { get; set; } = 20_000;
+
+    /// <summary>How much SSH activity is recorded into the host's MCP request log.</summary>
+    public SshMcpLogLevel McpLogLevel { get; set; } = SshMcpLogLevel.Connectivity;
 }
 
 /// <summary>
@@ -341,6 +368,7 @@ internal sealed class SshRepository(IModuleDatabase database)
     private const string DefaultIdleTimeoutKey = "default_idle_timeout_seconds";
     private const string CommandTimeoutKey = "command_timeout_seconds";
     private const string MaxOutputCharsKey = "max_output_chars";
+    private const string McpLogLevelKey = "mcp_log_level";
 
     private readonly IModuleDatabase _database = database;
 
@@ -359,6 +387,7 @@ internal sealed class SshRepository(IModuleDatabase database)
             DefaultIdleTimeoutSeconds = Math.Clamp(ReadInt(values, DefaultIdleTimeoutKey, 600), 0, 86_400),
             CommandTimeoutSeconds = Math.Clamp(ReadInt(values, CommandTimeoutKey, 60), 5, 3_600),
             MaxOutputChars = Math.Clamp(ReadInt(values, MaxOutputCharsKey, 20_000), 1_000, 200_000),
+            McpLogLevel = ReadLogLevel(values, McpLogLevelKey, SshMcpLogLevel.Connectivity),
         };
     }
 
@@ -373,6 +402,7 @@ internal sealed class SshRepository(IModuleDatabase database)
         UpsertKeyValue("mcp_ssh_settings", DefaultIdleTimeoutKey, settings.DefaultIdleTimeoutSeconds.ToString());
         UpsertKeyValue("mcp_ssh_settings", CommandTimeoutKey, settings.CommandTimeoutSeconds.ToString());
         UpsertKeyValue("mcp_ssh_settings", MaxOutputCharsKey, settings.MaxOutputChars.ToString());
+        UpsertKeyValue("mcp_ssh_settings", McpLogLevelKey, settings.McpLogLevel.ToString());
     }
 
     // ── Stored connections ──────────────────────────────────────────────────
@@ -509,6 +539,53 @@ internal sealed class SshRepository(IModuleDatabase database)
 
     private static int ReadInt(Dictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out string? raw) && int.TryParse(raw, out int parsed) ? parsed : fallback;
+
+    private static SshMcpLogLevel ReadLogLevel(Dictionary<string, string> values, string key, SshMcpLogLevel fallback) =>
+        values.TryGetValue(key, out string? raw) && Enum.TryParse(raw, ignoreCase: true, out SshMcpLogLevel level)
+            ? level
+            : fallback;
+}
+
+/// <summary>
+/// Writes SSH activity entries into the host's MCP request log (Logs tab, MCP sub-tab). The
+/// configured <see cref="SshSettings.McpLogLevel"/> is read live on every write so a change on
+/// the SSH tab applies immediately. Errors and cancellations are always recorded; regular tool
+/// traffic only at <see cref="SshMcpLogLevel.Full"/>.
+/// </summary>
+internal sealed class SshActivityLogger(IMcpActivityLog sink, Func<SshMcpLogLevel> levelProvider)
+{
+    /// <summary>Source label shown in the log's Method column.</summary>
+    public const string Source = "SSH";
+
+    private readonly IMcpActivityLog _sink = sink ?? throw new ArgumentNullException(nameof(sink));
+    private readonly Func<SshMcpLogLevel> _levelProvider = levelProvider ?? throw new ArgumentNullException(nameof(levelProvider));
+
+    /// <summary>True when full details (tool arguments and results) should be recorded.</summary>
+    public bool FullEnabled
+    {
+        get
+        {
+            try
+            {
+                return _levelProvider() == SshMcpLogLevel.Full;
+            }
+            catch
+            {
+                // The level lookup reads the module database; on any trouble fall back quietly.
+                return false;
+            }
+        }
+    }
+
+    /// <summary>Always records the entry (connection lifecycle events, errors, cancellations).</summary>
+    public void Write(McpActivityEntry entry) => _sink.Write(entry);
+
+    /// <summary>Records the entry only when full/verbose logging is enabled.</summary>
+    public void WriteAtFull(McpActivityEntry entry)
+    {
+        if (FullEnabled)
+            _sink.Write(entry);
+    }
 }
 
 /// <summary>
@@ -522,13 +599,15 @@ internal sealed class SshConnectionManager : IDisposable
     private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(15);
 
     private readonly SshRepository _repository;
+    private readonly SshActivityLogger _activity;
     private readonly ConcurrentDictionary<string, ManagedConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _connectLock = new(1, 1);
     private System.Threading.Timer? _idleSweepTimer;
 
-    public SshConnectionManager(SshRepository repository)
+    public SshConnectionManager(SshRepository repository, SshActivityLogger activity)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+        _activity = activity ?? throw new ArgumentNullException(nameof(activity));
     }
 
     /// <summary>
@@ -582,6 +661,7 @@ internal sealed class SshConnectionManager : IDisposable
         if (_connections.TryGetValue(request.Key, out ManagedConnection? existing) && existing.Client.IsConnected)
         {
             existing.Touch();
+            LogConnectReused(request.Key);
             return request.Key;
         }
 
@@ -592,6 +672,7 @@ internal sealed class SshConnectionManager : IDisposable
             if (_connections.TryGetValue(request.Key, out existing) && existing.Client.IsConnected)
             {
                 existing.Touch();
+                LogConnectReused(request.Key);
                 return request.Key;
             }
 
@@ -599,11 +680,38 @@ internal sealed class SshConnectionManager : IDisposable
             if (existing is not null && _connections.TryRemove(request.Key, out ManagedConnection? stale))
                 stale.Dispose();
 
-            ManagedConnection connection = await OpenConnectionAsync(request, opener, cancellationToken);
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            ManagedConnection connection;
+            try
+            {
+                connection = await OpenConnectionAsync(request, opener, cancellationToken);
+            }
+            catch (Exception ex) when (ex is SshException or IOException or SocketException or OperationCanceledException or InvalidOperationException)
+            {
+                _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "connect")
+                {
+                    Target = request.Key,
+                    DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                    IsError = ex is not OperationCanceledException,
+                    IsCancelled = ex is OperationCanceledException,
+                    ErrorMessage = ex is OperationCanceledException
+                        ? "Connection attempt timed out or was cancelled."
+                        : $"Connection failed: {ex.Message}",
+                });
+                throw;
+            }
+            stopwatch.Stop();
+
             _connections[request.Key] = connection;
 
             Log.Information("SSH connection {Key} opened to {Host}:{Port} as {Username}",
                 request.Key, request.Host, request.Port, request.Username);
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "connect")
+            {
+                Target = request.Key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                ResponseDetail = $"Connected to {request.Host}:{request.Port} as {request.Username}.",
+            });
             ConnectionsChanged?.Invoke(this, EventArgs.Empty);
 
             return request.Key;
@@ -612,6 +720,16 @@ internal sealed class SshConnectionManager : IDisposable
         {
             _connectLock.Release();
         }
+    }
+
+    /// <summary>Records a reused connection at full level only; reuse carries no network activity.</summary>
+    private void LogConnectReused(string connectionKey)
+    {
+        _activity.WriteAtFull(new McpActivityEntry(SshActivityLogger.Source, "connect")
+        {
+            Target = connectionKey,
+            ResponseDetail = "Reused an already open connection.",
+        });
     }
 
     /// <summary>
@@ -634,6 +752,12 @@ internal sealed class SshConnectionManager : IDisposable
             {
                 dead.Dispose();
                 ConnectionsChanged?.Invoke(this, EventArgs.Empty);
+                _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "close")
+                {
+                    Target = connectionKey,
+                    IsError = true,
+                    ErrorMessage = "Connection lost (transport died); removed.",
+                });
             }
 
             return null;
@@ -821,6 +945,12 @@ internal sealed class SshConnectionManager : IDisposable
                         dead.Dispose();
                         changed = true;
                         Log.Information("SSH connection {Key} was lost and has been removed", entry.Key);
+                        _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "close")
+                        {
+                            Target = entry.Key,
+                            IsError = true,
+                            ErrorMessage = "Connection lost (detected by the idle sweep); removed.",
+                        });
                     }
 
                     continue;
@@ -840,6 +970,11 @@ internal sealed class SshConnectionManager : IDisposable
                         idle.Dispose();
                         changed = true;
                         Log.Information("SSH connection {Key} closed after {Seconds}s idle", entry.Key, effectiveTimeout);
+                        _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "close")
+                        {
+                            Target = entry.Key,
+                            ResponseDetail = $"Closed after {effectiveTimeout}s idle.",
+                        });
                     }
                 }
             }
@@ -914,12 +1049,14 @@ internal sealed class SshTools(
     SshConnectionManager manager,
     SshRepository repository,
     ISecretProvider secrets,
-    McpSessionInfo session)
+    McpSessionInfo session,
+    SshActivityLogger activity)
 {
     private readonly SshConnectionManager _manager = manager;
     private readonly SshRepository _repository = repository;
     private readonly ISecretProvider _secrets = secrets;
     private readonly McpSessionInfo _session = session;
+    private readonly SshActivityLogger _activity = activity;
 
     [McpServerTool(Name = "ssh_connect"), Description(
         "Opens a persistent SSH connection to a computer and keeps it open for subsequent " +
@@ -1049,25 +1186,61 @@ internal sealed class SshTools(
                 "connection name / host details), or use ssh_list to see open connections.";
         }
 
+        string trimmedCommand = command.Trim();
+        Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
             SshCommandResult? result = await _manager.ExecuteAsync(
-                key, command.Trim(), settings.CommandTimeoutSeconds, cancellationToken);
+                key, trimmedCommand, settings.CommandTimeoutSeconds, cancellationToken);
+            stopwatch.Stop();
 
             if (result is null)
             {
+                _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+                {
+                    Target = key,
+                    DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                    IsError = true,
+                    ErrorMessage = "The connection dropped before the command could run.",
+                    RequestDetail = _activity.FullEnabled ? trimmedCommand : null,
+                });
                 return $"The SSH connection '{key}' dropped. Reconnect with ssh_connect and try again.";
             }
+
+            _activity.WriteAtFull(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                StatusCode = result.ExitCode,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                RequestDetail = trimmedCommand,
+                ResponseDetail = FormatExecDetail(result, settings.MaxOutputChars),
+            });
 
             return FormatResult(key, result, settings.MaxOutputChars);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                IsCancelled = true,
+                ErrorMessage = $"The command timed out after {settings.CommandTimeoutSeconds} seconds.",
+                RequestDetail = _activity.FullEnabled ? trimmedCommand : null,
+            });
             return $"The command timed out after {settings.CommandTimeoutSeconds} seconds.";
         }
         catch (SshException ex)
         {
             Log.Warning(ex, "ssh_exec on {Key} failed", key);
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                IsError = true,
+                ErrorMessage = $"Command execution failed: {ex.Message}",
+                RequestDetail = _activity.FullEnabled ? trimmedCommand : null,
+            });
             return $"Command execution failed: {ex.Message}";
         }
     }
@@ -1088,17 +1261,41 @@ internal sealed class SshTools(
         {
             IReadOnlyList<OpenSshConnectionInfo> open = _manager.GetSnapshot();
             _manager.DisconnectAll();
-            return open.Count == 0
+
+            string result = open.Count == 0
                 ? "No SSH connections were open."
                 : $"Closed {open.Count} SSH connection(s).";
+
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
+            {
+                Target = "all",
+                ResponseDetail = _activity.FullEnabled ? result : null,
+            });
+
+            return result;
         }
 
         if (string.IsNullOrWhiteSpace(connection))
             return "Provide the connection key to close, or set all to true. Use ssh_list to see open connections.";
 
-        return _manager.Disconnect(connection.Trim())
-            ? $"SSH connection '{connection.Trim()}' closed."
-            : $"No open SSH connection named '{connection.Trim()}' was found.";
+        string key = connection.Trim();
+        if (_manager.Disconnect(key))
+        {
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
+            {
+                Target = key,
+                ResponseDetail = _activity.FullEnabled ? $"SSH connection '{key}' closed." : null,
+            });
+            return $"SSH connection '{key}' closed.";
+        }
+
+        _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
+        {
+            Target = key,
+            IsError = true,
+            ErrorMessage = $"No open SSH connection named '{key}' was found.",
+        });
+        return $"No open SSH connection named '{key}' was found.";
     }
 
     [McpServerTool(Name = "ssh_list"), Description(
@@ -1113,7 +1310,13 @@ internal sealed class SshTools(
 
         IReadOnlyList<OpenSshConnectionInfo> open = _manager.GetSnapshot();
         if (open.Count == 0)
+        {
+            _activity.WriteAtFull(new McpActivityEntry(SshActivityLogger.Source, "list")
+            {
+                ResponseDetail = "No SSH connections are currently open.",
+            });
             return "No SSH connections are currently open.";
+        }
 
         var output = new StringBuilder();
         output.AppendLine($"Open SSH connections ({open.Count}):");
@@ -1130,7 +1333,14 @@ internal sealed class SshTools(
             output.AppendLine();
         }
 
-        return output.ToString().TrimEnd();
+        string result = output.ToString().TrimEnd();
+
+        _activity.WriteAtFull(new McpActivityEntry(SshActivityLogger.Source, "list")
+        {
+            ResponseDetail = result,
+        });
+
+        return result;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
@@ -1252,6 +1462,31 @@ internal sealed class SshTools(
         return output.ToString().TrimEnd();
     }
 
+    /// <summary>
+    /// Builds the MCP log detail for an executed command: exit code plus both output streams,
+    /// truncated like the model-facing result.
+    /// </summary>
+    private static string FormatExecDetail(SshCommandResult result, int maxOutputChars)
+    {
+        var output = new StringBuilder();
+        output.AppendLine($"exit code {result.ExitCode}");
+        output.AppendLine();
+        output.AppendLine("--- stdout ---");
+        output.AppendLine(string.IsNullOrEmpty(result.Output)
+            ? "(empty)"
+            : Truncate(result.Output, maxOutputChars, out _));
+
+        if (result.Error.Length > 0 || result.ExitCode != 0)
+        {
+            output.AppendLine("--- stderr ---");
+            output.AppendLine(string.IsNullOrEmpty(result.Error)
+                ? "(empty)"
+                : Truncate(result.Error, maxOutputChars, out _));
+        }
+
+        return output.ToString().TrimEnd();
+    }
+
     private static string Truncate(string value, int maxChars, out bool truncated)
     {
         if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
@@ -1286,6 +1521,7 @@ internal sealed class SshConfigPage : TabPage
     private NumericUpDown _nudIdleTimeout = null!;
     private NumericUpDown _nudCommandTimeout = null!;
     private NumericUpDown _nudMaxOutput = null!;
+    private ComboBox _cmbLogLevel = null!;
 
     // Stored connections controls
     private ListView _lstConnections = null!;
@@ -1371,6 +1607,14 @@ internal sealed class SshConfigPage : TabPage
         _nudCommandTimeout.ValueChanged += SshSetting_Changed;
         _nudMaxOutput.ValueChanged += SshSetting_Changed;
 
+        _cmbLogLevel = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Margin = new Padding(0, 2, 12, 2),
+        };
+        _cmbLogLevel.Items.AddRange(["Connectivity & errors", "Full (verbose)"]);
+        _cmbLogLevel.SelectedIndexChanged += SshSetting_Changed;
+
         inner.Controls.Add(_chkConnectTool, 0, 0);
         inner.Controls.Add(_chkExecTool, 1, 0);
         inner.Controls.Add(_chkDisconnectTool, 2, 0);
@@ -1382,6 +1626,8 @@ internal sealed class SshConfigPage : TabPage
         inner.Controls.Add(_nudCommandTimeout, 3, 1);
         inner.Controls.Add(MakeCaption("Max output (chars):"), 0, 2);
         inner.Controls.Add(_nudMaxOutput, 1, 2);
+        inner.Controls.Add(MakeCaption("MCP log detail:"), 2, 2);
+        inner.Controls.Add(_cmbLogLevel, 3, 2);
 
         group.Controls.Add(inner);
         return group;
@@ -1490,6 +1736,7 @@ internal sealed class SshConfigPage : TabPage
             _nudIdleTimeout.Value = settings.DefaultIdleTimeoutSeconds;
             _nudCommandTimeout.Value = settings.CommandTimeoutSeconds;
             _nudMaxOutput.Value = settings.MaxOutputChars;
+            _cmbLogLevel.SelectedIndex = settings.McpLogLevel == SshMcpLogLevel.Full ? 1 : 0;
         }
         finally
         {
@@ -1511,6 +1758,7 @@ internal sealed class SshConfigPage : TabPage
             DefaultIdleTimeoutSeconds = (int)_nudIdleTimeout.Value,
             CommandTimeoutSeconds = (int)_nudCommandTimeout.Value,
             MaxOutputChars = (int)_nudMaxOutput.Value,
+            McpLogLevel = _cmbLogLevel.SelectedIndex == 1 ? SshMcpLogLevel.Full : SshMcpLogLevel.Connectivity,
         });
     }
 
