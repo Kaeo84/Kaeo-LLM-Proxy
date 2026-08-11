@@ -450,13 +450,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Scalar API explorer — served only when explicitly enabled in settings.
         if (_settings.EnableApiExplorer && method == "GET")
         {
-            if (path is "/swagger" or "/swagger/")
+            if (path is "/scalar" or "/scalar/")
             {
                 await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
                 return;
             }
 
-            if (path == "/swagger/v1/swagger.json")
+            if (path == "/openapi/v1/openapi.json")
             {
                 await WriteJsonRawAsync(resp, OpenApiSpec, ct);
                 return;

@@ -103,7 +103,9 @@ internal partial class MainForm : Form
         _perfService.Sampled += OnPerfSampled;
         _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
         _lblApiExplorerUrl.Click += LblApiExplorerUrl_Click;
+        _lblApiSpecUrl.Click += LblApiSpecUrl_Click;
         _lblMcpApiExplorerUrl.Click += LblMcpApiExplorerUrl_Click;
+        _lblMcpSpecUrl.Click += LblMcpSpecUrl_Click;
 
         // Settings on the Settings tab persist immediately when changed; only the Listener
         // group (port/address) requires an explicit save because it needs a proxy restart.
@@ -316,18 +318,26 @@ internal partial class MainForm : Form
     /// Builds the MCP API Explorer (Scalar) URL from the form's listen address and port,
     /// substituting localhost for wildcard bind addresses.
     /// </summary>
-    private string BuildMcpApiExplorerUrl()
+    private string BuildMcpApiExplorerUrl() => BuildMcpUrl(McpServerHost.ScalarPath);
+
+    /// <summary>
+    /// Builds the MCP OpenAPI specification (JSON) URL from the form's listen address and
+    /// port, substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildMcpSpecUrl() => BuildMcpUrl(McpServerHost.SpecPath);
+
+    private string BuildMcpUrl(string path)
     {
         string host = _cboMcpListenAddress.Text.Trim();
         if (host is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
             host = "localhost";
 
-        return $"http://{host}:{(int)_nudMcpPort.Value}{McpServerHost.ScalarPath}";
+        return $"http://{host}:{(int)_nudMcpPort.Value}{path}";
     }
 
     /// <summary>
-    /// Updates the MCP API Explorer URL note label based on the current enable state,
-    /// listen address, and port.
+    /// Updates the MCP API Explorer and OpenAPI spec URL note labels based on the current
+    /// enable state, listen address, and port.
     /// </summary>
     private void UpdateMcpApiExplorerUrlLabel()
     {
@@ -336,18 +346,30 @@ internal partial class MainForm : Form
             _lblMcpApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
             _lblMcpApiExplorerUrl.ForeColor = SystemColors.GrayText;
             _lblMcpApiExplorerUrl.Cursor = Cursors.Default;
+            _lblMcpSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+            _lblMcpSpecUrl.ForeColor = SystemColors.GrayText;
+            _lblMcpSpecUrl.Cursor = Cursors.Default;
             return;
         }
 
         _lblMcpApiExplorerUrl.Text = $"API Explorer URL: {BuildMcpApiExplorerUrl()}";
         _lblMcpApiExplorerUrl.ForeColor = SystemColors.Highlight;
         _lblMcpApiExplorerUrl.Cursor = Cursors.Hand;
+        _lblMcpSpecUrl.Text = $"OpenAPI Spec URL: {BuildMcpSpecUrl()}";
+        _lblMcpSpecUrl.ForeColor = SystemColors.Highlight;
+        _lblMcpSpecUrl.Cursor = Cursors.Hand;
     }
 
     private void LblMcpApiExplorerUrl_Click(object? sender, EventArgs e)
     {
         if (_chkMcpApiExplorer.Checked)
             OpenUrlInBrowser(BuildMcpApiExplorerUrl());
+    }
+
+    private void LblMcpSpecUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkMcpApiExplorer.Checked)
+            OpenUrlInBrowser(BuildMcpSpecUrl());
     }
 
     // ── Status ──────────────────────────────────────────────────────────
@@ -373,18 +395,26 @@ internal partial class MainForm : Form
     /// Builds the proxy API Explorer (Scalar) URL from the persisted listener settings,
     /// substituting localhost for wildcard bind addresses.
     /// </summary>
-    private string BuildApiExplorerUrl()
+    private string BuildApiExplorerUrl() => BuildProxyUrl("/scalar");
+
+    /// <summary>
+    /// Builds the proxy OpenAPI specification (JSON) URL from the persisted listener settings,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildApiSpecUrl() => BuildProxyUrl("/openapi/v1/openapi.json");
+
+    private string BuildProxyUrl(string path)
     {
         string host = _settings.ListenAddress.Trim();
         if (host is "0.0.0.0" or "+" or "")
             host = "localhost";
 
-        return $"http://{host}:{_settings.ListenPort}/swagger";
+        return $"http://{host}:{_settings.ListenPort}{path}";
     }
 
     /// <summary>
-    /// Updates the API Explorer URL note label based on the current enable state,
-    /// listen address, and port.
+    /// Updates the API Explorer and OpenAPI spec URL note labels based on the current enable
+    /// state, listen address, and port.
     /// </summary>
     private void UpdateApiExplorerUrlLabel()
     {
@@ -393,18 +423,30 @@ internal partial class MainForm : Form
             _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
             _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
             _lblApiExplorerUrl.Cursor = Cursors.Default;
+            _lblApiSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+            _lblApiSpecUrl.ForeColor = SystemColors.GrayText;
+            _lblApiSpecUrl.Cursor = Cursors.Default;
             return;
         }
 
         _lblApiExplorerUrl.Text = $"API Explorer URL: {BuildApiExplorerUrl()}";
         _lblApiExplorerUrl.ForeColor = SystemColors.Highlight;
         _lblApiExplorerUrl.Cursor = Cursors.Hand;
+        _lblApiSpecUrl.Text = $"OpenAPI Spec URL: {BuildApiSpecUrl()}";
+        _lblApiSpecUrl.ForeColor = SystemColors.Highlight;
+        _lblApiSpecUrl.Cursor = Cursors.Hand;
     }
 
     private void LblApiExplorerUrl_Click(object? sender, EventArgs e)
     {
         if (_chkApiExplorer.Checked)
             OpenUrlInBrowser(BuildApiExplorerUrl());
+    }
+
+    private void LblApiSpecUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkApiExplorer.Checked)
+            OpenUrlInBrowser(BuildApiSpecUrl());
     }
 
     /// <summary>Opens the given URL in the system's default browser.</summary>

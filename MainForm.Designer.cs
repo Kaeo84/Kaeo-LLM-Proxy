@@ -30,6 +30,7 @@ partial class MainForm
         _chkMcpEnabled = new CheckBox();
         _chkMcpApiExplorer = new CheckBox();
         _lblMcpApiExplorerUrl = new Label();
+        _lblMcpSpecUrl = new Label();
         _lblMcpListenAddress = new Label();
         _cboMcpListenAddress = new ComboBox();
         _lblMcpPort = new Label();
@@ -165,6 +166,7 @@ partial class MainForm
         _chkPerformanceSampling = new CheckBox();
         _chkApiExplorer = new CheckBox();
         _lblApiExplorerUrl = new Label();
+        _lblApiSpecUrl = new Label();
         _chkAutoSummarization = new CheckBox();
 
         _grpLogging = new GroupBox();
@@ -918,7 +920,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 15;
+        _tlpSettings.RowCount = 16;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -941,16 +943,18 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
         _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
+        _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
+        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 10);
         _tlpSettings.SetColumnSpan(_chkAutoSummarization, 2);
-        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 10);
+        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 11);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 12);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 13);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 14);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 15);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1042,7 +1046,7 @@ partial class MainForm
         _chkApiExplorer.AutoSize = true;
         _chkApiExplorer.Margin = new Padding(4, 4, 4, 4);
         _chkApiExplorer.Name = "_chkApiExplorer";
-        _chkApiExplorer.Text = "Enable API Explorer (Scalar at /swagger)";
+        _chkApiExplorer.Text = "Enable API Explorer (Scalar at /scalar)";
 
         _lblApiExplorerUrl.AutoSize = true;
         _lblApiExplorerUrl.Cursor = Cursors.Hand;
@@ -1050,6 +1054,13 @@ partial class MainForm
         _lblApiExplorerUrl.Name = "_lblApiExplorerUrl";
         _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
         _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+
+        _lblApiSpecUrl.AutoSize = true;
+        _lblApiSpecUrl.Cursor = Cursors.Hand;
+        _lblApiSpecUrl.Margin = new Padding(4, 0, 4, 8);
+        _lblApiSpecUrl.Name = "_lblApiSpecUrl";
+        _lblApiSpecUrl.ForeColor = SystemColors.GrayText;
+        _lblApiSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
 
         _chkAutoSummarization.AutoSize = true;
         _chkAutoSummarization.Margin = new Padding(4, 4, 4, 8);
@@ -1554,16 +1565,18 @@ partial class MainForm
         _tlpMcp.Controls.Add(_chkMcpEnabled, 0, 0);
         _tlpMcp.Controls.Add(_chkMcpApiExplorer, 0, 1);
         _tlpMcp.Controls.Add(_lblMcpApiExplorerUrl, 0, 2);
-        _tlpMcp.Controls.Add(_lblMcpPort, 0, 3);
-        _tlpMcp.Controls.Add(_nudMcpPort, 1, 3);
-        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 4);
-        _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 4);
-        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 5);
-        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 5);
-        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 7);
+        _tlpMcp.Controls.Add(_lblMcpSpecUrl, 0, 3);
+        _tlpMcp.Controls.Add(_lblMcpPort, 0, 4);
+        _tlpMcp.Controls.Add(_nudMcpPort, 1, 4);
+        _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 5);
+        _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 5);
+        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 6);
+        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 6);
+        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 8);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
-        _tlpMcp.RowCount = 8;
+        _tlpMcp.RowCount = 9;
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1575,6 +1588,7 @@ partial class MainForm
         _tlpMcp.SetColumnSpan(_chkMcpEnabled, 2);
         _tlpMcp.SetColumnSpan(_chkMcpApiExplorer, 2);
         _tlpMcp.SetColumnSpan(_lblMcpApiExplorerUrl, 2);
+        _tlpMcp.SetColumnSpan(_lblMcpSpecUrl, 2);
         _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
 
         _chkMcpEnabled.AccessibleName = "Enable MCP server";
@@ -1594,6 +1608,12 @@ partial class MainForm
         _lblMcpApiExplorerUrl.Margin = new Padding(0, 0, 0, 8);
         _lblMcpApiExplorerUrl.Name = "_lblMcpApiExplorerUrl";
         _lblMcpApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+
+        _lblMcpSpecUrl.AutoSize = true;
+        _lblMcpSpecUrl.ForeColor = SystemColors.GrayText;
+        _lblMcpSpecUrl.Margin = new Padding(0, 0, 0, 8);
+        _lblMcpSpecUrl.Name = "_lblMcpSpecUrl";
+        _lblMcpSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
 
         _lblMcpListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpListenAddress.AutoSize = true;
@@ -2097,6 +2117,7 @@ partial class MainForm
     private CheckBox _chkPerformanceSampling;
     private CheckBox _chkApiExplorer;
     private Label _lblApiExplorerUrl;
+    private Label _lblApiSpecUrl;
     private CheckBox _chkAutoSummarization;
     private CheckBox _chkStreamingHeartbeats;
     private Label _lblHeartbeatInterval;
@@ -2170,6 +2191,7 @@ partial class MainForm
     private CheckBox _chkMcpEnabled;
     private CheckBox _chkMcpApiExplorer;
     private Label _lblMcpApiExplorerUrl;
+    private Label _lblMcpSpecUrl;
     private Label _lblMcpListenAddress;
     private ComboBox _cboMcpListenAddress;
     private Label _lblMcpPort;

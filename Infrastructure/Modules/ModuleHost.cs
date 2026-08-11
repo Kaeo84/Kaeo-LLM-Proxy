@@ -235,7 +235,7 @@ internal sealed class ModuleHost
             : host;
 
         string? specUrl = _settings.EnableApiExplorer
-            ? $"http://{displayHost}:{_settings.ListenPort}/swagger/v1/swagger.json"
+            ? $"http://{displayHost}:{_settings.ListenPort}/openapi/v1/openapi.json"
             : null;
 
         return new HostInfo(_settings.ListenAddress, _settings.ListenPort, _settings.EnableApiExplorer, specUrl);
