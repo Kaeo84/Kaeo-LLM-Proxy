@@ -1409,9 +1409,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         delta["reasoning_content"] = JsonValue.Create(existingReasoning + reasoning);
                     }
 
-                    // Always rewrite content to the non-thinking remainder (may be empty) so the
-                    // thinking text is removed from the visible answer.
-                    delta["content"] = JsonValue.Create(content);
+                    // Rewrite content based on what the extractor produced:
+                    // - non-empty remainder → set it (will be post-processed by tool-call ingestion below)
+                    // - empty remainder but incoming was present (thinking consumed it or partial-tag
+                    //   buffering) → remove the key so reasoning-only / role-only deltas are clean
+                    // - no incoming content at all → leave delta untouched (don't fabricate "")
+                    if (content.Length > 0)
+                        delta["content"] = JsonValue.Create(content);
+                    else if (incoming.Length > 0)
+                        delta.Remove("content");
                 }
 
                 // Mirror reasoning_content → content (when content is empty/null). Only in
