@@ -21,6 +21,7 @@ internal sealed class StatisticsService : IDisposable
     private int _maxEntries;
     private int _retentionHours;
     private readonly AppDatabase? _store;
+    private readonly LogSource _source;
 
     // Rolling 60-second window of request timestamps for requests-per-second calculation.
     private readonly ConcurrentQueue<long> _requestTimestamps = new();
@@ -56,16 +57,18 @@ internal sealed class StatisticsService : IDisposable
     public event EventHandler? StatsChanged;
     public event EventHandler? HeartbeatsChanged;
 
-    public StatisticsService(int maxEntries = 500, AppDatabase? store = null, int retentionHours = 72)
+    public StatisticsService(int maxEntries = 500, AppDatabase? store = null, int retentionHours = 72,
+        LogSource source = LogSource.Proxy)
     {
         _maxEntries = maxEntries;
         _retentionHours = retentionHours;
         _store = store;
+        _source = source;
 
         // Seed in-memory queue from persisted store so the GUI is populated on startup.
         if (store is not null)
         {
-            foreach (RequestLog entry in store.LoadRecent(maxEntries))
+            foreach (RequestLog entry in store.LoadRecent(maxEntries, _source))
             {
                 _logs.Enqueue(entry);
                 Interlocked.Increment(ref _totalRequests);
@@ -74,8 +77,12 @@ internal sealed class StatisticsService : IDisposable
                 Interlocked.Add(ref _totalCompletionTokens, entry.CompletionTokens);
             }
 
-            foreach ((string model, long count, DateTime lastSentUtc) in store.LoadHeartbeatStats())
-                SetHeartbeatStat(model, count, lastSentUtc);
+            // Heartbeat tracking is a proxy concern; the MCP store has no heartbeat rows.
+            if (_source == LogSource.Proxy)
+            {
+                foreach ((string model, long count, DateTime lastSentUtc) in store.LoadHeartbeatStats())
+                    SetHeartbeatStat(model, count, lastSentUtc);
+            }
         }
 
         // Background cleanup: prune stale entries every 15 minutes.
@@ -112,9 +119,9 @@ internal sealed class StatisticsService : IDisposable
                 try
                 {
                     if (item.Entry is { } entry)
-                        _store!.Insert(entry, item.Exception);
+                        _store!.Insert(entry, item.Exception, _source);
                     else
-                        _store!.ClearLogs();
+                        _store!.ClearLogs(_source);
                 }
                 catch (Exception storeEx)
                 {
@@ -237,7 +244,8 @@ internal sealed class StatisticsService : IDisposable
     /// Retrieves the full <see cref="ExceptionDetail"/> for a log entry, or null if
     /// no exception was recorded or the store is unavailable.
     /// </summary>
-    public ExceptionDetail? GetException(int exceptionId) => _store?.GetException(exceptionId);
+    public ExceptionDetail? GetException(int exceptionId) =>
+        _source == LogSource.Proxy ? _store?.GetException(exceptionId) : null;
 
     public long TotalRequests => Interlocked.Read(ref _totalRequests);
     public long TotalErrors => Interlocked.Read(ref _totalErrors);
@@ -397,7 +405,7 @@ internal sealed class StatisticsService : IDisposable
 
         try
         {
-            int pruned = _store.DeleteOlderThan(cutoff);
+            int pruned = _store.DeleteOlderThan(cutoff, _source);
 
             if (pruned > 0)
             {

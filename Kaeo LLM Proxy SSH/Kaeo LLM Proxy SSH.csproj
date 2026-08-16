@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.Ssh</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy SSH</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWindowsForms>true</UseWindowsForms>
+		<!-- Class libraries do not copy NuGet runtime assemblies by default; this module must
+				 ship them beside its DLL so the module load context can resolve them. -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- Private=false: the contracts assembly ships with the host and unifies at runtime,
+				 keeping this module's core output a single DLL. -->
+		<ProjectReference Include="..\Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" Private="false" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Compile-time only: at runtime these unify with the host's copies. -->
+		<PackageReference Include="ModelContextProtocol" Version="2.0.0" ExcludeAssets="runtime" />
+		<PackageReference Include="Serilog" Version="4.4.0" ExcludeAssets="runtime" />
+		<!-- Runtime dependency: ships beside the module DLL and loads into the module's own
+				 assembly load context. -->
+		<PackageReference Include="SSH.NET" Version="2026.0.0" />
+	</ItemGroup>
+
+</Project>

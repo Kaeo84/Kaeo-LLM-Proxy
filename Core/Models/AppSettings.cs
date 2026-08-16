@@ -102,19 +102,39 @@ internal sealed class InstructionSet
 
 /// <summary>
 /// A named secret (e.g. an upstream API key) stored centrally so multiple model mappings can
-/// reference it by name instead of each carrying its own copy. The <see cref="Secret"/> is kept
-/// in plaintext in memory while the app runs but is encrypted at rest in the application database.
+/// reference it by name instead of each carrying its own copy. Secret material is kept in
+/// plaintext in memory while the app runs but is encrypted at rest in the application database.
+/// Besides a single <see cref="Secret"/> (API key / password), a credential may carry an
+/// SSH-style <see cref="Username"/>, <see cref="PrivateKey"/>, and <see cref="Certificate"/>.
 /// </summary>
 internal sealed class StoredCredential
 {
     /// <summary>Unique name for this credential, referenced by <see cref="ModelMapping.CredentialName"/>.</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>The secret value (e.g. bearer API key). Plaintext in memory, encrypted at rest.</summary>
+    /// <summary>
+    /// The secret value (e.g. bearer API key or SSH password). Plaintext in memory, encrypted
+    /// at rest. May be empty when the credential carries key/certificate material instead.
+    /// </summary>
     public string Secret { get; set; } = string.Empty;
 
     /// <summary>Optional description of what this credential is used for.</summary>
     public string? Description { get; set; }
+
+    /// <summary>Optional username (e.g. an SSH login user) stored alongside the secret material.</summary>
+    public string? Username { get; set; }
+
+    /// <summary>Optional SSH private key (PEM or OpenSSH format). Plaintext in memory, encrypted at rest.</summary>
+    public string? PrivateKey { get; set; }
+
+    /// <summary>Optional SSH certificate paired with <see cref="PrivateKey"/>. Plaintext in memory, encrypted at rest.</summary>
+    public string? Certificate { get; set; }
+
+    /// <summary>Whether any secret material (secret, private key, or certificate) is present.</summary>
+    public bool HasSecretMaterial =>
+        !string.IsNullOrWhiteSpace(Secret)
+        || !string.IsNullOrWhiteSpace(PrivateKey)
+        || !string.IsNullOrWhiteSpace(Certificate);
 }
 
 /// <summary>Mutable runtime settings stored in the application database.</summary>
@@ -125,6 +145,13 @@ internal sealed class RuntimeSettings
     public bool StartWithDashboardOpen { get; set; } = false;
 
     public bool AllowMultipleInstances { get; set; } = false;
+
+    /// <summary>
+    /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
+    /// accepts non-localhost listener bindings without a manual "Run as administrator".
+    /// Ignored in debug builds. Default: false.
+    /// </summary>
+    public bool RunAsAdministrator { get; set; } = false;
 
     public bool ShowCloseToTrayNotification { get; set; } = true;
 
@@ -149,8 +176,8 @@ internal sealed class RuntimeSettings
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
-    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
-    /// specification at /swagger/v1/swagger.json. Default: false.
+    /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
+    /// specification at /openapi/v1/openapi.json. Default: false.
     /// </summary>
     public bool EnableApiExplorer { get; set; } = false;
 
@@ -261,6 +288,31 @@ internal sealed class ModelMapping
     public double Temperature { get; set; } = 0.7;
 
     /// <summary>
+    /// Controls which reasoning_effort wins in upstream requests for this model.
+    /// <see cref="SamplingPriority.ClientApp"/> passes the client's value through unchanged;
+    /// <see cref="SamplingPriority.Proxy"/> always sends <see cref="ReasoningEffort"/>,
+    /// overriding (or injecting for) the client; <see cref="SamplingPriority.Provider"/>
+    /// omits the field entirely so hosted providers keep their platform default.
+    /// Defaults to <see cref="SamplingPriority.ClientApp"/>.
+    /// </summary>
+    public SamplingPriority ReasoningEffortPriority { get; set; } = SamplingPriority.ClientApp;
+
+    /// <summary>
+    /// The reasoning_effort value sent to the upstream when <see cref="ReasoningEffortPriority"/>
+    /// is <see cref="SamplingPriority.Proxy"/>. Null/empty sends nothing (falls back to pass-through).
+    /// Should be one of <see cref="ReasoningEffortValues"/>.
+    /// </summary>
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
+    /// Reasoning effort values this model supports, in priority order (highest priority first).
+    /// Informational for upstreams that accept a list of available reasoning efforts; the value
+    /// actually sent is controlled by <see cref="ReasoningEffortPriority"/> and
+    /// <see cref="ReasoningEffort"/>. Empty disables reasoning effort handling.
+    /// </summary>
+    public List<string> ReasoningEffortValues { get; set; } = [];
+
+    /// <summary>
     /// Enable automatic context summarization when the model's context window is exceeded.
     /// When enabled, the proxy will automatically summarize older conversation history
     /// and retry the request with condensed context. Default: true.
@@ -353,6 +405,9 @@ internal sealed class ModelMapping
         TemperaturePriority = TemperaturePriority,
         RepeatPenaltyPriority = RepeatPenaltyPriority,
         Temperature = Temperature,
+        ReasoningEffortPriority = ReasoningEffortPriority,
+        ReasoningEffort = ReasoningEffort,
+        ReasoningEffortValues = [.. ReasoningEffortValues],
         EnableAutoSummarization = EnableAutoSummarization,
         PreserveRecentMessageCount = PreserveRecentMessageCount,
         MaxSummarizationRetries = MaxSummarizationRetries,
@@ -496,6 +551,14 @@ internal sealed class AppSettings
     public bool AllowMultipleInstances { get; set; } = false;
 
     /// <summary>
+    /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
+    /// accepts non-localhost listener bindings (e.g. 0.0.0.0) without a manual "Run as
+    /// administrator". Ignored in debug builds. Takes effect on the next launch. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool RunAsAdministrator { get; set; } = false;
+
+    /// <summary>
     /// When true, show a notification dialog the first time the main window is closed to the tray.
     /// Users can disable it from that dialog. Default: true.
     /// </summary>
@@ -548,9 +611,10 @@ internal sealed class AppSettings
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
-    /// When true, the proxy serves a Swagger UI API explorer at /swagger and an OpenAPI
-    /// specification at /swagger/v1/swagger.json, allowing browser-based exploration of all
-    /// proxy endpoints. Default: false.
+    /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
+    /// specification at /openapi/v1/openapi.json, allowing browser-based exploration of all
+    /// proxy endpoints. Documents reported by loaded modules appear in the same explorer
+    /// dropdown. Default: false.
     /// </summary>
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
@@ -664,6 +728,7 @@ internal sealed class AppSettings
         AutoStartProxy = AutoStartProxy,
         StartWithDashboardOpen = StartWithDashboardOpen,
         AllowMultipleInstances = AllowMultipleInstances,
+        RunAsAdministrator = RunAsAdministrator,
         ShowCloseToTrayNotification = ShowCloseToTrayNotification,
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
@@ -681,6 +746,7 @@ internal sealed class AppSettings
         AutoStartProxy = runtimeSettings.AutoStartProxy;
         StartWithDashboardOpen = runtimeSettings.StartWithDashboardOpen;
         AllowMultipleInstances = runtimeSettings.AllowMultipleInstances;
+        RunAsAdministrator = runtimeSettings.RunAsAdministrator;
         ShowCloseToTrayNotification = runtimeSettings.ShowCloseToTrayNotification;
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;

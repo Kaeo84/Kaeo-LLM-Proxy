@@ -284,6 +284,8 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("mirostat_eta")] public float? MirostatEta { get; set; }
     /// <summary>Forwarded to llama.cpp-compatible upstreams that accept it (mapped from num_ctx).</summary>
     [JsonPropertyName("n_ctx")] public int? NCtx { get; set; }
+    /// <summary>Non-standard reasoning intensity hint supported by some hosted providers.</summary>
+    [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
 }
 
 internal sealed class LlamaCppCompletionRequest

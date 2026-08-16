@@ -1,6 +1,9 @@
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
+using Kaeo.LlmProxy.Infrastructure.Modules;
+using Kaeo.LlmProxy.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy;
@@ -14,10 +17,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly AppSettings _settings;
     private readonly StatisticsService _stats;
+    private readonly StatisticsService _mcpStats;
     private readonly PerformanceService _perfService;
     private readonly OllamaProxyHandler _handler;
     private readonly ProxyServer _server;
     private readonly AppDatabase _database;
+    private readonly ModuleHost _moduleHost;
+    private readonly McpServerService _mcpServer;
     private MainForm? _mainForm;
     private bool _disposed;
 
@@ -26,13 +32,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// model mappings, and credentials applied (see <c>Program.Main</c>). The caller owns the
     /// supplied <paramref name="database"/> — exactly one shared instance exists per process.
     /// </summary>
-    public TrayApplicationContext(AppSettings settings, AppDatabase database)
+    public TrayApplicationContext(AppSettings settings, AppDatabase database, ModuleHost moduleHost)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(moduleHost);
 
         _settings = settings;
         _database = database;
+        _moduleHost = moduleHost;
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
@@ -43,8 +51,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _settings.ListenAddress, _settings.ListenPort, _settings.ModelMappings.Count);
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
+        _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp);
+
+        // Modules were initialized with a forwarding sink; point it at the real MCP log store
+        // so module activity (e.g. SSH connections) appears in the MCP logs.
+        _moduleHost.BindActivityLog(new McpActivityLogAdapter(_mcpStats));
+
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
-        _handler = new OllamaProxyHandler(_settings, _stats);
+        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
         _handler.StartHeartbeatMonitors();
         _server = new ProxyServer(_handler);
 
@@ -62,8 +77,55 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (_settings.AutoStartProxy)
             StartProxy();
 
+        StartModules();
+        _ = StartMcpServerAsync();
+
         if (_settings.StartWithDashboardOpen)
             ShowMainForm();
+    }
+
+    /// <summary>
+    /// Starts the built-in MCP server after the modules. It gates itself on the persisted
+    /// enabled flag; a bind failure logs a warning and never blocks host startup.
+    /// </summary>
+    private async Task StartMcpServerAsync()
+    {
+        try
+        {
+            await _mcpServer.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "MCP server failed to start");
+        }
+    }
+
+    /// <summary>
+    /// Starts every loaded runnable module after the proxy. Modules decide internally whether
+    /// to actually start based on their own persisted enabled state; a module that fails to
+    /// start (e.g. a port bind error) logs a warning and never blocks the host or other modules.
+    /// </summary>
+    private void StartModules()
+    {
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            if (loaded.Module is not IRunnableModule runnable)
+                continue;
+
+            _ = StartModuleAsync(loaded.Entry.Name, runnable);
+        }
+    }
+
+    private static async Task StartModuleAsync(string? moduleName, IRunnableModule module)
+    {
+        try
+        {
+            await module.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Module {ModuleName} failed to start", moduleName);
+        }
     }
 
     private ContextMenuStrip BuildContextMenu()
@@ -144,7 +206,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database);
+            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost, _mcpServer);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }
@@ -241,6 +303,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Visible = false;
         try
         {
+            await _mcpServer.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping MCP server during shutdown");
+        }
+        try
+        {
+            await _moduleHost.StopAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping modules during shutdown");
+        }
+        try
+        {
             await _server.StopAsync();
         }
         catch (Exception ex)
@@ -266,6 +344,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _server.Dispose();
             _handler.Dispose();
             _stats.Dispose();
+            _mcpStats.Dispose();
             _perfService.Dispose();
             // The database is owned by Program.Main (created and disposed there); only one
             // shared instance exists per process, so it must not be disposed here.

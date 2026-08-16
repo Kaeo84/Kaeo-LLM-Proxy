@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -11,6 +12,9 @@ using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Core.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
+using Kaeo.LlmProxy.Infrastructure.Modules;
+using Kaeo.LlmProxy.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy;
@@ -23,14 +27,36 @@ internal partial class MainForm : Form
     private readonly OllamaProxyHandler _handler;
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
+    private readonly ModuleHost _moduleHost;
+    private readonly McpServerService _mcpServer;
+    private readonly StatisticsService _mcpStats;
+
+    // Tabs injected by loaded modules
+    // module is disabled or unregistered while the dashboard is open.
+    private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TabPage> _moduleHelpPages = new(StringComparer.OrdinalIgnoreCase);
+    private TabControl _helpModulesTabs = null!;
+    private TabPage _helpModulesPlaceholder = null!;
 
     // Cached snapshot of log summaries backing the virtual-mode ListView. Only visible rows
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
     private IReadOnlyList<RequestLog> _logCache = [];
+    private IReadOnlyList<RequestLog> _mcpLogCache = [];
 
     // Set while LoadSettingsToForm populates controls so the immediate-save event handlers
     // do not persist values that are merely being loaded.
     private bool _loadingSettings;
+
+    // Set while a dashboard start/stop/restart operation is in flight so rapid repeated clicks
+    // cannot start overlapping operations; the refresh methods keep the control buttons
+    // disabled for the duration.
+    private bool _proxyOperationInProgress;
+    private bool _mcpDashOperationInProgress;
+
+    // Coalesces concurrent MCP settings applies so rapid successive changes produce at most
+    // one in-flight apply plus one follow-up.
+    private bool _applyingMcpSettings;
+    private bool _mcpSettingsApplyPending;
 
     internal event EventHandler? MinimizedToTray;
 
@@ -42,7 +68,7 @@ internal partial class MainForm : Form
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer)
     {
         _settings = settings;
         _stats = stats;
@@ -50,25 +76,49 @@ internal partial class MainForm : Form
         _handler = handler;
         _perfService = perfService;
         _database = database;
+        _moduleHost = moduleHost;
+        _mcpServer = mcpServer;
+        _mcpStats = mcpServer.Statistics;
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
+
+        // Inject configuration tabs for already-loaded modules and track module registry
+        // changes so imports, enables, disables, and removals update the tabs live.
+        _moduleHost.ModulesChanged += OnModulesChanged;
+        AddModuleTabs();
+        BuildHelpContent();
+        AddModuleHelpPages();
 
         // Virtual mode materializes only the visible rows (plus a small buffer) instead of
         // creating a ListViewItem for every log entry on each refresh.
         _lstLogs.VirtualMode = true;
         _lstLogs.RetrieveVirtualItem += LstLogs_RetrieveVirtualItem;
+        _lstMcpLogs.VirtualMode = true;
+        _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
 
         _stats.StatsChanged += OnStatsChanged;
+        _mcpStats.StatsChanged += OnMcpStatsChanged;
         _server.StatusChanged += OnServerStatusChanged;
         _perfService.Sampled += OnPerfSampled;
         _chkApiExplorer.CheckedChanged += (_, _) => UpdateApiExplorerUrlLabel();
+        _lblApiExplorerUrl.Click += LblApiExplorerUrl_Click;
+        _lblApiSpecUrl.Click += LblApiSpecUrl_Click;
+        _lblMcpApiExplorerUrl.Click += LblMcpApiExplorerUrl_Click;
+        _lblMcpSpecUrl.Click += LblMcpSpecUrl_Click;
 
         // Settings on the Settings tab persist immediately when changed; only the Listener
         // group (port/address) requires an explicit save because it needs a proxy restart.
         _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
+#if DEBUG
+        // Debug builds never force elevation so the running instance stays attachable;
+        // disable the control so it does not suggest otherwise.
+        _chkRunAsAdmin.Enabled = false;
+        _chkRunAsAdmin.Text += " (disabled in debug builds)";
+#endif
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -81,6 +131,16 @@ internal partial class MainForm : Form
         _txtReqLogSize.Validated += (_, _) => SaveLoggingSettings();
         _txtRequestDbPath.Validated += (_, _) => SaveLoggingSettings();
         _txtLogRetention.Validated += (_, _) => SaveLoggingSettings();
+
+        // MCP tab settings persist and restart the server immediately, like the Settings tab.
+        _mcpServer.StatusChanged += OnMcpStatusChanged;
+        _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _chkMcpApiExplorer.CheckedChanged += (_, _) => UpdateMcpApiExplorerUrlLabel();
+        _chkMcpApiExplorer.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _nudMcpPort.Validated += (_, _) => OnMcpSettingChanged();
+        _cboMcpListenAddress.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
+        _cboMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
+        _btnMcpApply.Click += (_, _) => OnMcpSettingChanged();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -89,9 +149,14 @@ internal partial class MainForm : Form
         LoadSettingsToForm();
         RefreshStatus();
         RefreshStats();
+        RefreshMcpStats();
         RefreshLogs();
+        RefreshMcpLogs();
         RefreshHeartbeats();
         RefreshCredentials();
+        RefreshModules();
+        LoadMcpSettingsToForm();
+        UpdateMcpStatusDisplays();
         _stats.HeartbeatsChanged += OnHeartbeatsChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
@@ -115,30 +180,241 @@ internal partial class MainForm : Form
     {
         _refreshTimer.Stop();
         _stats.StatsChanged -= OnStatsChanged;
+        _mcpStats.StatsChanged -= OnMcpStatsChanged;
         _stats.HeartbeatsChanged -= OnHeartbeatsChanged;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
+        _moduleHost.ModulesChanged -= OnModulesChanged;
+        _mcpServer.StatusChanged -= OnMcpStatusChanged;
         base.OnFormClosed(e);
     }
 
-    // ── Status ──────────────────────────────────────────────────────────────
+    // ── MCP tab ─────────────────────────────────────────────────────────────
 
-    private void RefreshStatus()
+    private void LoadMcpSettingsToForm()
     {
-        bool running = _server.IsRunning;
-        _lblStatusValue.Text = running ? $"Running ({_settings.ListenAddress}:{_settings.ListenPort})" : "Stopped";
-        _lblStatusValue.ForeColor = running ? Color.Green : Color.Red;
-        _btnStart.Enabled = !running;
-        _btnStop.Enabled = running;
-        _btnRestart.Enabled = running;
-        _btnDashStart.Enabled = !running;
-        _btnDashStop.Enabled = running;
-        _btnDashRestart.Enabled = running;
+        _loadingSettings = true;
+        try
+        {
+            McpServerSettings settings = _mcpServer.LoadSettings();
+
+            _chkMcpEnabled.Checked = settings.Enabled;
+            _chkMcpApiExplorer.Checked = settings.EnableApiExplorer;
+            _nudMcpPort.Value = Math.Clamp(settings.ListenPort, (int)_nudMcpPort.Minimum, (int)_nudMcpPort.Maximum);
+            PopulateListenAddressOptions(_cboMcpListenAddress, settings.ListenAddress);
+            UpdateMcpApiExplorerUrlLabel();
+        }
+        finally
+        {
+            _loadingSettings = false;
+        }
+    }
+
+    private void SaveMcpSettingsFromForm()
+    {
+        McpServerSettings settings = new()
+        {
+            Enabled = _chkMcpEnabled.Checked,
+            ListenPort = (int)_nudMcpPort.Value,
+            ListenAddress = _cboMcpListenAddress.Text.Trim(),
+            EnableApiExplorer = _chkMcpApiExplorer.Checked,
+            AuthCredentialName = null,
+        };
+
+        _mcpServer.SaveSettings(settings);
+    }
+
+    private void OnMcpSettingChanged()
+    {
+        if (_loadingSettings)
+            return;
+
+        UpdateMcpApiExplorerUrlLabel();
+        SaveMcpSettingsFromForm();
+        ApplyMcpServerSettingsAsync();
+    }
+
+    private async void ApplyMcpServerSettingsAsync()
+    {
+        if (_applyingMcpSettings)
+        {
+            _mcpSettingsApplyPending = true;
+            return;
+        }
+
+        _applyingMcpSettings = true;
+        _btnMcpApply.Enabled = false;
+
+        try
+        {
+            do
+            {
+                _mcpSettingsApplyPending = false;
+
+                try
+                {
+                    await _mcpServer.ApplySettingsAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Failed to apply MCP server settings");
+                }
+            } while (_mcpSettingsApplyPending);
+        }
+        finally
+        {
+            _applyingMcpSettings = false;
+            _btnMcpApply.Enabled = true;
+            UpdateMcpStatusDisplays();
+        }
+    }
+
+    private void OnMcpStatusChanged(object? sender, string status)
+    {
+        if (IsHandleCreated)
+            BeginInvoke(UpdateMcpStatusDisplays);
+        else
+            UpdateMcpStatusDisplays();
+    }
+
+    private void UpdateMcpStatusLabel() => _lblMcpStatus.Text = _mcpServer.Status;
+
+    /// <summary>
+    /// Updates the MCP tab's status label and the dashboard MCP Status group from the
+    /// service's current runtime state.
+    /// </summary>
+    private void UpdateMcpStatusDisplays()
+    {
+        UpdateMcpStatusLabel();
+        RefreshMcpDashboardStatus();
     }
 
     /// <summary>
-    /// Updates the API Explorer URL note label based on the current enable state,
-    /// listen address, and port.
+    /// Refreshes the dashboard MCP Status group: shows the status plus the address and port
+    /// the MCP server is currently running on (fixed until the service restarts) and
+    /// enables/disables the MCP control buttons accordingly.
+    /// </summary>
+    private void RefreshMcpDashboardStatus()
+    {
+        bool running = _mcpServer.IsRunning;
+        string status = _mcpServer.Status;
+
+        _lblDashMcpStatusValue.Text = running ? "Running" : status;
+        _lblDashMcpStatusValue.ForeColor = running
+            ? Color.Green
+            : status.StartsWith("Failed", StringComparison.OrdinalIgnoreCase)
+                ? Color.Red
+                : SystemColors.ControlText;
+
+        _lblDashMcpAddressValue.Text = running ? _mcpServer.ListenAddress : "-";
+        _lblDashMcpPortValue.Text = running ? _mcpServer.ListenPort.ToString() : "-";
+
+        _btnDashMcpStart.Enabled = !running && !_mcpDashOperationInProgress;
+        _btnDashMcpStop.Enabled = running && !_mcpDashOperationInProgress;
+        _btnDashMcpRestart.Enabled = running && !_mcpDashOperationInProgress;
+    }
+
+    /// <summary>
+    /// Builds the MCP API Explorer (Scalar) URL from the form's listen address and port,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildMcpApiExplorerUrl() => BuildMcpUrl(McpServerHost.ScalarPath);
+
+    /// <summary>
+    /// Builds the MCP OpenAPI specification (JSON) URL from the form's listen address and
+    /// port, substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildMcpSpecUrl() => BuildMcpUrl(McpServerHost.SpecPath);
+
+    private string BuildMcpUrl(string path)
+    {
+        string host = _cboMcpListenAddress.Text.Trim();
+        if (host is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
+            host = "localhost";
+
+        return $"http://{host}:{(int)_nudMcpPort.Value}{path}";
+    }
+
+    /// <summary>
+    /// Updates the MCP API Explorer and OpenAPI spec URL note labels based on the current
+    /// enable state, listen address, and port.
+    /// </summary>
+    private void UpdateMcpApiExplorerUrlLabel()
+    {
+        if (!_chkMcpApiExplorer.Checked)
+        {
+            _lblMcpApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
+            _lblMcpApiExplorerUrl.ForeColor = SystemColors.GrayText;
+            _lblMcpApiExplorerUrl.Cursor = Cursors.Default;
+            _lblMcpSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+            _lblMcpSpecUrl.ForeColor = SystemColors.GrayText;
+            _lblMcpSpecUrl.Cursor = Cursors.Default;
+            return;
+        }
+
+        _lblMcpApiExplorerUrl.Text = $"API Explorer URL: {BuildMcpApiExplorerUrl()}";
+        _lblMcpApiExplorerUrl.ForeColor = SystemColors.Highlight;
+        _lblMcpApiExplorerUrl.Cursor = Cursors.Hand;
+        _lblMcpSpecUrl.Text = $"OpenAPI Spec URL: {BuildMcpSpecUrl()}";
+        _lblMcpSpecUrl.ForeColor = SystemColors.Highlight;
+        _lblMcpSpecUrl.Cursor = Cursors.Hand;
+    }
+
+    private void LblMcpApiExplorerUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkMcpApiExplorer.Checked)
+            OpenUrlInBrowser(BuildMcpApiExplorerUrl());
+    }
+
+    private void LblMcpSpecUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkMcpApiExplorer.Checked)
+            OpenUrlInBrowser(BuildMcpSpecUrl());
+    }
+
+    // ── Status ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Refreshes the dashboard Proxy Status group: shows the status plus the address and port
+    /// the proxy is currently bound to (fixed until the proxy restarts) and enables/disables
+    /// the proxy control buttons accordingly.
+    /// </summary>
+    private void RefreshStatus()
+    {
+        bool running = _server.IsRunning;
+        _lblStatusValue.Text = running ? "Running" : "Stopped";
+        _lblStatusValue.ForeColor = running ? Color.Green : Color.Red;
+        _lblStatusAddressValue.Text = running ? _server.ListenAddress : "-";
+        _lblStatusPortValue.Text = running ? _server.ListenPort.ToString() : "-";
+        _btnStart.Enabled = !running && !_proxyOperationInProgress;
+        _btnStop.Enabled = running && !_proxyOperationInProgress;
+        _btnRestart.Enabled = running && !_proxyOperationInProgress;
+    }
+
+    /// <summary>
+    /// Builds the proxy API Explorer (Scalar) URL from the persisted listener settings,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildApiExplorerUrl() => BuildProxyUrl("/scalar");
+
+    /// <summary>
+    /// Builds the proxy OpenAPI specification (JSON) URL from the persisted listener settings,
+    /// substituting localhost for wildcard bind addresses.
+    /// </summary>
+    private string BuildApiSpecUrl() => BuildProxyUrl("/openapi/v1/openapi.json");
+
+    private string BuildProxyUrl(string path)
+    {
+        string host = _settings.ListenAddress.Trim();
+        if (host is "0.0.0.0" or "+" or "")
+            host = "localhost";
+
+        return $"http://{host}:{_settings.ListenPort}{path}";
+    }
+
+    /// <summary>
+    /// Updates the API Explorer and OpenAPI spec URL note labels based on the current enable
+    /// state, listen address, and port.
     /// </summary>
     private void UpdateApiExplorerUrlLabel()
     {
@@ -146,15 +422,46 @@ internal partial class MainForm : Form
         {
             _lblApiExplorerUrl.Text = "API Explorer URL: (enable to see URL)";
             _lblApiExplorerUrl.ForeColor = SystemColors.GrayText;
+            _lblApiExplorerUrl.Cursor = Cursors.Default;
+            _lblApiSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+            _lblApiSpecUrl.ForeColor = SystemColors.GrayText;
+            _lblApiSpecUrl.Cursor = Cursors.Default;
             return;
         }
 
-        string host = _settings.ListenAddress.Trim();
-        if (host is "0.0.0.0" or "+" or "")
-            host = "localhost";
-
-        _lblApiExplorerUrl.Text = $"API Explorer URL: http://{host}:{_settings.ListenPort}/swagger";
+        _lblApiExplorerUrl.Text = $"API Explorer URL: {BuildApiExplorerUrl()}";
         _lblApiExplorerUrl.ForeColor = SystemColors.Highlight;
+        _lblApiExplorerUrl.Cursor = Cursors.Hand;
+        _lblApiSpecUrl.Text = $"OpenAPI Spec URL: {BuildApiSpecUrl()}";
+        _lblApiSpecUrl.ForeColor = SystemColors.Highlight;
+        _lblApiSpecUrl.Cursor = Cursors.Hand;
+    }
+
+    private void LblApiExplorerUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkApiExplorer.Checked)
+            OpenUrlInBrowser(BuildApiExplorerUrl());
+    }
+
+    private void LblApiSpecUrl_Click(object? sender, EventArgs e)
+    {
+        if (_chkApiExplorer.Checked)
+            OpenUrlInBrowser(BuildApiSpecUrl());
+    }
+
+    /// <summary>Opens the given URL in the system's default browser.</summary>
+    private static void OpenUrlInBrowser(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            Log.Warning(ex, "Failed to open the default browser for {Url}", url);
+            MessageBox.Show($"Could not open the default browser: {ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void OnServerStatusChanged(object? sender, string status)
@@ -168,42 +475,164 @@ internal partial class MainForm : Form
         RefreshStatus();
     }
 
+    /// <summary>
+    /// Runs a synchronous button operation with the button disabled so a click re-entering
+    /// through a MessageBox message pump cannot retrigger it.
+    /// </summary>
+    private void RunOnceWhileDisabled(Button button, Action operation)
+    {
+        if (!button.Enabled)
+            return;
+
+        button.Enabled = false;
+        try
+        {
+            operation();
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
     private void BtnStart_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Failed to start: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
     }
 
     private async void BtnStop_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             await _server.StopAsync();
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Error stopping: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
     }
 
     private async void BtnRestart_Click(object? sender, EventArgs e)
     {
+        if (_proxyOperationInProgress)
+            return;
+
+        _proxyOperationInProgress = true;
+        RefreshStatus();
+
         try
         {
             await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            RefreshStatus();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"Error restarting: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _proxyOperationInProgress = false;
+            RefreshStatus();
+        }
+    }
+
+    private async void BtnDashMcpStart_Click(object? sender, EventArgs e)
+    {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
+        try
+        {
+            await _mcpServer.StartAsync(forceStart: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to start the MCP server from the dashboard");
+            MessageBox.Show($"Failed to start the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
+        }
+    }
+
+    private async void BtnDashMcpStop_Click(object? sender, EventArgs e)
+    {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
+        try
+        {
+            await _mcpServer.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to stop the MCP server from the dashboard");
+            MessageBox.Show($"Error stopping the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
+        }
+    }
+
+    private async void BtnDashMcpRestart_Click(object? sender, EventArgs e)
+    {
+        if (_mcpDashOperationInProgress)
+            return;
+
+        _mcpDashOperationInProgress = true;
+        RefreshMcpDashboardStatus();
+
+        try
+        {
+            await _mcpServer.RestartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to restart the MCP server from the dashboard");
+            MessageBox.Show($"Error restarting the MCP server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _mcpDashOperationInProgress = false;
+            RefreshMcpDashboardStatus();
         }
     }
 
@@ -229,6 +658,24 @@ internal partial class MainForm : Form
         RefreshStats();
     }
 
+    private void RefreshMcpStats()
+    {
+        _lblMcpTotalRequestsValue.Text = _mcpStats.TotalRequests.ToString("N0");
+        _lblMcpTotalErrorsValue.Text = _mcpStats.TotalErrors.ToString("N0");
+        _lblMcpRpsValue.Text = _mcpStats.RequestsPerSecond.ToString("F2");
+    }
+
+    private void OnMcpStatsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke(RefreshMcpStats);
+            return;
+        }
+        RefreshMcpStats();
+    }
+
     private void OnPerfSampled(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
@@ -246,12 +693,21 @@ internal partial class MainForm : Form
         _lblRamValue.Text = $"{_perfService.MemoryMb:F0} MB";
     }
 
-    private void BtnResetStats_Click(object? sender, EventArgs e)
-    {
-        _stats.Reset();
-        RefreshStats();
-        RefreshLogs();
-    }
+    private void BtnResetStats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetStats, () =>
+        {
+            _stats.Reset();
+            RefreshStats();
+            RefreshLogs();
+        });
+
+    private void BtnResetMcpStats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetMcpStats, () =>
+        {
+            _mcpStats.Reset();
+            RefreshMcpStats();
+            RefreshMcpLogs();
+        });
 
     // ── Logs ─────────────────────────────────────────────────────────────────
 
@@ -260,6 +716,13 @@ internal partial class MainForm : Form
         _logCache = _stats.GetRecentLogs();
         _lstLogs.VirtualListSize = _logCache.Count;
         _lstLogs.Invalidate();
+    }
+
+    private void RefreshMcpLogs()
+    {
+        _mcpLogCache = _mcpStats.GetRecentLogs();
+        _lstMcpLogs.VirtualListSize = _mcpLogCache.Count;
+        _lstMcpLogs.Invalidate();
     }
 
     private void LstLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
@@ -291,45 +754,94 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
-    private void BtnClearLogs_Click(object? sender, EventArgs e)
+    private void LstMcpLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
     {
-        _stats.ClearLogs();
-        _logCache = [];
-        _lstLogs.VirtualListSize = 0;
-        _lstLogs.Invalidate();
+        if (e.ItemIndex < 0 || e.ItemIndex >= _mcpLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        RequestLog log = _mcpLogCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
     }
 
-    private void BtnRefreshLogs_Click(object? sender, EventArgs e) => RefreshLogs();
+    private void BtnClearLogs_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnClearLogs, () =>
+        {
+            if (_logSubTabs.SelectedTab == _logMcpPage)
+            {
+                _mcpStats.ClearLogs();
+                _mcpLogCache = [];
+                _lstMcpLogs.VirtualListSize = 0;
+                _lstMcpLogs.Invalidate();
+                return;
+            }
+
+            _stats.ClearLogs();
+            _logCache = [];
+            _lstLogs.VirtualListSize = 0;
+            _lstLogs.Invalidate();
+        });
+
+    private void BtnRefreshLogs_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnRefreshLogs, () =>
+        {
+            RefreshLogs();
+            RefreshMcpLogs();
+        });
 
     private void BtnLogDetails_Click(object? sender, EventArgs e)
     {
-        if (_lstLogs.SelectedIndices.Count == 0)
+        if (_logSubTabs.SelectedTab == _logMcpPage)
+        {
+            ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
+            return;
+        }
+
+        ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
+    }
+
+    private void ShowSelectedLogDetails(ListView list, IReadOnlyList<RequestLog> cache, LogSource source)
+    {
+        if (list.SelectedIndices.Count == 0)
         {
             MessageBox.Show("Select a log entry first.", "No selection",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        int index = _lstLogs.SelectedIndices[0];
-        if (index >= 0 && index < _logCache.Count)
-            ShowLogDetails(_logCache[index]);
+        int index = list.SelectedIndices[0];
+        if (index >= 0 && index < cache.Count)
+            ShowLogDetails(cache[index], source);
     }
 
-    private void LstLogs_DoubleClick(object? sender, EventArgs e)
-    {
-        if (_lstLogs.SelectedIndices.Count == 0)
-            return;
+    private void LstLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
 
-        int index = _lstLogs.SelectedIndices[0];
-        if (index >= 0 && index < _logCache.Count)
-            ShowLogDetails(_logCache[index]);
-    }
+    private void LstMcpLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
 
-    private void ShowLogDetails(RequestLog log)
+    private void ShowLogDetails(RequestLog log, LogSource source)
     {
         // The in-memory entry is a lightweight summary without request/response bodies.
         // Load the full entry from SQLite on demand so large bodies stay out of memory.
-        RequestLog? full = _database.LoadFullLogEntry(log.Timestamp);
+        RequestLog? full = _database.LoadFullLogEntry(log.Timestamp, source);
         if (full is null)
         {
             MessageBox.Show("Log entry not found in the database. It may have been pruned.",
@@ -343,13 +855,20 @@ internal partial class MainForm : Form
         sb.AppendLine($"Timestamp : {log.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         sb.AppendLine($"Method    : {log.Method}");
         sb.AppendLine($"Path      : {log.OllamaPath}");
-        sb.AppendLine($"Upstream  : {log.UpstreamPath}");
-        sb.AppendLine($"Model     : {log.Model}");
+        if (source == LogSource.Proxy)
+        {
+            sb.AppendLine($"Upstream  : {log.UpstreamPath}");
+            sb.AppendLine($"Model     : {log.Model}");
+        }
         sb.AppendLine($"Status    : {log.Status} ({log.StatusCode})");
-        sb.AppendLine($"Streaming : {log.Streaming}");
+        if (source == LogSource.Proxy)
+            sb.AppendLine($"Streaming : {log.Streaming}");
         sb.AppendLine($"Duration  : {log.DurationMs:F1} ms");
-        sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion (total {log.TotalTokens})");
-        sb.AppendLine($"            {log.CachedPromptTokens} cached prompt, {log.ReasoningTokens} reasoning");
+        if (source == LogSource.Proxy)
+        {
+            sb.AppendLine($"Tokens    : {log.PromptTokens} prompt + {log.CompletionTokens} completion (total {log.TotalTokens})");
+            sb.AppendLine($"            {log.CachedPromptTokens} cached prompt, {log.ReasoningTokens} reasoning");
+        }
         sb.AppendLine($"Bytes     : {FormatBytes(log.RequestBytes, log.ResponseBytes)} (request / response)");
 
         if (!string.IsNullOrEmpty(log.ErrorMessage))
@@ -539,7 +1058,10 @@ internal partial class MainForm : Form
     private void RefreshTimer_Tick(object? sender, EventArgs e)
     {
         if (_tabControl.SelectedTab == _tabLogs && _chkAutoRefresh.Checked)
+        {
             RefreshLogs();
+            RefreshMcpLogs();
+        }
     }
 
     // ── Heartbeats tab ──────────────────────────────────────────────────────
@@ -636,32 +1158,34 @@ internal partial class MainForm : Form
         _lstHeartbeats.EndUpdate();
     }
 
-    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e)
-    {
-        if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
-            || heartbeatIntervalSeconds < 5
-            || heartbeatIntervalSeconds > 300)
+    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveHeartbeats, () =>
         {
-            MessageBox.Show("Heartbeat interval must be a number between 5 and 300 seconds.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+            if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
+                || heartbeatIntervalSeconds < 5
+                || heartbeatIntervalSeconds > 300)
+            {
+                MessageBox.Show("Heartbeat interval must be a number between 5 and 300 seconds.", "Validation",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-        _settings.EnableStreamingHeartbeats = _chkStreamingHeartbeats.Checked;
-        _settings.StreamingHeartbeatIntervalSeconds = heartbeatIntervalSeconds;
-        _settings.Save();
-        _handler.UpdateSettings(_settings);
-        RefreshHeartbeats();
+            _settings.EnableStreamingHeartbeats = _chkStreamingHeartbeats.Checked;
+            _settings.StreamingHeartbeatIntervalSeconds = heartbeatIntervalSeconds;
+            _settings.Save();
+            _handler.UpdateSettings(_settings);
+            RefreshHeartbeats();
 
-        MessageBox.Show("Heartbeat settings saved.", "Saved",
-            MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
+            MessageBox.Show("Heartbeat settings saved.", "Saved",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
 
-    private void BtnResetHeartbeats_Click(object? sender, EventArgs e)
-    {
-        _stats.ResetHeartbeats();
-        RefreshHeartbeats();
-    }
+    private void BtnResetHeartbeats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetHeartbeats, () =>
+        {
+            _stats.ResetHeartbeats();
+            RefreshHeartbeats();
+        });
 
     private readonly struct HeartbeatDisplayRow
     {
@@ -720,11 +1244,20 @@ internal partial class MainForm : Form
     /// the value that matches the current setting (or adds it as a custom entry if it's an
     /// address the dropdown doesn't otherwise enumerate, e.g. a specific NIC IP that changed).
     /// </summary>
-    private void PopulateListenAddressOptions()
+    private void PopulateListenAddressOptions() =>
+        PopulateListenAddressOptions(_cmbListenAddress, _settings.ListenAddress);
+
+    /// <summary>
+    /// Fills a listen-address dropdown with "all interfaces" (0.0.0.0), "localhost", and every
+    /// non-loopback IPv4/IPv6 address currently assigned to the machine, then selects the given
+    /// current value (adding it as a custom entry when not otherwise enumerated, e.g. a specific
+    /// NIC IP that changed).
+    /// </summary>
+    private static void PopulateListenAddressOptions(ComboBox combo, string currentValue)
     {
-        _cmbListenAddress.Items.Clear();
-        _cmbListenAddress.Items.Add("0.0.0.0");
-        _cmbListenAddress.Items.Add("localhost");
+        combo.Items.Clear();
+        combo.Items.Add("0.0.0.0");
+        combo.Items.Add("localhost");
 
         try
         {
@@ -743,8 +1276,8 @@ internal partial class MainForm : Form
                         continue;
 
                     string ip = addr.Address.ToString();
-                    if (!_cmbListenAddress.Items.Contains(ip))
-                        _cmbListenAddress.Items.Add(ip);
+                    if (!combo.Items.Contains(ip))
+                        combo.Items.Add(ip);
                 }
             }
         }
@@ -753,11 +1286,11 @@ internal partial class MainForm : Form
             Log.Warning(ex, "Failed to enumerate local network interfaces for the Listen Address dropdown");
         }
 
-        string current = string.IsNullOrWhiteSpace(_settings.ListenAddress) ? "localhost" : _settings.ListenAddress.Trim();
-        if (!_cmbListenAddress.Items.Contains(current))
-            _cmbListenAddress.Items.Add(current);
+        string current = string.IsNullOrWhiteSpace(currentValue) ? "localhost" : currentValue.Trim();
+        if (!combo.Items.Contains(current))
+            combo.Items.Add(current);
 
-        _cmbListenAddress.Text = current;
+        combo.Text = current;
     }
 
     private void LoadSettingsToForm()
@@ -770,6 +1303,7 @@ internal partial class MainForm : Form
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
+        _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
@@ -822,26 +1356,27 @@ internal partial class MainForm : Form
     /// proxy restart is required for them to take effect; everything else on the Settings tab
     /// persists immediately when changed.
     /// </summary>
-    private void BtnSaveListener_Click(object? sender, EventArgs e)
-    {
-        if (!int.TryParse(_txtListenPort.Text, out int port) || port < 1 || port > 65535)
+    private void BtnSaveListener_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveListener, () =>
         {
-            MessageBox.Show("Listen port must be a number between 1 and 65535.", "Validation",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+            if (!int.TryParse(_txtListenPort.Text, out int port) || port < 1 || port > 65535)
+            {
+                MessageBox.Show("Listen port must be a number between 1 and 65535.", "Validation",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-        _settings.ListenPort = port;
-        _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
+            _settings.ListenPort = port;
+            _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
 
-        PersistSettingsCore();
+            PersistSettingsCore();
 
-        MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
-            "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
+                "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-        RefreshStatus();
-        UpdateApiExplorerUrlLabel();
-    }
+            RefreshStatus();
+            UpdateApiExplorerUrlLabel();
+        });
 
     /// <summary>
     /// Persists the immediately-saved general Settings tab options (everything except the
@@ -858,6 +1393,7 @@ internal partial class MainForm : Form
         _settings.MaxLogEntries = maxLogs;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
+        _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
@@ -865,6 +1401,7 @@ internal partial class MainForm : Form
         _settings.EnableAutoSummarization = _chkAutoSummarization.Checked;
 
         _stats.UpdateMaxEntries(maxLogs);
+        _mcpStats.UpdateMaxEntries(maxLogs);
         _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
         PersistSettingsCore();
@@ -909,6 +1446,7 @@ internal partial class MainForm : Form
         _settings.Logging.LogRetentionHours = logRetentionHours;
 
         _stats.UpdateRetentionHours(logRetentionHours);
+        _mcpStats.UpdateRetentionHours(logRetentionHours);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);
@@ -1039,13 +1577,13 @@ internal partial class MainForm : Form
 
     /// <summary>
     /// Ensures a session passphrase is available (prompting when necessary) and returns a copy of
-    /// the stored credentials with secrets encrypted for persistence. The in-memory
+    /// the stored credentials with secret material encrypted for persistence. The in-memory
     /// <see cref="AppSettings.Credentials"/> keep plaintext secrets so the running proxy can resolve
     /// them. Returns false — aborting the save — when the user cancels the passphrase prompt.
     /// </summary>
     private bool TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials)
     {
-        bool anySecret = _settings.Credentials.Any(c => !string.IsNullOrWhiteSpace(c.Secret));
+        bool anySecret = _settings.Credentials.Any(c => c.HasSecretMaterial);
 
         if (anySecret && string.IsNullOrEmpty(_settings.RuntimePassphrase))
         {
@@ -1064,9 +1602,7 @@ internal partial class MainForm : Form
 
         persistedCredentials = _settings.Credentials.Select(credential =>
         {
-            if (string.IsNullOrWhiteSpace(credential.Secret)
-                || string.IsNullOrEmpty(_settings.RuntimePassphrase)
-                || SecretProtector.IsEncrypted(credential.Secret))
+            if (!credential.HasSecretMaterial || string.IsNullOrEmpty(_settings.RuntimePassphrase))
             {
                 return credential;
             }
@@ -1075,11 +1611,28 @@ internal partial class MainForm : Form
             {
                 Name = credential.Name,
                 Description = credential.Description,
-                Secret = SecretProtector.Encrypt(credential.Secret, _settings.RuntimePassphrase),
+                Username = credential.Username,
+                Secret = EncryptForSave(credential.Secret, _settings.RuntimePassphrase) ?? string.Empty,
+                PrivateKey = EncryptForSave(credential.PrivateKey, _settings.RuntimePassphrase),
+                Certificate = EncryptForSave(credential.Certificate, _settings.RuntimePassphrase),
             };
         }).ToList();
 
         return true;
+    }
+
+    /// <summary>
+    /// Encrypts a secret-material value for persistence. Already-encrypted values pass through
+    /// unchanged; null or whitespace-only values return null.
+    /// </summary>
+    private static string? EncryptForSave(string? value, string passphrase)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return SecretProtector.IsEncrypted(value)
+            ? value
+            : SecretProtector.Encrypt(value, passphrase);
     }
 
     private void BtnBrowseRequestDb_Click(object? sender, EventArgs e)
@@ -1503,6 +2056,9 @@ internal partial class MainForm : Form
         existing.Name = edited.Name;
         existing.Secret = edited.Secret;
         existing.Description = edited.Description;
+        existing.Username = edited.Username;
+        existing.PrivateKey = edited.PrivateKey;
+        existing.Certificate = edited.Certificate;
 
         if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase))
             PropagateCredentialReferenceChange(oldName, edited.Name);
@@ -1562,6 +2118,308 @@ internal partial class MainForm : Form
             if (string.Equals(mapping.CredentialName, oldName, StringComparison.OrdinalIgnoreCase))
                 mapping.CredentialName = newName;
         }
+    }
+
+    // ── Modules ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Keeps the module list and injected module tabs in sync with the module registry after
+    /// any import, enable, disable, or remove operation.
+    /// </summary>
+    private void OnModulesChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed)
+            return;
+
+        RefreshModules();
+        AddModuleTabs();
+        RemoveStaleModuleTabs();
+        AddModuleHelpPages();
+        RemoveStaleModuleHelpPages();
+    }
+
+    /// <summary>
+    /// Appends the configuration tab of every loaded module that does not have one yet.
+    /// Modules build and own their entire tab page; the host only appends it.
+    /// </summary>
+    private void AddModuleTabs()
+    {
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            string moduleId = loaded.Entry.ModuleId ?? loaded.Entry.AssemblyPath;
+            if (_moduleTabs.ContainsKey(moduleId))
+                continue;
+
+            TabPage page;
+            try
+            {
+                page = loaded.Module.CreateConfigPage();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Module {Name} failed to build its configuration page", loaded.Entry.Name);
+                continue;
+            }
+
+            page.Tag = moduleId;
+            _mcpSubTabs.TabPages.Add(page);
+            _moduleTabs[moduleId] = page;
+        }
+    }
+
+    /// <summary>Removes tabs belonging to modules that are no longer loaded.</summary>
+    private void RemoveStaleModuleTabs()
+    {
+        HashSet<string> loadedIds = [.. _moduleHost.LoadedModules
+            .Select(m => m.Entry.ModuleId ?? m.Entry.AssemblyPath)];
+
+        foreach ((string moduleId, TabPage page) in _moduleTabs
+            .Where(kvp => !loadedIds.Contains(kvp.Key))
+            .ToList())
+        {
+            _mcpSubTabs.TabPages.Remove(page);
+            page.Dispose();
+            _moduleTabs.Remove(moduleId);
+        }
+    }
+
+    private void RefreshModules()
+    {
+        _lstModules.BeginUpdate();
+
+        try
+        {
+            _lstModules.Items.Clear();
+
+            foreach (ModuleRegistryEntry entry in _moduleHost.GetRegistryEntries())
+            {
+                string state;
+                if (!entry.IsEnabled)
+                {
+                    state = "Disabled";
+                }
+                else if (!string.IsNullOrWhiteSpace(entry.LastError))
+                {
+                    state = "Error";
+                }
+                else
+                {
+                    state = _moduleHost.LoadedModules.Any(m => m.Entry.Id == entry.Id)
+                        ? "Loaded"
+                        : "Enabled";
+                }
+
+                ListViewItem item = new(entry.Name ?? Path.GetFileName(entry.AssemblyPath));
+                item.SubItems.Add(entry.Version ?? string.Empty);
+                item.SubItems.Add(state);
+                item.SubItems.Add(entry.AssemblyPath);
+                item.Tag = entry;
+                _lstModules.Items.Add(item);
+            }
+        }
+        finally
+        {
+            _lstModules.EndUpdate();
+        }
+
+        UpdateModuleStatusLabel();
+        UpdateModuleButtons();
+    }
+
+    private void UpdateModuleStatusLabel()
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            _lblModuleStatus.Text = string.Empty;
+            _lblModuleStatus.ForeColor = SystemColors.GrayText;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.LastError))
+        {
+            _lblModuleStatus.ForeColor = Color.Red;
+            _lblModuleStatus.Text = $"Last error: {entry.LastError}";
+            return;
+        }
+
+        _lblModuleStatus.ForeColor = SystemColors.GrayText;
+        _lblModuleStatus.Text = entry.AssemblyPath;
+    }
+
+    private void UpdateModuleButtons()
+    {
+        bool selected = _lstModules.SelectedItems.Count > 0;
+        _btnToggleModule.Enabled = selected;
+        _btnRemoveModule.Enabled = selected;
+    }
+
+    private void LstModules_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        UpdateModuleStatusLabel();
+        UpdateModuleButtons();
+    }
+
+    private void BtnImportModule_Click(object? sender, EventArgs e)
+    {
+        using OpenFileDialog dialog = new()
+        {
+            Title = "Import Kaeo LLM Proxy Module",
+            Filter = "Kaeo LLM Proxy modules (*.dll)|*.dll",
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.FileName))
+            return;
+
+        try
+        {
+            _moduleHost.Import(dialog.FileName);
+            RefreshModules();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to import module {Path}", dialog.FileName);
+            MessageBox.Show(this,
+                $"Failed to import module:\n\n{ex.Message}",
+                "Import Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private async void BtnToggleModule_Click(object? sender, EventArgs e)
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            return;
+        }
+
+        try
+        {
+            await _moduleHost.SetEnabledAsync(entry, !entry.IsEnabled);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to change enabled state for module {Path}", entry.AssemblyPath);
+            MessageBox.Show(this,
+                $"Failed to change module state:\n\n{ex.Message}",
+                "Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshModules();
+    }
+
+    private async void BtnRemoveModule_Click(object? sender, EventArgs e)
+    {
+        if (_lstModules.SelectedItems.Count == 0
+            || _lstModules.SelectedItems[0].Tag is not ModuleRegistryEntry entry)
+        {
+            return;
+        }
+
+        DialogResult result = MessageBox.Show(this,
+            $"Remove module '{entry.Name ?? entry.AssemblyPath}' from the registry?\n\n" +
+            "The module file itself is not deleted.",
+            "Remove Module", MessageBoxButtons.OKCancel, MessageBoxIcon.Question);
+
+        if (result != DialogResult.OK)
+            return;
+
+        try
+        {
+            await _moduleHost.RemoveAsync(entry);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to remove module {Path}", entry.AssemblyPath);
+            MessageBox.Show(this,
+                $"Failed to remove module:\n\n{ex.Message}",
+                "Remove Module", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        RefreshModules();
+    }
+
+    // ── Help ──────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds the host-owned Help pages: one blurb per dashboard tab, an MCP page with
+    /// Server/Modules sub-pages, and the Modules page that receives injected module help.
+    /// </summary>
+    private void BuildHelpContent()
+    {
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Dashboard", HelpPages.Dashboard));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Logs", HelpPages.Logs));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Settings", HelpPages.Settings));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Instructions", HelpPages.Instructions));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Credentials", HelpPages.Credentials));
+
+        TabPage mcpPage = new() { Text = "MCP", Padding = new Padding(8) };
+        TabControl mcpSub = new() { Dock = DockStyle.Fill };
+        mcpSub.TabPages.Add(HelpPages.TextPage("Server", HelpPages.McpServer));
+        mcpSub.TabPages.Add(HelpPages.TextPage("Modules", HelpPages.McpModules));
+        mcpPage.Controls.Add(mcpSub);
+        _helpTabs.TabPages.Add(mcpPage);
+
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Test", HelpPages.Test));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Heartbeats", HelpPages.Heartbeats));
+
+        _helpModulesPlaceholder = HelpPages.TextPage("Modules", HelpPages.ModulesPlaceholder);
+        _helpModulesTabs = new TabControl { Dock = DockStyle.Fill };
+        _helpModulesTabs.TabPages.Add(_helpModulesPlaceholder);
+
+        TabPage modulesPage = new() { Text = "Modules", Padding = new Padding(8) };
+        modulesPage.Controls.Add(_helpModulesTabs);
+        _helpTabs.TabPages.Add(modulesPage);
+    }
+
+    /// <summary>Appends the help page of every loaded IHelpModule module that lacks one.</summary>
+    private void AddModuleHelpPages()
+    {
+        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+        {
+            string moduleId = loaded.Entry.ModuleId ?? loaded.Entry.AssemblyPath;
+            if (_moduleHelpPages.ContainsKey(moduleId))
+                continue;
+
+            if (loaded.Module is not IHelpModule helpModule)
+                continue;
+
+            TabPage page;
+            try
+            {
+                page = helpModule.CreateHelpPage();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Module {Name} failed to build its help page", loaded.Entry.Name);
+                continue;
+            }
+
+            page.Tag = moduleId;
+            _helpModulesTabs.TabPages.Remove(_helpModulesPlaceholder);
+            _helpModulesTabs.TabPages.Add(page);
+            _moduleHelpPages[moduleId] = page;
+        }
+    }
+
+    /// <summary>Removes help pages belonging to modules that are no longer loaded.</summary>
+    private void RemoveStaleModuleHelpPages()
+    {
+        HashSet<string> loadedIds = [.. _moduleHost.LoadedModules
+            .Select(m => m.Entry.ModuleId ?? m.Entry.AssemblyPath)];
+
+        foreach ((string moduleId, TabPage page) in _moduleHelpPages
+            .Where(kvp => !loadedIds.Contains(kvp.Key))
+            .ToList())
+        {
+            _helpModulesTabs.TabPages.Remove(page);
+            page.Dispose();
+            _moduleHelpPages.Remove(moduleId);
+        }
+
+        if (_moduleHelpPages.Count == 0 && !_helpModulesTabs.TabPages.Contains(_helpModulesPlaceholder))
+            _helpModulesTabs.TabPages.Add(_helpModulesPlaceholder);
     }
 
     // ── Test Console ──────────────────────────────────────────────────────────

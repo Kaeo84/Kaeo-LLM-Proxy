@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
@@ -57,7 +58,7 @@ internal sealed class AppDatabase : IDisposable
     /// If <paramref name="ex"/> is provided, the full exception detail is stored in the
     /// exceptions table and the generated id is linked back onto <paramref name="entry"/>.
     /// </summary>
-    public void Insert(RequestLog entry, Exception? ex = null)
+    public void Insert(RequestLog entry, Exception? ex = null, LogSource source = LogSource.Proxy)
     {
         ArgumentNullException.ThrowIfNull(entry);
 
@@ -66,7 +67,9 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
             using SqliteTransaction transaction = connection.BeginTransaction();
 
-            if (ex is not null)
+            // Exception details are persisted only for proxy requests; MCP errors are
+            // HTTP-level and carried on the entry itself.
+            if (ex is not null && source == LogSource.Proxy)
             {
                 ExceptionDetail detail = ExceptionDetail.FromException(ex, entry);
                 detail.Id = InsertException(connection, transaction, detail);
@@ -76,8 +79,8 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText =
-                """
-                INSERT INTO requests (
+                $$"""
+                INSERT INTO {{RequestTable(source)}} (
                     timestamp_utc,
                     method,
                     ollama_path,
@@ -170,7 +173,10 @@ internal sealed class AppDatabase : IDisposable
                     context_window_tokens,
                     synthesize_openai_metadata,
                     temperature_priority,
-                    repeat_penalty_priority
+                    repeat_penalty_priority,
+                    reasoning_effort_priority,
+                    reasoning_effort,
+                    reasoning_effort_values
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -231,7 +237,10 @@ internal sealed class AppDatabase : IDisposable
                         context_window_tokens,
                         synthesize_openai_metadata,
                         temperature_priority,
-                        repeat_penalty_priority
+                        repeat_penalty_priority,
+                        reasoning_effort_priority,
+                        reasoning_effort,
+                        reasoning_effort_values
                     )
                     VALUES (
                         $proxyName,
@@ -257,7 +266,10 @@ internal sealed class AppDatabase : IDisposable
                         $contextWindowTokens,
                         $synthesizeOpenAiMetadata,
                         $temperaturePriority,
-                        $repeatPenaltyPriority
+                        $repeatPenaltyPriority,
+                        $reasoningEffortPriority,
+                        $reasoningEffort,
+                        $reasoningEffortValues
                     );
                     """;
 
@@ -335,7 +347,7 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Loads all stored credentials. The <c>secret</c> values are returned exactly as stored
+    /// Loads all stored credentials. Secret values are returned exactly as stored
     /// (encrypted envelopes when a passphrase was used); decryption is handled by the caller.
     /// </summary>
     public IReadOnlyList<StoredCredential> LoadCredentials()
@@ -346,7 +358,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT name, secret, description
+                SELECT name, secret, description, username, private_key, certificate
                 FROM credentials
                 ORDER BY name;
                 """;
@@ -361,6 +373,9 @@ internal sealed class AppDatabase : IDisposable
                     Name = reader.GetString(0),
                     Secret = reader.GetString(1),
                     Description = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    Username = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    PrivateKey = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    Certificate = reader.IsDBNull(5) ? null : reader.GetString(5),
                 });
             }
 
@@ -394,12 +409,15 @@ internal sealed class AppDatabase : IDisposable
                 insertCommand.Transaction = transaction;
                 insertCommand.CommandText =
                     """
-                    INSERT INTO credentials (name, secret, description)
-                    VALUES ($name, $secret, $description);
+                    INSERT INTO credentials (name, secret, description, username, private_key, certificate)
+                    VALUES ($name, $secret, $description, $username, $privateKey, $certificate);
                     """;
                 insertCommand.Parameters.AddWithValue("$name", credential.Name);
                 insertCommand.Parameters.AddWithValue("$secret", credential.Secret);
                 insertCommand.Parameters.AddWithValue("$description", DbValue(credential.Description));
+                insertCommand.Parameters.AddWithValue("$username", DbValue(credential.Username));
+                insertCommand.Parameters.AddWithValue("$privateKey", DbValue(credential.PrivateKey));
+                insertCommand.Parameters.AddWithValue("$certificate", DbValue(credential.Certificate));
                 insertCommand.ExecuteNonQuery();
             }
 
@@ -489,7 +507,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization
+                    enable_auto_summarization,
+                    run_as_administrator
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -512,6 +531,7 @@ internal sealed class AppDatabase : IDisposable
                 EnablePerformanceSampling = ReadBoolean(reader, 8),
                 EnableApiExplorer = ReadBoolean(reader, 9),
                 EnableAutoSummarization = ReadBoolean(reader, 10),
+                RunAsAdministrator = ReadBoolean(reader, 11),
             };
         }
     }
@@ -538,7 +558,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization
+                    enable_auto_summarization,
+                    run_as_administrator
                 )
                 VALUES (
                     $id,
@@ -552,7 +573,8 @@ internal sealed class AppDatabase : IDisposable
                     $streamingHeartbeatIntervalSeconds,
                     $enablePerformanceSampling,
                     $enableApiExplorer,
-                    $enableAutoSummarization
+                    $enableAutoSummarization,
+                    $runAsAdministrator
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -565,7 +587,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
-                    enable_auto_summarization = excluded.enable_auto_summarization;
+                    enable_auto_summarization = excluded.enable_auto_summarization,
+                    run_as_administrator = excluded.run_as_administrator;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -580,6 +603,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$enableAutoSummarization", ToSqliteBoolean(settings.EnableAutoSummarization));
+            command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
             command.ExecuteNonQuery();
         }
     }
@@ -661,14 +685,14 @@ internal sealed class AppDatabase : IDisposable
     /// the supplied list, oldest first (so callers can enqueue them in chronological order).
     /// Used to seed the in-memory queue on startup.
     /// </summary>
-    public IReadOnlyList<RequestLog> LoadRecent(int count)
+    public IReadOnlyList<RequestLog> LoadRecent(int count, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -716,7 +740,7 @@ internal sealed class AppDatabase : IDisposable
                         total_tokens,
                         cached_prompt_tokens,
                         reasoning_tokens
-                    FROM requests
+                    FROM {{RequestTable(source)}}
                     ORDER BY timestamp_utc DESC
                     LIMIT $count
                 ) recent
@@ -740,14 +764,14 @@ internal sealed class AppDatabase : IDisposable
     /// no matching entry exists. When multiple rows share a timestamp, the most recently
     /// inserted row is returned.
     /// </summary>
-    public RequestLog? LoadFullLogEntry(DateTime localTimestamp)
+    public RequestLog? LoadFullLogEntry(DateTime localTimestamp, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -773,7 +797,7 @@ internal sealed class AppDatabase : IDisposable
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
-                FROM requests
+                FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
                 LIMIT 1;
@@ -790,7 +814,7 @@ internal sealed class AppDatabase : IDisposable
     /// <see cref="RequestLog.Timestamp"/> older than <paramref name="cutoff"/>.
     /// Returns the number of rows deleted.
     /// </summary>
-    public int DeleteOlderThan(DateTime cutoff)
+    public int DeleteOlderThan(DateTime cutoff, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
@@ -803,9 +827,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 selectCommand.Transaction = transaction;
                 selectCommand.CommandText =
-                    """
+                    $$"""
                     SELECT exception_id
-                    FROM requests
+                    FROM {{RequestTable(source)}}
                     WHERE timestamp_utc < $cutoffUtc
                       AND exception_id IS NOT NULL;
                     """;
@@ -822,8 +846,8 @@ internal sealed class AppDatabase : IDisposable
             {
                 deleteRequests.Transaction = transaction;
                 deleteRequests.CommandText =
-                    """
-                    DELETE FROM requests
+                    $$"""
+                    DELETE FROM {{RequestTable(source)}}
                     WHERE timestamp_utc < $cutoffUtc;
                     """;
                 deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
@@ -862,7 +886,7 @@ internal sealed class AppDatabase : IDisposable
     /// auto-increment counters so ids restart at 1. SQLite has no TRUNCATE statement; an
     /// unfiltered DELETE FROM is the equivalent. Returns the number of request rows deleted.
     /// </summary>
-    public int ClearLogs()
+    public int ClearLogs(LogSource source = LogSource.Proxy)
     {
         lock (_lock)
         {
@@ -874,12 +898,13 @@ internal sealed class AppDatabase : IDisposable
             using (SqliteCommand deleteRequests = connection.CreateCommand())
             {
                 deleteRequests.Transaction = transaction;
-                deleteRequests.CommandText = "DELETE FROM requests;";
+                deleteRequests.CommandText = $"DELETE FROM {RequestTable(source)};";
                 deleted = deleteRequests.ExecuteNonQuery();
             }
 
-            using (SqliteCommand deleteExceptions = connection.CreateCommand())
+            if (source == LogSource.Proxy)
             {
+                using SqliteCommand deleteExceptions = connection.CreateCommand();
                 deleteExceptions.Transaction = transaction;
                 deleteExceptions.CommandText = "DELETE FROM exceptions;";
                 deleteExceptions.ExecuteNonQuery();
@@ -906,11 +931,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 using SqliteCommand resetSequence = connection.CreateCommand();
                 resetSequence.Transaction = transaction;
-                resetSequence.CommandText =
-                    """
-                    DELETE FROM sqlite_sequence
-                    WHERE name IN ('requests', 'exceptions');
-                    """;
+                resetSequence.CommandText = source == LogSource.Proxy
+                    ? "DELETE FROM sqlite_sequence WHERE name IN ('requests', 'exceptions');"
+                    : "DELETE FROM sqlite_sequence WHERE name = 'mcp_requests';";
                 resetSequence.ExecuteNonQuery();
             }
 
@@ -922,6 +945,10 @@ internal sealed class AppDatabase : IDisposable
             return deleted;
         }
     }
+
+    /// <summary>Maps a log source to its backing request log table.</summary>
+    private static string RequestTable(LogSource source) =>
+        source == LogSource.Mcp ? "mcp_requests" : "requests";
 
     /// <summary>Returns aggregate stats from the active database file.</summary>
     public (long total, long errors, long promptTokens, long completionTokens) QueryTotals()
@@ -1039,6 +1066,36 @@ internal sealed class AppDatabase : IDisposable
                 CREATE INDEX IF NOT EXISTS idx_requests_exception_id ON requests(exception_id);
                 CREATE INDEX IF NOT EXISTS idx_exceptions_timestamp_utc ON exceptions(timestamp_utc);
 
+                CREATE TABLE IF NOT EXISTS mcp_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    ollama_path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    streaming INTEGER NOT NULL,
+                    status INTEGER NOT NULL,
+                    error_message TEXT NULL,
+                    status_code INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    tokens_per_second REAL NOT NULL,
+                    exception_id INTEGER NULL,
+                    request_body TEXT NULL,
+                    response_body TEXT NULL,
+                    request_bytes INTEGER NOT NULL,
+                    response_bytes INTEGER NOT NULL,
+                    summarization_retries INTEGER NOT NULL,
+                    original_message_count INTEGER NULL,
+                    summarized_message_count INTEGER NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
+
                 CREATE TABLE IF NOT EXISTS model_mappings (
                     proxy_name TEXT PRIMARY KEY,
                     is_enabled INTEGER NOT NULL,
@@ -1063,7 +1120,10 @@ internal sealed class AppDatabase : IDisposable
                     context_window_tokens INTEGER NOT NULL DEFAULT 0,
                     synthesize_openai_metadata INTEGER NOT NULL DEFAULT 0,
                     temperature_priority INTEGER NOT NULL DEFAULT 0,
-                    repeat_penalty_priority INTEGER NOT NULL DEFAULT 0
+                    repeat_penalty_priority INTEGER NOT NULL DEFAULT 0,
+                    reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
+                    reasoning_effort TEXT NULL,
+                    reasoning_effort_values TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1077,7 +1137,10 @@ internal sealed class AppDatabase : IDisposable
                 CREATE TABLE IF NOT EXISTS credentials (
                     name TEXT PRIMARY KEY,
                     secret TEXT NOT NULL,
-                    description TEXT NULL
+                    description TEXT NULL,
+                    username TEXT NULL,
+                    private_key TEXT NULL,
+                    certificate TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS heartbeats (
@@ -1098,7 +1161,24 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
-                    enable_auto_summarization INTEGER NOT NULL DEFAULT 1
+                    enable_auto_summarization INTEGER NOT NULL DEFAULT 1,
+                    run_as_administrator INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS module_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assembly_path TEXT NOT NULL UNIQUE,
+                    module_id TEXT NULL,
+                    name TEXT NULL,
+                    version TEXT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    registered_utc TEXT NOT NULL,
+                    last_error TEXT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mcp_server_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 """;
             command.ExecuteNonQuery();
@@ -1106,6 +1186,7 @@ internal sealed class AppDatabase : IDisposable
             MigrateRuntimeSettingsTable(connection);
             MigrateModelMappingsTable(connection);
             MigrateRequestsTable(connection);
+            MigrateCredentialsTable(connection);
         }
     }
 
@@ -1148,9 +1229,47 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
+    /// Adds the SSH-style credential columns to pre-existing <c>credentials</c> tables that were
+    /// created before they were introduced: <c>username</c>, <c>private_key</c>, and
+    /// <c>certificate</c>.
+    /// </summary>
+    private static void MigrateCredentialsTable(SqliteConnection connection)
+    {
+        if (!TableExists(connection, "credentials"))
+            return;
+
+        if (!ColumnExists(connection, "credentials", "username"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN username TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added username column.");
+        }
+
+        if (!ColumnExists(connection, "credentials", "private_key"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN private_key TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added private_key column.");
+        }
+
+        if (!ColumnExists(connection, "credentials", "certificate"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE credentials ADD COLUMN certificate TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated credentials table: added certificate column.");
+        }
+    }
+
+    /// <summary>
     /// Adds columns to pre-existing runtime_settings tables that were created before they
     /// were introduced: <c>enable_performance_sampling</c>, <c>enable_api_explorer</c>,
-    /// and <c>enable_auto_summarization</c>.
+    /// <c>enable_auto_summarization</c>, and <c>run_as_administrator</c>.
     /// </summary>
     private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
     {
@@ -1186,13 +1305,25 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated runtime_settings table: added enable_auto_summarization column.");
         }
+
+        if (!ColumnExists(connection, "runtime_settings", "run_as_administrator"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN run_as_administrator INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added run_as_administrator column.");
+        }
     }
 
     /// <summary>
     /// Adds columns to pre-existing <c>model_mappings</c> tables that were created before they
     /// were introduced: <c>supports_vision</c>, <c>credential_name</c>, <c>thinking_mode</c>,
     /// <c>context_window_tokens</c>, <c>synthesize_openai_metadata</c>,
-    /// <c>temperature_priority</c>, and <c>repeat_penalty_priority</c>.
+    /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
+    /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>, and
+    /// <c>reasoning_effort_values</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1260,6 +1391,33 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added repeat_penalty_priority column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_priority"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_priority INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort_priority column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_values"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_values TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort_values column.");
         }
     }
 
@@ -1464,6 +1622,11 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$synthesizeOpenAiMetadata", ToSqliteBoolean(mapping.SynthesizeOpenAiMetadata));
         command.Parameters.AddWithValue("$temperaturePriority", (int)mapping.TemperaturePriority);
         command.Parameters.AddWithValue("$repeatPenaltyPriority", (int)mapping.RepeatPenaltyPriority);
+        command.Parameters.AddWithValue("$reasoningEffortPriority", (int)mapping.ReasoningEffortPriority);
+        command.Parameters.AddWithValue("$reasoningEffort", DbValue(mapping.ReasoningEffort));
+        command.Parameters.AddWithValue("$reasoningEffortValues", mapping.ReasoningEffortValues.Count > 0
+            ? DbValue(string.Join(", ", mapping.ReasoningEffortValues))
+            : DBNull.Value);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1500,6 +1663,13 @@ internal sealed class AppDatabase : IDisposable
         RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(23))
             ? (SamplingPriority)reader.GetInt32(23)
             : SamplingPriority.ClientApp,
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(24))
+            ? (SamplingPriority)reader.GetInt32(24)
+            : SamplingPriority.ClientApp,
+        ReasoningEffort = reader.IsDBNull(25) ? null : reader.GetString(25),
+        ReasoningEffortValues = reader.IsDBNull(26)
+            ? []
+            : [.. reader.GetString(26).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
@@ -1655,6 +1825,247 @@ internal sealed class AppDatabase : IDisposable
     private static int ToSqliteBoolean(bool value) => value ? 1 : 0;
 
     private static object DbValue(string? value) => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value;
+
+    // ── Module registry + module database gateway support ───────────────────
+
+    /// <summary>Loads all registered modules ordered by registration.</summary>
+    public IReadOnlyList<ModuleRegistryEntry> LoadModuleRegistry()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    id,
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                FROM module_registry
+                ORDER BY id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ModuleRegistryEntry> entries = [];
+
+            while (reader.Read())
+            {
+                entries.Add(new ModuleRegistryEntry
+                {
+                    Id = reader.GetInt32(0),
+                    AssemblyPath = reader.GetString(1),
+                    ModuleId = reader.IsDBNull(2) ? null : reader.GetString(2),
+                    Name = reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Version = reader.IsDBNull(4) ? null : reader.GetString(4),
+                    IsEnabled = ReadBoolean(reader, 5),
+                    RegisteredUtc = ReadUtc(reader, 6),
+                    LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                });
+            }
+
+            return entries;
+        }
+    }
+
+    /// <summary>Finds a registered module by its assembly path, or null when not registered.</summary>
+    public ModuleRegistryEntry? FindModuleRegistryByPath(string assemblyPath)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    id,
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                FROM module_registry
+                WHERE assembly_path = $assemblyPath;
+                """;
+            command.Parameters.AddWithValue("$assemblyPath", assemblyPath);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return null;
+
+            return new ModuleRegistryEntry
+            {
+                Id = reader.GetInt32(0),
+                AssemblyPath = reader.GetString(1),
+                ModuleId = reader.IsDBNull(2) ? null : reader.GetString(2),
+                Name = reader.IsDBNull(3) ? null : reader.GetString(3),
+                Version = reader.IsDBNull(4) ? null : reader.GetString(4),
+                IsEnabled = ReadBoolean(reader, 5),
+                RegisteredUtc = ReadUtc(reader, 6),
+                LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+            };
+        }
+    }
+
+    /// <summary>Registers a new module. The generated row id is written back to <paramref name="entry"/>.</summary>
+    public void InsertModuleRegistry(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO module_registry (
+                    assembly_path,
+                    module_id,
+                    name,
+                    version,
+                    is_enabled,
+                    registered_utc,
+                    last_error
+                )
+                VALUES (
+                    $assemblyPath,
+                    $moduleId,
+                    $name,
+                    $version,
+                    $isEnabled,
+                    $registeredUtc,
+                    $lastError
+                );
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$assemblyPath", entry.AssemblyPath);
+            command.Parameters.AddWithValue("$moduleId", DbValue(entry.ModuleId));
+            command.Parameters.AddWithValue("$name", DbValue(entry.Name));
+            command.Parameters.AddWithValue("$version", DbValue(entry.Version));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
+            command.Parameters.AddWithValue("$registeredUtc", ToUtcText(entry.RegisteredUtc));
+            command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+
+            object? scalar = command.ExecuteScalar();
+            entry.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates mutable registry fields (metadata, enabled state, last error) for a module.</summary>
+    public void UpdateModuleRegistry(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE module_registry
+                SET
+                    module_id = $moduleId,
+                    name = $name,
+                    version = $version,
+                    is_enabled = $isEnabled,
+                    last_error = $lastError
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", entry.Id);
+            command.Parameters.AddWithValue("$moduleId", DbValue(entry.ModuleId));
+            command.Parameters.AddWithValue("$name", DbValue(entry.Name));
+            command.Parameters.AddWithValue("$version", DbValue(entry.Version));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
+            command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Removes a module from the registry.</summary>
+    public void DeleteModuleRegistry(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM module_registry WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Executes a module-provided baseline schema script (DDL) against the application
+    /// database. Scripts must be idempotent (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF
+    /// NOT EXISTS). Called through <c>ModuleDatabaseGateway</c>.
+    /// </summary>
+    internal void ExecuteModuleSchemaScript(string script)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(script);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = script;
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Executes a module-provided non-query command. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal int ExecuteModuleNonQuery(string commandText, Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+            return command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Executes a module-provided scalar command. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal object? ExecuteModuleScalar(string commandText, Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+            return command.ExecuteScalar();
+        }
+    }
+
+    /// <summary>Executes a module-provided query and maps every row. Called through <c>ModuleDatabaseGateway</c>.</summary>
+    internal IReadOnlyList<T> ExecuteModuleQuery<T>(
+        string commandText,
+        Func<DbDataReader, T> map,
+        Action<DbCommand>? configureCommand)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = commandText;
+            configureCommand?.Invoke(command);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<T> results = [];
+
+            while (reader.Read())
+                results.Add(map(reader));
+
+            return results;
+        }
+    }
 
     public void Dispose()
     {

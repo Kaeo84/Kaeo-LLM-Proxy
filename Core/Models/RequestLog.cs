@@ -7,6 +7,13 @@ internal enum RequestStatus
     Cancelled,
 }
 
+/// <summary>Identifies which service produced a request log entry.</summary>
+internal enum LogSource
+{
+    Proxy,
+    Mcp,
+}
+
 /// <summary>A single logged proxy request with timing and token stats.</summary>
 internal sealed class RequestLog
 {

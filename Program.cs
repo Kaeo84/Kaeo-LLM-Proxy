@@ -4,6 +4,7 @@ using System.Security.Principal;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Modules;
 
 namespace Kaeo.LlmProxy;
 
@@ -18,14 +19,6 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.System);
 
-        // Binding the proxy to anything other than "localhost" (e.g. 0.0.0.0 / a specific NIC IP)
-        // requires the process to be elevated, because http.sys only grants non-elevated processes
-        // free use of the loopback binding. Re-launch ourselves elevated via a UAC prompt so the
-        // proxy can listen on all interfaces without the user having to right-click "Run as admin".
-        // If the user declines the UAC prompt we simply continue non-elevated (localhost still works).
-        if (!IsRunningAsAdministrator() && TryRelaunchElevated())
-            return;
-
         // Surface ALL unhandled exceptions instead of silently swallowing them.
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, e) => ShowUnhandledException("UI thread", e.Exception);
@@ -39,11 +32,29 @@ internal static class Program
 
         AppSettings settings = AppSettings.Load();
 
+#if DEBUG
+        // Debug builds never run elevated (the UAC re-launch is compiled out), and http.sys
+        // denies non-loopback bindings to unprivileged processes. Force the loopback address so
+        // the proxy can start without administrator rights during development.
+        settings.ListenAddress = "localhost";
+#endif
+
         // Program owns the single shared AppDatabase for the whole process. It is passed into
         // TrayApplicationContext rather than created there so a second connection to the same
         // file can never exist.
         using AppDatabase database = new(settings.Logging);
         settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
+
+#if !DEBUG
+        // Binding the proxy to anything other than "localhost" (e.g. 0.0.0.0 / a specific NIC IP)
+        // requires the process to be elevated, because http.sys only grants non-elevated processes
+        // free use of the loopback binding. When the user opts in via the "Run as administrator"
+        // setting, re-launch ourselves elevated via a UAC prompt; if the prompt is declined we
+        // simply continue non-elevated (localhost still works). Debug builds never force elevation
+        // so development runs stay attachable.
+        if (settings.RunAsAdministrator && !IsRunningAsAdministrator() && TryRelaunchElevated())
+            return;
+#endif
 
         if (!settings.AllowMultipleInstances)
         {
@@ -71,7 +82,12 @@ internal static class Program
         settings.Credentials = [.. database.LoadCredentials()];
         ResolvePassphrase(settings);
 
-        Application.Run(new TrayApplicationContext(settings, database));
+        // Load user-registered modules (browse-to-import registry). A module that fails to load
+        // records its error in the registry and never blocks startup of the host or other modules.
+        ModuleHost moduleHost = new(database, settings);
+        moduleHost.LoadRegisteredModules();
+
+        Application.Run(new TrayApplicationContext(settings, database, moduleHost));
     }
 
     /// <summary>
@@ -103,6 +119,9 @@ internal static class Program
                 FileName = exePath,
                 UseShellExecute = true,
                 Verb = "runas",
+                // ShellExecute defaults the elevated child's working directory to a system folder,
+                // but this app resolves settings.jsonc and the Data folder relative to the CWD.
+                WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory,
             };
 
             using var elevated = System.Diagnostics.Process.Start(startInfo);
@@ -122,7 +141,10 @@ internal static class Program
     /// </summary>
     private static void ResolvePassphrase(AppSettings settings)
     {
-        bool hasEncrypted = settings.Credentials.Any(c => SecretProtector.IsEncrypted(c.Secret));
+        bool hasEncrypted = settings.Credentials.Any(c =>
+            SecretProtector.IsEncrypted(c.Secret)
+            || SecretProtector.IsEncrypted(c.PrivateKey)
+            || SecretProtector.IsEncrypted(c.Certificate));
 
         if (!hasEncrypted)
         {
@@ -180,19 +202,22 @@ internal static class Program
     }
 
     /// <summary>
-    /// Verifies that every encrypted credential secret can be decrypted with
-    /// <paramref name="passphrase"/>, then applies the decryption in-place.
-    /// Returns false if any secret fails authentication.
+    /// Verifies that every encrypted secret-material field (secret, private key, certificate)
+    /// on every credential can be decrypted with <paramref name="passphrase"/>, then applies
+    /// the decryption in-place. Returns false if any secret fails authentication.
     /// </summary>
     private static bool TryDecryptAllSecrets(AppSettings settings, string passphrase)
     {
         // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).
         foreach (StoredCredential credential in settings.Credentials)
         {
-            if (SecretProtector.IsEncrypted(credential.Secret)
-                && !SecretProtector.TryDecrypt(credential.Secret, passphrase, out _))
+            foreach (string? value in SecretMaterialValues(credential))
             {
-                return false;
+                if (SecretProtector.IsEncrypted(value)
+                    && !SecretProtector.TryDecrypt(value, passphrase, out _))
+                {
+                    return false;
+                }
             }
         }
 
@@ -201,9 +226,23 @@ internal static class Program
         {
             if (SecretProtector.IsEncrypted(credential.Secret))
                 credential.Secret = SecretProtector.Decrypt(credential.Secret, passphrase);
+
+            if (SecretProtector.IsEncrypted(credential.PrivateKey))
+                credential.PrivateKey = SecretProtector.Decrypt(credential.PrivateKey, passphrase);
+
+            if (SecretProtector.IsEncrypted(credential.Certificate))
+                credential.Certificate = SecretProtector.Decrypt(credential.Certificate, passphrase);
         }
 
         return true;
+    }
+
+    /// <summary>Enumerates the secret-bearing fields of a credential (may contain nulls/empties).</summary>
+    private static IEnumerable<string?> SecretMaterialValues(StoredCredential credential)
+    {
+        yield return credential.Secret;
+        yield return credential.PrivateKey;
+        yield return credential.Certificate;
     }
 
     internal static Icon GetApplicationIcon()
