@@ -15,18 +15,25 @@
     <ProjectReference Include="Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
+  </ItemGroup>
+
   <!-- The host project lives at the repository root; keep sibling project sources out of its
        default glob so each library compiles only its own files. -->
   <ItemGroup>
     <Compile Remove="Kaeo LLM Proxy Modules\**" />
     <Compile Remove="Kaeo LLM Proxy Web Search\**" />
     <Compile Remove="Kaeo LLM Proxy SSH\**" />
+    <Compile Remove="Kaeo LLM Proxy.Tests\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Modules\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Web Search\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy SSH\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy.Tests\**" />
     <None Remove="Kaeo LLM Proxy Modules\**" />
     <None Remove="Kaeo LLM Proxy Web Search\**" />
     <None Remove="Kaeo LLM Proxy SSH\**" />
+    <None Remove="Kaeo LLM Proxy.Tests\**" />
   </ItemGroup>
 
   <ItemGroup>

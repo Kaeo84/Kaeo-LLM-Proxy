@@ -641,10 +641,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 string bodyText = await ReadBodyAsync(req, ct);
                 log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
-                string rewritten = NormalizeRequestBody(bodyText, log, ShouldApplyThinkingCompatibility);
+                string rewritten = NormalizeRequestBody(bodyText, _settings, log, ShouldApplyThinkingCompatibility);
                 originalModel = log.Model; // set by NormalizeRequestBody
+                // Capture both the client's original body and the upstream-bound (rewritten)
+                // body so proxy-injected values such as reasoning_effort can be compared
+                // side-by-side in the request log.
                 if (_settings.CollectRequestDetails)
+                {
                     log.RequestBody = RedactRequestBodyForLog(bodyText, originalModel);
+                    log.UpstreamRequestBody = RedactRequestBodyForLog(rewritten, originalModel);
+                }
                 isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
                 log.Streaming = isStreamingRequest;
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
@@ -1598,7 +1604,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// </list>
     /// Returns the original text unchanged if the body isn't valid JSON.
     /// </summary>
-    private string NormalizeRequestBody(string json, RequestLog log, Func<string, bool>? shouldApplyThinkingCompatibility = null)
+    internal static string NormalizeRequestBody(string json, AppSettings settings, RequestLog log, Func<string, bool>? shouldApplyThinkingCompatibility = null)
     {
         try
         {
@@ -1610,11 +1616,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 ? modelEl.GetString() ?? string.Empty
                 : string.Empty;
 
-            string resolved = _settings.ResolveModelName(original);
+            string resolved = settings.ResolveModelName(original);
             log.Model = original;
             bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(original) ?? true;
-            string? injectedInstructions = GetInstructionTextForModel(original);
-            ModelMapping? normalizeMapping = _settings.FindModelMapping(original);
+            string? injectedInstructions = GetInstructionTextForModel(settings, original);
+            ModelMapping? normalizeMapping = settings.FindModelMapping(original);
             SamplingPriority tempPriority = normalizeMapping?.TemperaturePriority ?? SamplingPriority.ClientApp;
             SamplingPriority repeatPriority = normalizeMapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp;
             double proxyTemperature = normalizeMapping?.Temperature ?? 0.7;
@@ -1822,10 +1828,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return true;
     }
 
-    private string? GetInstructionTextForModel(string modelName)
+    internal static string? GetInstructionTextForModel(AppSettings settings, string modelName)
     {
-        ModelMapping? mapping = _settings.FindModelMapping(modelName);
-        InstructionSet? instructionSet = _settings.FindInstructionSet(mapping?.InstructionSetName);
+        ModelMapping? mapping = settings.FindModelMapping(modelName);
+        InstructionSet? instructionSet = settings.FindInstructionSet(mapping?.InstructionSetName);
         return string.IsNullOrWhiteSpace(instructionSet?.Instructions)
             ? null
             : instructionSet.Instructions;
@@ -2237,7 +2243,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     (float)(mapping?.RepeatPenalty ?? 1.0)),
             };
 
-        using StringContent genContent = new(JsonSerializer.Serialize(llamaReq, _jsonOptions), Encoding.UTF8, "application/json");
+        string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
+        // Capture the upstream-bound (translated) body so proxy-injected values can be
+        // compared against the client body in the request log.
+        if (_settings.CollectRequestDetails)
+            log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+
+        using StringContent genContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var genReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/completions") { Content = genContent };
         ApplyApiKey(genReqMsg, genApiKey);
         using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
@@ -2381,7 +2393,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 NCtx = ollamaReq.Options?.NumCtx,
             };
 
-            using StringContent chatContent = new(JsonSerializer.Serialize(llamaReq, _jsonOptions), Encoding.UTF8, "application/json");
+            string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
+            // Capture the upstream-bound (translated) body so proxy-injected values such as
+            // reasoning_effort can be compared against the client body in the request log.
+            if (_settings.CollectRequestDetails)
+                log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+
+            using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
             using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
             ApplyApiKey(chatReqMsg, chatApiKey);
             using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
@@ -2569,7 +2587,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         var llamaReq = new LlamaCppEmbeddingsRequest { Model = resolvedModel, Input = resolvedInput };
 
-        using StringContent embedContent = new(JsonSerializer.Serialize(llamaReq, _jsonOptions), Encoding.UTF8, "application/json");
+        string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
+        // Capture the upstream-bound (translated) body for the request log.
+        if (_settings.CollectRequestDetails)
+            log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+
+        using StringContent embedContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var embedReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings") { Content = embedContent };
         ApplyApiKey(embedReqMsg, embedApiKey);
         using HttpResponseMessage upstreamResp = await SendUpstreamAsync(embedReqMsg, embedBase, embedTimeout, HttpCompletionOption.ResponseContentRead, ct);

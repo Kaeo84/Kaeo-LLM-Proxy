@@ -96,6 +96,7 @@ internal sealed class AppDatabase : IDisposable
                     tokens_per_second,
                     exception_id,
                     request_body,
+                    upstream_request_body,
                     response_body,
                     request_bytes,
                     response_bytes,
@@ -122,6 +123,7 @@ internal sealed class AppDatabase : IDisposable
                     $tokensPerSecond,
                     $exceptionId,
                     $requestBody,
+                    $upstreamRequestBody,
                     $responseBody,
                     $requestBytes,
                     $responseBytes,
@@ -656,6 +658,7 @@ internal sealed class AppDatabase : IDisposable
                     tokens_per_second,
                     exception_id,
                     request_body,
+                    upstream_request_body,
                     response_body,
                     request_bytes,
                     response_bytes,
@@ -788,6 +791,7 @@ internal sealed class AppDatabase : IDisposable
                     tokens_per_second,
                     exception_id,
                     request_body,
+                    upstream_request_body,
                     response_body,
                     request_bytes,
                     response_bytes,
@@ -1051,6 +1055,7 @@ internal sealed class AppDatabase : IDisposable
                     tokens_per_second REAL NOT NULL,
                     exception_id INTEGER NULL,
                     request_body TEXT NULL,
+                    upstream_request_body TEXT NULL,
                     response_body TEXT NULL,
                     request_bytes INTEGER NOT NULL,
                     response_bytes INTEGER NOT NULL,
@@ -1083,6 +1088,7 @@ internal sealed class AppDatabase : IDisposable
                     tokens_per_second REAL NOT NULL,
                     exception_id INTEGER NULL,
                     request_body TEXT NULL,
+                    upstream_request_body TEXT NULL,
                     response_body TEXT NULL,
                     request_bytes INTEGER NOT NULL,
                     response_bytes INTEGER NOT NULL,
@@ -1226,6 +1232,24 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated requests table: added reasoning_tokens column.");
         }
+
+        AddColumnIfMissing(connection, "requests", "upstream_request_body",
+            "ALTER TABLE requests ADD COLUMN upstream_request_body TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "upstream_request_body",
+            "ALTER TABLE mcp_requests ADD COLUMN upstream_request_body TEXT NULL;");
+    }
+
+    /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
+    private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string alterStatement)
+    {
+        if (!TableExists(connection, tableName) || ColumnExists(connection, tableName, columnName))
+            return;
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = alterStatement;
+        command.ExecuteNonQuery();
+
+        Log.Information("Migrated {Table} table: added {Column} column.", tableName, columnName);
     }
 
     /// <summary>
@@ -1583,6 +1607,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$tokensPerSecond", entry.TokensPerSecond);
         command.Parameters.AddWithValue("$exceptionId", entry.ExceptionId.HasValue ? entry.ExceptionId.Value : DBNull.Value);
         command.Parameters.AddWithValue("$requestBody", DbValue(entry.RequestBody));
+        command.Parameters.AddWithValue("$upstreamRequestBody", DbValue(entry.UpstreamRequestBody));
         command.Parameters.AddWithValue("$responseBody", DbValue(entry.ResponseBody));
         command.Parameters.AddWithValue("$requestBytes", entry.RequestBytes);
         command.Parameters.AddWithValue("$responseBytes", entry.ResponseBytes);
@@ -1691,15 +1716,16 @@ internal sealed class AppDatabase : IDisposable
         TokensPerSecond = reader.GetDouble(12),
         ExceptionId = reader.IsDBNull(13) ? null : reader.GetInt32(13),
         RequestBody = reader.IsDBNull(14) ? null : reader.GetString(14),
-        ResponseBody = reader.IsDBNull(15) ? null : reader.GetString(15),
-        RequestBytes = reader.GetInt64(16),
-        ResponseBytes = reader.GetInt64(17),
-        SummarizationRetries = reader.GetInt32(18),
-        OriginalMessageCount = reader.IsDBNull(19) ? null : reader.GetInt32(19),
-        SummarizedMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
-        TotalTokens = reader.GetInt32(21),
-        CachedPromptTokens = reader.GetInt32(22),
-        ReasoningTokens = reader.GetInt32(23),
+        UpstreamRequestBody = reader.IsDBNull(15) ? null : reader.GetString(15),
+        ResponseBody = reader.IsDBNull(16) ? null : reader.GetString(16),
+        RequestBytes = reader.GetInt64(17),
+        ResponseBytes = reader.GetInt64(18),
+        SummarizationRetries = reader.GetInt32(19),
+        OriginalMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
+        SummarizedMessageCount = reader.IsDBNull(21) ? null : reader.GetInt32(21),
+        TotalTokens = reader.GetInt32(22),
+        CachedPromptTokens = reader.GetInt32(23),
+        ReasoningTokens = reader.GetInt32(24),
     };
 
     /// <summary>

@@ -63,10 +63,20 @@ internal sealed class RequestLog
     public int? ExceptionId { get; set; }
 
     /// <summary>
-    /// Raw request body captured when <c>CollectRequestDetails</c> is enabled in settings.
-    /// Null when capture is disabled.
+    /// Raw request body received from the client, captured when <c>CollectRequestDetails</c>
+    /// is enabled in settings. Null when capture is disabled.
     /// </summary>
     public string? RequestBody { get; set; }
+
+    /// <summary>
+    /// The request body actually sent to the upstream after proxy translation/rewriting,
+    /// captured when <c>CollectRequestDetails</c> is enabled. For translated Ollama requests
+    /// this is the OpenAI-compatible body built by the proxy; for OpenAI passthrough it is the
+    /// rewritten client body. Values the proxy injects per-model (e.g. <c>reasoning_effort</c>)
+    /// are visible here, allowing before/after comparison against <see cref="RequestBody"/>.
+    /// Null when capture is disabled or no upstream call was made.
+    /// </summary>
+    public string? UpstreamRequestBody { get; set; }
 
     /// <summary>
     /// Assembled LLM response text captured when <c>CollectResponseDetails</c> is enabled in settings.

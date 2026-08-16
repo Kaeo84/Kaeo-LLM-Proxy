@@ -878,13 +878,6 @@ internal partial class MainForm : Form
             sb.AppendLine(log.ErrorMessage);
         }
 
-        if (log.RequestBody is not null)
-        {
-            sb.AppendLine();
-            sb.AppendLine("── Request Body ───────────────────────────────────────────────");
-            AppendBody(sb, log.RequestBody);
-        }
-
         if (log.ExceptionId.HasValue)
         {
             ExceptionDetail? ex = _stats.GetException(log.ExceptionId.Value);
@@ -939,6 +932,32 @@ internal partial class MainForm : Form
         summaryTab.Controls.Add(summaryText);
         tabControl.Controls.Add(summaryTab);
 
+        if (log.RequestBody is not null)
+        {
+            TabPage requestTab = new()
+            {
+                Name = "_tabLogRequestBody",
+                Padding = new Padding(8),
+                Text = "Request Body",
+            };
+
+            requestTab.Controls.Add(CreateLogDetailsTextBox(FormatBody(log.RequestBody)));
+            tabControl.Controls.Add(requestTab);
+        }
+
+        if (log.UpstreamRequestBody is not null)
+        {
+            TabPage upstreamTab = new()
+            {
+                Name = "_tabLogUpstreamRequestBody",
+                Padding = new Padding(8),
+                Text = "Upstream Request Body",
+            };
+
+            upstreamTab.Controls.Add(CreateLogDetailsTextBox(FormatBody(log.UpstreamRequestBody)));
+            tabControl.Controls.Add(upstreamTab);
+        }
+
         if (log.ResponseBody is not null)
         {
             TabPage responseTab = new()
@@ -981,11 +1000,6 @@ internal partial class MainForm : Form
             _ => $"{b / (1024.0 * 1024):F2} MB",
         };
         return $"{Fmt(requestBytes)} / {Fmt(responseBytes)}";
-    }
-
-    private static void AppendBody(StringBuilder sb, string body)
-    {
-        sb.AppendLine(FormatBody(body));
     }
 
     private static string FormatBody(string body)

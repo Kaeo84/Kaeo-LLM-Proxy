@@ -22,3 +22,5 @@ Desktop.ini
 _gsdata*/
 *._gs
 *.gsl
+# Edit-tool temp backups
+*.tmp
