@@ -711,7 +711,8 @@ internal sealed class ModelMappingDialog : Form
             "Payload format used when Reasoning Effort Priority is Proxy Priority:\n"
             + "Legacy sends top-level reasoning_effort; Modern sends the nested\n"
             + "reasoning.effort object; Both sends both; Qwen Cloud sends enable_thinking\n"
-            + "alongside reasoning_effort. Ignored for the other priorities.");
+            + "alongside reasoning_effort; llama.cpp/vLLM sends chat_template_kwargs.\n"
+            + "Ignored for the other priorities.");
 
         _lblTempPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTempPriority.AutoSize = true;
@@ -1255,6 +1256,7 @@ internal sealed class ModelMappingDialog : Form
         new(ReasoningEffortFormat.Modern, "Modern (nested reasoning.effort)"),
         new(ReasoningEffortFormat.Both, "Both (legacy + modern)"),
         new(ReasoningEffortFormat.QwenCloud, "Qwen Cloud (enable_thinking + reasoning_effort)"),
+        new(ReasoningEffortFormat.ChatTemplateKwargs, "llama.cpp / vLLM (chat_template_kwargs)"),
     ];
 
     private static SamplingPriorityOption[] SamplingPriorityOptions() =>

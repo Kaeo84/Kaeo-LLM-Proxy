@@ -22,6 +22,7 @@ OpenAI-style providers expect lowercase.
 | Modern    | `"reasoning": { "effort": "<value>" }`                                    |
 | Both      | both of the above                                                          |
 | QwenCloud | `"enable_thinking": true` + `"reasoning_effort": "<value>"`               |
+| ChatTemplateKwargs | `"chat_template_kwargs": { "reasoning_effort": "<value>" }` (llama.cpp, vLLM, and other local inference servers) |
 
 - Client App priority keeps passing client `reasoning_effort` / `reasoning` / `enable_thinking`
   through unchanged; Provider priority keeps dropping only `reasoning_effort` as before.

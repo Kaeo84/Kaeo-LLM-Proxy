@@ -186,4 +186,44 @@ public class ReasoningEffortNormalizationTests
 
         Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
     }
+
+    [Fact]
+    public void ProxyPriorityChatTemplateKwargsFormatInjectsTemplateKwargs()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.ChatTemplateKwargs);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.False(root.TryGetProperty("reasoning_effort", out _));
+        Assert.False(root.TryGetProperty("reasoning", out _));
+        Assert.Equal("medium", root.GetProperty("chat_template_kwargs").GetProperty("reasoning_effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityChatTemplateKwargsFormatReplacesClientTemplateKwargs()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "high", ReasoningEffortFormat.ChatTemplateKwargs);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"reasoning_effort":"low","enable_thinking":true}}""",
+            settings);
+
+        JsonElement kwargs = root.GetProperty("chat_template_kwargs");
+        Assert.Equal("high", kwargs.GetProperty("reasoning_effort").GetString());
+        Assert.False(kwargs.TryGetProperty("enable_thinking", out _));
+    }
+
+    [Fact]
+    public void ClientAppPriorityPassesClientTemplateKwargsThrough()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.ClientApp, null);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"reasoning_effort":"medium"}}""",
+            settings);
+
+        Assert.Equal("medium", root.GetProperty("chat_template_kwargs").GetProperty("reasoning_effort").GetString());
+    }
 }

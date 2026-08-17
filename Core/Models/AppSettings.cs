@@ -34,8 +34,9 @@ internal enum SamplingPriority
 /// Determines the wire format the proxy uses when it injects a reasoning effort value into an
 /// upstream request under <see cref="SamplingPriority.Proxy"/> priority. Providers disagree on
 /// the shape: older OpenAI models read a top-level <c>reasoning_effort</c> string, newer OpenAI
-/// models read a nested <c>reasoning.effort</c> object, and Qwen Cloud expects
-/// <c>enable_thinking</c> alongside <c>reasoning_effort</c>.
+/// models read a nested <c>reasoning.effort</c> object, Qwen Cloud expects
+/// <c>enable_thinking</c> alongside <c>reasoning_effort</c>, and local inference servers
+/// (llama.cpp, vLLM) read <c>chat_template_kwargs.reasoning_effort</c>.
 /// </summary>
 internal enum ReasoningEffortFormat
 {
@@ -50,6 +51,9 @@ internal enum ReasoningEffortFormat
 
     /// <summary>Qwen Cloud style: <c>"enable_thinking": true</c> plus legacy <c>reasoning_effort</c>.</summary>
     QwenCloud = 3,
+
+    /// <summary>Local inference servers (llama.cpp, vLLM): <c>"chat_template_kwargs": { "reasoning_effort": "value" }</c>.</summary>
+    ChatTemplateKwargs = 4,
 }
 
 /// <summary>

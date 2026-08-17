@@ -290,12 +290,23 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("reasoning")] public LlamaCppReasoning? Reasoning { get; set; }
     /// <summary>Qwen Cloud thinking switch sent alongside <c>reasoning_effort</c>.</summary>
     [JsonPropertyName("enable_thinking")] public bool? EnableThinking { get; set; }
+    /// <summary>Chat template kwargs carrying <c>reasoning_effort</c> for llama.cpp/vLLM-style local servers.</summary>
+    [JsonPropertyName("chat_template_kwargs")] public LlamaCppChatTemplateKwargs? ChatTemplateKwargs { get; set; }
 }
 
 /// <summary>Modern OpenAI reasoning object carrying the effort level (e.g. gpt-5.5).</summary>
 internal sealed class LlamaCppReasoning
 {
     [JsonPropertyName("effort")] public string? Effort { get; set; }
+}
+
+/// <summary>
+/// Chat template keyword arguments understood by llama.cpp, vLLM, and similar local inference
+/// servers; the Jinja chat template receives them and can branch on the reasoning effort.
+/// </summary>
+internal sealed class LlamaCppChatTemplateKwargs
+{
+    [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
 }
 
 internal sealed class LlamaCppCompletionRequest
