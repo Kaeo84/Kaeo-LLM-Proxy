@@ -49,8 +49,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly TextBox _txtReasoningEffortValues = new();
     private readonly Label _lblReasoningEffort = new();
     private readonly ComboBox _cmbReasoningEffort = new();
-    private readonly Label _lblReasoningEffortFormat = new();
-    private readonly ComboBox _cmbReasoningEffortFormat = new();
+    private readonly Label _lblReasoningEffortFormats = new();
+    private readonly CheckedListBox _lstReasoningEffortFormats = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly Label _lblTempPriority = new();
     private readonly ComboBox _cmbTempPriority = new();
@@ -292,19 +292,22 @@ internal sealed class ModelMappingDialog : Form
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private ReasoningEffortFormat ReasoningEffortFormat
     {
-        get => (_cmbReasoningEffortFormat.SelectedItem as ReasoningEffortFormatOption)?.Format ?? ReasoningEffortFormat.Legacy;
+        get
+        {
+            ReasoningEffortFormat format = default;
+            foreach (ReasoningEffortFormatOption option in _lstReasoningEffortFormats.CheckedItems)
+                format |= option.Format;
+
+            // Nothing selected degrades to Legacy so Proxy priority always injects a shape.
+            return format == default ? ReasoningEffortFormat.Legacy : format;
+        }
         set
         {
-            for (int i = 0; i < _cmbReasoningEffortFormat.Items.Count; i++)
+            for (int i = 0; i < _lstReasoningEffortFormats.Items.Count; i++)
             {
-                if (((ReasoningEffortFormatOption)_cmbReasoningEffortFormat.Items[i]!).Format == value)
-                {
-                    _cmbReasoningEffortFormat.SelectedIndex = i;
-                    return;
-                }
+                ReasoningEffortFormatOption option = (ReasoningEffortFormatOption)_lstReasoningEffortFormats.Items[i]!;
+                _lstReasoningEffortFormats.SetItemChecked(i, value.HasFlag(option.Format));
             }
-
-            _cmbReasoningEffortFormat.SelectedIndex = 0;
         }
     }
 
@@ -355,8 +358,8 @@ internal sealed class ModelMappingDialog : Form
         bool enabled = ReasoningEffortPriority != SamplingPriority.Provider;
         _txtReasoningEffortValues.Enabled = enabled;
         _cmbReasoningEffort.Enabled = enabled;
-        // The payload format only matters under Proxy Priority, the only mode that injects.
-        _cmbReasoningEffortFormat.Enabled = ReasoningEffortPriority == SamplingPriority.Proxy;
+        // The payload formats only matter under Proxy Priority, the only mode that injects.
+        _lstReasoningEffortFormats.Enabled = ReasoningEffortPriority == SamplingPriority.Proxy;
     }
 
     /// <summary>
@@ -696,23 +699,22 @@ internal sealed class ModelMappingDialog : Form
             "The reasoning_effort value sent upstream when Reasoning Effort Priority is\n"
             + "Proxy Priority. Leave empty to send nothing.");
 
-        _lblReasoningEffortFormat.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblReasoningEffortFormat.AutoSize = true;
-        _lblReasoningEffortFormat.Margin = new Padding(0, 8, 8, 4);
-        _lblReasoningEffortFormat.Text = "Reasoning Effort Format:";
+        _lblReasoningEffortFormats.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblReasoningEffortFormats.AutoSize = true;
+        _lblReasoningEffortFormats.Margin = new Padding(0, 8, 8, 4);
+        _lblReasoningEffortFormats.Text = "Reasoning Effort Formats:";
 
-        _cmbReasoningEffortFormat.Dock = DockStyle.Fill;
-        _cmbReasoningEffortFormat.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cmbReasoningEffortFormat.Margin = new Padding(0, 4, 0, 4);
-        _cmbReasoningEffortFormat.Items.AddRange([.. ReasoningEffortFormatOptions()]);
-        _cmbReasoningEffortFormat.SelectedIndex = 0;
+        _lstReasoningEffortFormats.CheckOnClick = true;
+        _lstReasoningEffortFormats.Dock = DockStyle.Fill;
+        _lstReasoningEffortFormats.Margin = new Padding(0, 4, 0, 4);
+        _lstReasoningEffortFormats.Items.AddRange([.. ReasoningEffortFormatOptions()]);
         _toolTip.SetToolTip(
-            _cmbReasoningEffortFormat,
-            "Payload format used when Reasoning Effort Priority is Proxy Priority:\n"
-            + "Legacy sends top-level reasoning_effort; Modern sends the nested\n"
-            + "reasoning.effort object; Both sends both; Qwen Cloud sends enable_thinking\n"
-            + "alongside reasoning_effort; llama.cpp/vLLM sends chat_template_kwargs.\n"
-            + "Ignored for the other priorities.");
+            _lstReasoningEffortFormats,
+            "Wire shapes sent when Reasoning Effort Priority is Proxy Priority; select any\n"
+            + "combination. Legacy sends top-level reasoning_effort; Modern sends the nested\n"
+            + "reasoning.effort object; Qwen Cloud sends extra_body with enable_thinking and\n"
+            + "reasoning_effort; llama.cpp/vLLM sends chat_template_kwargs. Ignored for the\n"
+            + "other priorities.");
 
         _lblTempPriority.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTempPriority.AutoSize = true;
@@ -809,8 +811,8 @@ internal sealed class ModelMappingDialog : Form
         _tlpThinkingReasoning.Controls.Add(_txtReasoningEffortValues, 1, 2);
         _tlpThinkingReasoning.Controls.Add(_lblReasoningEffort, 0, 3);
         _tlpThinkingReasoning.Controls.Add(_cmbReasoningEffort, 1, 3);
-        _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortFormat, 0, 4);
-        _tlpThinkingReasoning.Controls.Add(_cmbReasoningEffortFormat, 1, 4);
+        _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortFormats, 0, 4);
+        _tlpThinkingReasoning.Controls.Add(_lstReasoningEffortFormats, 1, 4);
 
         _chkSupportsVision.AutoSize = true;
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
@@ -1254,8 +1256,7 @@ internal sealed class ModelMappingDialog : Form
     [
         new(ReasoningEffortFormat.Legacy, "Legacy (top-level reasoning_effort)"),
         new(ReasoningEffortFormat.Modern, "Modern (nested reasoning.effort)"),
-        new(ReasoningEffortFormat.Both, "Both (legacy + modern)"),
-        new(ReasoningEffortFormat.QwenCloud, "Qwen Cloud (enable_thinking + reasoning_effort)"),
+        new(ReasoningEffortFormat.QwenCloud, "Qwen Cloud (extra_body with enable_thinking)"),
         new(ReasoningEffortFormat.ChatTemplateKwargs, "llama.cpp / vLLM (chat_template_kwargs)"),
     ];
 

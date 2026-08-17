@@ -112,9 +112,12 @@ public class ReasoningEffortNormalizationTests
     }
 
     [Fact]
-    public void ProxyPriorityBothFormatInjectsLegacyAndModern()
+    public void ProxyPriorityMultiSelectInjectsLegacyAndModern()
     {
-        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.Both);
+        AppSettings settings = CreateSettings(
+            SamplingPriority.Proxy,
+            "medium",
+            ReasoningEffortFormat.Legacy | ReasoningEffortFormat.Modern);
 
         JsonElement root = Normalize(
             """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
@@ -125,7 +128,7 @@ public class ReasoningEffortNormalizationTests
     }
 
     [Fact]
-    public void ProxyPriorityQwenCloudFormatInjectsEnableThinkingAndLegacyEffort()
+    public void ProxyPriorityQwenCloudFormatInjectsExtraBodyWrapper()
     {
         AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.QwenCloud);
 
@@ -133,9 +136,11 @@ public class ReasoningEffortNormalizationTests
             """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
             settings);
 
-        Assert.True(root.GetProperty("enable_thinking").GetBoolean());
-        Assert.Equal("medium", root.GetProperty("reasoning_effort").GetString());
-        Assert.False(root.TryGetProperty("reasoning", out _));
+        JsonElement extraBody = root.GetProperty("extra_body");
+        Assert.True(extraBody.GetProperty("enable_thinking").GetBoolean());
+        Assert.Equal("medium", extraBody.GetProperty("reasoning_effort").GetString());
+        Assert.False(root.TryGetProperty("reasoning_effort", out _));
+        Assert.False(root.TryGetProperty("enable_thinking", out _));
     }
 
     [Fact]
@@ -164,15 +169,17 @@ public class ReasoningEffortNormalizationTests
     }
 
     [Fact]
-    public void ProxyPriorityQwenCloudFormatOverridesClientEnableThinking()
+    public void ProxyPriorityQwenCloudFormatOverridesClientExtraBody()
     {
         AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.QwenCloud);
 
         JsonElement root = Normalize(
-            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"enable_thinking":false}""",
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"extra_body":{"enable_thinking":false,"reasoning_effort":"low"}}""",
             settings);
 
-        Assert.True(root.GetProperty("enable_thinking").GetBoolean());
+        JsonElement extraBody = root.GetProperty("extra_body");
+        Assert.True(extraBody.GetProperty("enable_thinking").GetBoolean());
+        Assert.Equal("medium", extraBody.GetProperty("reasoning_effort").GetString());
     }
 
     [Fact]
@@ -225,5 +232,50 @@ public class ReasoningEffortNormalizationTests
             settings);
 
         Assert.Equal("medium", root.GetProperty("chat_template_kwargs").GetProperty("reasoning_effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityMultiSelectInjectsAllSelectedShapes()
+    {
+        AppSettings settings = CreateSettings(
+            SamplingPriority.Proxy,
+            "high",
+            ReasoningEffortFormat.QwenCloud | ReasoningEffortFormat.ChatTemplateKwargs);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.Equal("high", root.GetProperty("extra_body").GetProperty("reasoning_effort").GetString());
+        Assert.Equal("high", root.GetProperty("chat_template_kwargs").GetProperty("reasoning_effort").GetString());
+        Assert.False(root.TryGetProperty("reasoning_effort", out _));
+        Assert.False(root.TryGetProperty("reasoning", out _));
+    }
+
+    [Fact]
+    public void ProxyPriorityDropsUnselectedClientReasoningShapes()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "high", ReasoningEffortFormat.Legacy);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"extra_body":{"reasoning_effort":"low"},"chat_template_kwargs":{"reasoning_effort":"low"}}""",
+            settings);
+
+        Assert.Equal("high", root.GetProperty("reasoning_effort").GetString());
+        Assert.False(root.TryGetProperty("extra_body", out _));
+        Assert.False(root.TryGetProperty("chat_template_kwargs", out _));
+    }
+
+    [Fact]
+    public void ProxyPriorityQwenCloudFormatPassesClientTopLevelEnableThinkingThrough()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.QwenCloud);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"enable_thinking":false}""",
+            settings);
+
+        Assert.False(root.GetProperty("enable_thinking").GetBoolean());
+        Assert.True(root.GetProperty("extra_body").GetProperty("enable_thinking").GetBoolean());
     }
 }

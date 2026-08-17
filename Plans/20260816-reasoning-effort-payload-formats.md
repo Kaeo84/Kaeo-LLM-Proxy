@@ -16,13 +16,18 @@ OpenAI-style providers expect lowercase.
 
 ## Format semantics (Proxy priority injection)
 
-| Format    | Payload emitted                                                            |
-|-----------|----------------------------------------------------------------------------|
-| Legacy    | `"reasoning_effort": "<value>"` (current behavior, default)               |
-| Modern    | `"reasoning": { "effort": "<value>" }`                                    |
-| Both      | both of the above                                                          |
-| QwenCloud | `"enable_thinking": true` + `"reasoning_effort": "<value>"`               |
-| ChatTemplateKwargs | `"chat_template_kwargs": { "reasoning_effort": "<value>" }` (llama.cpp, vLLM, and other local inference servers) |
+Superseded by `20260817-reasoning-format-multiselect-extra-body.md`: the setting is now a
+multiselect flags enum (the dedicated "Both" option is gone) and Qwen Cloud emits an
+`extra_body` wrapper. Current payload shapes:
+
+| Format flag       | Payload emitted                                                            |
+|-------------------|----------------------------------------------------------------------------|
+| Legacy            | `"reasoning_effort": "<value>"` (default)                                 |
+| Modern            | `"reasoning": { "effort": "<value>" }`                                    |
+| QwenCloud         | `"extra_body": { "enable_thinking": true, "reasoning_effort": "<value>" }` |
+| ChatTemplateKwargs| `"chat_template_kwargs": { "reasoning_effort": "<value>" }` (llama.cpp, vLLM) |
+
+Any combination of flags may be selected; every selected shape is emitted.
 
 - Client App priority keeps passing client `reasoning_effort` / `reasoning` / `enable_thinking`
   through unchanged; Provider priority keeps dropping only `reasoning_effort` as before.

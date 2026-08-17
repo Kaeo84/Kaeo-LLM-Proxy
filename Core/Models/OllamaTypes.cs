@@ -288,8 +288,8 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
     /// <summary>Modern nested reasoning object (<c>reasoning.effort</c>) used by newer OpenAI models.</summary>
     [JsonPropertyName("reasoning")] public LlamaCppReasoning? Reasoning { get; set; }
-    /// <summary>Qwen Cloud thinking switch sent alongside <c>reasoning_effort</c>.</summary>
-    [JsonPropertyName("enable_thinking")] public bool? EnableThinking { get; set; }
+    /// <summary>Qwen Cloud wrapper carrying <c>enable_thinking</c> alongside <c>reasoning_effort</c>.</summary>
+    [JsonPropertyName("extra_body")] public LlamaCppExtraBody? ExtraBody { get; set; }
     /// <summary>Chat template kwargs carrying <c>reasoning_effort</c> for llama.cpp/vLLM-style local servers.</summary>
     [JsonPropertyName("chat_template_kwargs")] public LlamaCppChatTemplateKwargs? ChatTemplateKwargs { get; set; }
 }
@@ -298,6 +298,16 @@ internal sealed class LlamaCppChatRequest
 internal sealed class LlamaCppReasoning
 {
     [JsonPropertyName("effort")] public string? Effort { get; set; }
+}
+
+/// <summary>
+/// Qwen Cloud request wrapper: the thinking switch plus the reasoning effort travel together
+/// inside an <c>extra_body</c> object rather than as top-level fields.
+/// </summary>
+internal sealed class LlamaCppExtraBody
+{
+    [JsonPropertyName("enable_thinking")] public bool? EnableThinking { get; set; }
+    [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
 }
 
 /// <summary>

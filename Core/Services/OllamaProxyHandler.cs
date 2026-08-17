@@ -225,22 +225,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Wire shapes the reasoning effort injection can take. Legacy and Qwen Cloud carry a
-    /// top-level <c>reasoning_effort</c> string; Modern and Both carry a nested
-    /// <c>reasoning.effort</c> object; Qwen Cloud additionally sends <c>enable_thinking</c>;
-    /// ChatTemplateKwargs carries <c>chat_template_kwargs.reasoning_effort</c> for local servers.
-    /// </summary>
-    private static (bool Legacy, bool Modern, bool EnableThinking, bool ChatTemplateKwargs) GetReasoningFormatComponents(ReasoningEffortFormat format) =>
-        format switch
-        {
-            ReasoningEffortFormat.Modern => (false, true, false, false),
-            ReasoningEffortFormat.Both => (true, true, false, false),
-            ReasoningEffortFormat.QwenCloud => (true, false, true, false),
-            ReasoningEffortFormat.ChatTemplateKwargs => (false, false, false, true),
-            _ => (true, false, false, false),
-        };
-
-    /// <summary>
     /// Resolves the lowercased reasoning_effort to inject into a translated upstream chat
     /// request. Ollama clients cannot send reasoning_effort, so only Proxy priority (which
     /// overrides) produces a value; Client App and Provider priorities omit the field.
@@ -252,9 +236,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : null;
 
     /// <summary>
-    /// Applies the configured reasoning effort to a translated chat request using the mapping's
-    /// <see cref="ReasoningEffortFormat"/>: legacy top-level field, modern nested object, both,
-    /// the Qwen Cloud <c>enable_thinking</c> combination, or <c>chat_template_kwargs</c>.
+    /// Applies the configured reasoning effort to a translated chat request, emitting every
+    /// wire shape selected in the mapping's <see cref="ReasoningEffortFormat"/> flags: legacy
+    /// top-level field, modern nested object, the Qwen Cloud <c>extra_body</c> wrapper, and/or
+    /// <c>chat_template_kwargs</c>.
     /// </summary>
     private static void ApplyReasoningEffort(ModelMapping? mapping, LlamaCppChatRequest request)
     {
@@ -262,16 +247,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (effort is null)
             return;
 
-        (bool legacy, bool modern, bool enableThinking, bool chatTemplateKwargs) =
-            GetReasoningFormatComponents(mapping!.ReasoningEffortFormat);
+        ReasoningEffortFormat format = mapping!.ReasoningEffortFormat;
 
-        if (legacy)
+        if (format.HasFlag(ReasoningEffortFormat.Legacy))
             request.ReasoningEffort = effort;
-        if (modern)
+        if (format.HasFlag(ReasoningEffortFormat.Modern))
             request.Reasoning = new LlamaCppReasoning { Effort = effort };
-        if (enableThinking)
-            request.EnableThinking = true;
-        if (chatTemplateKwargs)
+        if (format.HasFlag(ReasoningEffortFormat.QwenCloud))
+            request.ExtraBody = new LlamaCppExtraBody { EnableThinking = true, ReasoningEffort = effort };
+        if (format.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs))
             request.ChatTemplateKwargs = new LlamaCppChatTemplateKwargs { ReasoningEffort = effort };
     }
 
@@ -1643,9 +1627,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     ///         <c>temperature</c>/<c>repeat_penalty</c> so hosted providers keep their platform
     ///         values; <c>Proxy</c> overwrites (or injects) the configured proxy values.</item>
     ///   <item>Under <c>Proxy</c> reasoning priority, injects the configured reasoning effort in
-    ///         the mapping's <see cref="ReasoningEffortFormat"/> wire shape (legacy
-    ///         <c>reasoning_effort</c>, modern <c>reasoning.effort</c>, both, the Qwen Cloud
-    ///         <c>enable_thinking</c> combination, or <c>chat_template_kwargs</c>), lowercasing
+    ///         every wire shape selected by the mapping's <see cref="ReasoningEffortFormat"/>
+    ///         flags (legacy <c>reasoning_effort</c>, modern <c>reasoning.effort</c>, the Qwen
+    ///         Cloud <c>extra_body</c> wrapper, and/or <c>chat_template_kwargs</c>), lowercasing
     ///         the value.</item>
     /// </list>
     /// Returns the original text unchanged if the body isn't valid JSON.
@@ -1675,14 +1659,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // Providers expect lowercase effort levels (e.g. OpenAI rejects "High").
             string proxyReasoningEffort = normalizeMapping?.ReasoningEffort?.Trim().ToLowerInvariant() ?? string.Empty;
             bool proxyHasReasoningEffort = reasoningPriority == SamplingPriority.Proxy && proxyReasoningEffort.Length > 0;
-            // The configured format only matters when the proxy injects: Legacy/Qwen Cloud carry a
-            // top-level reasoning_effort, Modern/Both a nested reasoning object, Qwen Cloud
-            // additionally sends enable_thinking, and ChatTemplateKwargs a chat_template_kwargs
-            // object for local inference servers.
-            (bool injectLegacyEffort, bool injectModernEffort, bool injectEnableThinking, bool injectChatTemplateKwargs) =
-                proxyHasReasoningEffort
-                    ? GetReasoningFormatComponents(normalizeMapping!.ReasoningEffortFormat)
-                    : (false, false, false, false);
+            // The configured formats only matter when the proxy injects: each selected flag adds
+            // its wire shape (top-level reasoning_effort, nested reasoning object, the extra_body
+            // wrapper, or chat_template_kwargs for local inference servers).
+            ReasoningEffortFormat reasoningFormat = normalizeMapping?.ReasoningEffortFormat ?? ReasoningEffortFormat.Legacy;
+            bool injectLegacyEffort = proxyHasReasoningEffort && reasoningFormat.HasFlag(ReasoningEffortFormat.Legacy);
+            bool injectModernEffort = proxyHasReasoningEffort && reasoningFormat.HasFlag(ReasoningEffortFormat.Modern);
+            bool injectExtraBody = proxyHasReasoningEffort && reasoningFormat.HasFlag(ReasoningEffortFormat.QwenCloud);
+            bool injectChatTemplateKwargs = proxyHasReasoningEffort && reasoningFormat.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs);
             // Provider drops the field; Proxy overrides/injects the configured value. Client App
             // (and Proxy without a configured value) leave the client's field untouched.
             bool rewriteReasoningEffort = reasoningPriority == SamplingPriority.Provider || proxyHasReasoningEffort;
@@ -1732,7 +1716,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             bool clientHadRepeatPenalty = false;
             bool wroteReasoningEffort = false;
             bool wroteReasoning = false;
-            bool wroteEnableThinking = false;
+            bool wroteExtraBody = false;
             bool wroteChatTemplateKwargs = false;
 
             foreach (JsonProperty prop in root.EnumerateObject())
@@ -1793,13 +1777,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     else
                         prop.WriteTo(writer);
                 }
-                else if (prop.Name.Equals("enable_thinking", StringComparison.OrdinalIgnoreCase))
+                else if (prop.Name.Equals("extra_body", StringComparison.OrdinalIgnoreCase)
+                      && prop.Value.ValueKind == JsonValueKind.Object)
                 {
-                    // Qwen Cloud format always enables thinking alongside reasoning_effort.
-                    if (proxyHasReasoningEffort && injectEnableThinking)
+                    if (proxyHasReasoningEffort)
                     {
-                        writer.WriteBoolean("enable_thinking", true);
-                        wroteEnableThinking = true;
+                        // The proxy takes over: override when the configured formats carry an
+                        // extra_body wrapper, otherwise drop the client's.
+                        if (injectExtraBody)
+                        {
+                            WriteExtraBodyObject(writer, proxyReasoningEffort);
+                            wroteExtraBody = true;
+                        }
                     }
                     else
                         prop.WriteTo(writer);
@@ -1902,8 +1891,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     writer.WriteString("reasoning_effort", proxyReasoningEffort);
                 if (injectModernEffort && !wroteReasoning)
                     WriteReasoningObject(writer, proxyReasoningEffort);
-                if (injectEnableThinking && !wroteEnableThinking)
-                    writer.WriteBoolean("enable_thinking", true);
+                if (injectExtraBody && !wroteExtraBody)
+                    WriteExtraBodyObject(writer, proxyReasoningEffort);
                 if (injectChatTemplateKwargs && !wroteChatTemplateKwargs)
                     WriteChatTemplateKwargsObject(writer, proxyReasoningEffort);
             }
@@ -1926,6 +1915,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         writer.WritePropertyName("reasoning");
         writer.WriteStartObject();
         writer.WriteString("effort", effort);
+        writer.WriteEndObject();
+    }
+
+    /// <summary>Writes the Qwen Cloud <c>"extra_body": { "enable_thinking": true,
+    /// "reasoning_effort": "..." }</c> wrapper.</summary>
+    private static void WriteExtraBodyObject(Utf8JsonWriter writer, string effort)
+    {
+        writer.WritePropertyName("extra_body");
+        writer.WriteStartObject();
+        writer.WriteBoolean("enable_thinking", true);
+        writer.WriteString("reasoning_effort", effort);
         writer.WriteEndObject();
     }
 

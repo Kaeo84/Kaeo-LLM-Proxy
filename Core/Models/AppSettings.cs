@@ -31,29 +31,28 @@ internal enum SamplingPriority
 }
 
 /// <summary>
-/// Determines the wire format the proxy uses when it injects a reasoning effort value into an
-/// upstream request under <see cref="SamplingPriority.Proxy"/> priority. Providers disagree on
-/// the shape: older OpenAI models read a top-level <c>reasoning_effort</c> string, newer OpenAI
-/// models read a nested <c>reasoning.effort</c> object, Qwen Cloud expects
-/// <c>enable_thinking</c> alongside <c>reasoning_effort</c>, and local inference servers
-/// (llama.cpp, vLLM) read <c>chat_template_kwargs.reasoning_effort</c>.
+/// Wire formats the proxy uses when it injects a reasoning effort value into an upstream
+/// request under <see cref="SamplingPriority.Proxy"/> priority, selectable in any combination.
+/// Providers disagree on the shape: older OpenAI models read a top-level
+/// <c>reasoning_effort</c> string, newer OpenAI models read a nested <c>reasoning.effort</c>
+/// object, Qwen Cloud expects an <c>extra_body</c> wrapper carrying <c>enable_thinking</c>
+/// alongside <c>reasoning_effort</c>, and local inference servers (llama.cpp, vLLM) read
+/// <c>chat_template_kwargs.reasoning_effort</c>.
 /// </summary>
+[Flags]
 internal enum ReasoningEffortFormat
 {
     /// <summary>Legacy top-level <c>"reasoning_effort": "value"</c> property (e.g. o3-mini).</summary>
-    Legacy = 0,
+    Legacy = 1,
 
     /// <summary>Modern nested <c>"reasoning": { "effort": "value" }</c> object (e.g. gpt-5.5).</summary>
-    Modern = 1,
+    Modern = 2,
 
-    /// <summary>Inject both the legacy and the modern representation.</summary>
-    Both = 2,
-
-    /// <summary>Qwen Cloud style: <c>"enable_thinking": true</c> plus legacy <c>reasoning_effort</c>.</summary>
-    QwenCloud = 3,
+    /// <summary>Qwen Cloud style: <c>"extra_body": { "enable_thinking": true, "reasoning_effort": "value" }</c>.</summary>
+    QwenCloud = 4,
 
     /// <summary>Local inference servers (llama.cpp, vLLM): <c>"chat_template_kwargs": { "reasoning_effort": "value" }</c>.</summary>
-    ChatTemplateKwargs = 4,
+    ChatTemplateKwargs = 8,
 }
 
 /// <summary>
@@ -339,10 +338,11 @@ internal sealed class ModelMapping
     public List<string> ReasoningEffortValues { get; set; } = [];
 
     /// <summary>
-    /// Wire format used when the proxy injects <see cref="ReasoningEffort"/> under
-    /// <see cref="SamplingPriority.Proxy"/> priority. Ignored for the other priorities:
-    /// Client App passes the client's fields through unchanged and Provider omits them.
-    /// Defaults to <see cref="ReasoningEffortFormat.Legacy"/>. Injected values are always
+    /// Wire formats emitted when the proxy injects <see cref="ReasoningEffort"/> under
+    /// <see cref="SamplingPriority.Proxy"/> priority; any combination of flags may be selected
+    /// and each selected format is written into the upstream request. Ignored for the other
+    /// priorities: Client App passes the client's fields through unchanged and Provider omits
+    /// them. Defaults to <see cref="ReasoningEffortFormat.Legacy"/>. Injected values are always
     /// lowercased because OpenAI-style providers expect lowercase effort levels.
     /// </summary>
     public ReasoningEffortFormat ReasoningEffortFormat { get; set; } = ReasoningEffortFormat.Legacy;

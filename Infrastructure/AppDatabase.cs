@@ -1133,7 +1133,7 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
                     reasoning_effort TEXT NULL,
                     reasoning_effort_values TEXT NULL,
-                    reasoning_effort_format INTEGER NOT NULL DEFAULT 0
+                    reasoning_effort_format INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1451,7 +1451,7 @@ internal sealed class AppDatabase : IDisposable
         if (!ColumnExists(connection, "model_mappings", "reasoning_effort_format"))
         {
             using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_format INTEGER NOT NULL DEFAULT 0;";
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_format INTEGER NOT NULL DEFAULT 1;";
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added reasoning_effort_format column.");
@@ -1709,10 +1709,24 @@ internal sealed class AppDatabase : IDisposable
         ReasoningEffortValues = reader.IsDBNull(26)
             ? []
             : [.. reader.GetString(26).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = Enum.IsDefined(typeof(ReasoningEffortFormat), reader.GetInt32(27))
-            ? (ReasoningEffortFormat)reader.GetInt32(27)
-            : ReasoningEffortFormat.Legacy,
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(27)),
     };
+
+    /// <summary>
+    /// Interprets the stored bitmask as a <see cref="ReasoningEffortFormat"/>, discarding unknown
+    /// bits and falling back to <see cref="ReasoningEffortFormat.Legacy"/> when nothing is
+    /// selected (e.g. the historical column default) so Proxy-priority mappings keep injecting.
+    /// </summary>
+    private static ReasoningEffortFormat ToReasoningEffortFormat(int value)
+    {
+        const ReasoningEffortFormat allFormats = ReasoningEffortFormat.Legacy
+            | ReasoningEffortFormat.Modern
+            | ReasoningEffortFormat.QwenCloud
+            | ReasoningEffortFormat.ChatTemplateKwargs;
+
+        ReasoningEffortFormat format = (ReasoningEffortFormat)value & allFormats;
+        return format == default ? ReasoningEffortFormat.Legacy : format;
+    }
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
     {
