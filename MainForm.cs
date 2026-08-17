@@ -2534,38 +2534,28 @@ internal partial class MainForm : Form
             ? proxyName
             : mapping.ModelName;
 
-        // Inject configured instruction set (if any) as a leading system message.
-        InstructionSet? instructionSet = _settings.FindInstructionSet(mapping.InstructionSetName);
+        // The Test Console acts as a regular client app: it sends the proxy model name and its
+        // own sampling values, then runs the body through the same normalization pipeline the
+        // /v1 passthrough uses, so model rewriting, instruction injection and the per-model
+        // sampling priorities (including reasoning_effort) apply identically.
+        var messages = new List<object>
+        {
+            new { role = "user", content = prompt },
+        };
 
-        var messages = new List<object>();
-        if (instructionSet is not null && !string.IsNullOrWhiteSpace(instructionSet.Instructions))
-            messages.Add(new { role = "system", content = instructionSet.Instructions });
-        messages.Add(new { role = "user", content = prompt });
-
-        // Honor the per-model sampling overrides: when disabled, the field is omitted entirely
-        // so hosted providers keep their platform-configured values.
         JsonArray messagesArray = [];
         foreach (object message in messages)
             messagesArray.Add(JsonSerializer.SerializeToNode(message));
 
         JsonObject payload = new()
         {
-            ["model"] = upstreamModel,
+            ["model"] = proxyName,
             ["stream"] = true,
             ["messages"] = messagesArray,
+            ["temperature"] = (double)_nudTestTemp.Value,
+            ["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value,
         };
-        // The Test Console is itself the client app: its values win under Client App Priority,
-        // the configured proxy values win under Proxy Priority, and Provider Priority omits them.
-        if (mapping.TemperaturePriority == SamplingPriority.ClientApp)
-            payload["temperature"] = (double)_nudTestTemp.Value;
-        else if (mapping.TemperaturePriority == SamplingPriority.Proxy)
-            payload["temperature"] = mapping.Temperature;
-
-        if (mapping.RepeatPenaltyPriority == SamplingPriority.ClientApp)
-            payload["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value;
-        else if (mapping.RepeatPenaltyPriority == SamplingPriority.Proxy)
-            payload["repeat_penalty"] = mapping.RepeatPenalty;
-        string requestBody = payload.ToJsonString(_indentedJsonOptions);
+        string clientBody = payload.ToJsonString(_indentedJsonOptions);
 
         var log = new RequestLog
         {
@@ -2575,9 +2565,22 @@ internal partial class MainForm : Form
             Model = proxyName,
             Streaming = true,
             Status = RequestStatus.Success,
-            RequestBody = _settings.CollectRequestDetails ? requestBody : null,
-            RequestBytes = Encoding.UTF8.GetByteCount(requestBody),
+            RequestBytes = Encoding.UTF8.GetByteCount(clientBody),
         };
+
+        string requestBody = OllamaProxyHandler.NormalizeRequestBody(
+            clientBody,
+            _settings,
+            log,
+            modelName => OllamaProxyHandler.ShouldApplyThinkingCompatibility(_settings, modelName));
+
+        // Capture the client's original body and the upstream-bound (rewritten) body side by
+        // side, mirroring the passthrough path, so proxy-injected values are visible in the log.
+        if (_settings.CollectRequestDetails)
+        {
+            log.RequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, clientBody, proxyName);
+            log.UpstreamRequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, requestBody, proxyName);
+        }
 
         var responseBuilder = new StringBuilder();
         bool hasThinkingOutput = false;
