@@ -5,12 +5,13 @@ namespace Kaeo.LlmProxy.Modules;
 /// </summary>
 public sealed class ModuleContext
 {
-    public ModuleContext(IModuleDatabase database, ISecretProvider secrets, HostInfo host, IMcpActivityLog activityLog)
+    public ModuleContext(IModuleDatabase database, ISecretProvider secrets, HostInfo host, IMcpActivityLog activityLog, string dataDirectory)
     {
         Database = database ?? throw new ArgumentNullException(nameof(database));
         Secrets = secrets ?? throw new ArgumentNullException(nameof(secrets));
         Host = host ?? throw new ArgumentNullException(nameof(host));
         ActivityLog = activityLog ?? throw new ArgumentNullException(nameof(activityLog));
+        DataDirectory = dataDirectory ?? throw new ArgumentNullException(nameof(dataDirectory));
     }
 
     /// <summary>Gateway to the shared application database for schema and module data access.</summary>
@@ -27,6 +28,12 @@ public sealed class ModuleContext
     /// sub-tab). Entries written here are persisted alongside the MCP server's HTTP rows.
     /// </summary>
     public IMcpActivityLog ActivityLog { get; }
+
+    /// <summary>
+    /// Directory the host application uses to store its database and other persistent data.
+    /// Modules may place auxiliary files (module-owned databases, git mirrors) here.
+    /// </summary>
+    public string DataDirectory { get; }
 }
 
 /// <summary>

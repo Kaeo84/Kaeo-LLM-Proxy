@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.CodeVector</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy Code Vector Store</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWindowsForms>true</UseWindowsForms>
+		<!-- Module must ship neighbor runtime assemblies into its folder. -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" Private="false" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Compile-time only: the host supplies the runtime copies to unify types. -->
+		<PackageReference Include="ModelContextProtocol" Version="2.0.0" ExcludeAssets="runtime" />
+		<PackageReference Include="Serilog" Version="4.4.0" ExcludeAssets="runtime" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" ExcludeAssets="runtime" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Runtime dependencies: shipped beside the module DLL and loaded into the module's own
+				 assembly load context. -->
+		<PackageReference Include="LibGit2Sharp" Version="0.30.0" />
+		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.0" />
+	</ItemGroup>
+
+</Project>

@@ -54,6 +54,12 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
+    /// Absolute path to the configured application database file.
+    /// Exposed so modules can derive the application's data directory for module-owned files.
+    /// </summary>
+    public string DatabasePath => _configuredDbPath;
+
+    /// <summary>
     /// Inserts a request log entry.
     /// If <paramref name="ex"/> is provided, the full exception detail is stored in the
     /// exceptions table and the generated id is linked back onto <paramref name="entry"/>.
