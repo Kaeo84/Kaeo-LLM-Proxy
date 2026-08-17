@@ -38,4 +38,4 @@ OpenAI-style providers expect lowercase.
 - [x] 6. Add Reasoning Effort Format dropdown to ModelMappingDialog.cs (Proxy-only enablement)
 - [x] 7. Extend ReasoningEffortNormalizationTests with format and lowercase tests
 - [x] 8. Build solution and run tests
-- [ ] 9. Git commit
+- [x] 9. Git commit
