@@ -286,6 +286,16 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("n_ctx")] public int? NCtx { get; set; }
     /// <summary>Non-standard reasoning intensity hint supported by some hosted providers.</summary>
     [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
+    /// <summary>Modern nested reasoning object (<c>reasoning.effort</c>) used by newer OpenAI models.</summary>
+    [JsonPropertyName("reasoning")] public LlamaCppReasoning? Reasoning { get; set; }
+    /// <summary>Qwen Cloud thinking switch sent alongside <c>reasoning_effort</c>.</summary>
+    [JsonPropertyName("enable_thinking")] public bool? EnableThinking { get; set; }
+}
+
+/// <summary>Modern OpenAI reasoning object carrying the effort level (e.g. gpt-5.5).</summary>
+internal sealed class LlamaCppReasoning
+{
+    [JsonPropertyName("effort")] public string? Effort { get; set; }
 }
 
 internal sealed class LlamaCppCompletionRequest

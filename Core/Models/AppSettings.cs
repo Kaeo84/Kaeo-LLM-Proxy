@@ -31,6 +31,28 @@ internal enum SamplingPriority
 }
 
 /// <summary>
+/// Determines the wire format the proxy uses when it injects a reasoning effort value into an
+/// upstream request under <see cref="SamplingPriority.Proxy"/> priority. Providers disagree on
+/// the shape: older OpenAI models read a top-level <c>reasoning_effort</c> string, newer OpenAI
+/// models read a nested <c>reasoning.effort</c> object, and Qwen Cloud expects
+/// <c>enable_thinking</c> alongside <c>reasoning_effort</c>.
+/// </summary>
+internal enum ReasoningEffortFormat
+{
+    /// <summary>Legacy top-level <c>"reasoning_effort": "value"</c> property (e.g. o3-mini).</summary>
+    Legacy = 0,
+
+    /// <summary>Modern nested <c>"reasoning": { "effort": "value" }</c> object (e.g. gpt-5.5).</summary>
+    Modern = 1,
+
+    /// <summary>Inject both the legacy and the modern representation.</summary>
+    Both = 2,
+
+    /// <summary>Qwen Cloud style: <c>"enable_thinking": true</c> plus legacy <c>reasoning_effort</c>.</summary>
+    QwenCloud = 3,
+}
+
+/// <summary>
 /// Controls how upstream reasoning/"thinking" text is transformed before being returned to clients.
 /// </summary>
 internal enum ThinkingMode
@@ -313,6 +335,15 @@ internal sealed class ModelMapping
     public List<string> ReasoningEffortValues { get; set; } = [];
 
     /// <summary>
+    /// Wire format used when the proxy injects <see cref="ReasoningEffort"/> under
+    /// <see cref="SamplingPriority.Proxy"/> priority. Ignored for the other priorities:
+    /// Client App passes the client's fields through unchanged and Provider omits them.
+    /// Defaults to <see cref="ReasoningEffortFormat.Legacy"/>. Injected values are always
+    /// lowercased because OpenAI-style providers expect lowercase effort levels.
+    /// </summary>
+    public ReasoningEffortFormat ReasoningEffortFormat { get; set; } = ReasoningEffortFormat.Legacy;
+
+    /// <summary>
     /// Enable automatic context summarization when the model's context window is exceeded.
     /// When enabled, the proxy will automatically summarize older conversation history
     /// and retry the request with condensed context. Default: true.
@@ -408,6 +439,7 @@ internal sealed class ModelMapping
         ReasoningEffortPriority = ReasoningEffortPriority,
         ReasoningEffort = ReasoningEffort,
         ReasoningEffortValues = [.. ReasoningEffortValues],
+        ReasoningEffortFormat = ReasoningEffortFormat,
         EnableAutoSummarization = EnableAutoSummarization,
         PreserveRecentMessageCount = PreserveRecentMessageCount,
         MaxSummarizationRetries = MaxSummarizationRetries,

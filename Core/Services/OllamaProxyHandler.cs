@@ -218,10 +218,57 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             "Add a mapping in settings with ProxyName, ModelName, and UpstreamUrl.");
     }
 
-    private bool ShouldApplyThinkingCompatibility(string modelName)
+    internal static bool ShouldApplyThinkingCompatibility(AppSettings settings, string modelName)
     {
-        ModelMapping? mapping = _settings.FindModelMapping(modelName);
+        ModelMapping? mapping = settings.FindModelMapping(modelName);
         return mapping?.EnableThinkingCompatibility ?? true;
+    }
+
+    /// <summary>
+    /// Wire shapes the reasoning effort injection can take. Legacy and Qwen Cloud carry a
+    /// top-level <c>reasoning_effort</c> string; Modern and Both carry a nested
+    /// <c>reasoning.effort</c> object; Qwen Cloud additionally sends <c>enable_thinking</c>.
+    /// </summary>
+    private static (bool Legacy, bool Modern, bool EnableThinking) GetReasoningFormatComponents(ReasoningEffortFormat format) =>
+        format switch
+        {
+            ReasoningEffortFormat.Modern => (false, true, false),
+            ReasoningEffortFormat.Both => (true, true, false),
+            ReasoningEffortFormat.QwenCloud => (true, false, true),
+            _ => (true, false, false),
+        };
+
+    /// <summary>
+    /// Resolves the lowercased reasoning_effort to inject into a translated upstream chat
+    /// request. Ollama clients cannot send reasoning_effort, so only Proxy priority (which
+    /// overrides) produces a value; Client App and Provider priorities omit the field.
+    /// </summary>
+    private static string? ResolveReasoningEffort(ModelMapping? mapping) =>
+        mapping is { ReasoningEffortPriority: SamplingPriority.Proxy }
+            && !string.IsNullOrWhiteSpace(mapping.ReasoningEffort)
+                ? mapping.ReasoningEffort.Trim().ToLowerInvariant()
+                : null;
+
+    /// <summary>
+    /// Applies the configured reasoning effort to a translated chat request using the mapping's
+    /// <see cref="ReasoningEffortFormat"/>: legacy top-level field, modern nested object, both,
+    /// or the Qwen Cloud <c>enable_thinking</c> combination.
+    /// </summary>
+    private static void ApplyReasoningEffort(ModelMapping? mapping, LlamaCppChatRequest request)
+    {
+        string? effort = ResolveReasoningEffort(mapping);
+        if (effort is null)
+            return;
+
+        (bool legacy, bool modern, bool enableThinking) =
+            GetReasoningFormatComponents(mapping!.ReasoningEffortFormat);
+
+        if (legacy)
+            request.ReasoningEffort = effort;
+        if (modern)
+            request.Reasoning = new LlamaCppReasoning { Effort = effort };
+        if (enableThinking)
+            request.EnableThinking = true;
     }
 
     /// <summary>
@@ -230,17 +277,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// overrides (<see cref="SamplingPriority.Proxy"/>), or the field is omitted entirely
     /// (<see cref="SamplingPriority.Provider"/>).
     /// </summary>
-    /// <summary>
-    /// Resolves the reasoning_effort to inject into a translated upstream chat request. Ollama
-    /// clients cannot send reasoning_effort, so only Proxy priority (which overrides) produces
-    /// a value; Client App and Provider priorities omit the field.
-    /// </summary>
-    private static string? ResolveReasoningEffort(ModelMapping? mapping) =>
-        mapping is { ReasoningEffortPriority: SamplingPriority.Proxy }
-            && !string.IsNullOrWhiteSpace(mapping.ReasoningEffort)
-                ? mapping.ReasoningEffort.Trim()
-                : null;
-
     private static float? ResolveSamplingValue(SamplingPriority priority, float? clientValue, float proxyValue) =>
         priority switch
         {
@@ -641,15 +677,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 string bodyText = await ReadBodyAsync(req, ct);
                 log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
-                string rewritten = NormalizeRequestBody(bodyText, _settings, log, ShouldApplyThinkingCompatibility);
+                string rewritten = NormalizeRequestBody(
+                    bodyText, _settings, log, modelName => ShouldApplyThinkingCompatibility(_settings, modelName));
                 originalModel = log.Model; // set by NormalizeRequestBody
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
                 // side-by-side in the request log.
                 if (_settings.CollectRequestDetails)
                 {
-                    log.RequestBody = RedactRequestBodyForLog(bodyText, originalModel);
-                    log.UpstreamRequestBody = RedactRequestBodyForLog(rewritten, originalModel);
+                    log.RequestBody = RedactRequestBodyForLog(_settings, bodyText, originalModel);
+                    log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, rewritten, originalModel);
                 }
                 isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
                 log.Streaming = isStreamingRequest;
@@ -1601,6 +1638,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     ///   <item>Applies the per-model sampling priorities: <c>Provider</c> drops client-supplied
     ///         <c>temperature</c>/<c>repeat_penalty</c> so hosted providers keep their platform
     ///         values; <c>Proxy</c> overwrites (or injects) the configured proxy values.</item>
+    ///   <item>Under <c>Proxy</c> reasoning priority, injects the configured reasoning effort in
+    ///         the mapping's <see cref="ReasoningEffortFormat"/> wire shape (legacy
+    ///         <c>reasoning_effort</c>, modern <c>reasoning.effort</c>, both, or the Qwen Cloud
+    ///         <c>enable_thinking</c> combination), lowercasing the value.</item>
     /// </list>
     /// Returns the original text unchanged if the body isn't valid JSON.
     /// </summary>
@@ -1626,8 +1667,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             double proxyTemperature = normalizeMapping?.Temperature ?? 0.7;
             double proxyRepeatPenalty = normalizeMapping?.RepeatPenalty ?? 1.0;
             SamplingPriority reasoningPriority = normalizeMapping?.ReasoningEffortPriority ?? SamplingPriority.ClientApp;
-            string proxyReasoningEffort = normalizeMapping?.ReasoningEffort?.Trim() ?? string.Empty;
+            // Providers expect lowercase effort levels (e.g. OpenAI rejects "High").
+            string proxyReasoningEffort = normalizeMapping?.ReasoningEffort?.Trim().ToLowerInvariant() ?? string.Empty;
             bool proxyHasReasoningEffort = reasoningPriority == SamplingPriority.Proxy && proxyReasoningEffort.Length > 0;
+            // The configured format only matters when the proxy injects: Legacy/Qwen Cloud carry a
+            // top-level reasoning_effort, Modern/Both a nested reasoning object, and Qwen Cloud
+            // additionally sends enable_thinking.
+            (bool injectLegacyEffort, bool injectModernEffort, bool injectEnableThinking) =
+                proxyHasReasoningEffort
+                    ? GetReasoningFormatComponents(normalizeMapping!.ReasoningEffortFormat)
+                    : (false, false, false);
             // Provider drops the field; Proxy overrides/injects the configured value. Client App
             // (and Proxy without a configured value) leave the client's field untouched.
             bool rewriteReasoningEffort = reasoningPriority == SamplingPriority.Provider || proxyHasReasoningEffort;
@@ -1675,7 +1724,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             bool clientHadTemperature = false;
             bool clientHadRepeatPenalty = false;
-            bool clientHadReasoningEffort = false;
+            bool wroteReasoningEffort = false;
+            bool wroteReasoning = false;
+            bool wroteEnableThinking = false;
 
             foreach (JsonProperty prop in root.EnumerateObject())
             {
@@ -1703,12 +1754,46 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
                 else if (prop.Name.Equals("reasoning_effort", StringComparison.OrdinalIgnoreCase))
                 {
-                    clientHadReasoningEffort = true;
                     if (reasoningPriority == SamplingPriority.Provider)
                         continue;
 
                     if (proxyHasReasoningEffort)
-                        writer.WriteString("reasoning_effort", proxyReasoningEffort);
+                    {
+                        // The proxy takes over: override when the configured format carries a
+                        // legacy field, otherwise drop the client's value.
+                        if (injectLegacyEffort)
+                        {
+                            writer.WriteString("reasoning_effort", proxyReasoningEffort);
+                            wroteReasoningEffort = true;
+                        }
+                    }
+                    else
+                        prop.WriteTo(writer);
+                }
+                else if (prop.Name.Equals("reasoning", StringComparison.OrdinalIgnoreCase)
+                      && prop.Value.ValueKind == JsonValueKind.Object)
+                {
+                    if (proxyHasReasoningEffort)
+                    {
+                        // The proxy takes over: override when the configured format carries a
+                        // modern object, otherwise drop the client's.
+                        if (injectModernEffort)
+                        {
+                            WriteReasoningObject(writer, proxyReasoningEffort);
+                            wroteReasoning = true;
+                        }
+                    }
+                    else
+                        prop.WriteTo(writer);
+                }
+                else if (prop.Name.Equals("enable_thinking", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Qwen Cloud format always enables thinking alongside reasoning_effort.
+                    if (proxyHasReasoningEffort && injectEnableThinking)
+                    {
+                        writer.WriteBoolean("enable_thinking", true);
+                        wroteEnableThinking = true;
+                    }
                     else
                         prop.WriteTo(writer);
                 }
@@ -1788,8 +1873,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 writer.WriteNumber("temperature", proxyTemperature);
             if (repeatPriority == SamplingPriority.Proxy && !clientHadRepeatPenalty)
                 writer.WriteNumber("repeat_penalty", proxyRepeatPenalty);
-            if (proxyHasReasoningEffort && !clientHadReasoningEffort)
-                writer.WriteString("reasoning_effort", proxyReasoningEffort);
+            if (proxyHasReasoningEffort)
+            {
+                if (injectLegacyEffort && !wroteReasoningEffort)
+                    writer.WriteString("reasoning_effort", proxyReasoningEffort);
+                if (injectModernEffort && !wroteReasoning)
+                    WriteReasoningObject(writer, proxyReasoningEffort);
+                if (injectEnableThinking && !wroteEnableThinking)
+                    writer.WriteBoolean("enable_thinking", true);
+            }
 
             writer.WriteEndObject();
             writer.Flush();
@@ -1801,6 +1893,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // Non-JSON or malformed body — forward as-is.
             return json;
         }
+    }
+
+    /// <summary>Writes the modern nested <c>"reasoning": { "effort": "..." }</c> object.</summary>
+    private static void WriteReasoningObject(Utf8JsonWriter writer, string effort)
+    {
+        writer.WritePropertyName("reasoning");
+        writer.WriteStartObject();
+        writer.WriteString("effort", effort);
+        writer.WriteEndObject();
     }
 
     private static bool IsAssistantResponsePrefill(JsonElement message)
@@ -1837,9 +1938,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             : instructionSet.Instructions;
     }
 
-    private string RedactRequestBodyForLog(string body, string modelName)
+    internal static string RedactRequestBodyForLog(AppSettings settings, string body, string modelName)
     {
-        ModelMapping? mapping = _settings.FindModelMapping(modelName);
+        ModelMapping? mapping = settings.FindModelMapping(modelName);
         if (mapping?.RedactRequestBodies ?? true)
             return RedactedBodyText;
 
@@ -2003,7 +2104,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string modelName = mapping?.ModelName ?? _settings.ResolveModelName(requestedModel);
         log.Model = modelName;
         if (_settings.CollectRequestDetails)
-            log.RequestBody = RedactRequestBodyForLog(body, requestedModel);
+            log.RequestBody = RedactRequestBodyForLog(_settings, body, requestedModel);
 
         // /api/show asks the proxy what it has configured for a model — it isn't a
         // request the upstream needs to answer, and upstreams vary wildly in whether/how
@@ -2193,7 +2294,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
         if (_settings.CollectRequestDetails)
-            log.RequestBody = RedactRequestBodyForLog(body, ollamaReq.Model);
+            log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
         var (genBase, genTimeout, genApiKey) = ResolveUpstream(ollamaReq.Model);
 
@@ -2247,7 +2348,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Capture the upstream-bound (translated) body so proxy-injected values can be
         // compared against the client body in the request log.
         if (_settings.CollectRequestDetails)
-            log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
 
         using StringContent genContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var genReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/completions") { Content = genContent };
@@ -2325,7 +2426,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
         if (_settings.CollectRequestDetails)
-            log.RequestBody = RedactRequestBodyForLog(body, ollamaReq.Model);
+            log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
         var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
 
@@ -2340,7 +2441,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // upstreams can correlate assistant tool_calls with the following role:"tool" replies.
         List<LlamaCppMessage> messages = MapMessagesWithToolCorrelation(ollamaReq.Messages);
         if (messages.Count > 0
-            && ShouldApplyThinkingCompatibility(ollamaReq.Model)
+            && ShouldApplyThinkingCompatibility(_settings, ollamaReq.Model)
             && IsAssistantResponsePrefill(messages[^1]))
         {
             messages.RemoveAt(messages.Count - 1);
@@ -2386,18 +2487,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
                     ollamaReq.Options?.RepeatPenalty,
                     (float)(mapping?.RepeatPenalty ?? 1.0)),
-                ReasoningEffort = ResolveReasoningEffort(mapping),
                 Mirostat = ollamaReq.Options?.Mirostat,
                 MirostatTau = ollamaReq.Options?.MirostatTau,
                 MirostatEta = ollamaReq.Options?.MirostatEta,
                 NCtx = ollamaReq.Options?.NumCtx,
             };
 
+            // Apply the configured reasoning effort in the mapping's wire format (legacy, modern,
+            // both, or Qwen Cloud). No-op unless this mapping uses Proxy priority with a value.
+            ApplyReasoningEffort(mapping, llamaReq);
+
             string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
             // Capture the upstream-bound (translated) body so proxy-injected values such as
             // reasoning_effort can be compared against the client body in the request log.
             if (_settings.CollectRequestDetails)
-                log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+                log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
 
             using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
             using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
@@ -2578,7 +2682,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
         if (_settings.CollectRequestDetails)
-            log.RequestBody = RedactRequestBodyForLog(body, ollamaReq.Model);
+            log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         var (embedBase, embedTimeout, embedApiKey) = ResolveUpstream(ollamaReq.Model);
 
         // Resolve input: prefer new `input` (string or string[]), fall back to legacy `prompt`.
@@ -2590,7 +2694,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body for the request log.
         if (_settings.CollectRequestDetails)
-            log.UpstreamRequestBody = RedactRequestBodyForLog(upstreamBody, ollamaReq.Model);
+            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
 
         using StringContent embedContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var embedReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings") { Content = embedContent };

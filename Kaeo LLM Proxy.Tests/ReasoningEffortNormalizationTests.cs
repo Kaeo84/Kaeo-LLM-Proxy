@@ -11,7 +11,10 @@ namespace Kaeo.LlmProxy.Tests;
 /// </summary>
 public class ReasoningEffortNormalizationTests
 {
-    private static AppSettings CreateSettings(SamplingPriority priority, string? reasoningEffort)
+    private static AppSettings CreateSettings(
+        SamplingPriority priority,
+        string? reasoningEffort,
+        ReasoningEffortFormat format = ReasoningEffortFormat.Legacy)
     {
         AppSettings settings = new();
         settings.ModelMappings.Add(new ModelMapping
@@ -22,6 +25,7 @@ public class ReasoningEffortNormalizationTests
             ReasoningEffortPriority = priority,
             ReasoningEffort = reasoningEffort,
             ReasoningEffortValues = reasoningEffort is null ? [] : [reasoningEffort],
+            ReasoningEffortFormat = format,
         });
         return settings;
     }
@@ -92,5 +96,94 @@ public class ReasoningEffortNormalizationTests
             settings);
 
         Assert.False(root.TryGetProperty("reasoning_effort", out _));
+    }
+
+    [Fact]
+    public void ProxyPriorityModernFormatInjectsNestedReasoningObject()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "high", ReasoningEffortFormat.Modern);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.False(root.TryGetProperty("reasoning_effort", out _));
+        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityBothFormatInjectsLegacyAndModern()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.Both);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.Equal("medium", root.GetProperty("reasoning_effort").GetString());
+        Assert.Equal("medium", root.GetProperty("reasoning").GetProperty("effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityQwenCloudFormatInjectsEnableThinkingAndLegacyEffort()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.QwenCloud);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.True(root.GetProperty("enable_thinking").GetBoolean());
+        Assert.Equal("medium", root.GetProperty("reasoning_effort").GetString());
+        Assert.False(root.TryGetProperty("reasoning", out _));
+    }
+
+    [Fact]
+    public void ProxyPriorityLowercasesConfiguredValue()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "High", ReasoningEffortFormat.Legacy);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true}""",
+            settings);
+
+        Assert.Equal("high", root.GetProperty("reasoning_effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityModernFormatReplacesClientReasoningShapes()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "high", ReasoningEffortFormat.Modern);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low","reasoning":{"effort":"low"}}""",
+            settings);
+
+        Assert.False(root.TryGetProperty("reasoning_effort", out _));
+        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
+    }
+
+    [Fact]
+    public void ProxyPriorityQwenCloudFormatOverridesClientEnableThinking()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.Proxy, "medium", ReasoningEffortFormat.QwenCloud);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"enable_thinking":false}""",
+            settings);
+
+        Assert.True(root.GetProperty("enable_thinking").GetBoolean());
+    }
+
+    [Fact]
+    public void ClientAppPriorityPassesClientReasoningObjectThrough()
+    {
+        AppSettings settings = CreateSettings(SamplingPriority.ClientApp, null);
+
+        JsonElement root = Normalize(
+            """{"model":"test-model","messages":[{"role":"user","content":"hi"}],"reasoning":{"effort":"high"}}""",
+            settings);
+
+        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
     }
 }

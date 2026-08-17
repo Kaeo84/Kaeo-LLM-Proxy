@@ -178,7 +178,8 @@ internal sealed class AppDatabase : IDisposable
                     repeat_penalty_priority,
                     reasoning_effort_priority,
                     reasoning_effort,
-                    reasoning_effort_values
+                    reasoning_effort_values,
+                    reasoning_effort_format
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -242,7 +243,8 @@ internal sealed class AppDatabase : IDisposable
                         repeat_penalty_priority,
                         reasoning_effort_priority,
                         reasoning_effort,
-                        reasoning_effort_values
+                        reasoning_effort_values,
+                        reasoning_effort_format
                     )
                     VALUES (
                         $proxyName,
@@ -271,7 +273,8 @@ internal sealed class AppDatabase : IDisposable
                         $repeatPenaltyPriority,
                         $reasoningEffortPriority,
                         $reasoningEffort,
-                        $reasoningEffortValues
+                        $reasoningEffortValues,
+                        $reasoningEffortFormat
                     );
                     """;
 
@@ -1129,7 +1132,8 @@ internal sealed class AppDatabase : IDisposable
                     repeat_penalty_priority INTEGER NOT NULL DEFAULT 0,
                     reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
                     reasoning_effort TEXT NULL,
-                    reasoning_effort_values TEXT NULL
+                    reasoning_effort_values TEXT NULL,
+                    reasoning_effort_format INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1346,8 +1350,8 @@ internal sealed class AppDatabase : IDisposable
     /// were introduced: <c>supports_vision</c>, <c>credential_name</c>, <c>thinking_mode</c>,
     /// <c>context_window_tokens</c>, <c>synthesize_openai_metadata</c>,
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
-    /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>, and
-    /// <c>reasoning_effort_values</c>.
+    /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
+    /// <c>reasoning_effort_values</c>, and <c>reasoning_effort_format</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1442,6 +1446,15 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added reasoning_effort_values column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_format"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_format INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added reasoning_effort_format column.");
         }
     }
 
@@ -1652,6 +1665,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$reasoningEffortValues", mapping.ReasoningEffortValues.Count > 0
             ? DbValue(string.Join(", ", mapping.ReasoningEffortValues))
             : DBNull.Value);
+        command.Parameters.AddWithValue("$reasoningEffortFormat", (int)mapping.ReasoningEffortFormat);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1695,6 +1709,9 @@ internal sealed class AppDatabase : IDisposable
         ReasoningEffortValues = reader.IsDBNull(26)
             ? []
             : [.. reader.GetString(26).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = Enum.IsDefined(typeof(ReasoningEffortFormat), reader.GetInt32(27))
+            ? (ReasoningEffortFormat)reader.GetInt32(27)
+            : ReasoningEffortFormat.Legacy,
     };
 
     private static RequestLog ReadRequestLog(SqliteDataReader reader) => new()
