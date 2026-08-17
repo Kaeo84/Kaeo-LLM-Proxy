@@ -28,4 +28,4 @@ Two corrections to the reasoning effort format feature:
 - [x] 4. Update AppDatabase defaults and bitmask read
 - [x] 5. Replace the dialog format dropdown with a CheckedListBox multiselect
 - [x] 6. Update and extend the normalization tests for extra_body and multiselect
-- [ ] 7. Build, run tests, commit, and push
+- [x] 7. Build, run tests, commit, and push
