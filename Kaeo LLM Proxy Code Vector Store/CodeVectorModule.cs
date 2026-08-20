@@ -1440,7 +1440,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private GroupBox BuildRemoteGroup()
     {
         var group = new GroupBox { Text = "Remote Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 5 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 5 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
 
@@ -1512,7 +1512,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private GroupBox BuildOnnxGroup()
     {
         var group = new GroupBox { Text = "ONNX Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 3 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 3 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
 
@@ -1549,7 +1549,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private GroupBox BuildGeneralGroup()
     {
         var group = new GroupBox { Text = "General Settings", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 12 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 12 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
 
