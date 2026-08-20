@@ -68,7 +68,14 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		string moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
 		Directory.CreateDirectory(moduleDataDir);
 
-		string vectorDbPath = Path.Combine(moduleDataDir, "codevector.db");
+        string vectorDbPath = string.IsNullOrWhiteSpace(_settings.VectorDatabasePath)
+            ? Path.Combine(moduleDataDir, "codevector.db")
+            : (Path.IsPathRooted(_settings.VectorDatabasePath)
+                ? _settings.VectorDatabasePath
+                : Path.Combine(moduleDataDir, _settings.VectorDatabasePath));
+        string? vectorDbDirectory = Path.GetDirectoryName(vectorDbPath);
+        if (!string.IsNullOrWhiteSpace(vectorDbDirectory))
+            Directory.CreateDirectory(vectorDbDirectory);
 		_vectorDb = new CodeVectorDatabase(vectorDbPath);
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
 		_embeddingBackend = CreateEmbeddingBackend(_settings, context.Secrets, context.Host);
@@ -181,6 +188,7 @@ internal sealed class CodeVectorSettings
 	/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
 	/// </summary>
 	public string GitMirrorPath { get; set; } = string.Empty;
+    public string VectorDatabasePath { get; set; } = string.Empty;
 }
 // ── Repository ─────────────────────────────────────────────────────────────
 
@@ -219,6 +227,7 @@ internal sealed class CodeVectorRepository
                 case "reindex_enabled": s.ReindexEnabled = v == "1"; break;
                 case "sync_interval": if (int.TryParse(v, out var si)) s.GitSyncIntervalMinutes = si; break;
                 case "log_level": if (Enum.TryParse<CodeVectorMcpLogLevel>(v, true, out var ll)) s.McpLogLevel = ll; break;
+                case "vector_database_path": s.VectorDatabasePath = v; break;
             }
         }
         return s;
@@ -1052,6 +1061,17 @@ internal sealed class GitMirrorManager
         }
     }
 
+    public async Task IndexMirrorFilesAsync(MirrorRegistration mirror, CancellationToken ct)
+    {
+        var mirrorPath = Path.Combine(_mirrorRoot, mirror.CollectionName);
+        if (!Repository.IsValid(mirrorPath))
+        {
+            _activity?.Log("index_error", mirror.CollectionName, "Mirror not yet cloned. Run Sync first.");
+            return;
+        }
+        await IndexMirrorFilesAsync(mirror, mirrorPath, ct);
+    }
+
     private async Task IndexMirrorFilesAsync(MirrorRegistration mirror, string mirrorPath, CancellationToken ct)
     {
         using var repo = new Repository(mirrorPath);
@@ -1354,6 +1374,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private NumericUpDown _topKBox = null!;
     private NumericUpDown _syncBox = null!;
     private TextBox _checkoutPathBox = null!;
+    private TextBox _vectorDatabasePathBox = null!;
     private ComboBox _logLevelCombo = null!;
     private CheckBox _chkSearch = null!;
     private CheckBox _chkIndex = null!;
@@ -1391,12 +1412,30 @@ internal sealed class CodeVectorConfigPage : TabPage
         AutoScroll = true;
         var main = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             AutoScroll = true,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            Padding = new Padding(8),
+            RowCount = 8,
+            Padding = new Padding(14, 8, 14, 8),
         };
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int row = 0; row < main.RowCount; row++)
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        // Vector database location
+        var databasePanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, Margin = new Padding(0, 0, 0, 8) };
+        databasePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        databasePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        databasePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        databasePanel.Controls.Add(new Label { Text = "Vector Database:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, 0);
+        _vectorDatabasePathBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.VectorDatabasePath, Margin = new Padding(3) };
+        var browseDatabaseButton = new Button { Text = "Browse...", AutoSize = true, Margin = new Padding(3) };
+        browseDatabaseButton.Click += BrowseDatabaseButton_Click;
+        databasePanel.Controls.Add(_vectorDatabasePathBox, 1, 0);
+        databasePanel.Controls.Add(browseDatabaseButton, 2, 0);
+        main.Controls.Add(databasePanel, 0, 0);
 
         // Backend selector
         var backendPanel = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 0, 0, 8) };
@@ -1408,42 +1447,32 @@ internal sealed class CodeVectorConfigPage : TabPage
         _backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
         _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
         backendPanel.Controls.Add(_backendCombo, 1, 0);
-        main.Controls.Add(backendPanel, 0, 0);
+        main.Controls.Add(backendPanel, 0, 1);
 
         // Remote group
         _remoteGroup = BuildRemoteGroup();
-        main.Controls.Add(_remoteGroup, 0, 1);
+        main.Controls.Add(_remoteGroup, 0, 2);
 
         // ONNX group
         _onnxGroup = BuildOnnxGroup();
-        main.Controls.Add(_onnxGroup, 0, 2);
+        main.Controls.Add(_onnxGroup, 0, 3);
 
         // General settings
         _generalGroup = BuildGeneralGroup();
-        main.Controls.Add(_generalGroup, 0, 3);
+        main.Controls.Add(_generalGroup, 0, 4);
 
         // Git Repos
         _reposGroup = BuildReposGroup();
-        main.Controls.Add(_reposGroup, 0, 4);
+        main.Controls.Add(_reposGroup, 0, 5);
 
         // Status
         _statusGroup = BuildStatusGroup();
-        main.Controls.Add(_statusGroup, 0, 5);
+        main.Controls.Add(_statusGroup, 0, 6);
 
-        // Action buttons
-        var actionPanel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(0, 4, 0, 0) };
-        var btnIndex = new Button { Text = "Index File", AutoSize = true, Margin = new Padding(3) };
-        btnIndex.Click += IndexFileButton_Click;
-        var btnSync = new Button { Text = "Sync All", AutoSize = true, Margin = new Padding(3) };
-        btnSync.Click += SyncAllButton_Click;
-        var btnStatus = new Button { Text = "Status", AutoSize = true, Margin = new Padding(3) };
-        btnStatus.Click += StatusButton_Click;
-        var btnReindex = new Button { Text = "Reindex", AutoSize = true, Margin = new Padding(3) };
-        btnReindex.Click += ReindexButton_Click;
-        var btnSave = new Button { Text = "Save Settings", AutoSize = true, Margin = new Padding(3) };
+        // Save button
+        var btnSave = new Button { Text = "Save Settings", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 8, 0, 0) };
         btnSave.Click += SaveButton_Click;
-        actionPanel.Controls.AddRange([btnIndex, btnSync, btnStatus, btnReindex, btnSave]);
-        main.Controls.Add(actionPanel, 0, 6);
+        main.Controls.Add(btnSave, 0, 7);
 
         Controls.Add(main);
     }
@@ -1452,7 +1481,7 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private GroupBox BuildRemoteGroup()
     {
-        var group = new GroupBox { Text = "Remote Backend", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var group = new GroupBox { Text = "Remote Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1497,7 +1526,7 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private GroupBox BuildOnnxGroup()
     {
-        var group = new GroupBox { Text = "ONNX Backend", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var group = new GroupBox { Text = "ONNX Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1525,8 +1554,8 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private GroupBox BuildGeneralGroup()
     {
-        var group = new GroupBox { Text = "General Settings", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        var group = new GroupBox { Text = "General Settings", Anchor = AnchorStyles.Left | AnchorStyles.Right, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var layout = new TableLayoutPanel { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, AutoSize = true, ColumnCount = 2 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         int row = 0;
@@ -1582,8 +1611,8 @@ internal sealed class CodeVectorConfigPage : TabPage
 
                private GroupBox BuildReposGroup()
                {
-                   var group = new GroupBox { Text = "Git Repos", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
-                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2 };
+                   var group = new GroupBox { Text = "Git Repos", Anchor = AnchorStyles.Left | AnchorStyles.Right, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+                   var layout = new TableLayoutPanel { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, AutoSize = true, ColumnCount = 1, RowCount = 2 };
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                    layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1604,14 +1633,22 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _reposListView.Columns.Add("Status", 100);
                    layout.Controls.Add(_reposListView, 0, 0);
 
-                   var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+                   var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
                    var btnAdd = new Button { Text = "Add", AutoSize = true, Margin = new Padding(3) };
                    btnAdd.Click += AddRepoButton_Click;
                    var btnEdit = new Button { Text = "Edit", AutoSize = true, Margin = new Padding(3) };
                    btnEdit.Click += EditRepoButton_Click;
                    var btnRemove = new Button { Text = "Remove", AutoSize = true, Margin = new Padding(3) };
                    btnRemove.Click += RemoveRepoButton_Click;
-                   btnPanel.Controls.AddRange([btnAdd, btnEdit, btnRemove]);
+                   var btnIndex = new Button { Text = "Index", AutoSize = true, Margin = new Padding(3) };
+                   btnIndex.Click += IndexRepoButton_Click;
+                   var btnSync = new Button { Text = "Sync", AutoSize = true, Margin = new Padding(3) };
+                   btnSync.Click += SyncRepoButton_Click;
+                   var btnStatus = new Button { Text = "Status", AutoSize = true, Margin = new Padding(3) };
+                   btnStatus.Click += RepoStatusButton_Click;
+                   var btnReindex = new Button { Text = "Reindex", AutoSize = true, Margin = new Padding(3) };
+                   btnReindex.Click += ReindexRepoButton_Click;
+                   btnPanel.Controls.AddRange([btnAdd, btnEdit, btnRemove, btnIndex, btnSync, btnStatus, btnReindex]);
                    layout.Controls.Add(btnPanel, 0, 1);
 
                    group.Controls.Add(layout);
@@ -1620,7 +1657,7 @@ internal sealed class CodeVectorConfigPage : TabPage
 
                private GroupBox BuildStatusGroup()
                {
-                   var group = new GroupBox { Text = "Status", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+                   var group = new GroupBox { Text = "Status", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
                    var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 4 };
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1796,53 +1833,73 @@ internal sealed class CodeVectorConfigPage : TabPage
                    }
                }
 
-               private async void IndexFileButton_Click(object? sender, EventArgs e)
+               private void RequireRepo(out MirrorRegistration m)
                {
-                   using var dlg = new OpenFileDialog { Title = "Select File to Index", Filter = "All Files (*.*)|*.*" };
-                   if (dlg.ShowDialog(this.FindForm()) != DialogResult.OK) return;
+                   m = GetSelectedRepo()!;
+                   if (m is null) MessageBox.Show("Select a repo in the list first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Information);
+               }
+
+               private async void IndexRepoButton_Click(object? sender, EventArgs e)
+               {
+                   if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    try
                    {
-                       var content = await File.ReadAllTextAsync(dlg.FileName);
-                       var collection = string.IsNullOrWhiteSpace(_collectionBox.Text) ? "default" : _collectionBox.Text.Trim();
-                       _module.Indexer.EnqueueIndexFile(collection, dlg.FileName, content, "ui");
-                       _module.Activity.Log("ui_index", $"{collection}:{dlg.FileName}", "Queued from UI");
+                       await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                       _module.Activity.Log("ui_index", m.CollectionName, $"Re-indexed files for {m.CollectionName}");
                    }
                    catch (Exception ex) { MessageBox.Show(ex.Message, "Index Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                }
 
-               private async void SyncAllButton_Click(object? sender, EventArgs e)
+               private async void SyncRepoButton_Click(object? sender, EventArgs e)
                {
-                   var mirrors = _module.Repository.LoadMirrors();
-                   if (mirrors.Count == 0) { MessageBox.Show("No repos registered.", "Nothing to Sync", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-                   foreach (var m in mirrors)
+                   if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
+                   try
+                   {
                        await _module.MirrorManager.SyncMirrorAsync(m, CancellationToken.None);
-                   RefreshRepos();
+                       RefreshRepos();
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Sync Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                }
 
-               private void StatusButton_Click(object? sender, EventArgs e)
+               private void RepoStatusButton_Click(object? sender, EventArgs e)
                {
+                   if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    var collections = _module.VectorDb.ListCollections();
-                   var mirrors = _module.Repository.LoadMirrors();
+                   var col = collections.FirstOrDefault(c => c.Name == m.CollectionName);
                    var sb = new StringBuilder();
-                   sb.AppendLine($"Backend: {_module.Settings.BackendType}");
-                   sb.AppendLine($"Model: {_module.EmbeddingBackend.ModelName}");
-                   sb.AppendLine($"Dimension: {_module.EmbeddingBackend.Dimension}");
-                   sb.AppendLine($"Engine: {(_module.Indexer.IsRunning ? "Running" : "Stopped")} | Queue: {_module.Indexer.QueueDepth}");
+                   sb.AppendLine($"Collection: {m.CollectionName}");
+                   sb.AppendLine($"Remote: {m.RemoteUrl} [{m.Branch}]");
+                   sb.AppendLine($"Last Sync: {m.LastSyncUtc ?? "never"}");
+                   sb.AppendLine($"Sync Status: {m.LastSyncStatus ?? "pending"}");
+                   if (col is not null) sb.AppendLine($"Indexed: {col.FileCount} files, {col.ChunkCount} chunks");
                    sb.AppendLine();
-                   foreach (var c in collections) sb.AppendLine($"  {c.Name}: {c.FileCount} files, {c.ChunkCount} chunks");
-                   foreach (var m in mirrors) sb.AppendLine($"  Mirror {m.CollectionName}: {m.LastSyncUtc ?? "never"} [{m.LastSyncStatus ?? "pending"}]");
-                   MessageBox.Show(sb.ToString(), "Code Vector Store Status", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                   sb.AppendLine($"Engine: {(_module.Indexer.IsRunning ? "Running" : "Stopped")} | Queue: {_module.Indexer.QueueDepth}");
+                   MessageBox.Show(sb.ToString(), $"Status — {m.CollectionName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
                }
 
-               private void ReindexButton_Click(object? sender, EventArgs e)
+               private void ReindexRepoButton_Click(object? sender, EventArgs e)
                {
-                   var collection = string.IsNullOrWhiteSpace(_collectionBox.Text) ? "default" : _collectionBox.Text.Trim();
-                   _module.Indexer.EnqueueReindex(collection);
-                   _module.Activity.Log("ui_reindex", collection, "Reindex queued from UI");
+                   if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
+                   _module.Indexer.EnqueueReindex(m.CollectionName);
+                   _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex queued from UI");
                }
 
                private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
                    => UpdateBackendVisibility();
+
+    private void BrowseDatabaseButton_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Select Vector Database Location",
+            Filter = "SQLite database (*.db)|*.db|All files (*.*)|*.*",
+            FileName = Path.GetFileName(string.IsNullOrWhiteSpace(_vectorDatabasePathBox.Text) ? "codevector.db" : _vectorDatabasePathBox.Text),
+            OverwritePrompt = false,
+        };
+
+        if (dialog.ShowDialog(FindForm()) == DialogResult.OK)
+            _vectorDatabasePathBox.Text = dialog.FileName;
+    }
 
     private void UpdateBackendVisibility()
     {
@@ -2099,6 +2156,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         settings.StatusEnabled = _chkStatus.Checked;
         settings.RemoveEnabled = _chkRemove.Checked;
         settings.ReindexEnabled = _chkReindex.Checked;
+        settings.VectorDatabasePath = _vectorDatabasePathBox.Text.Trim();
 
         var repo = _module.Repository;
         repo.SaveSetting("backend_type", settings.BackendType.ToString());
@@ -2123,6 +2181,7 @@ internal sealed class CodeVectorConfigPage : TabPage
             repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
             repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
             repo.SaveSetting("git_mirror_path", settings.GitMirrorPath);
+        repo.SaveSetting("vector_database_path", settings.VectorDatabasePath);
 
             MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
