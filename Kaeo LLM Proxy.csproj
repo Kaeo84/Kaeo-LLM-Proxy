@@ -43,6 +43,12 @@
     <Content Include="Assets\AppIcon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen.ps1" />
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen1.ps1" />
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen3.ps1" />
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen4.ps1" />
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen5.ps1" />
+    <None Include="Kaeo LLM Proxy Code Vector Store\_gen6.ps1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
     <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
     <!-- Override transitive SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q) -->

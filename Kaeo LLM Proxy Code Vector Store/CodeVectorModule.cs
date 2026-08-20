@@ -1231,79 +1231,165 @@ internal sealed class CodeVectorTools
 internal sealed class CodeVectorConfigPage : TabPage
 {
     private readonly CodeVectorModule _module;
+    private ComboBox _backendCombo = null!;
+    private Label _remoteUrlLabel = null!;
+    private TextBox _remoteUrlBox = null!;
+    private Label _remoteModelLabel = null!;
+    private TextBox _remoteModelBox = null!;
+    private Label _onnxLabel = null!;
+    private Panel _onnxPanel = null!;
+    private TextBox _onnxBox = null!;
+    private Button _onnxBrowseButton = null!;
+    private NumericUpDown _chunkLinesBox = null!;
+    private NumericUpDown _overlapBox = null!;
+    private NumericUpDown _maxSizeBox = null!;
+    private NumericUpDown _topKBox = null!;
+    private NumericUpDown _syncBox = null!;
 
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
         _module = module;
         InitializeComponent();
+        UpdateBackendVisibility();
     }
 
     private void InitializeComponent()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 10, Padding = new Padding(10) };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 10,
+            Padding = new Padding(10),
+        };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
 
         int row = 0;
 
+        // Backend Type
         layout.Controls.Add(new Label { Text = "Backend Type:", Anchor = AnchorStyles.Left }, 0, row);
-        var backendCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        backendCombo.Items.AddRange(new[] { "Remote", "Onnx" });
-        backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
-        layout.Controls.Add(backendCombo, 1, row++);
+        _backendCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        _backendCombo.Items.AddRange(["Remote", "Onnx"]);
+        _backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
+        _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
+        layout.Controls.Add(_backendCombo, 1, row++);
 
-        layout.Controls.Add(new Label { Text = "Remote URL:", Anchor = AnchorStyles.Left }, 0, row);
-        var urlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl };
-        layout.Controls.Add(urlBox, 1, row++);
+        // Remote URL (visible only when Remote is selected)
+        _remoteUrlLabel = new Label { Text = "Remote URL:", Anchor = AnchorStyles.Left };
+        layout.Controls.Add(_remoteUrlLabel, 0, row);
+        _remoteUrlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl };
+        layout.Controls.Add(_remoteUrlBox, 1, row++);
 
-        layout.Controls.Add(new Label { Text = "Remote Model:", Anchor = AnchorStyles.Left }, 0, row);
-        var modelBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
-        layout.Controls.Add(modelBox, 1, row++);
+        // Remote Model (visible only when Remote is selected)
+        _remoteModelLabel = new Label { Text = "Remote Model:", Anchor = AnchorStyles.Left };
+        layout.Controls.Add(_remoteModelLabel, 0, row);
+        _remoteModelBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
+        layout.Controls.Add(_remoteModelBox, 1, row++);
 
-        layout.Controls.Add(new Label { Text = "ONNX Model Folder:", Anchor = AnchorStyles.Left }, 0, row);
-        var onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
-        layout.Controls.Add(onnxBox, 1, row++);
+        // ONNX Model Folder with Browse button (visible only when Onnx is selected)
+        _onnxLabel = new Label { Text = "ONNX Model Folder:", Anchor = AnchorStyles.Left };
+        layout.Controls.Add(_onnxLabel, 0, row);
+        _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
+        _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+        _onnxBrowseButton.Click += OnnxBrowseButton_Click;
+        _onnxPanel = new Panel { Dock = DockStyle.Fill };
+        var onnxInnerLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+        };
+        onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        onnxInnerLayout.Controls.Add(_onnxBox, 0, 0);
+        onnxInnerLayout.Controls.Add(_onnxBrowseButton, 1, 0);
+        _onnxPanel.Controls.Add(onnxInnerLayout);
+        layout.Controls.Add(_onnxPanel, 1, row++);
 
+        // Chunk Lines
         layout.Controls.Add(new Label { Text = "Chunk Lines:", Anchor = AnchorStyles.Left }, 0, row);
-        var chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines };
-        layout.Controls.Add(chunkLinesBox, 1, row++);
+        _chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines };
+        layout.Controls.Add(_chunkLinesBox, 1, row++);
 
+        // Chunk Overlap Lines
         layout.Controls.Add(new Label { Text = "Chunk Overlap Lines:", Anchor = AnchorStyles.Left }, 0, row);
-        var overlapBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = _module.Settings.ChunkOverlapLines };
-        layout.Controls.Add(overlapBox, 1, row++);
+        _overlapBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = _module.Settings.ChunkOverlapLines };
+        layout.Controls.Add(_overlapBox, 1, row++);
 
+        // Max File Size (KB)
         layout.Controls.Add(new Label { Text = "Max File Size (KB):", Anchor = AnchorStyles.Left }, 0, row);
-        var maxSizeBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 10240, Value = _module.Settings.MaxFileSizeKb };
-        layout.Controls.Add(maxSizeBox, 1, row++);
+        _maxSizeBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 10240, Value = _module.Settings.MaxFileSizeKb };
+        layout.Controls.Add(_maxSizeBox, 1, row++);
 
+        // Default Top K
         layout.Controls.Add(new Label { Text = "Default Top K:", Anchor = AnchorStyles.Left }, 0, row);
-        var topKBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 100, Value = _module.Settings.DefaultTopK };
-        layout.Controls.Add(topKBox, 1, row++);
+        _topKBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 100, Value = _module.Settings.DefaultTopK };
+        layout.Controls.Add(_topKBox, 1, row++);
 
+        // Git Sync Interval (min)
         layout.Controls.Add(new Label { Text = "Git Sync Interval (min):", Anchor = AnchorStyles.Left }, 0, row);
-        var syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
-        layout.Controls.Add(syncBox, 1, row++);
+        _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
+        layout.Controls.Add(_syncBox, 1, row++);
 
+        // Save button
         var saveButton = new Button { Text = "Save Settings", Dock = DockStyle.Fill };
-        saveButton.Click += (s, e) => SaveSettings(backendCombo, urlBox, modelBox, onnxBox, chunkLinesBox, overlapBox, maxSizeBox, topKBox, syncBox);
+        saveButton.Click += SaveButton_Click;
         layout.Controls.Add(saveButton, 0, row);
         layout.SetColumnSpan(saveButton, 2);
 
         Controls.Add(layout);
     }
 
-    private void SaveSettings(ComboBox backend, TextBox url, TextBox model, TextBox onnx, NumericUpDown chunkLines, NumericUpDown overlap, NumericUpDown maxSize, NumericUpDown topK, NumericUpDown syncInterval)
+    private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
+        => UpdateBackendVisibility();
+
+    private void UpdateBackendVisibility()
+    {
+        bool isRemote = _backendCombo.SelectedItem?.ToString() == "Remote";
+        bool isOnnx = !isRemote;
+
+        _remoteUrlLabel.Visible = isRemote;
+        _remoteUrlBox.Visible = isRemote;
+        _remoteModelLabel.Visible = isRemote;
+        _remoteModelBox.Visible = isRemote;
+
+        _onnxLabel.Visible = isOnnx;
+        _onnxPanel.Visible = isOnnx;
+    }
+
+    private void OnnxBrowseButton_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Select ONNX Model File",
+            Filter = "ONNX Model Files (*.onnx)|*.onnx|All Files (*.*)|*.*",
+            FilterIndex = 1,
+        };
+
+        if (!string.IsNullOrWhiteSpace(_onnxBox.Text) && Directory.Exists(_onnxBox.Text))
+            dialog.InitialDirectory = _onnxBox.Text;
+
+        if (dialog.ShowDialog() == DialogResult.OK)
+        {
+            string? folder = Path.GetDirectoryName(dialog.FileName);
+            if (!string.IsNullOrEmpty(folder))
+                _onnxBox.Text = folder;
+        }
+    }
+
+    private void SaveButton_Click(object? sender, EventArgs e)
     {
         var settings = _module.Settings;
-        settings.BackendType = backend.SelectedItem?.ToString() == "Onnx" ? BackendType.Onnx : BackendType.Remote;
-        settings.RemoteUrl = url.Text;
-        settings.RemoteModel = model.Text;
-        settings.OnnxModelFolder = onnx.Text;
-        settings.ChunkLines = (int)chunkLines.Value;
-        settings.ChunkOverlapLines = (int)overlap.Value;
-        settings.MaxFileSizeKb = (int)maxSize.Value;
-        settings.DefaultTopK = (int)topK.Value;
-        settings.GitSyncIntervalMinutes = (int)syncInterval.Value;
+        settings.BackendType = _backendCombo.SelectedItem?.ToString() == "Onnx" ? BackendType.Onnx : BackendType.Remote;
+        settings.RemoteUrl = _remoteUrlBox.Text;
+        settings.RemoteModel = _remoteModelBox.Text;
+        settings.OnnxModelFolder = _onnxBox.Text;
+        settings.ChunkLines = (int)_chunkLinesBox.Value;
+        settings.ChunkOverlapLines = (int)_overlapBox.Value;
+        settings.MaxFileSizeKb = (int)_maxSizeBox.Value;
+        settings.DefaultTopK = (int)_topKBox.Value;
+        settings.GitSyncIntervalMinutes = (int)_syncBox.Value;
 
         var repo = _module.Repository;
         repo.SaveSetting("backend_type", settings.BackendType.ToString());
