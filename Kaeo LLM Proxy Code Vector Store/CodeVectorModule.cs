@@ -5,6 +5,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using ModelContextProtocol.Server;
 using Serilog;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Data.Common;
 using System.Net.Http.Headers;
@@ -48,6 +49,8 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_mirrorManager ?? throw new InvalidOperationException("Module not initialized.");
 	internal VectorSearchEngine SearchEngine =>
 		_searchEngine ?? throw new InvalidOperationException("Module not initialized.");
+	internal CodeVectorActivityLogger Activity =>
+		_activity ?? throw new InvalidOperationException("Module not initialized.");
 	internal ISecretProvider Secrets =>
 		_context?.Secrets ?? throw new InvalidOperationException("Module not initialized.");
 	internal HostInfo Host =>
@@ -172,6 +175,12 @@ internal sealed class CodeVectorSettings
 	public bool ReindexEnabled { get; set; } = true;
 	public int GitSyncIntervalMinutes { get; set; } = 15;
 	public CodeVectorMcpLogLevel McpLogLevel { get; set; } = CodeVectorMcpLogLevel.Connectivity;
+
+	/// <summary>
+	/// Root directory where git mirrors are checked out. Defaults to <c>moduleDataDir/mirrors</c>.
+	/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
+	/// </summary>
+	public string GitMirrorPath { get; set; } = string.Empty;
 }
 // ── Repository ─────────────────────────────────────────────────────────────
 
@@ -813,7 +822,9 @@ internal sealed class IndexingEngine
     private readonly CodeVectorActivityLogger? _activity;
     private readonly Channel<IndexJob> _queue;
     private readonly CancellationTokenSource _cts = new();
+    private readonly ConcurrentQueue<QueueItemInfo> _pendingJobs = new();
     private Task? _worker;
+    private volatile QueueItemInfo? _currentJob;
 
     public IndexingEngine(CodeVectorDatabase db, IEmbeddingBackend backend, CodeVectorSettings settings, CodeVectorActivityLogger? activity)
     {
@@ -825,6 +836,10 @@ internal sealed class IndexingEngine
     }
 
     public bool IsRunning => _worker is { IsCompleted: false };
+    public int QueueDepth => _pendingJobs.Count;
+    public QueueItemInfo? CurrentJob => _currentJob;
+
+    public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => _pendingJobs.ToArray();
 
     public void Start()
     {
@@ -840,30 +855,37 @@ internal sealed class IndexingEngine
 
     public void EnqueueIndexFile(string collection, string path, string content, string source = "agent")
     {
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.IndexFile, Collection = collection, Path = path, Content = content, Source = source });
+        var info = new QueueItemInfo("Index", collection, path, source);
+        _pendingJobs.Enqueue(info);
+        _queue.Writer.TryWrite(new IndexJob { Type = JobType.IndexFile, Collection = collection, Path = path, Content = content, Source = source, Info = info });
     }
 
     public void EnqueueDeletePath(string collection, string pathPrefix)
     {
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix });
+        var info = new QueueItemInfo("DeletePath", collection, pathPrefix, "-");
+        _pendingJobs.Enqueue(info);
+        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix, Info = info });
     }
 
     public void EnqueueDeleteCollection(string collection)
     {
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeleteCollection, Collection = collection });
+        var info = new QueueItemInfo("DeleteCollection", collection, "(all)", "-");
+        _pendingJobs.Enqueue(info);
+        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeleteCollection, Collection = collection, Info = info });
     }
 
     public void EnqueueReindex(string collection)
     {
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.Reindex, Collection = collection });
+        var info = new QueueItemInfo("Reindex", collection, "(all)", "-");
+        _pendingJobs.Enqueue(info);
+        _queue.Writer.TryWrite(new IndexJob { Type = JobType.Reindex, Collection = collection, Info = info });
     }
-
-    public int QueueDepth => _queue.Reader.Count;
 
     private async Task ProcessQueueAsync(CancellationToken ct)
     {
         await foreach (var job in _queue.Reader.ReadAllAsync(ct))
         {
+            _currentJob = job.Info;
             try
             {
                 switch (job.Type)
@@ -877,6 +899,11 @@ internal sealed class IndexingEngine
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _activity?.Log("error", job.Collection ?? "", $"Indexing failed: {ex.Message}");
+            }
+            finally
+            {
+                _pendingJobs.TryDequeue(out _);
+                _currentJob = null;
             }
         }
     }
@@ -893,6 +920,7 @@ internal sealed class IndexingEngine
         var chunks = chunker.Chunk(content);
         if (chunks.Count == 0) return;
 
+        _activity?.Log("file_start", $"{collection}:{path}", $"Chunked into {chunks.Count} pieces, source={source}");
         _db.GetOrCreateCollection(collection, _backend.ModelName, _backend.Dimension);
         var fileId = _db.UpsertFile(collection, path, hash, source, chunks.Count);
         _db.DeleteFileChunks(fileId);
@@ -903,6 +931,7 @@ internal sealed class IndexingEngine
             ct.ThrowIfCancellationRequested();
             var batch = chunks.Skip(i).Take(batchSize).ToList();
             var texts = batch.Select(c => c.Text).ToList();
+            _activity?.Log("embed_batch", $"{collection}:{path}", $"Embedding batch {i / batchSize + 1} ({batch.Count} chunks, offset {i})");
             float[][] embeddings;
             try { embeddings = await _backend.EmbedBatchAsync(texts, ct); }
             catch (Exception ex) { _activity?.Log("error", $"{collection}:{path}", $"Embedding failed: {ex.Message}"); return; }
@@ -913,7 +942,7 @@ internal sealed class IndexingEngine
                 _db.InsertChunk(fileId, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
             }
         }
-        _activity?.Log("index", $"{collection}:{path}", $"Indexed {chunks.Count} chunks");
+        _activity?.Log("file_complete", $"{collection}:{path}", $"Indexed {chunks.Count} chunks");
     }
 
     private static string ComputeSha256(string content)
@@ -923,7 +952,17 @@ internal sealed class IndexingEngine
     }
 
     private enum JobType { IndexFile, DeletePath, DeleteCollection, Reindex }
-    private sealed class IndexJob { public JobType Type { get; init; } public string? Collection { get; init; } public string? Path { get; init; } public string? Content { get; init; } public string? Source { get; init; } }
+    private sealed class IndexJob
+    {
+        public JobType Type { get; init; }
+        public string? Collection { get; init; }
+        public string? Path { get; init; }
+        public string? Content { get; init; }
+        public string? Source { get; init; }
+        public QueueItemInfo? Info { get; init; }
+    }
+
+    internal sealed record QueueItemInfo(string Operation, string Collection, string Path, string Source);
 }
 
 // ── Git Mirror Manager ─────────────────────────────────────────────────────
@@ -939,15 +978,17 @@ internal sealed class GitMirrorManager
     private System.Threading.Timer? _timer;
 
     public GitMirrorManager(string moduleDataDir, CodeVectorRepository repository, IndexingEngine indexer, CodeVectorSettings settings, CodeVectorActivityLogger? activity, ISecretProvider secrets)
-    {
-        _mirrorRoot = Path.Combine(moduleDataDir, "mirrors");
-        _repository = repository;
-        _indexer = indexer;
-        _settings = settings;
-        _activity = activity;
-        _secrets = secrets;
-        Directory.CreateDirectory(_mirrorRoot);
-    }
+     {
+         _mirrorRoot = string.IsNullOrWhiteSpace(settings.GitMirrorPath)
+             ? Path.Combine(moduleDataDir, "mirrors")
+             : settings.GitMirrorPath;
+         _repository = repository;
+         _indexer = indexer;
+         _settings = settings;
+         _activity = activity;
+         _secrets = secrets;
+         Directory.CreateDirectory(_mirrorRoot);
+     }
 
     public void StartTimer()
     {
@@ -967,6 +1008,7 @@ internal sealed class GitMirrorManager
 
     public async Task SyncMirrorAsync(MirrorRegistration mirror, CancellationToken ct)
     {
+        _activity?.Log("sync_start", mirror.CollectionName, $"Syncing {mirror.RemoteUrl} [{mirror.Branch}]");
         try
         {
             var mirrorPath = Path.Combine(_mirrorRoot, mirror.CollectionName);
@@ -1001,6 +1043,7 @@ internal sealed class GitMirrorManager
             }
             await IndexMirrorFilesAsync(mirror, mirrorPath, ct);
             _repository.UpdateMirrorSync(mirror.Id, DateTime.UtcNow.ToString("o"), "success");
+            _activity?.Log("sync_success", mirror.CollectionName, "Mirror synced successfully");
         }
         catch (Exception ex) when (ex is IOException or LibGit2SharpException)
         {
@@ -1013,27 +1056,47 @@ internal sealed class GitMirrorManager
     {
         using var repo = new Repository(mirrorPath);
         var workDir = repo.Info.WorkingDirectory;
-        var trackedFiles = repo.RetrieveStatus(new StatusOptions()).Where(s => s.State != FileStatus.Ignored).Select(s => s.FilePath).ToList();
-        int indexed = 0;
+        var trackedFiles = new List<string>();
+        WalkTree(repo.Head!.Tip.Tree, string.Empty, trackedFiles);
+        int queued = 0, skipped = 0;
         foreach (var relPath in trackedFiles)
         {
             ct.ThrowIfCancellationRequested();
             var fullPath = Path.Combine(workDir, relPath);
-            if (!File.Exists(fullPath)) continue;
+            if (!File.Exists(fullPath)) { skipped++; continue; }
             var fileInfo = new FileInfo(fullPath);
-            if (fileInfo.Length > _settings.MaxFileSizeKb * 1024) continue;
+            if (fileInfo.Length > _settings.MaxFileSizeKb * 1024) { _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", $"File too large ({fileInfo.Length / 1024} KB)"); skipped++; continue; }
             try
             {
                 var content = await File.ReadAllTextAsync(fullPath, ct);
                 _indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror");
-                indexed++;
+                queued++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", $"Read failed: {ex.Message}");
+                skipped++;
             }
         }
-        _activity?.Log("mirror", mirror.CollectionName, $"Queued {indexed} files for indexing");
+        _activity?.Log("sync_complete", mirror.CollectionName, $"Discovered {trackedFiles.Count} files, queued {queued}, skipped {skipped}");
+    }
+
+    private static void WalkTree(Tree tree, string prefix, List<string> files)
+    {
+        foreach (var entry in tree)
+        {
+            var path = string.IsNullOrEmpty(prefix) ? entry.Name : prefix + "/" + entry.Name;
+            switch (entry.TargetType)
+            {
+                case TreeEntryTargetType.Blob:
+                    files.Add(path);
+                    break;
+                case TreeEntryTargetType.Tree:
+                    if (entry.Target is Tree subtree)
+                        WalkTree(subtree, path, files);
+                    break;
+            }
+        }
     }
 
     private async Task SyncAllMirrorsAsync()
@@ -1071,8 +1134,14 @@ internal sealed class VectorSearchEngine
 
 internal sealed class CodeVectorActivityLogger
 {
+    private const int MaxBufferedEntries = 500;
+
     private readonly IMcpActivityLog _activityLog;
     private readonly Func<CodeVectorMcpLogLevel> _getLogLevel;
+    private readonly object _bufferLock = new();
+    private readonly List<LogEntry> _buffer = new();
+    private long _totalLogged;
+    private long _errorCount;
 
     public CodeVectorActivityLogger(IMcpActivityLog activityLog, Func<CodeVectorMcpLogLevel> getLogLevel)
     {
@@ -1080,16 +1149,47 @@ internal sealed class CodeVectorActivityLogger
         _getLogLevel = getLogLevel;
     }
 
+    public long TotalLogged => Interlocked.Read(ref _totalLogged);
+    public long ErrorCount => Interlocked.Read(ref _errorCount);
+
     public void Log(string operation, string target, string? detail = null)
     {
         var level = _getLogLevel();
-        if (level == CodeVectorMcpLogLevel.None) return;
-        _activityLog.Write(new McpActivityEntry("CodeVector", operation)
+        var isError = operation == "error";
+        if (isError) Interlocked.Increment(ref _errorCount);
+        Interlocked.Increment(ref _totalLogged);
+
+        if (level != CodeVectorMcpLogLevel.None)
         {
-            Target = target,
-            RequestDetail = detail,
-        });
+            _activityLog.Write(new McpActivityEntry("CodeVector", operation)
+            {
+                Target = target,
+                RequestDetail = detail,
+                IsError = isError,
+            });
+        }
+
+        var entry = new LogEntry(DateTime.Now, operation, target, detail);
+        lock (_bufferLock)
+        {
+            _buffer.Add(entry);
+            if (_buffer.Count > MaxBufferedEntries)
+                _buffer.RemoveRange(0, _buffer.Count - MaxBufferedEntries);
+        }
     }
+
+    public IReadOnlyList<LogEntry> GetRecentEntries()
+    {
+        lock (_bufferLock)
+            return _buffer.ToList();
+    }
+
+    public void ClearBuffer()
+    {
+        lock (_bufferLock) _buffer.Clear();
+    }
+
+    internal sealed record LogEntry(DateTime Timestamp, string Operation, string Target, string? Detail);
 }
 
 // ── MCP Tools ──────────────────────────────────────────────────────────────
@@ -1240,6 +1340,8 @@ internal sealed class CodeVectorConfigPage : TabPage
     private ComboBox _credentialCombo = null!;
     private NumericUpDown _timeoutBox = null!;
     private Label _fetchStatusLabel = null!;
+      private TextBox _checkoutPathBox = null!;
+     private Button _testConnectionButton = null!;
     private GroupBox _onnxGroup = null!;
     private TextBox _onnxBox = null!;
     private Button _onnxBrowseButton = null!;
@@ -1260,11 +1362,25 @@ internal sealed class CodeVectorConfigPage : TabPage
     private CheckBox _chkRemove = null!;
     private CheckBox _chkReindex = null!;
 
+    private GroupBox _statusGroup = null!;
+    private Label _engineStatusLabel = null!;
+    private Label _queueStatusLabel = null!;
+    private Label _currentStatusLabel = null!;
+    private Label _logSummaryLabel = null!;
+    private ListView _queueListView = null!;
+    private ListView _logListView = null!;
+    private System.Windows.Forms.Timer? _refreshTimer;
+
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
         _module = module;
         InitializeComponent();
         UpdateBackendVisibility();
+        _refreshTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _refreshTimer.Tick += (_, _) => RefreshStatus();
+        _refreshTimer.Start();
+        Disposed += (_, _) => { _refreshTimer?.Dispose(); _refreshTimer = null; };
+        RefreshStatus();
     }
 
     private void InitializeComponent()
@@ -1276,11 +1392,11 @@ internal sealed class CodeVectorConfigPage : TabPage
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowOnly,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 6,
             Padding = new Padding(10),
         };
         outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 6; i++)
             outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         int section = 0;
@@ -1308,6 +1424,10 @@ internal sealed class CodeVectorConfigPage : TabPage
         // General settings group
         _generalGroup = BuildGeneralGroup();
         outerLayout.Controls.Add(_generalGroup, 0, section++);
+
+        // Status group
+        _statusGroup = BuildStatusGroup();
+        outerLayout.Controls.Add(_statusGroup, 0, section++);
 
         // Save button
         var saveButton = new Button { Text = "Save Settings", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 10, 0, 0) };
@@ -1341,30 +1461,40 @@ internal sealed class CodeVectorConfigPage : TabPage
         layout.Controls.Add(urlPanel, 1, row++);
 
         // Model combo + Show Info
-        layout.Controls.Add(new Label { Text = "Model:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
-        _showModelButton = new Button { Text = "Show Info", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
-        _showModelButton.Click += ShowModelButton_Click;
-        var modelPanel = new Panel { Dock = DockStyle.Fill };
-        var modelLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        modelLayout.Controls.Add(_remoteModelCombo, 0, 0);
-        modelLayout.Controls.Add(_showModelButton, 1, 0);
-        modelPanel.Controls.Add(modelLayout);
-        layout.Controls.Add(modelPanel, 1, row++);
+         layout.Controls.Add(new Label { Text = "Model:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+         _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
+         _showModelButton = new Button { Text = "Show Info", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+         _showModelButton.Click += ShowModelButton_Click;
+         var modelPanel = new Panel { Dock = DockStyle.Fill };
+         var modelLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+         modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+         modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+         modelLayout.Controls.Add(_remoteModelCombo, 0, 0);
+         modelLayout.Controls.Add(_showModelButton, 1, 0);
+         modelPanel.Controls.Add(modelLayout);
+         layout.Controls.Add(modelPanel, 1, row++);
 
-        // Credential
-        layout.Controls.Add(new Label { Text = "Credential:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
-        try
-        {
-            var names = _module.Secrets.ListCredentialNames();
-            _credentialCombo.Items.AddRange(names.ToArray());
-        }
-        catch { /* secrets unavailable */ }
-        _credentialCombo.Text = _module.Settings.RemoteCredentialName;
-        layout.Controls.Add(_credentialCombo, 1, row++);
+         // Test Connection
+         layout.Controls.Add(new Label { Text = "Test:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+         _testConnectionButton = new Button { Text = "Test Connection", AutoSize = true };
+         _testConnectionButton.Click += TestConnectionButton_Click;
+         var testPanel = new Panel { Dock = DockStyle.Fill };
+         var testLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1 };
+         testLayout.Controls.Add(_testConnectionButton, 0, 0);
+         testPanel.Controls.Add(testLayout);
+         layout.Controls.Add(testPanel, 1, row++);
+
+         // Credential
+         layout.Controls.Add(new Label { Text = "Credential:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+         _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
+         try
+         {
+             var names = _module.Secrets.ListCredentialNames();
+             _credentialCombo.Items.AddRange(names.ToArray());
+         }
+         catch { /* secrets unavailable */ }
+         _credentialCombo.Text = _module.Settings.RemoteCredentialName;
+         layout.Controls.Add(_credentialCombo, 1, row++);
 
         // Timeout
         layout.Controls.Add(new Label { Text = "Timeout (sec):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
@@ -1451,35 +1581,163 @@ internal sealed class CodeVectorConfigPage : TabPage
         layout.Controls.Add(_topKBox, 1, row++);
 
         // Git sync interval
-        layout.Controls.Add(new Label { Text = "Git Sync (min):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
-        layout.Controls.Add(_syncBox, 1, row++);
+         layout.Controls.Add(new Label { Text = "Git Sync (min):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+         _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
+         layout.Controls.Add(_syncBox, 1, row++);
 
-        // Log level
-        layout.Controls.Add(new Label { Text = "Log Level:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
-        _logLevelCombo.SelectedItem = _module.Settings.McpLogLevel.ToString();
-        layout.Controls.Add(_logLevelCombo, 1, row++);
+            // Checkout path
+              layout.Controls.Add(new Label { Text = "Checkout Path:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+              _checkoutPathBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.GitMirrorPath };
+              layout.Controls.Add(_checkoutPathBox, 1, row++);
 
-        // Tool toggles
-        layout.Controls.Add(new Label { Text = "Tools:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        var toolsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true };
-        _chkSearch = new CheckBox { Text = "Search", AutoSize = true, Checked = _module.Settings.SearchEnabled };
-        _chkIndex = new CheckBox { Text = "Index", AutoSize = true, Checked = _module.Settings.IndexEnabled };
-        _chkSync = new CheckBox { Text = "Sync", AutoSize = true, Checked = _module.Settings.SyncRepoEnabled };
-        _chkStatus = new CheckBox { Text = "Status", AutoSize = true, Checked = _module.Settings.StatusEnabled };
-        _chkRemove = new CheckBox { Text = "Remove", AutoSize = true, Checked = _module.Settings.RemoveEnabled };
-        _chkReindex = new CheckBox { Text = "Reindex", AutoSize = true, Checked = _module.Settings.ReindexEnabled };
-        toolsPanel.Controls.AddRange([_chkSearch, _chkIndex, _chkSync, _chkStatus, _chkRemove, _chkReindex]);
-        layout.Controls.Add(toolsPanel, 1, row++);
+              // Log level
+              layout.Controls.Add(new Label { Text = "Log Level:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+              _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+              _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
+              _logLevelCombo.SelectedItem = _module.Settings.McpLogLevel.ToString();
+              layout.Controls.Add(_logLevelCombo, 1, row++);
 
-        group.Controls.Add(layout);
-        return group;
-    }
+              // Tool toggles
+               layout.Controls.Add(new Label { Text = "Tools:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+               var toolsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true };
+               _chkSearch = new CheckBox { Text = "Search", AutoSize = true, Checked = _module.Settings.SearchEnabled };
+               _chkIndex = new CheckBox { Text = "Index", AutoSize = true, Checked = _module.Settings.IndexEnabled };
+               _chkSync = new CheckBox { Text = "Sync", AutoSize = true, Checked = _module.Settings.SyncRepoEnabled };
+               _chkStatus = new CheckBox { Text = "Status", AutoSize = true, Checked = _module.Settings.StatusEnabled };
+               _chkRemove = new CheckBox { Text = "Remove", AutoSize = true, Checked = _module.Settings.RemoveEnabled };
+               _chkReindex = new CheckBox { Text = "Reindex", AutoSize = true, Checked = _module.Settings.ReindexEnabled };
+               toolsPanel.Controls.AddRange([_chkSearch, _chkIndex, _chkSync, _chkStatus, _chkRemove, _chkReindex]);
+               layout.Controls.Add(toolsPanel, 1, row++);
 
-    private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
-        => UpdateBackendVisibility();
+                           group.Controls.Add(layout);
+                           return group;
+                     }
+
+               private GroupBox BuildStatusGroup()
+               {
+                   var group = new GroupBox { Text = "Status", Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(10) };
+                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 4 };
+                   layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                   layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                   layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
+
+                   // Status labels row
+                   var statusPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
+                   _engineStatusLabel = new Label { Text = "Engine: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
+                   _queueStatusLabel = new Label { Text = "Queue: 0", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
+                   _currentStatusLabel = new Label { Text = "Current: —", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+                   statusPanel.Controls.AddRange([_engineStatusLabel, _queueStatusLabel, _currentStatusLabel]);
+                   layout.Controls.Add(statusPanel, 0, 0);
+
+                   // Log summary label
+                   _logSummaryLabel = new Label { Text = "Logged: 0 | Errors: 0", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 4) };
+                   layout.Controls.Add(_logSummaryLabel, 0, 1);
+
+                   // Queue ListView
+                   _queueListView = new ListView
+                   {
+                       View = View.Details,
+                       FullRowSelect = true,
+                       GridLines = true,
+                       MultiSelect = false,
+                       Dock = DockStyle.Fill,
+                       HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                   };
+                   _queueListView.Columns.Add("Operation", 90);
+                   _queueListView.Columns.Add("Collection", 140);
+                   _queueListView.Columns.Add("Path", 260);
+                   _queueListView.Columns.Add("Source", 70);
+                   layout.Controls.Add(_queueListView, 0, 2);
+
+                   // Log section: header with Clear button + ListView
+                   var logHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+                   logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                   logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                   logHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                   logHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                   logHeader.Controls.Add(new Label { Text = "Activity Log:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 0);
+                   var clearButton = new Button { Text = "Clear", AutoSize = true, Anchor = AnchorStyles.Right };
+                   clearButton.Click += (_, _) => { _module.Activity.ClearBuffer(); RefreshStatus(); };
+                   logHeader.Controls.Add(clearButton, 1, 0);
+                   _logListView = new ListView
+                   {
+                       View = View.Details,
+                       FullRowSelect = true,
+                       GridLines = true,
+                       MultiSelect = false,
+                       Dock = DockStyle.Fill,
+                       HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                   };
+                   _logListView.Columns.Add("Time", 75);
+                   _logListView.Columns.Add("Operation", 100);
+                   _logListView.Columns.Add("Target", 180);
+                   _logListView.Columns.Add("Detail", 240);
+                   logHeader.Controls.Add(_logListView, 0, 1);
+                   logHeader.SetColumnSpan(_logListView, 2);
+                   layout.Controls.Add(logHeader, 0, 3);
+
+                   group.Controls.Add(layout);
+                   return group;
+               }
+
+               private long _lastRefreshedLogged = -1;
+
+               private void RefreshStatus()
+               {
+                   try
+                   {
+                       var engine = _module.Indexer;
+                       var engineRunning = engine.IsRunning;
+                       _engineStatusLabel.Text = engineRunning ? "Engine: Running" : "Engine: Stopped";
+                       _engineStatusLabel.ForeColor = engineRunning ? Color.Green : SystemColors.GrayText;
+                       _queueStatusLabel.Text = $"Queue: {engine.QueueDepth}";
+                       var current = engine.CurrentJob;
+                       _currentStatusLabel.Text = current is null ? "Current: —" : $"Current: {current.Path}";
+
+                       var activity = _module.Activity;
+                       _logSummaryLabel.Text = $"Logged: {activity.TotalLogged} | Errors: {activity.ErrorCount}";
+
+                       // Queue ListView (always refreshed — small and changes frequently)
+                       _queueListView.BeginUpdate();
+                       _queueListView.Items.Clear();
+                       foreach (var item in engine.GetQueueSnapshot())
+                       {
+                           var lvi = new ListViewItem(item.Operation);
+                           lvi.SubItems.Add(item.Collection);
+                           lvi.SubItems.Add(item.Path);
+                           lvi.SubItems.Add(item.Source);
+                           _queueListView.Items.Add(lvi);
+                       }
+                       _queueListView.EndUpdate();
+
+                       // Log ListView (only rebuilt when new entries arrive, to avoid flicker)
+                       if (activity.TotalLogged != _lastRefreshedLogged)
+                       {
+                           _lastRefreshedLogged = activity.TotalLogged;
+                           _logListView.BeginUpdate();
+                           _logListView.Items.Clear();
+                           foreach (var entry in activity.GetRecentEntries())
+                           {
+                               var lvi = new ListViewItem(entry.Timestamp.ToString("HH:mm:ss"));
+                               lvi.SubItems.Add(entry.Operation);
+                               lvi.SubItems.Add(entry.Target);
+                               lvi.SubItems.Add(entry.Detail ?? "");
+                               if (entry.Operation == "error") lvi.ForeColor = Color.Red;
+                               _logListView.Items.Add(lvi);
+                           }
+                           _logListView.EndUpdate();
+                       }
+                   }
+                   catch
+                   {
+                       // Module may be mid-initialization; ignore transient errors.
+                   }
+               }
+
+               private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
+                   => UpdateBackendVisibility();
 
     private void UpdateBackendVisibility()
     {
@@ -1628,26 +1886,71 @@ internal sealed class CodeVectorConfigPage : TabPage
     }
 
     private void OnnxBrowseButton_Click(object? sender, EventArgs e)
-    {
-        using var dialog = new OpenFileDialog
-        {
-            Title = "Select ONNX Model File",
-            Filter = "ONNX Model Files (*.onnx)|*.onnx|All Files (*.*)|*.*",
-            FilterIndex = 1,
-        };
+     {
+         using var dialog = new OpenFileDialog
+         {
+             Title = "Select ONNX Model File",
+             Filter = "ONNX Model Files (*.onnx)|*.onnx|All Files (*.*)|*.*",
+             FilterIndex = 1,
+         };
 
-        if (!string.IsNullOrWhiteSpace(_onnxBox.Text) && Directory.Exists(_onnxBox.Text))
-            dialog.InitialDirectory = _onnxBox.Text;
+         if (!string.IsNullOrWhiteSpace(_onnxBox.Text) && Directory.Exists(_onnxBox.Text))
+             dialog.InitialDirectory = _onnxBox.Text;
 
-        if (dialog.ShowDialog() == DialogResult.OK)
-        {
-            string? folder = Path.GetDirectoryName(dialog.FileName);
-            if (!string.IsNullOrEmpty(folder))
-                _onnxBox.Text = folder;
-        }
-    }
+         if (dialog.ShowDialog() == DialogResult.OK)
+         {
+             string? folder = Path.GetDirectoryName(dialog.FileName);
+             if (!string.IsNullOrEmpty(folder))
+                 _onnxBox.Text = folder;
+         }
+     }
 
-    private void SaveButton_Click(object? sender, EventArgs e)
+     private async void TestConnectionButton_Click(object? sender, EventArgs e)
+     {
+         _testConnectionButton.Enabled = false;
+         _fetchStatusLabel.ForeColor = SystemColors.GrayText;
+         _fetchStatusLabel.Text = "Testing connection…";
+
+         string baseUrl = DeriveBaseUrl();
+         string testUrl = baseUrl + "/v1/models";
+
+         try
+         {
+             using var client = CreateAuthedClient();
+             using var response = await client.GetAsync(testUrl, System.Threading.CancellationToken.None);
+
+             if (response.IsSuccessStatusCode)
+             {
+                 string body = await response.Content.ReadAsStringAsync();
+                 _fetchStatusLabel.ForeColor = Color.Green;
+                 try
+                 {
+                     using var doc = JsonDocument.Parse(body);
+                          _fetchStatusLabel.Text = $"OK — {doc.RootElement.GetProperty("description").GetString() ?? body}";
+                 }
+                 catch
+                 {
+                     _fetchStatusLabel.Text = $"OK — {body.Substring(0, Math.Min(100, body.Length))}";
+                 }
+             }
+             else
+             {
+                 _fetchStatusLabel.ForeColor = Color.Red;
+                 _fetchStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
+             }
+         }
+         catch (Exception ex)
+         {
+             _fetchStatusLabel.ForeColor = Color.Red;
+             _fetchStatusLabel.Text = $"Error: {ex.Message}";
+         }
+         finally
+         {
+             _testConnectionButton.Enabled = true;
+         }
+     }
+
+     private void SaveButton_Click(object? sender, EventArgs e)
     {
         bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
 
@@ -1710,13 +2013,14 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("log_level", settings.McpLogLevel.ToString());
         repo.SaveSetting("search_enabled", settings.SearchEnabled ? "1" : "0");
         repo.SaveSetting("index_enabled", settings.IndexEnabled ? "1" : "0");
-        repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
-        repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
-        repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
-        repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
+           repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
+            repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
+            repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
+            repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
+            repo.SaveSetting("git_mirror_path", settings.GitMirrorPath);
 
-        MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
+            MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
 }
 
 internal sealed class ModelInfoDialog : Form
