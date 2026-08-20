@@ -1340,8 +1340,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private ComboBox _credentialCombo = null!;
     private NumericUpDown _timeoutBox = null!;
     private Label _fetchStatusLabel = null!;
-      private TextBox _checkoutPathBox = null!;
-     private Button _testConnectionButton = null!;
+    private Button _testConnectionButton = null!;
     private GroupBox _onnxGroup = null!;
     private TextBox _onnxBox = null!;
     private Button _onnxBrowseButton = null!;
@@ -1354,6 +1353,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private NumericUpDown _maxSizeBox = null!;
     private NumericUpDown _topKBox = null!;
     private NumericUpDown _syncBox = null!;
+    private TextBox _checkoutPathBox = null!;
     private ComboBox _logLevelCombo = null!;
     private CheckBox _chkSearch = null!;
     private CheckBox _chkIndex = null!;
@@ -1361,7 +1361,8 @@ internal sealed class CodeVectorConfigPage : TabPage
     private CheckBox _chkStatus = null!;
     private CheckBox _chkRemove = null!;
     private CheckBox _chkReindex = null!;
-
+    private GroupBox _reposGroup = null!;
+    private ListView _reposListView = null!;
     private GroupBox _statusGroup = null!;
     private Label _engineStatusLabel = null!;
     private Label _queueStatusLabel = null!;
@@ -1370,12 +1371,14 @@ internal sealed class CodeVectorConfigPage : TabPage
     private ListView _queueListView = null!;
     private ListView _logListView = null!;
     private System.Windows.Forms.Timer? _refreshTimer;
+    private long _lastRefreshedLogged = -1;
 
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
         _module = module;
-        InitializeComponent();
+        BuildUi();
         UpdateBackendVisibility();
+        RefreshRepos();
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 2000 };
         _refreshTimer.Tick += (_, _) => RefreshStatus();
         _refreshTimer.Start();
@@ -1383,127 +1386,110 @@ internal sealed class CodeVectorConfigPage : TabPage
         RefreshStatus();
     }
 
-    private void InitializeComponent()
+    private void BuildUi()
     {
         AutoScroll = true;
-        var outerLayout = new TableLayoutPanel
+        var main = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowOnly,
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
             ColumnCount = 1,
-            RowCount = 6,
-            Padding = new Padding(10),
+            Padding = new Padding(8),
         };
-        outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 6; i++)
-            outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        int section = 0;
+        main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         // Backend selector
-        var backendPanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1 };
+        var backendPanel = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 0, 0, 8) };
         backendPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        backendPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        backendPanel.Controls.Add(new Label { Text = "Backend Type:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 0);
-        _backendCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        backendPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        backendPanel.Controls.Add(new Label { Text = "Backend:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 0);
+        _backendCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
         _backendCombo.Items.AddRange(["Remote", "Onnx"]);
         _backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
         _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
         backendPanel.Controls.Add(_backendCombo, 1, 0);
-        outerLayout.Controls.Add(backendPanel, 0, section++);
+        main.Controls.Add(backendPanel, 0, 0);
 
-        // Remote backend group
+        // Remote group
         _remoteGroup = BuildRemoteGroup();
-        outerLayout.Controls.Add(_remoteGroup, 0, section++);
+        main.Controls.Add(_remoteGroup, 0, 1);
 
-        // ONNX backend group
+        // ONNX group
         _onnxGroup = BuildOnnxGroup();
-        outerLayout.Controls.Add(_onnxGroup, 0, section++);
+        main.Controls.Add(_onnxGroup, 0, 2);
 
-        // General settings group
+        // General settings
         _generalGroup = BuildGeneralGroup();
-        outerLayout.Controls.Add(_generalGroup, 0, section++);
+        main.Controls.Add(_generalGroup, 0, 3);
 
-        // Status group
+        // Git Repos
+        _reposGroup = BuildReposGroup();
+        main.Controls.Add(_reposGroup, 0, 4);
+
+        // Status
         _statusGroup = BuildStatusGroup();
-        outerLayout.Controls.Add(_statusGroup, 0, section++);
+        main.Controls.Add(_statusGroup, 0, 5);
 
-        // Save button
-        var saveButton = new Button { Text = "Save Settings", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 10, 0, 0) };
-        saveButton.Click += SaveButton_Click;
-        outerLayout.Controls.Add(saveButton, 0, section++);
+        // Action buttons
+        var actionPanel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = new Padding(0, 4, 0, 0) };
+        var btnIndex = new Button { Text = "Index File", AutoSize = true, Margin = new Padding(3) };
+        btnIndex.Click += IndexFileButton_Click;
+        var btnSync = new Button { Text = "Sync All", AutoSize = true, Margin = new Padding(3) };
+        btnSync.Click += SyncAllButton_Click;
+        var btnStatus = new Button { Text = "Status", AutoSize = true, Margin = new Padding(3) };
+        btnStatus.Click += StatusButton_Click;
+        var btnReindex = new Button { Text = "Reindex", AutoSize = true, Margin = new Padding(3) };
+        btnReindex.Click += ReindexButton_Click;
+        var btnSave = new Button { Text = "Save Settings", AutoSize = true, Margin = new Padding(3) };
+        btnSave.Click += SaveButton_Click;
+        actionPanel.Controls.AddRange([btnIndex, btnSync, btnStatus, btnReindex, btnSave]);
+        main.Controls.Add(actionPanel, 0, 6);
 
-        Controls.Add(outerLayout);
+        Controls.Add(main);
     }
+
+    // (BuildUi replaces the old InitializeComponent)
 
     private GroupBox BuildRemoteGroup()
     {
-        var group = new GroupBox { Text = "Remote Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 5 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
-
+        var group = new GroupBox { Text = "Remote Backend", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         int row = 0;
 
-        // URL + Fetch Models
-        layout.Controls.Add(new Label { Text = "URL:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _remoteUrlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl };
-        _fetchModelsButton = new Button { Text = "Fetch Models", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+        layout.Controls.Add(new Label { Text = "URL:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _remoteUrlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl, Margin = new Padding(3) };
+        _fetchModelsButton = new Button { Text = "Fetch", AutoSize = true, Margin = new Padding(3) };
         _fetchModelsButton.Click += FetchModelsButton_Click;
-        var urlPanel = new Panel { Dock = DockStyle.Fill };
-        var urlLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        urlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        urlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        urlLayout.Controls.Add(_remoteUrlBox, 0, 0);
-        urlLayout.Controls.Add(_fetchModelsButton, 1, 0);
-        urlPanel.Controls.Add(urlLayout);
-        layout.Controls.Add(urlPanel, 1, row++);
+        layout.Controls.Add(_remoteUrlBox, 1, row);
+        layout.Controls.Add(_fetchModelsButton, 2, row++);
 
-        // Model combo + Show Info
-         layout.Controls.Add(new Label { Text = "Model:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-         _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
-         _showModelButton = new Button { Text = "Show Info", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
-         _showModelButton.Click += ShowModelButton_Click;
-         var modelPanel = new Panel { Dock = DockStyle.Fill };
-         var modelLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-         modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-         modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-         modelLayout.Controls.Add(_remoteModelCombo, 0, 0);
-         modelLayout.Controls.Add(_showModelButton, 1, 0);
-         modelPanel.Controls.Add(modelLayout);
-         layout.Controls.Add(modelPanel, 1, row++);
+        layout.Controls.Add(new Label { Text = "Model:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel, Margin = new Padding(3) };
+        _showModelButton = new Button { Text = "Info", AutoSize = true, Margin = new Padding(3) };
+        _showModelButton.Click += ShowModelButton_Click;
+        layout.Controls.Add(_remoteModelCombo, 1, row);
+        layout.Controls.Add(_showModelButton, 2, row++);
 
-         // Test Connection
-         layout.Controls.Add(new Label { Text = "Test:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-         _testConnectionButton = new Button { Text = "Test Connection", AutoSize = true };
-         _testConnectionButton.Click += TestConnectionButton_Click;
-         var testPanel = new Panel { Dock = DockStyle.Fill };
-         var testLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1 };
-         testLayout.Controls.Add(_testConnectionButton, 0, 0);
-         testPanel.Controls.Add(testLayout);
-         layout.Controls.Add(testPanel, 1, row++);
+        layout.Controls.Add(new Label { Text = "Test:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _testConnectionButton = new Button { Text = "Test Connection", AutoSize = true, Margin = new Padding(3) };
+        _testConnectionButton.Click += TestConnectionButton_Click;
+        layout.Controls.Add(_testConnectionButton, 1, row++);
 
-         // Credential
-         layout.Controls.Add(new Label { Text = "Credential:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-         _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
-         try
-         {
-             var names = _module.Secrets.ListCredentialNames();
-             _credentialCombo.Items.AddRange(names.ToArray());
-         }
-         catch { /* secrets unavailable */ }
-         _credentialCombo.Text = _module.Settings.RemoteCredentialName;
-         layout.Controls.Add(_credentialCombo, 1, row++);
+        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
+        try { _credentialCombo.Items.AddRange(_module.Secrets.ListCredentialNames().ToArray()); } catch { }
+        _credentialCombo.Text = _module.Settings.RemoteCredentialName;
+        layout.Controls.Add(_credentialCombo, 1, row++);
 
-        // Timeout
-        layout.Controls.Add(new Label { Text = "Timeout (sec):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _timeoutBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 5, Maximum = 300, Value = _module.Settings.RemoteTimeoutSeconds };
+        layout.Controls.Add(new Label { Text = "Timeout (s):", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _timeoutBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 5, Maximum = 300, Value = _module.Settings.RemoteTimeoutSeconds, Margin = new Padding(3) };
         layout.Controls.Add(_timeoutBox, 1, row++);
 
-        // Status label
-        _fetchStatusLabel = new Label { Text = "", Anchor = AnchorStyles.Left, AutoSize = true, ForeColor = SystemColors.GrayText };
-        layout.Controls.Add(_fetchStatusLabel, 1, row++);
+        _fetchStatusLabel = new Label { Text = "", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3) };
+        layout.Controls.Add(_fetchStatusLabel, 1, row);
 
         group.Controls.Add(layout);
         return group;
@@ -1511,36 +1497,27 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private GroupBox BuildOnnxGroup()
     {
-        var group = new GroupBox { Text = "ONNX Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 3 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
-
+        var group = new GroupBox { Text = "ONNX Backend", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 3 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         int row = 0;
 
-        // Model folder + Browse
-        layout.Controls.Add(new Label { Text = "Model Folder:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
-        _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+        layout.Controls.Add(new Label { Text = "Model Folder:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder, Margin = new Padding(3) };
+        _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3) };
         _onnxBrowseButton.Click += OnnxBrowseButton_Click;
-        var onnxPanel = new Panel { Dock = DockStyle.Fill };
-        var onnxLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        onnxLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        onnxLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        onnxLayout.Controls.Add(_onnxBox, 0, 0);
-        onnxLayout.Controls.Add(_onnxBrowseButton, 1, 0);
-        onnxPanel.Controls.Add(onnxLayout);
-        layout.Controls.Add(onnxPanel, 1, row++);
+        layout.Controls.Add(_onnxBox, 1, row);
+        layout.Controls.Add(_onnxBrowseButton, 2, row++);
 
-        // Max sequence length
-        layout.Controls.Add(new Label { Text = "Max Sequence:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _onnxMaxSeqBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 32, Maximum = 4096, Value = _module.Settings.OnnxMaxSequenceLength };
+        layout.Controls.Add(new Label { Text = "Max Sequence:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _onnxMaxSeqBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 32, Maximum = 4096, Value = _module.Settings.OnnxMaxSequenceLength, Margin = new Padding(3) };
         layout.Controls.Add(_onnxMaxSeqBox, 1, row++);
 
-        // Threads
-        layout.Controls.Add(new Label { Text = "Threads:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _onnxThreadsBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 32, Value = _module.Settings.OnnxMaxThreads };
-        layout.Controls.Add(_onnxThreadsBox, 1, row++);
+        layout.Controls.Add(new Label { Text = "Threads:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _onnxThreadsBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 32, Value = _module.Settings.OnnxMaxThreads, Margin = new Padding(3) };
+        layout.Controls.Add(_onnxThreadsBox, 1, row);
 
         group.Controls.Add(layout);
         return group;
@@ -1548,82 +1525,109 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private GroupBox BuildGeneralGroup()
     {
-        var group = new GroupBox { Text = "General Settings", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, RowCount = 12 };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
-
+        var group = new GroupBox { Text = "General Settings", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         int row = 0;
 
-        // Collection
-        layout.Controls.Add(new Label { Text = "Collection:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _collectionBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.DefaultCollection };
+        layout.Controls.Add(new Label { Text = "Collection:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _collectionBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.DefaultCollection, Margin = new Padding(3) };
         layout.Controls.Add(_collectionBox, 1, row++);
 
-        // Chunk lines
-        layout.Controls.Add(new Label { Text = "Chunk Lines:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines };
+        layout.Controls.Add(new Label { Text = "Chunk Lines:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines, Margin = new Padding(3) };
         layout.Controls.Add(_chunkLinesBox, 1, row++);
 
-        // Overlap
-        layout.Controls.Add(new Label { Text = "Overlap Lines:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _overlapBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = _module.Settings.ChunkOverlapLines };
+        layout.Controls.Add(new Label { Text = "Overlap Lines:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _overlapBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = _module.Settings.ChunkOverlapLines, Margin = new Padding(3) };
         layout.Controls.Add(_overlapBox, 1, row++);
 
-        // Max file size
-        layout.Controls.Add(new Label { Text = "Max File (KB):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _maxSizeBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 10240, Value = _module.Settings.MaxFileSizeKb };
+        layout.Controls.Add(new Label { Text = "Max File (KB):", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _maxSizeBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 10240, Value = _module.Settings.MaxFileSizeKb, Margin = new Padding(3) };
         layout.Controls.Add(_maxSizeBox, 1, row++);
 
-        // Top K
-        layout.Controls.Add(new Label { Text = "Default Top K:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-        _topKBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 100, Value = _module.Settings.DefaultTopK };
+        layout.Controls.Add(new Label { Text = "Default Top K:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _topKBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 100, Value = _module.Settings.DefaultTopK, Margin = new Padding(3) };
         layout.Controls.Add(_topKBox, 1, row++);
 
-        // Git sync interval
-         layout.Controls.Add(new Label { Text = "Git Sync (min):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-         _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
-         layout.Controls.Add(_syncBox, 1, row++);
+        layout.Controls.Add(new Label { Text = "Git Sync (min):", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes, Margin = new Padding(3) };
+        layout.Controls.Add(_syncBox, 1, row++);
 
-            // Checkout path
-              layout.Controls.Add(new Label { Text = "Checkout Path:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-              _checkoutPathBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.GitMirrorPath };
-              layout.Controls.Add(_checkoutPathBox, 1, row++);
+        layout.Controls.Add(new Label { Text = "Mirror Path:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _checkoutPathBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.GitMirrorPath, Margin = new Padding(3) };
+        layout.Controls.Add(_checkoutPathBox, 1, row++);
 
-              // Log level
-              layout.Controls.Add(new Label { Text = "Log Level:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-              _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-              _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
-              _logLevelCombo.SelectedItem = _module.Settings.McpLogLevel.ToString();
-              layout.Controls.Add(_logLevelCombo, 1, row++);
+        layout.Controls.Add(new Label { Text = "Log Level:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(3) };
+        _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
+        _logLevelCombo.SelectedItem = _module.Settings.McpLogLevel.ToString();
+        layout.Controls.Add(_logLevelCombo, 1, row++);
 
-              // Tool toggles
-               layout.Controls.Add(new Label { Text = "Tools:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
-               var toolsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true };
-               _chkSearch = new CheckBox { Text = "Search", AutoSize = true, Checked = _module.Settings.SearchEnabled };
-               _chkIndex = new CheckBox { Text = "Index", AutoSize = true, Checked = _module.Settings.IndexEnabled };
-               _chkSync = new CheckBox { Text = "Sync", AutoSize = true, Checked = _module.Settings.SyncRepoEnabled };
-               _chkStatus = new CheckBox { Text = "Status", AutoSize = true, Checked = _module.Settings.StatusEnabled };
-               _chkRemove = new CheckBox { Text = "Remove", AutoSize = true, Checked = _module.Settings.RemoveEnabled };
-               _chkReindex = new CheckBox { Text = "Reindex", AutoSize = true, Checked = _module.Settings.ReindexEnabled };
-               toolsPanel.Controls.AddRange([_chkSearch, _chkIndex, _chkSync, _chkStatus, _chkRemove, _chkReindex]);
-               layout.Controls.Add(toolsPanel, 1, row++);
+        layout.Controls.Add(new Label { Text = "Tools:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        var toolsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true, Margin = new Padding(3) };
+        _chkSearch = new CheckBox { Text = "Search", AutoSize = true, Checked = _module.Settings.SearchEnabled, Margin = new Padding(3, 6, 12, 3) };
+        _chkIndex = new CheckBox { Text = "Index", AutoSize = true, Checked = _module.Settings.IndexEnabled, Margin = new Padding(3, 6, 12, 3) };
+        _chkSync = new CheckBox { Text = "Sync", AutoSize = true, Checked = _module.Settings.SyncRepoEnabled, Margin = new Padding(3, 6, 12, 3) };
+        _chkStatus = new CheckBox { Text = "Status", AutoSize = true, Checked = _module.Settings.StatusEnabled, Margin = new Padding(3, 6, 12, 3) };
+        _chkRemove = new CheckBox { Text = "Remove", AutoSize = true, Checked = _module.Settings.RemoveEnabled, Margin = new Padding(3, 6, 12, 3) };
+        _chkReindex = new CheckBox { Text = "Reindex", AutoSize = true, Checked = _module.Settings.ReindexEnabled, Margin = new Padding(3, 6, 3, 3) };
+        toolsPanel.Controls.AddRange([_chkSearch, _chkIndex, _chkSync, _chkStatus, _chkRemove, _chkReindex]);
+        layout.Controls.Add(toolsPanel, 1, row);
 
-                           group.Controls.Add(layout);
-                           return group;
-                     }
+        group.Controls.Add(layout);
+        return group;
+    }
+
+               private GroupBox BuildReposGroup()
+               {
+                   var group = new GroupBox { Text = "Git Repos", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 2 };
+                   layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+                   layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+                   _reposListView = new ListView
+                   {
+                       View = View.Details,
+                       FullRowSelect = true,
+                       GridLines = true,
+                       MultiSelect = false,
+                       Dock = DockStyle.Fill,
+                       HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                   };
+                   _reposListView.Columns.Add("Collection", 140);
+                   _reposListView.Columns.Add("Remote URL", 260);
+                   _reposListView.Columns.Add("Branch", 70);
+                   _reposListView.Columns.Add("Last Sync", 140);
+                   _reposListView.Columns.Add("Status", 100);
+                   layout.Controls.Add(_reposListView, 0, 0);
+
+                   var btnPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+                   var btnAdd = new Button { Text = "Add", AutoSize = true, Margin = new Padding(3) };
+                   btnAdd.Click += AddRepoButton_Click;
+                   var btnEdit = new Button { Text = "Edit", AutoSize = true, Margin = new Padding(3) };
+                   btnEdit.Click += EditRepoButton_Click;
+                   var btnRemove = new Button { Text = "Remove", AutoSize = true, Margin = new Padding(3) };
+                   btnRemove.Click += RemoveRepoButton_Click;
+                   btnPanel.Controls.AddRange([btnAdd, btnEdit, btnRemove]);
+                   layout.Controls.Add(btnPanel, 0, 1);
+
+                   group.Controls.Add(layout);
+                   return group;
+               }
 
                private GroupBox BuildStatusGroup()
                {
-                   var group = new GroupBox { Text = "Status", Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(10) };
-                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 4 };
+                   var group = new GroupBox { Text = "Status", AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
+                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 4 };
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
-                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 170));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
 
-                   // Status labels row
                    var statusPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
                    _engineStatusLabel = new Label { Text = "Engine: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
                    _queueStatusLabel = new Label { Text = "Queue: 0", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
@@ -1631,11 +1635,9 @@ internal sealed class CodeVectorConfigPage : TabPage
                    statusPanel.Controls.AddRange([_engineStatusLabel, _queueStatusLabel, _currentStatusLabel]);
                    layout.Controls.Add(statusPanel, 0, 0);
 
-                   // Log summary label
                    _logSummaryLabel = new Label { Text = "Logged: 0 | Errors: 0", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 4) };
                    layout.Controls.Add(_logSummaryLabel, 0, 1);
 
-                   // Queue ListView
                    _queueListView = new ListView
                    {
                        View = View.Details,
@@ -1646,12 +1648,11 @@ internal sealed class CodeVectorConfigPage : TabPage
                        HeaderStyle = ColumnHeaderStyle.Nonclickable,
                    };
                    _queueListView.Columns.Add("Operation", 90);
-                   _queueListView.Columns.Add("Collection", 140);
-                   _queueListView.Columns.Add("Path", 260);
-                   _queueListView.Columns.Add("Source", 70);
+                   _queueListView.Columns.Add("Collection", 130);
+                   _queueListView.Columns.Add("Path", 250);
+                   _queueListView.Columns.Add("Source", 60);
                    layout.Controls.Add(_queueListView, 0, 2);
 
-                   // Log section: header with Clear button + ListView
                    var logHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
                    logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                    logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -1670,10 +1671,10 @@ internal sealed class CodeVectorConfigPage : TabPage
                        Dock = DockStyle.Fill,
                        HeaderStyle = ColumnHeaderStyle.Nonclickable,
                    };
-                   _logListView.Columns.Add("Time", 75);
-                   _logListView.Columns.Add("Operation", 100);
-                   _logListView.Columns.Add("Target", 180);
-                   _logListView.Columns.Add("Detail", 240);
+                   _logListView.Columns.Add("Time", 65);
+                   _logListView.Columns.Add("Operation", 90);
+                   _logListView.Columns.Add("Target", 160);
+                   _logListView.Columns.Add("Detail", 230);
                    logHeader.Controls.Add(_logListView, 0, 1);
                    logHeader.SetColumnSpan(_logListView, 2);
                    layout.Controls.Add(logHeader, 0, 3);
@@ -1682,16 +1683,14 @@ internal sealed class CodeVectorConfigPage : TabPage
                    return group;
                }
 
-               private long _lastRefreshedLogged = -1;
-
                private void RefreshStatus()
                {
                    try
                    {
                        var engine = _module.Indexer;
-                       var engineRunning = engine.IsRunning;
-                       _engineStatusLabel.Text = engineRunning ? "Engine: Running" : "Engine: Stopped";
-                       _engineStatusLabel.ForeColor = engineRunning ? Color.Green : SystemColors.GrayText;
+                       var running = engine.IsRunning;
+                       _engineStatusLabel.Text = running ? "Engine: Running" : "Engine: Stopped";
+                       _engineStatusLabel.ForeColor = running ? Color.Green : SystemColors.GrayText;
                        _queueStatusLabel.Text = $"Queue: {engine.QueueDepth}";
                        var current = engine.CurrentJob;
                        _currentStatusLabel.Text = current is null ? "Current: —" : $"Current: {current.Path}";
@@ -1699,7 +1698,6 @@ internal sealed class CodeVectorConfigPage : TabPage
                        var activity = _module.Activity;
                        _logSummaryLabel.Text = $"Logged: {activity.TotalLogged} | Errors: {activity.ErrorCount}";
 
-                       // Queue ListView (always refreshed — small and changes frequently)
                        _queueListView.BeginUpdate();
                        _queueListView.Items.Clear();
                        foreach (var item in engine.GetQueueSnapshot())
@@ -1712,7 +1710,6 @@ internal sealed class CodeVectorConfigPage : TabPage
                        }
                        _queueListView.EndUpdate();
 
-                       // Log ListView (only rebuilt when new entries arrive, to avoid flicker)
                        if (activity.TotalLogged != _lastRefreshedLogged)
                        {
                            _lastRefreshedLogged = activity.TotalLogged;
@@ -1730,10 +1727,118 @@ internal sealed class CodeVectorConfigPage : TabPage
                            _logListView.EndUpdate();
                        }
                    }
-                   catch
+                   catch { }
+               }
+
+               private void RefreshRepos()
+               {
+                   try
                    {
-                       // Module may be mid-initialization; ignore transient errors.
+                       _reposListView.BeginUpdate();
+                       _reposListView.Items.Clear();
+                       foreach (var m in _module.Repository.LoadMirrors())
+                       {
+                           var lvi = new ListViewItem(m.CollectionName);
+                           lvi.SubItems.Add(m.RemoteUrl);
+                           lvi.SubItems.Add(m.Branch);
+                           lvi.SubItems.Add(m.LastSyncUtc ?? "never");
+                           lvi.SubItems.Add(m.LastSyncStatus ?? "pending");
+                           lvi.Tag = m;
+                           _reposListView.Items.Add(lvi);
+                       }
+                       _reposListView.EndUpdate();
                    }
+                   catch { }
+               }
+
+               private MirrorRegistration? GetSelectedRepo()
+                   => _reposListView.SelectedItems.Count > 0 ? _reposListView.SelectedItems[0].Tag as MirrorRegistration : null;
+
+               private void AddRepoButton_Click(object? sender, EventArgs e)
+               {
+                   using var dlg = new RepoDialog(null);
+                   if (dlg.ShowDialog(this.FindForm()) == DialogResult.OK)
+                   {
+                       try
+                       {
+                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None);
+                           RefreshRepos();
+                       }
+                       catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                   }
+               }
+
+               private void EditRepoButton_Click(object? sender, EventArgs e)
+               {
+                   var m = GetSelectedRepo();
+                   if (m is null) { MessageBox.Show("Select a repo first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                   using var dlg = new RepoDialog(m);
+                   if (dlg.ShowDialog(this.FindForm()) == DialogResult.OK)
+                   {
+                       try
+                       {
+                           _module.Repository.DeleteMirror(m.CollectionName);
+                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None);
+                           RefreshRepos();
+                       }
+                       catch (Exception ex) { MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                   }
+               }
+
+               private void RemoveRepoButton_Click(object? sender, EventArgs e)
+               {
+                   var m = GetSelectedRepo();
+                   if (m is null) { MessageBox.Show("Select a repo first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                   if (MessageBox.Show($"Remove '{m.CollectionName}'?", "Confirm Remove", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                   {
+                       _module.Repository.DeleteMirror(m.CollectionName);
+                       RefreshRepos();
+                   }
+               }
+
+               private async void IndexFileButton_Click(object? sender, EventArgs e)
+               {
+                   using var dlg = new OpenFileDialog { Title = "Select File to Index", Filter = "All Files (*.*)|*.*" };
+                   if (dlg.ShowDialog(this.FindForm()) != DialogResult.OK) return;
+                   try
+                   {
+                       var content = await File.ReadAllTextAsync(dlg.FileName);
+                       var collection = string.IsNullOrWhiteSpace(_collectionBox.Text) ? "default" : _collectionBox.Text.Trim();
+                       _module.Indexer.EnqueueIndexFile(collection, dlg.FileName, content, "ui");
+                       _module.Activity.Log("ui_index", $"{collection}:{dlg.FileName}", "Queued from UI");
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Index Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+               }
+
+               private async void SyncAllButton_Click(object? sender, EventArgs e)
+               {
+                   var mirrors = _module.Repository.LoadMirrors();
+                   if (mirrors.Count == 0) { MessageBox.Show("No repos registered.", "Nothing to Sync", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                   foreach (var m in mirrors)
+                       await _module.MirrorManager.SyncMirrorAsync(m, CancellationToken.None);
+                   RefreshRepos();
+               }
+
+               private void StatusButton_Click(object? sender, EventArgs e)
+               {
+                   var collections = _module.VectorDb.ListCollections();
+                   var mirrors = _module.Repository.LoadMirrors();
+                   var sb = new StringBuilder();
+                   sb.AppendLine($"Backend: {_module.Settings.BackendType}");
+                   sb.AppendLine($"Model: {_module.EmbeddingBackend.ModelName}");
+                   sb.AppendLine($"Dimension: {_module.EmbeddingBackend.Dimension}");
+                   sb.AppendLine($"Engine: {(_module.Indexer.IsRunning ? "Running" : "Stopped")} | Queue: {_module.Indexer.QueueDepth}");
+                   sb.AppendLine();
+                   foreach (var c in collections) sb.AppendLine($"  {c.Name}: {c.FileCount} files, {c.ChunkCount} chunks");
+                   foreach (var m in mirrors) sb.AppendLine($"  Mirror {m.CollectionName}: {m.LastSyncUtc ?? "never"} [{m.LastSyncStatus ?? "pending"}]");
+                   MessageBox.Show(sb.ToString(), "Code Vector Store Status", MessageBoxButtons.OK, MessageBoxIcon.Information);
+               }
+
+               private void ReindexButton_Click(object? sender, EventArgs e)
+               {
+                   var collection = string.IsNullOrWhiteSpace(_collectionBox.Text) ? "default" : _collectionBox.Text.Trim();
+                   _module.Indexer.EnqueueReindex(collection);
+                   _module.Activity.Log("ui_reindex", collection, "Reindex queued from UI");
                }
 
                private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
@@ -2021,6 +2126,62 @@ internal sealed class CodeVectorConfigPage : TabPage
 
             MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+}
+
+internal sealed class RepoDialog : Form
+{
+    private readonly TextBox _collectionBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
+    private readonly TextBox _urlBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
+    private readonly TextBox _branchBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3), Text = "main" };
+    private readonly ComboBox _credentialCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
+
+    public string CollectionName => _collectionBox.Text.Trim();
+    public string RemoteUrl => _urlBox.Text.Trim();
+    public string Branch => string.IsNullOrWhiteSpace(_branchBox.Text) ? "main" : _branchBox.Text.Trim();
+    public string? CredentialName => string.IsNullOrWhiteSpace(_credentialCombo.Text) ? null : _credentialCombo.Text.Trim();
+
+    public RepoDialog(MirrorRegistration? existing)
+    {
+        Text = existing is null ? "Add Git Repo" : "Edit Git Repo";
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ClientSize = new Size(460, 220);
+
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(10), AutoSize = true };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        layout.Controls.Add(new Label { Text = "Collection:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 0);
+        layout.Controls.Add(_collectionBox, 1, 0);
+        layout.Controls.Add(new Label { Text = "Remote URL:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 1);
+        layout.Controls.Add(_urlBox, 1, 1);
+        layout.Controls.Add(new Label { Text = "Branch:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 2);
+        layout.Controls.Add(_branchBox, 1, 2);
+        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 3);
+        layout.Controls.Add(_credentialCombo, 1, 3);
+
+        var btnPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
+        var okBtn = new Button { Text = "OK", AutoSize = true, DialogResult = DialogResult.OK, Margin = new Padding(3) };
+        var cancelBtn = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, Margin = new Padding(3) };
+        btnPanel.Controls.Add(cancelBtn);
+        btnPanel.Controls.Add(okBtn);
+        layout.Controls.Add(btnPanel, 0, 4);
+        layout.SetColumnSpan(btnPanel, 2);
+
+        Controls.Add(layout);
+        AcceptButton = okBtn;
+        CancelButton = cancelBtn;
+
+        if (existing is not null)
+        {
+            _collectionBox.Text = existing.CollectionName;
+            _urlBox.Text = existing.RemoteUrl;
+            _branchBox.Text = existing.Branch;
+            _credentialCombo.Text = existing.CredentialName ?? "";
+        }
+    }
 }
 
 internal sealed class ModelInfoDialog : Form
