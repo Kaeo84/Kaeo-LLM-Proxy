@@ -1240,6 +1240,8 @@ internal sealed class CodeVectorConfigPage : TabPage
     private Panel _onnxPanel = null!;
     private TextBox _onnxBox = null!;
     private Button _onnxBrowseButton = null!;
+    private Button _testButton = null!;
+    private Label _testStatusLabel = null!;
     private NumericUpDown _chunkLinesBox = null!;
     private NumericUpDown _overlapBox = null!;
     private NumericUpDown _maxSizeBox = null!;
@@ -1259,7 +1261,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 10,
+            RowCount = 11,
             Padding = new Padding(10),
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
@@ -1287,7 +1289,14 @@ internal sealed class CodeVectorConfigPage : TabPage
         _remoteModelBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
         layout.Controls.Add(_remoteModelBox, 1, row++);
 
-        // ONNX Model Folder with Browse button (visible only when Onnx is selected)
+        // Test Connection (visible only when Remote is selected)
+        _testButton = new Button { Text = "Test Connection", AutoSize = true, Anchor = AnchorStyles.Left };
+        _testButton.Click += TestButton_Click;
+        layout.Controls.Add(_testButton, 0, row);
+        _testStatusLabel = new Label { Text = "", Anchor = AnchorStyles.Left, AutoSize = true, ForeColor = SystemColors.GrayText };
+        layout.Controls.Add(_testStatusLabel, 1, row++);
+
+        // ONNX Model Folder
         _onnxLabel = new Label { Text = "ONNX Model Folder:", Anchor = AnchorStyles.Left };
         layout.Controls.Add(_onnxLabel, 0, row);
         _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
@@ -1356,6 +1365,80 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         _onnxLabel.Visible = isOnnx;
         _onnxPanel.Visible = isOnnx;
+
+        _testButton.Visible = isRemote;
+        _testStatusLabel.Visible = isRemote;
+    }
+
+    private async void TestButton_Click(object? sender, EventArgs e)
+    {
+        string baseUrl = _remoteUrlBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            baseUrl = $"http://{_module.Host.DisplayHost}:{_module.Host.ListenPort}/v1/embeddings";
+
+        // Derive the /v1/models endpoint from the configured embeddings URL
+        string modelsUrl = baseUrl;
+        if (modelsUrl.EndsWith("/v1/embeddings", StringComparison.OrdinalIgnoreCase))
+            modelsUrl = modelsUrl[..^"/v1/embeddings".Length] + "/v1/models";
+        else if (!modelsUrl.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))
+            modelsUrl = modelsUrl.TrimEnd('/') + "/v1/models";
+
+        _testButton.Enabled = false;
+        _testStatusLabel.ForeColor = SystemColors.GrayText;
+        _testStatusLabel.Text = "Testing…";
+
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+
+            string? credentialName = _module.Settings.RemoteCredentialName;
+            if (!string.IsNullOrWhiteSpace(credentialName))
+            {
+                string? secret = _module.Secrets.ResolveSecret(credentialName);
+                if (!string.IsNullOrWhiteSpace(secret))
+                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+            }
+
+            using var response = await client.GetAsync(modelsUrl);
+            string body = await response.Content.ReadAsStringAsync();
+
+            if (response.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
+                {
+                    var modelIds = data.EnumerateArray()
+                        .Where(m => m.TryGetProperty("id", out _))
+                        .Select(m => m.GetProperty("id").GetString())
+                        .Where(id => id is not null)
+                        .Take(5)
+                        .ToList();
+
+                    string modelList = modelIds.Count > 0 ? string.Join(", ", modelIds) : "(no models listed)";
+                    _testStatusLabel.ForeColor = Color.Green;
+                    _testStatusLabel.Text = $"OK — Models: {modelList}";
+                }
+                else
+                {
+                    _testStatusLabel.ForeColor = Color.Green;
+                    _testStatusLabel.Text = $"OK ({(int)response.StatusCode} {response.ReasonPhrase})";
+                }
+            }
+            else
+            {
+                _testStatusLabel.ForeColor = Color.Red;
+                _testStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _testStatusLabel.ForeColor = Color.Red;
+            _testStatusLabel.Text = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _testButton.Enabled = true;
+        }
     }
 
     private void OnnxBrowseButton_Click(object? sender, EventArgs e)
