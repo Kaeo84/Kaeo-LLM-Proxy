@@ -1233,15 +1233,18 @@ internal sealed class CodeVectorConfigPage : TabPage
     private readonly CodeVectorModule _module;
     private ComboBox _backendCombo = null!;
     private Label _remoteUrlLabel = null!;
+    private Panel _remoteUrlPanel = null!;
     private TextBox _remoteUrlBox = null!;
+    private Button _fetchModelsButton = null!;
     private Label _remoteModelLabel = null!;
-    private TextBox _remoteModelBox = null!;
+    private Panel _remoteModelPanel = null!;
+    private ComboBox _remoteModelCombo = null!;
+    private Button _showModelButton = null!;
+    private Label _fetchStatusLabel = null!;
     private Label _onnxLabel = null!;
     private Panel _onnxPanel = null!;
     private TextBox _onnxBox = null!;
     private Button _onnxBrowseButton = null!;
-    private Button _testButton = null!;
-    private Label _testStatusLabel = null!;
     private NumericUpDown _chunkLinesBox = null!;
     private NumericUpDown _overlapBox = null!;
     private NumericUpDown _maxSizeBox = null!;
@@ -1261,7 +1264,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 11,
+            RowCount = 12,
             Padding = new Padding(10),
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
@@ -1277,38 +1280,48 @@ internal sealed class CodeVectorConfigPage : TabPage
         _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
         layout.Controls.Add(_backendCombo, 1, row++);
 
-        // Remote URL (visible only when Remote is selected)
+        // Remote URL + Fetch Models button
         _remoteUrlLabel = new Label { Text = "Remote URL:", Anchor = AnchorStyles.Left };
         layout.Controls.Add(_remoteUrlLabel, 0, row);
         _remoteUrlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl };
-        layout.Controls.Add(_remoteUrlBox, 1, row++);
+        _fetchModelsButton = new Button { Text = "Fetch Models", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+        _fetchModelsButton.Click += FetchModelsButton_Click;
+        _remoteUrlPanel = new Panel { Dock = DockStyle.Fill };
+        var urlInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        urlInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        urlInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        urlInnerLayout.Controls.Add(_remoteUrlBox, 0, 0);
+        urlInnerLayout.Controls.Add(_fetchModelsButton, 1, 0);
+        _remoteUrlPanel.Controls.Add(urlInnerLayout);
+        layout.Controls.Add(_remoteUrlPanel, 1, row++);
 
-        // Remote Model (visible only when Remote is selected)
+        // Remote Model (editable ComboBox) + Show Model Info button
         _remoteModelLabel = new Label { Text = "Remote Model:", Anchor = AnchorStyles.Left };
         layout.Controls.Add(_remoteModelLabel, 0, row);
-        _remoteModelBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
-        layout.Controls.Add(_remoteModelBox, 1, row++);
+        _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
+        _showModelButton = new Button { Text = "Show Info", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
+        _showModelButton.Click += ShowModelButton_Click;
+        _remoteModelPanel = new Panel { Dock = DockStyle.Fill };
+        var modelInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        modelInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        modelInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        modelInnerLayout.Controls.Add(_remoteModelCombo, 0, 0);
+        modelInnerLayout.Controls.Add(_showModelButton, 1, 0);
+        _remoteModelPanel.Controls.Add(modelInnerLayout);
+        layout.Controls.Add(_remoteModelPanel, 1, row++);
 
-        // Test Connection (visible only when Remote is selected)
-        _testButton = new Button { Text = "Test Connection", AutoSize = true, Anchor = AnchorStyles.Left };
-        _testButton.Click += TestButton_Click;
-        layout.Controls.Add(_testButton, 0, row);
-        _testStatusLabel = new Label { Text = "", Anchor = AnchorStyles.Left, AutoSize = true, ForeColor = SystemColors.GrayText };
-        layout.Controls.Add(_testStatusLabel, 1, row++);
+        // Fetch status label
+        _fetchStatusLabel = new Label { Text = "", Anchor = AnchorStyles.Left, AutoSize = true, ForeColor = SystemColors.GrayText };
+        layout.Controls.Add(_fetchStatusLabel, 1, row++);
 
-        // ONNX Model Folder
+        // ONNX Model Folder + Browse button
         _onnxLabel = new Label { Text = "ONNX Model Folder:", Anchor = AnchorStyles.Left };
         layout.Controls.Add(_onnxLabel, 0, row);
         _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
         _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
         _onnxBrowseButton.Click += OnnxBrowseButton_Click;
         _onnxPanel = new Panel { Dock = DockStyle.Fill };
-        var onnxInnerLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 1,
-        };
+        var onnxInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
         onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         onnxInnerLayout.Controls.Add(_onnxBox, 0, 0);
@@ -1359,46 +1372,51 @@ internal sealed class CodeVectorConfigPage : TabPage
         bool isOnnx = !isRemote;
 
         _remoteUrlLabel.Visible = isRemote;
-        _remoteUrlBox.Visible = isRemote;
+        _remoteUrlPanel.Visible = isRemote;
         _remoteModelLabel.Visible = isRemote;
-        _remoteModelBox.Visible = isRemote;
+        _remoteModelPanel.Visible = isRemote;
+        _fetchStatusLabel.Visible = isRemote;
 
         _onnxLabel.Visible = isOnnx;
         _onnxPanel.Visible = isOnnx;
-
-        _testButton.Visible = isRemote;
-        _testStatusLabel.Visible = isRemote;
     }
 
-    private async void TestButton_Click(object? sender, EventArgs e)
+    private string DeriveBaseUrl()
     {
         string baseUrl = _remoteUrlBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(baseUrl))
             baseUrl = $"http://{_module.Host.DisplayHost}:{_module.Host.ListenPort}/v1/embeddings";
 
-        // Derive the /v1/models endpoint from the configured embeddings URL
-        string modelsUrl = baseUrl;
-        if (modelsUrl.EndsWith("/v1/embeddings", StringComparison.OrdinalIgnoreCase))
-            modelsUrl = modelsUrl[..^"/v1/embeddings".Length] + "/v1/models";
-        else if (!modelsUrl.EndsWith("/v1/models", StringComparison.OrdinalIgnoreCase))
-            modelsUrl = modelsUrl.TrimEnd('/') + "/v1/models";
+        if (baseUrl.EndsWith("/v1/embeddings", StringComparison.OrdinalIgnoreCase))
+            return baseUrl[..^"/v1/embeddings".Length];
 
-        _testButton.Enabled = false;
-        _testStatusLabel.ForeColor = SystemColors.GrayText;
-        _testStatusLabel.Text = "Testing…";
+        return baseUrl.TrimEnd('/');
+    }
+
+    private HttpClient CreateAuthedClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        string? credentialName = _module.Settings.RemoteCredentialName;
+        if (!string.IsNullOrWhiteSpace(credentialName))
+        {
+            string? secret = _module.Secrets.ResolveSecret(credentialName);
+            if (!string.IsNullOrWhiteSpace(secret))
+                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
+        return client;
+    }
+
+    private async void FetchModelsButton_Click(object? sender, EventArgs e)
+    {
+        string modelsUrl = DeriveBaseUrl() + "/v1/models";
+
+        _fetchModelsButton.Enabled = false;
+        _fetchStatusLabel.ForeColor = SystemColors.GrayText;
+        _fetchStatusLabel.Text = "Fetching models…";
 
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-
-            string? credentialName = _module.Settings.RemoteCredentialName;
-            if (!string.IsNullOrWhiteSpace(credentialName))
-            {
-                string? secret = _module.Secrets.ResolveSecret(credentialName);
-                if (!string.IsNullOrWhiteSpace(secret))
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
-            }
-
+            using var client = CreateAuthedClient();
             using var response = await client.GetAsync(modelsUrl);
             string body = await response.Content.ReadAsStringAsync();
 
@@ -1407,37 +1425,98 @@ internal sealed class CodeVectorConfigPage : TabPage
                 using var doc = JsonDocument.Parse(body);
                 if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
                 {
-                    var modelIds = data.EnumerateArray()
-                        .Where(m => m.TryGetProperty("id", out _))
-                        .Select(m => m.GetProperty("id").GetString())
-                        .Where(id => id is not null)
-                        .Take(5)
-                        .ToList();
+                    string? currentSelection = _remoteModelCombo.Text;
+                    _remoteModelCombo.Items.Clear();
+                    var modelIds = new List<string>();
 
-                    string modelList = modelIds.Count > 0 ? string.Join(", ", modelIds) : "(no models listed)";
-                    _testStatusLabel.ForeColor = Color.Green;
-                    _testStatusLabel.Text = $"OK — Models: {modelList}";
+                    foreach (var item in data.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("id", out var idProp) && idProp.GetString() is string id)
+                            modelIds.Add(id);
+                    }
+
+                    _remoteModelCombo.Items.AddRange(modelIds.ToArray());
+
+                    if (modelIds.Contains(currentSelection))
+                        _remoteModelCombo.Text = currentSelection;
+                    else if (modelIds.Count > 0)
+                        _remoteModelCombo.SelectedIndex = 0;
+
+                    _fetchStatusLabel.ForeColor = Color.Green;
+                    _fetchStatusLabel.Text = $"Found {modelIds.Count} model(s)";
                 }
                 else
                 {
-                    _testStatusLabel.ForeColor = Color.Green;
-                    _testStatusLabel.Text = $"OK ({(int)response.StatusCode} {response.ReasonPhrase})";
+                    _fetchStatusLabel.ForeColor = Color.OrangeRed;
+                    _fetchStatusLabel.Text = $"OK but unexpected response format";
                 }
             }
             else
             {
-                _testStatusLabel.ForeColor = Color.Red;
-                _testStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
+                _fetchStatusLabel.ForeColor = Color.Red;
+                _fetchStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
             }
         }
         catch (Exception ex)
         {
-            _testStatusLabel.ForeColor = Color.Red;
-            _testStatusLabel.Text = $"Error: {ex.Message}";
+            _fetchStatusLabel.ForeColor = Color.Red;
+            _fetchStatusLabel.Text = $"Error: {ex.Message}";
         }
         finally
         {
-            _testButton.Enabled = true;
+            _fetchModelsButton.Enabled = true;
+        }
+    }
+
+    private async void ShowModelButton_Click(object? sender, EventArgs e)
+    {
+        string modelId = _remoteModelCombo.Text.Trim();
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            MessageBox.Show("Enter or select a model first.", "No Model Selected",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        string modelUrl = DeriveBaseUrl() + "/v1/models/" + Uri.EscapeDataString(modelId);
+
+        _showModelButton.Enabled = false;
+
+        try
+        {
+            using var client = CreateAuthedClient();
+            using var response = await client.GetAsync(modelUrl);
+            string body = await response.Content.ReadAsStringAsync();
+
+            string displayText;
+            if (response.IsSuccessStatusCode)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+                }
+                catch
+                {
+                    displayText = body;
+                }
+            }
+            else
+            {
+                displayText = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}\n\n{body}";
+            }
+
+            using var dialog = new ModelInfoDialog(modelId, displayText);
+            dialog.ShowDialog(this.FindForm());
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error fetching model info: {ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _showModelButton.Enabled = true;
         }
     }
 
@@ -1466,7 +1545,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         var settings = _module.Settings;
         settings.BackendType = _backendCombo.SelectedItem?.ToString() == "Onnx" ? BackendType.Onnx : BackendType.Remote;
         settings.RemoteUrl = _remoteUrlBox.Text;
-        settings.RemoteModel = _remoteModelBox.Text;
+        settings.RemoteModel = _remoteModelCombo.Text;
         settings.OnnxModelFolder = _onnxBox.Text;
         settings.ChunkLines = (int)_chunkLinesBox.Value;
         settings.ChunkOverlapLines = (int)_overlapBox.Value;
@@ -1486,5 +1565,50 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("git_sync_interval", settings.GitSyncIntervalMinutes.ToString());
 
         MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+}
+
+internal sealed class ModelInfoDialog : Form
+{
+    public ModelInfoDialog(string modelId, string content)
+    {
+        Text = $"Model Info — {modelId}";
+        Size = new Size(700, 550);
+        StartPosition = FormStartPosition.CenterParent;
+        MinimumSize = new Size(400, 300);
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ShowInTaskbar = false;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(12),
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var textBox = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Both,
+            WordWrap = false,
+            Dock = DockStyle.Fill,
+            Text = content,
+            Font = new Font("Consolas", 9.5f),
+            BackColor = SystemColors.Window,
+        };
+        layout.Controls.Add(textBox, 0, 0);
+
+        var closeButton = new Button { Text = "Close", DialogResult = DialogResult.Cancel, Anchor = AnchorStyles.Right };
+        layout.Controls.Add(closeButton, 0, 1);
+
+        AcceptButton = closeButton;
+        CancelButton = closeButton;
+        Controls.Add(layout);
     }
 }
