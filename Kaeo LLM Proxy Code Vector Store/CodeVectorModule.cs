@@ -1232,24 +1232,33 @@ internal sealed class CodeVectorConfigPage : TabPage
 {
     private readonly CodeVectorModule _module;
     private ComboBox _backendCombo = null!;
-    private Label _remoteUrlLabel = null!;
-    private Panel _remoteUrlPanel = null!;
+    private GroupBox _remoteGroup = null!;
     private TextBox _remoteUrlBox = null!;
     private Button _fetchModelsButton = null!;
-    private Label _remoteModelLabel = null!;
-    private Panel _remoteModelPanel = null!;
     private ComboBox _remoteModelCombo = null!;
     private Button _showModelButton = null!;
+    private ComboBox _credentialCombo = null!;
+    private NumericUpDown _timeoutBox = null!;
     private Label _fetchStatusLabel = null!;
-    private Label _onnxLabel = null!;
-    private Panel _onnxPanel = null!;
+    private GroupBox _onnxGroup = null!;
     private TextBox _onnxBox = null!;
     private Button _onnxBrowseButton = null!;
+    private NumericUpDown _onnxMaxSeqBox = null!;
+    private NumericUpDown _onnxThreadsBox = null!;
+    private GroupBox _generalGroup = null!;
+    private TextBox _collectionBox = null!;
     private NumericUpDown _chunkLinesBox = null!;
     private NumericUpDown _overlapBox = null!;
     private NumericUpDown _maxSizeBox = null!;
     private NumericUpDown _topKBox = null!;
     private NumericUpDown _syncBox = null!;
+    private ComboBox _logLevelCombo = null!;
+    private CheckBox _chkSearch = null!;
+    private CheckBox _chkIndex = null!;
+    private CheckBox _chkSync = null!;
+    private CheckBox _chkStatus = null!;
+    private CheckBox _chkRemove = null!;
+    private CheckBox _chkReindex = null!;
 
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
@@ -1260,107 +1269,213 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private void InitializeComponent()
     {
-        var layout = new TableLayoutPanel
+        AutoScroll = true;
+        var outerLayout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 12,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
+            ColumnCount = 1,
+            RowCount = 5,
             Padding = new Padding(10),
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));
+        outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int i = 0; i < 5; i++)
+            outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        int row = 0;
+        int section = 0;
 
-        // Backend Type
-        layout.Controls.Add(new Label { Text = "Backend Type:", Anchor = AnchorStyles.Left }, 0, row);
+        // Backend selector
+        var backendPanel = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1 };
+        backendPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        backendPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        backendPanel.Controls.Add(new Label { Text = "Backend Type:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 0);
         _backendCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         _backendCombo.Items.AddRange(["Remote", "Onnx"]);
         _backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
         _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
-        layout.Controls.Add(_backendCombo, 1, row++);
+        backendPanel.Controls.Add(_backendCombo, 1, 0);
+        outerLayout.Controls.Add(backendPanel, 0, section++);
 
-        // Remote URL + Fetch Models button
-        _remoteUrlLabel = new Label { Text = "Remote URL:", Anchor = AnchorStyles.Left };
-        layout.Controls.Add(_remoteUrlLabel, 0, row);
+        // Remote backend group
+        _remoteGroup = BuildRemoteGroup();
+        outerLayout.Controls.Add(_remoteGroup, 0, section++);
+
+        // ONNX backend group
+        _onnxGroup = BuildOnnxGroup();
+        outerLayout.Controls.Add(_onnxGroup, 0, section++);
+
+        // General settings group
+        _generalGroup = BuildGeneralGroup();
+        outerLayout.Controls.Add(_generalGroup, 0, section++);
+
+        // Save button
+        var saveButton = new Button { Text = "Save Settings", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 10, 0, 0) };
+        saveButton.Click += SaveButton_Click;
+        outerLayout.Controls.Add(saveButton, 0, section++);
+
+        Controls.Add(outerLayout);
+    }
+
+    private GroupBox BuildRemoteGroup()
+    {
+        var group = new GroupBox { Text = "Remote Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 5 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
+
+        int row = 0;
+
+        // URL + Fetch Models
+        layout.Controls.Add(new Label { Text = "URL:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _remoteUrlBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteUrl };
         _fetchModelsButton = new Button { Text = "Fetch Models", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
         _fetchModelsButton.Click += FetchModelsButton_Click;
-        _remoteUrlPanel = new Panel { Dock = DockStyle.Fill };
-        var urlInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        urlInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        urlInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        urlInnerLayout.Controls.Add(_remoteUrlBox, 0, 0);
-        urlInnerLayout.Controls.Add(_fetchModelsButton, 1, 0);
-        _remoteUrlPanel.Controls.Add(urlInnerLayout);
-        layout.Controls.Add(_remoteUrlPanel, 1, row++);
+        var urlPanel = new Panel { Dock = DockStyle.Fill };
+        var urlLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        urlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        urlLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        urlLayout.Controls.Add(_remoteUrlBox, 0, 0);
+        urlLayout.Controls.Add(_fetchModelsButton, 1, 0);
+        urlPanel.Controls.Add(urlLayout);
+        layout.Controls.Add(urlPanel, 1, row++);
 
-        // Remote Model (editable ComboBox) + Show Model Info button
-        _remoteModelLabel = new Label { Text = "Remote Model:", Anchor = AnchorStyles.Left };
-        layout.Controls.Add(_remoteModelLabel, 0, row);
+        // Model combo + Show Info
+        layout.Controls.Add(new Label { Text = "Model:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _remoteModelCombo = new ComboBox { Dock = DockStyle.Fill, Text = _module.Settings.RemoteModel };
         _showModelButton = new Button { Text = "Show Info", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
         _showModelButton.Click += ShowModelButton_Click;
-        _remoteModelPanel = new Panel { Dock = DockStyle.Fill };
-        var modelInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        modelInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        modelInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        modelInnerLayout.Controls.Add(_remoteModelCombo, 0, 0);
-        modelInnerLayout.Controls.Add(_showModelButton, 1, 0);
-        _remoteModelPanel.Controls.Add(modelInnerLayout);
-        layout.Controls.Add(_remoteModelPanel, 1, row++);
+        var modelPanel = new Panel { Dock = DockStyle.Fill };
+        var modelLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        modelLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        modelLayout.Controls.Add(_remoteModelCombo, 0, 0);
+        modelLayout.Controls.Add(_showModelButton, 1, 0);
+        modelPanel.Controls.Add(modelLayout);
+        layout.Controls.Add(modelPanel, 1, row++);
 
-        // Fetch status label
+        // Credential
+        layout.Controls.Add(new Label { Text = "Credential:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
+        try
+        {
+            var names = _module.Secrets.ListCredentialNames();
+            _credentialCombo.Items.AddRange(names.ToArray());
+        }
+        catch { /* secrets unavailable */ }
+        _credentialCombo.Text = _module.Settings.RemoteCredentialName;
+        layout.Controls.Add(_credentialCombo, 1, row++);
+
+        // Timeout
+        layout.Controls.Add(new Label { Text = "Timeout (sec):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _timeoutBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 5, Maximum = 300, Value = _module.Settings.RemoteTimeoutSeconds };
+        layout.Controls.Add(_timeoutBox, 1, row++);
+
+        // Status label
         _fetchStatusLabel = new Label { Text = "", Anchor = AnchorStyles.Left, AutoSize = true, ForeColor = SystemColors.GrayText };
         layout.Controls.Add(_fetchStatusLabel, 1, row++);
 
-        // ONNX Model Folder + Browse button
-        _onnxLabel = new Label { Text = "ONNX Model Folder:", Anchor = AnchorStyles.Left };
-        layout.Controls.Add(_onnxLabel, 0, row);
+        group.Controls.Add(layout);
+        return group;
+    }
+
+    private GroupBox BuildOnnxGroup()
+    {
+        var group = new GroupBox { Text = "ONNX Backend", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 3 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
+
+        int row = 0;
+
+        // Model folder + Browse
+        layout.Controls.Add(new Label { Text = "Model Folder:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder };
         _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3, 0, 0, 0) };
         _onnxBrowseButton.Click += OnnxBrowseButton_Click;
-        _onnxPanel = new Panel { Dock = DockStyle.Fill };
-        var onnxInnerLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        onnxInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        onnxInnerLayout.Controls.Add(_onnxBox, 0, 0);
-        onnxInnerLayout.Controls.Add(_onnxBrowseButton, 1, 0);
-        _onnxPanel.Controls.Add(onnxInnerLayout);
-        layout.Controls.Add(_onnxPanel, 1, row++);
+        var onnxPanel = new Panel { Dock = DockStyle.Fill };
+        var onnxLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        onnxLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        onnxLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        onnxLayout.Controls.Add(_onnxBox, 0, 0);
+        onnxLayout.Controls.Add(_onnxBrowseButton, 1, 0);
+        onnxPanel.Controls.Add(onnxLayout);
+        layout.Controls.Add(onnxPanel, 1, row++);
 
-        // Chunk Lines
-        layout.Controls.Add(new Label { Text = "Chunk Lines:", Anchor = AnchorStyles.Left }, 0, row);
+        // Max sequence length
+        layout.Controls.Add(new Label { Text = "Max Sequence:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _onnxMaxSeqBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 32, Maximum = 4096, Value = _module.Settings.OnnxMaxSequenceLength };
+        layout.Controls.Add(_onnxMaxSeqBox, 1, row++);
+
+        // Threads
+        layout.Controls.Add(new Label { Text = "Threads:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _onnxThreadsBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 32, Value = _module.Settings.OnnxMaxThreads };
+        layout.Controls.Add(_onnxThreadsBox, 1, row++);
+
+        group.Controls.Add(layout);
+        return group;
+    }
+
+    private GroupBox BuildGeneralGroup()
+    {
+        var group = new GroupBox { Text = "General Settings", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 12 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 75));
+
+        int row = 0;
+
+        // Collection
+        layout.Controls.Add(new Label { Text = "Collection:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _collectionBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.DefaultCollection };
+        layout.Controls.Add(_collectionBox, 1, row++);
+
+        // Chunk lines
+        layout.Controls.Add(new Label { Text = "Chunk Lines:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines };
         layout.Controls.Add(_chunkLinesBox, 1, row++);
 
-        // Chunk Overlap Lines
-        layout.Controls.Add(new Label { Text = "Chunk Overlap Lines:", Anchor = AnchorStyles.Left }, 0, row);
+        // Overlap
+        layout.Controls.Add(new Label { Text = "Overlap Lines:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _overlapBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = _module.Settings.ChunkOverlapLines };
         layout.Controls.Add(_overlapBox, 1, row++);
 
-        // Max File Size (KB)
-        layout.Controls.Add(new Label { Text = "Max File Size (KB):", Anchor = AnchorStyles.Left }, 0, row);
+        // Max file size
+        layout.Controls.Add(new Label { Text = "Max File (KB):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _maxSizeBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 10240, Value = _module.Settings.MaxFileSizeKb };
         layout.Controls.Add(_maxSizeBox, 1, row++);
 
-        // Default Top K
-        layout.Controls.Add(new Label { Text = "Default Top K:", Anchor = AnchorStyles.Left }, 0, row);
+        // Top K
+        layout.Controls.Add(new Label { Text = "Default Top K:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _topKBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 100, Value = _module.Settings.DefaultTopK };
         layout.Controls.Add(_topKBox, 1, row++);
 
-        // Git Sync Interval (min)
-        layout.Controls.Add(new Label { Text = "Git Sync Interval (min):", Anchor = AnchorStyles.Left }, 0, row);
+        // Git sync interval
+        layout.Controls.Add(new Label { Text = "Git Sync (min):", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
         _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes };
         layout.Controls.Add(_syncBox, 1, row++);
 
-        // Save button
-        var saveButton = new Button { Text = "Save Settings", Dock = DockStyle.Fill };
-        saveButton.Click += SaveButton_Click;
-        layout.Controls.Add(saveButton, 0, row);
-        layout.SetColumnSpan(saveButton, 2);
+        // Log level
+        layout.Controls.Add(new Label { Text = "Log Level:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
+        _logLevelCombo.SelectedItem = _module.Settings.McpLogLevel.ToString();
+        layout.Controls.Add(_logLevelCombo, 1, row++);
 
-        Controls.Add(layout);
+        // Tool toggles
+        layout.Controls.Add(new Label { Text = "Tools:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, row);
+        var toolsPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, AutoSize = true };
+        _chkSearch = new CheckBox { Text = "Search", AutoSize = true, Checked = _module.Settings.SearchEnabled };
+        _chkIndex = new CheckBox { Text = "Index", AutoSize = true, Checked = _module.Settings.IndexEnabled };
+        _chkSync = new CheckBox { Text = "Sync", AutoSize = true, Checked = _module.Settings.SyncRepoEnabled };
+        _chkStatus = new CheckBox { Text = "Status", AutoSize = true, Checked = _module.Settings.StatusEnabled };
+        _chkRemove = new CheckBox { Text = "Remove", AutoSize = true, Checked = _module.Settings.RemoveEnabled };
+        _chkReindex = new CheckBox { Text = "Reindex", AutoSize = true, Checked = _module.Settings.ReindexEnabled };
+        toolsPanel.Controls.AddRange([_chkSearch, _chkIndex, _chkSync, _chkStatus, _chkRemove, _chkReindex]);
+        layout.Controls.Add(toolsPanel, 1, row++);
+
+        group.Controls.Add(layout);
+        return group;
     }
 
     private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
@@ -1369,16 +1484,8 @@ internal sealed class CodeVectorConfigPage : TabPage
     private void UpdateBackendVisibility()
     {
         bool isRemote = _backendCombo.SelectedItem?.ToString() == "Remote";
-        bool isOnnx = !isRemote;
-
-        _remoteUrlLabel.Visible = isRemote;
-        _remoteUrlPanel.Visible = isRemote;
-        _remoteModelLabel.Visible = isRemote;
-        _remoteModelPanel.Visible = isRemote;
-        _fetchStatusLabel.Visible = isRemote;
-
-        _onnxLabel.Visible = isOnnx;
-        _onnxPanel.Visible = isOnnx;
+        _remoteGroup.Visible = isRemote;
+        _onnxGroup.Visible = !isRemote;
     }
 
     private string DeriveBaseUrl()
@@ -1395,8 +1502,8 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private HttpClient CreateAuthedClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        string? credentialName = _module.Settings.RemoteCredentialName;
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds((double)_timeoutBox.Value) };
+        string credentialName = _credentialCombo.Text.Trim();
         if (!string.IsNullOrWhiteSpace(credentialName))
         {
             string? secret = _module.Secrets.ResolveSecret(credentialName);
@@ -1542,27 +1649,71 @@ internal sealed class CodeVectorConfigPage : TabPage
 
     private void SaveButton_Click(object? sender, EventArgs e)
     {
+        bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
+
+        if (!isOnnx && string.IsNullOrWhiteSpace(_remoteUrlBox.Text)
+            && string.IsNullOrWhiteSpace(_module.Settings.RemoteUrl))
+        {
+            // Blank URL falls back to the local proxy; allow it but confirm intent.
+            var confirm = MessageBox.Show(
+                "Remote URL is empty. The local proxy endpoint will be used. Continue?",
+                "Empty Remote URL", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes) return;
+        }
+
+        if (isOnnx && !string.IsNullOrWhiteSpace(_onnxBox.Text) && !Directory.Exists(_onnxBox.Text))
+        {
+            MessageBox.Show("The ONNX model folder does not exist.", "Invalid Path",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
         var settings = _module.Settings;
-        settings.BackendType = _backendCombo.SelectedItem?.ToString() == "Onnx" ? BackendType.Onnx : BackendType.Remote;
-        settings.RemoteUrl = _remoteUrlBox.Text;
-        settings.RemoteModel = _remoteModelCombo.Text;
-        settings.OnnxModelFolder = _onnxBox.Text;
+        settings.BackendType = isOnnx ? BackendType.Onnx : BackendType.Remote;
+        settings.RemoteUrl = _remoteUrlBox.Text.Trim();
+        settings.RemoteModel = _remoteModelCombo.Text.Trim();
+        settings.RemoteCredentialName = _credentialCombo.Text.Trim();
+        settings.RemoteTimeoutSeconds = (int)_timeoutBox.Value;
+        settings.OnnxModelFolder = _onnxBox.Text.Trim();
+        settings.OnnxMaxSequenceLength = (int)_onnxMaxSeqBox.Value;
+        settings.OnnxMaxThreads = (int)_onnxThreadsBox.Value;
+        settings.DefaultCollection = _collectionBox.Text.Trim();
         settings.ChunkLines = (int)_chunkLinesBox.Value;
         settings.ChunkOverlapLines = (int)_overlapBox.Value;
         settings.MaxFileSizeKb = (int)_maxSizeBox.Value;
         settings.DefaultTopK = (int)_topKBox.Value;
         settings.GitSyncIntervalMinutes = (int)_syncBox.Value;
+        if (Enum.TryParse<CodeVectorMcpLogLevel>(_logLevelCombo.SelectedItem?.ToString(), out var logLevel))
+            settings.McpLogLevel = logLevel;
+        settings.SearchEnabled = _chkSearch.Checked;
+        settings.IndexEnabled = _chkIndex.Checked;
+        settings.SyncRepoEnabled = _chkSync.Checked;
+        settings.StatusEnabled = _chkStatus.Checked;
+        settings.RemoveEnabled = _chkRemove.Checked;
+        settings.ReindexEnabled = _chkReindex.Checked;
 
         var repo = _module.Repository;
         repo.SaveSetting("backend_type", settings.BackendType.ToString());
         repo.SaveSetting("remote_url", settings.RemoteUrl);
         repo.SaveSetting("remote_model", settings.RemoteModel);
+        repo.SaveSetting("remote_credential", settings.RemoteCredentialName);
+        repo.SaveSetting("remote_timeout", settings.RemoteTimeoutSeconds.ToString());
         repo.SaveSetting("onnx_folder", settings.OnnxModelFolder);
+        repo.SaveSetting("onnx_max_seq", settings.OnnxMaxSequenceLength.ToString());
+        repo.SaveSetting("onnx_threads", settings.OnnxMaxThreads.ToString());
+        repo.SaveSetting("default_collection", settings.DefaultCollection);
         repo.SaveSetting("chunk_lines", settings.ChunkLines.ToString());
         repo.SaveSetting("chunk_overlap", settings.ChunkOverlapLines.ToString());
         repo.SaveSetting("max_file_kb", settings.MaxFileSizeKb.ToString());
         repo.SaveSetting("default_top_k", settings.DefaultTopK.ToString());
-        repo.SaveSetting("git_sync_interval", settings.GitSyncIntervalMinutes.ToString());
+        repo.SaveSetting("sync_interval", settings.GitSyncIntervalMinutes.ToString());
+        repo.SaveSetting("log_level", settings.McpLogLevel.ToString());
+        repo.SaveSetting("search_enabled", settings.SearchEnabled ? "1" : "0");
+        repo.SaveSetting("index_enabled", settings.IndexEnabled ? "1" : "0");
+        repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
+        repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
+        repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
+        repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
 
         MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
