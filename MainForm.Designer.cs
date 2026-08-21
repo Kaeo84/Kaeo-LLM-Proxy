@@ -1861,9 +1861,10 @@ partial class MainForm
 
         // _flpSysLogTop
         _flpSysLogTop.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _flpSysLogTop.AutoSize = true;
         _flpSysLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         _flpSysLogTop.FlowDirection = FlowDirection.LeftToRight;
-        _flpSysLogTop.Margin = new Padding(0, 0, 0, 6);
+        _flpSysLogTop.Margin = new Padding(0, 0, 0, 4);
         _flpSysLogTop.Name = "_flpSysLogTop";
         _flpSysLogTop.WrapContents = false;
         _flpSysLogTop.Controls.Add(_lblSysLogLevel);
@@ -1872,30 +1873,30 @@ partial class MainForm
         _flpSysLogTop.Controls.Add(_btnSysLogClear);
         _flpSysLogTop.Controls.Add(_lblSysLogStatus);
 
-        _lblSysLogLevel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblSysLogLevel.Anchor = AnchorStyles.Left;
         _lblSysLogLevel.AutoSize = true;
-        _lblSysLogLevel.Margin = new Padding(0, 6, 4, 3);
+        _lblSysLogLevel.Margin = new Padding(0, 5, 4, 0);
         _lblSysLogLevel.Name = "_lblSysLogLevel";
         _lblSysLogLevel.Text = "Level:";
 
         _cboSysLogLevel.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cboSysLogLevel.Margin = new Padding(0, 3, 8, 3);
+        _cboSysLogLevel.Margin = new Padding(0, 0, 8, 0);
         _cboSysLogLevel.Name = "_cboSysLogLevel";
         _cboSysLogLevel.Size = new Size(100, 23);
 
-        _btnSysLogRefresh.Margin = new Padding(0, 3, 4, 3);
+        _btnSysLogRefresh.Margin = new Padding(0, 0, 4, 0);
         _btnSysLogRefresh.Name = "_btnSysLogRefresh";
         _btnSysLogRefresh.Size = new Size(70, 28);
         _btnSysLogRefresh.Text = "Refresh";
 
-        _btnSysLogClear.Margin = new Padding(0, 3, 8, 3);
+        _btnSysLogClear.Margin = new Padding(0, 0, 8, 0);
         _btnSysLogClear.Name = "_btnSysLogClear";
         _btnSysLogClear.Size = new Size(60, 28);
         _btnSysLogClear.Text = "Clear";
 
-        _lblSysLogStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblSysLogStatus.Anchor = AnchorStyles.Left;
         _lblSysLogStatus.AutoSize = true;
-        _lblSysLogStatus.Margin = new Padding(0, 6, 0, 3);
+        _lblSysLogStatus.Margin = new Padding(0, 5, 0, 0);
         _lblSysLogStatus.Name = "_lblSysLogStatus";
         _lblSysLogStatus.Text = "";
 
