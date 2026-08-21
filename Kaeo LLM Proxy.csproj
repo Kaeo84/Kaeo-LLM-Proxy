@@ -58,4 +58,16 @@
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
 
+  <!-- Module system: copy all module outputs (DLL + large deps) to $(OutputPath)Modules/ -->
+  <PropertyGroup>
+    <CopyModulesToHost>true</CopyModulesToHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <ModuleProject Include="Kaeo LLM Proxy Code Vector Store" />
+    <ModuleProject Include="Kaeo LLM Proxy SSH" />
+    <ModuleProject Include="Kaeo LLM Proxy Web Search" />
+  </ItemGroup>
+
+  <Import Project="ModuleBuild.targets" />
+
 </Project>

@@ -1,0 +1,102 @@
+<Project>
+
+  <!--
+	Shared build targets for the Kaeo LLM Proxy module system.
+
+	Module projects import this and set <IsModuleProject>true</IsModuleProject> to:
+	  - Embed small runtime dependencies into the module DLL (reduces file count)
+	  - Assemblies in ModuleLargeDependencyNames stay as separate files
+
+	The host project imports this and sets <CopyModulesToHost>true</CopyModulesToHost>
+	  to automatically copy all module outputs into $(OutputPath)Modules/.
+
+	To exclude a large dependency from embedding, add its assembly name (without .dll)
+	to ModuleLargeDependencyNames (semicolon-separated) in the module's .csproj.
+  -->
+
+  <PropertyGroup>
+	<!-- Semicolon-separated list of assembly names to exclude from embedding.
+		 These stay as separate files alongside the module DLL. -->
+	<ModuleLargeDependencyNames>Microsoft.ML.OnnxRuntime;Microsoft.Windows.SDK.NET</ModuleLargeDependencyNames>
+  </PropertyGroup>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+	   Target for MODULE projects: embed small runtime dependencies
+	   Runs before CoreCompile so resources reach the Csc task.
+	   ═══════════════════════════════════════════════════════════════════ -->
+  <Target Name="EmbedSmallModuleDependencies"
+		  BeforeTargets="CoreCompile"
+		  Condition="'$(IsModuleProject)' == 'true'">
+
+	<!-- Build the list of files to embed from ReferenceCopyLocalPaths.
+		 Filter: .dll extension AND empty DestinationSubDirectory (managed assemblies go to root,
+		 RID-specific native DLLs go to runtimes/{rid}/native subdirectories).
+		 Exclude the module's own DLL, contracts, and large dependencies. -->
+	<ItemGroup>
+	  <ModuleEmbedCandidate Include="@(ReferenceCopyLocalPaths)"
+		Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'
+				   AND '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''" />
+	  <!-- Exclude the module's own DLL -->
+	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)%(ModuleEmbedCandidate.Extension)' == '$(AssemblyName).dll'" />
+	  <!-- Exclude the contracts assembly -->
+	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Modules'" />
+	  <!-- Exclude large dependencies -->
+	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'" />
+	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.Windows.SDK.NET'" />
+	</ItemGroup>
+
+	<Message Importance="High"
+	  Text="ModuleBuild: Embedding @(ModuleEmbedCandidate->Count()) dependencies: @(ModuleEmbedCandidate->'%(Filename)%(Extension)', ', ')" />
+
+	<!-- Pass /resource: parameters directly to the Csc compiler via OtherFlags.
+		 This bypasses the EmbeddedResource item pipeline which doesn't reliably
+		 reach Csc in .NET SDK projects. -->
+	<PropertyGroup Condition="'@(ModuleEmbedCandidate)' != ''">
+		<_ModuleResourceFlags>@(ModuleEmbedCandidate->'/resource:moduledep/%(Filename)%(Extension);%(Identity)', ' ')</_ModuleResourceFlags>
+		<OtherFlags>$(OtherFlags) $(_ModuleResourceFlags)</OtherFlags>
+	</PropertyGroup>
+
+	<!-- Remove from the copy-to-output list (they're now in the DLL) -->
+	<ItemGroup Condition="'@(ModuleEmbedCandidate)' != ''">
+	  <ReferenceCopyLocalPaths Remove="@(ModuleEmbedCandidate)" />
+	</ItemGroup>
+  </Target>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+	   Target for HOST project: copy all module outputs to Modules/
+	   Uses recursive glob (**\*.*) so that native dependency subdirectories
+	   (runtimes/{rid}/native/) are preserved alongside the module DLL.
+	   ═══════════════════════════════════════════════════════════════════ -->
+  <Target Name="CopyModulesToHostOutput"
+		  AfterTargets="Build"
+		  Condition="'$(CopyModulesToHost)' == 'true'">
+
+	<PropertyGroup>
+	  <ModulesOutputDir>$(OutputPath)Modules</ModulesOutputDir>
+	</PropertyGroup>
+
+	<MakeDir Directories="$(ModulesOutputDir)" />
+
+	<!-- Collect all files recursively from each module's build output -->
+	<ItemGroup>
+	  <_ModuleOutputFiles Include="%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)\**\*.*"
+		Condition="Exists('%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)')" />
+	</ItemGroup>
+
+	<!-- Create subdirectories needed to preserve the module's directory structure -->
+	<MakeDir Directories="@(_ModuleOutputFiles->'$(ModulesOutputDir)\%(RecursiveDir)')" />
+
+	<!-- Copy preserving relative paths so runtimes/{rid}/native/ stays intact -->
+	<Copy SourceFiles="@(_ModuleOutputFiles)"
+		  DestinationFiles="@(_ModuleOutputFiles->'$(ModulesOutputDir)\%(RecursiveDir)%(Filename)%(Extension)')"
+		  SkipUnchangedFiles="true" />
+
+	<Message Importance="Normal"
+	  Text="ModuleBuild: Copied @(_ModuleOutputFiles->Count()) files to $(ModulesOutputDir)" />
+  </Target>
+
+</Project>

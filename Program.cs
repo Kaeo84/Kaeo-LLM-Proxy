@@ -20,15 +20,20 @@ internal static class Program
         Application.SetColorMode(SystemColorMode.System);
 
         // Surface ALL unhandled exceptions instead of silently swallowing them.
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => ShowUnhandledException("UI thread", e.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            ShowUnhandledException("AppDomain", e.ExceptionObject as Exception);
-        TaskScheduler.UnobservedTaskException += (_, e) =>
-        {
-            ShowUnhandledException("Unobserved Task", e.Exception);
-            e.SetObserved();
-        };
+        #if DEBUG
+                // In debug, rethrow so the debugger breaks at the exact throw line.
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+        #else
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += (_, e) => ShowUnhandledException("UI thread", e.Exception);
+                AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                    ShowUnhandledException("AppDomain", e.ExceptionObject as Exception);
+                TaskScheduler.UnobservedTaskException += (_, e) =>
+                {
+                    ShowUnhandledException("Unobserved Task", e.Exception);
+                    e.SetObserved();
+                };
+        #endif
 
         AppSettings settings = AppSettings.Load();
 
