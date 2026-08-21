@@ -33,6 +33,9 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblModelName = new();
     private readonly ComboBox _cmbModelName = new();
     private readonly Button _btnFetchModels = new();
+    private readonly Button _btnModelInfo = new();
+    private readonly FlowLayoutPanel _flpModelButtons = new();
+    private readonly Label _lblModelInfoStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
     private readonly Label _lblInstructionSet = new();
     private readonly ComboBox _cmbInstructionSet = new();
     private readonly Label _lblUpstreamTimeout = new();
@@ -484,7 +487,11 @@ internal sealed class ModelMappingDialog : Form
 
         _tlpMain.Controls.Add(_lblModelName, 0, 4);
         _tlpMain.Controls.Add(_cmbModelName, 1, 4);
-        _tlpMain.Controls.Add(_btnFetchModels, 2, 4);
+        _flpModelButtons.Controls.Add(_btnFetchModels);
+        _flpModelButtons.Controls.Add(_btnModelInfo);
+        _tlpMain.Controls.Add(_flpModelButtons, 2, 4);
+        _tlpMain.Controls.Add(_lblModelInfoStatus, 2, 5);
+        _tlpMain.SetColumnSpan(_lblModelInfoStatus, 3);
 
         _tlpMain.Controls.Add(_lblInstructionSet, 0, 5);
         _tlpMain.SetColumnSpan(_cmbInstructionSet, 2);
@@ -588,12 +595,24 @@ internal sealed class ModelMappingDialog : Form
         _cmbModelName.Margin = new Padding(0, 4, 4, 4);
         _cmbModelName.TextChanged += (_, _) => TryPrefillReasoningEffortProfile(_cmbModelName.Text);
 
-        _btnFetchModels.Anchor = AnchorStyles.Right;
+        _flpModelButtons.AutoSize = true;
+        _flpModelButtons.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _flpModelButtons.FlowDirection = FlowDirection.TopDown;
+        _flpModelButtons.WrapContents = false;
+        _flpModelButtons.Anchor = AnchorStyles.Right;
+        _flpModelButtons.Margin = new Padding(0, 4, 0, 4);
+
         _btnFetchModels.AutoSize = true;
-        _btnFetchModels.Margin = new Padding(0, 4, 0, 4);
+        _btnFetchModels.Margin = new Padding(0, 0, 0, 2);
         _btnFetchModels.MinimumSize = new Size(110, 24);
         _btnFetchModels.Text = "Fetch Models \u2193";
         _btnFetchModels.Click += BtnFetchModels_Click;
+
+        _btnModelInfo.AutoSize = true;
+        _btnModelInfo.Margin = new Padding(0);
+        _btnModelInfo.MinimumSize = new Size(110, 24);
+        _btnModelInfo.Text = "Model Info";
+        _btnModelInfo.Click += BtnModelInfo_Click;
 
         _lblInstructionSet.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblInstructionSet.AutoSize = true;
@@ -1010,6 +1029,162 @@ internal sealed class ModelMappingDialog : Form
             _btnFetchModels.Enabled = true;
             _btnFetchModels.Text = originalText;
         }
+    }
+
+    private async void BtnModelInfo_Click(object? sender, EventArgs e)
+    {
+        string modelId = _cmbModelName.Text.Trim();
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            MessageBox.Show(this, "Select a model first.", "No Model Selected",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_upstreamUrl) ||
+            !Uri.TryCreate(_upstreamUrl, UriKind.Absolute, out _))
+        {
+            MessageBox.Show(this, "Set the upstream URL first.", "No Upstream URL",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        _btnModelInfo.Enabled = false;
+        _lblModelInfoStatus.Text = "Fetching model info…";
+
+        try
+        {
+            string? apiKey = null;
+            string? credentialName = CredentialName;
+            if (!string.IsNullOrWhiteSpace(credentialName))
+            {
+                StoredCredential? credential = _credentials.FirstOrDefault(
+                    c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase));
+                apiKey = credential?.Secret;
+            }
+
+            Uri modelUri = UpstreamUriHelper.BuildRequestUri(_upstreamUrl, "v1/models/" + Uri.EscapeDataString(modelId));
+            using var request = new HttpRequestMessage(HttpMethod.Get, modelUri);
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+            using var response = await _modelFetchClient.SendAsync(request);
+            string body = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // Fall back to the list endpoint (Ollama and others don't support GET /v1/models/{id}).
+                Uri listUri = UpstreamUriHelper.BuildRequestUri(_upstreamUrl, "v1/models");
+                using var listRequest = new HttpRequestMessage(HttpMethod.Get, listUri);
+                if (!string.IsNullOrWhiteSpace(apiKey))
+                    listRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+                using var listResponse = await _modelFetchClient.SendAsync(listRequest);
+                string listBody = await listResponse.Content.ReadAsStringAsync();
+
+                if (listResponse.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(listBody);
+                    if (doc.RootElement.TryGetProperty("data", out var data))
+                    {
+                        foreach (var item in data.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("id", out var idProp)
+                                && string.Equals(idProp.GetString(), modelId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                body = item.GetRawText();
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    body = listBody;
+                    response.StatusCode = listResponse.StatusCode;
+                }
+            }
+
+            // Pretty-print for display.
+            string displayText;
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            }
+            catch
+            {
+                displayText = body;
+            }
+
+            _lblModelInfoStatus.ForeColor = SystemColors.GrayText;
+            _lblModelInfoStatus.Text = response.IsSuccessStatusCode ? "Model info loaded." : $"HTTP {(int)response.StatusCode}";
+
+            // Attempt to auto-fill context window from the response.
+            if (TryExtractContextWindow(body, out int? contextWindow))
+            {
+                if (contextWindow is > 0)
+                {
+                    _txtContextWindow.Text = contextWindow.Value.ToString();
+                    _lblModelInfoStatus.Text += $" Context window set to {contextWindow.Value:N0}.";
+                    _lblModelInfoStatus.ForeColor = Color.Green;
+                }
+            }
+
+            var dialog = new ModelInfoDialog(modelId, displayText);
+            dialog.Show(this);
+        }
+        catch (Exception ex)
+        {
+            _lblModelInfoStatus.ForeColor = Color.Red;
+            _lblModelInfoStatus.Text = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            _btnModelInfo.Enabled = true;
+        }
+    }
+
+    private static bool TryExtractContextWindow(string json, out int? contextWindow)
+    {
+        contextWindow = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+
+            // Search common field names for context window size.
+            string[] candidateNames = ["context_window", "context_length", "max_context_length", "max_context", "context", "num_ctx", "max_tokens"];
+            foreach (string name in candidateNames)
+            {
+                if (root.TryGetProperty(name, out var val) && val.ValueKind == JsonValueKind.Number
+                    && val.TryGetInt32(out int v) && v > 0)
+                {
+                    contextWindow = v;
+                    return true;
+                }
+            }
+
+            // Check nested "details" or "parameters" objects (Ollama /api/show style).
+            foreach (string nested in new[] { "details", "parameters", "config" })
+            {
+                if (root.TryGetProperty(nested, out var nestedObj) && nestedObj.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (string name in candidateNames)
+                    {
+                        if (nestedObj.TryGetProperty(name, out var val) && val.ValueKind == JsonValueKind.Number
+                            && val.TryGetInt32(out int v) && v > 0)
+                        {
+                            contextWindow = v;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        catch (JsonException) { }
+
+        return false;
     }
 
     /// <summary>

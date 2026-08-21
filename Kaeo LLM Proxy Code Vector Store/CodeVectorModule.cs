@@ -2136,15 +2136,45 @@ internal sealed class CodeVectorConfigPage : TabPage
             return;
         }
 
-        string modelUrl = DeriveBaseUrl() + "/v1/models/" + Uri.EscapeDataString(modelId);
-
+        string baseUrl = DeriveBaseUrl();
         _showModelButton.Enabled = false;
 
         try
         {
             using var client = CreateAuthedClient();
+
+            // Try the per-model endpoint first (OpenAI-compatible), fall back to the
+            // list endpoint (Ollama and others that don't support GET /v1/models/{id}).
+            string modelUrl = baseUrl + "/v1/models/" + Uri.EscapeDataString(modelId);
             using var response = await client.GetAsync(modelUrl);
             string body = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                using var listResponse = await client.GetAsync(baseUrl + "/v1/models");
+                string listBody = await listResponse.Content.ReadAsStringAsync();
+                if (listResponse.IsSuccessStatusCode)
+                {
+                    using var doc = JsonDocument.Parse(listBody);
+                    if (doc.RootElement.TryGetProperty("data", out var data))
+                    {
+                        foreach (var item in data.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("id", out var idProp)
+                                && string.Equals(idProp.GetString(), modelId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                body = JsonSerializer.Serialize(item, new JsonSerializerOptions { WriteIndented = true });
+                                response.StatusCode = (System.Net.HttpStatusCode)200;
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    body = listBody;
+                }
+            }
 
             string displayText;
             if (response.IsSuccessStatusCode)
@@ -2164,8 +2194,8 @@ internal sealed class CodeVectorConfigPage : TabPage
                 displayText = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}\n\n{body}";
             }
 
-            using var dialog = new ModelInfoDialog(modelId, displayText);
-            dialog.ShowDialog(this.FindForm());
+            var dialog = new ModelInfoDialog(modelId, displayText);
+            dialog.Show(this.FindForm());
         }
         catch (Exception ex)
         {
