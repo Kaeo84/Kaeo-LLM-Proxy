@@ -1810,15 +1810,16 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _queueListView.Columns.Add("Source", 60);
                    layout.Controls.Add(_queueListView, 0, 2);
 
-                   var logHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+                   var logHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
                    logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                   logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
                    logHeader.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    logHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-                   logHeader.Controls.Add(new Label { Text = "Activity Log:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 0);
-                   var clearButton = new Button { Text = "Clear", AutoSize = true, Anchor = AnchorStyles.Right };
+                   var logHeaderBar = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, Margin = new Padding(0, 0, 0, 4) };
+                   logHeaderBar.Controls.Add(new Label { Text = "Activity Log:", AutoSize = true, Margin = new Padding(0, 6, 12, 0) });
+                   var clearButton = new Button { Text = "Clear", AutoSize = true, Margin = new Padding(0) };
                    clearButton.Click += (_, _) => { _module.Activity.ClearBuffer(); RefreshStatus(); };
-                   logHeader.Controls.Add(clearButton, 1, 0);
+                   logHeaderBar.Controls.Add(clearButton);
+                   logHeader.Controls.Add(logHeaderBar, 0, 0);
                    _logListView = new ListView
                    {
                        View = View.Details,
@@ -1833,7 +1834,6 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _logListView.Columns.Add("Target", 160);
                    _logListView.Columns.Add("Detail", 230);
                    logHeader.Controls.Add(_logListView, 0, 1);
-                   logHeader.SetColumnSpan(_logListView, 2);
                    layout.Controls.Add(logHeader, 0, 3);
 
                    group.Controls.Add(layout);

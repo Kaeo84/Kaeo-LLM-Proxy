@@ -252,7 +252,8 @@ internal sealed class McpServerHost : IAsyncDisposable
             await HandleRequestAsync(context, log, ct);
             log.StatusCode = context.Response.StatusCode;
             log.Status = log.StatusCode >= 400 ? RequestStatus.Error : RequestStatus.Success;
-            log.ResponseBytes = context.Response.ContentLength64 >= 0 ? context.Response.ContentLength64 : -1;
+            if (log.ResponseBytes <= 0)
+                log.ResponseBytes = context.Response.ContentLength64 >= 0 ? context.Response.ContentLength64 : -1;
         }
         catch (Exception ex) when (ex is IOException or HttpListenerException or OperationCanceledException)
         {
@@ -486,7 +487,10 @@ internal sealed class McpServerHost : IAsyncDisposable
             ct);
 
         if (responseCapture is not null && responseCapture.Length > 0)
+        {
             log.ResponseBody = Encoding.UTF8.GetString(responseCapture.ToArray());
+            log.ResponseBytes = responseCapture.Length;
+        }
 
         if (!wroteResponse)
         {
