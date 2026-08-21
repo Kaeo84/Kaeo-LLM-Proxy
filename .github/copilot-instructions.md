@@ -7,3 +7,6 @@
 
 ## File/Database Access
 - In Kaeo-LLM-Proxy, when multiple app instances may run concurrently (AllowMultipleInstances setting), ensure that file/database access code tolerates sharing violations gracefully. Catch `IOException`, log a warning, and degrade gracefully rather than allowing unhandled crashes.
+
+## Code Search
+- Use the MCP Local MCP Test code_search tool (Code Vector Store) for semantic code searches instead of grep_search or direct file reads when the code is indexed.
