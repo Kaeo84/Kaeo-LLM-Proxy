@@ -57,6 +57,50 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_context?.Host ?? throw new InvalidOperationException("Module not initialized.");
 	internal CodeVectorSettings Settings => _settings;
 
+	/// <summary>
+	/// Disposes the cached vector database and dependent engines so the next access
+	/// re-resolves the path from the updated <see cref="Settings.VectorDatabasePath"/>.
+	/// </summary>
+	internal void InvalidateVectorDatabase()
+	{
+		lock (_vectorDatabaseLock)
+		{
+			_searchEngine = null;
+			_indexingEngine = null;
+			_vectorDb?.Dispose();
+			_vectorDb = null;
+		}
+	}
+
+	/// <summary>
+	/// Disposes the cached embedding backend and dependent engines, then recreates the
+	/// backend from the current settings. Call when the backend type or ONNX model folder changes.
+	/// </summary>
+	internal void InvalidateEmbeddingBackend()
+	{
+		lock (_vectorDatabaseLock)
+		{
+			_mirrorManager = null;
+			_searchEngine = null;
+			_indexingEngine = null;
+			_embeddingBackend?.Dispose();
+			_embeddingBackend = CreateEmbeddingBackend(_settings, Secrets, Host);
+		}
+	}
+
+	/// <summary>
+	/// Stops and disposes the cached mirror manager so the next access recreates it
+	/// with the updated sync interval.
+	/// </summary>
+	internal void InvalidateMirrorManager()
+	{
+		lock (_vectorDatabaseLock)
+		{
+			_mirrorManager?.StopTimer();
+			_mirrorManager = null;
+		}
+	}
+
 	public void Initialize(ModuleContext context)
 	{
 		ArgumentNullException.ThrowIfNull(context);
@@ -67,7 +111,6 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 
         _dataDirectory = context.DataDirectory;
         _moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
-        Directory.CreateDirectory(_moduleDataDir);
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
 		_embeddingBackend = CreateEmbeddingBackend(_settings, context.Secrets, context.Host);
 	}
@@ -109,16 +152,17 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
             if (_vectorDb is not null)
                 return _vectorDb;
 
-            string dataDirectory = _dataDirectory ?? throw new InvalidOperationException("Module not initialized.");
+            string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
             string vectorDbPath = string.IsNullOrWhiteSpace(_settings.VectorDatabasePath)
-                ? Path.Combine(dataDirectory, "codevectordb")
+                ? Path.Combine(moduleDataDir, "codevectordb")
                 : (Path.IsPathRooted(_settings.VectorDatabasePath)
                     ? _settings.VectorDatabasePath
-                    : Path.Combine(_moduleDataDir ?? throw new InvalidOperationException("Module not initialized."), _settings.VectorDatabasePath));
+                    : Path.Combine(moduleDataDir, _settings.VectorDatabasePath));
             string? vectorDbDirectory = Path.GetDirectoryName(vectorDbPath);
             if (!string.IsNullOrWhiteSpace(vectorDbDirectory))
                 Directory.CreateDirectory(vectorDbDirectory);
 
+            Log.Information("Vector database: {Path}", vectorDbPath);
             _vectorDb = new CodeVectorDatabase(vectorDbPath);
             return _vectorDb;
         }
@@ -687,9 +731,17 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
 
     public RemoteEmbeddingBackend(CodeVectorSettings settings, ISecretProvider secrets, HostInfo host)
     {
-        _url = string.IsNullOrWhiteSpace(settings.RemoteUrl)
+        string url = string.IsNullOrWhiteSpace(settings.RemoteUrl)
             ? $"http://{host.DisplayHost}:{host.ListenPort}/v1/embeddings"
-            : settings.RemoteUrl;
+            : settings.RemoteUrl.Trim();
+
+        // Users typically enter just the host (e.g. http://192.168.1.1:8081).
+        // Append the embeddings endpoint if the path is not already specified.
+        if (!url.Contains("/v1/", StringComparison.OrdinalIgnoreCase)
+            && !url.EndsWith("/embeddings", StringComparison.OrdinalIgnoreCase))
+            url = url.TrimEnd('/') + "/v1/embeddings";
+
+        _url = url;
         _model = string.IsNullOrWhiteSpace(settings.RemoteModel) ? "default" : settings.RemoteModel;
         _modelName = _model;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(settings.RemoteTimeoutSeconds) };
@@ -717,8 +769,13 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
         var requestBody = new { model = _model, input = texts.ToArray() };
         var json = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
+        Log.Debug("Embedding request: POST {Url} model={Model} count={Count}", _url, _model, texts.Count);
         using var response = await _httpClient.PostAsync(_url, content, ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            string errBody = await response.Content.ReadAsStringAsync(ct);
+            throw new HttpRequestException($"Embedding request failed: {(int)response.StatusCode} {response.ReasonPhrase}\nURL: {_url}\nModel: {_model}\nResponse: {errBody}");
+        }
         var responseJson = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(responseJson);
         var data = doc.RootElement.GetProperty("data");
@@ -1443,7 +1500,6 @@ internal sealed class CodeVectorConfigPage : TabPage
     private NumericUpDown _onnxMaxSeqBox = null!;
     private NumericUpDown _onnxThreadsBox = null!;
     private GroupBox _generalGroup = null!;
-    private TextBox _collectionBox = null!;
     private NumericUpDown _chunkLinesBox = null!;
     private NumericUpDown _overlapBox = null!;
     private NumericUpDown _maxSizeBox = null!;
@@ -1473,6 +1529,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     {
         _module = module;
         BuildUi();
+        WireAutoSave();
         UpdateBackendVisibility();
         RefreshRepos();
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -1492,7 +1549,7 @@ internal sealed class CodeVectorConfigPage : TabPage
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 7,
             Padding = new Padding(14, 8, 14, 8),
         };
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -1543,11 +1600,6 @@ internal sealed class CodeVectorConfigPage : TabPage
         // Status
         _statusGroup = BuildStatusGroup();
         main.Controls.Add(_statusGroup, 0, 6);
-
-        // Save button
-        var btnSave = new Button { Text = "Save Settings", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(0, 8, 0, 0) };
-        btnSave.Click += SaveButton_Click;
-        main.Controls.Add(btnSave, 0, 7);
 
         Controls.Add(main);
     }
@@ -1635,10 +1687,6 @@ internal sealed class CodeVectorConfigPage : TabPage
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         int row = 0;
 
-        layout.Controls.Add(new Label { Text = "Collection:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
-        _collectionBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.DefaultCollection, Margin = new Padding(3) };
-        layout.Controls.Add(_collectionBox, 1, row++);
-
         layout.Controls.Add(new Label { Text = "Chunk Lines:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
         _chunkLinesBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 10, Maximum = 1000, Value = _module.Settings.ChunkLines, Margin = new Padding(3) };
         layout.Controls.Add(_chunkLinesBox, 1, row++);
@@ -1685,7 +1733,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    var group = new GroupBox { Text = "Git Repos", Anchor = AnchorStyles.Left | AnchorStyles.Right, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
                    var layout = new TableLayoutPanel { Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, AutoSize = true, ColumnCount = 1, RowCount = 2 };
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 240));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
                    _reposListView = new ListView
@@ -1734,8 +1782,8 @@ internal sealed class CodeVectorConfigPage : TabPage
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
-                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
+                   layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
 
                    var statusPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
                    _engineStatusLabel = new Label { Text = "Engine: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
@@ -1836,7 +1884,11 @@ internal sealed class CodeVectorConfigPage : TabPage
                            _logListView.EndUpdate();
                        }
                    }
-                   catch { }
+                   catch (Exception ex)
+                   {
+                       _engineStatusLabel.Text = $"Status error: {ex.Message}";
+                       _engineStatusLabel.ForeColor = Color.OrangeRed;
+                   }
                }
 
                private void RefreshRepos()
@@ -1950,11 +2002,17 @@ internal sealed class CodeVectorConfigPage : TabPage
                    MessageBox.Show(sb.ToString(), $"Status — {m.CollectionName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
                }
 
-               private void ReindexRepoButton_Click(object? sender, EventArgs e)
+               private async void ReindexRepoButton_Click(object? sender, EventArgs e)
                {
                    if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
-                   _module.Indexer.EnqueueReindex(m.CollectionName);
-                   _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex queued from UI");
+                   try
+                   {
+                       // Reindex = clear the collection, then re-walk the mirror and re-enqueue all files.
+                       _module.VectorDb.DeleteCollection(m.CollectionName);
+                       await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                       _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex: collection cleared + files re-queued");
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Reindex Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                }
 
                private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
@@ -2185,28 +2243,41 @@ internal sealed class CodeVectorConfigPage : TabPage
          }
      }
 
-     private void SaveButton_Click(object? sender, EventArgs e)
-    {
-        bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
+     private void WireAutoSave()
+     {
+         _vectorDatabasePathBox.Validated += (_, _) => SaveSettings();
+         _backendCombo.SelectedIndexChanged += (_, _) => SaveSettings();
+         _remoteUrlBox.Validated += (_, _) => SaveSettings();
+         _remoteModelCombo.TextChanged += (_, _) => SaveSettings();
+         _credentialCombo.TextChanged += (_, _) => SaveSettings();
+         _timeoutBox.ValueChanged += (_, _) => SaveSettings();
+         _onnxBox.Validated += (_, _) => SaveSettings();
+         _onnxMaxSeqBox.ValueChanged += (_, _) => SaveSettings();
+         _onnxThreadsBox.ValueChanged += (_, _) => SaveSettings();
+         _chunkLinesBox.ValueChanged += (_, _) => SaveSettings();
+         _overlapBox.ValueChanged += (_, _) => SaveSettings();
+         _maxSizeBox.ValueChanged += (_, _) => SaveSettings();
+         _topKBox.ValueChanged += (_, _) => SaveSettings();
+         _syncBox.ValueChanged += (_, _) => SaveSettings();
+         _logLevelCombo.SelectedIndexChanged += (_, _) => SaveSettings();
+         _chkSearch.CheckedChanged += (_, _) => SaveSettings();
+         _chkIndex.CheckedChanged += (_, _) => SaveSettings();
+         _chkSync.CheckedChanged += (_, _) => SaveSettings();
+         _chkStatus.CheckedChanged += (_, _) => SaveSettings();
+         _chkRemove.CheckedChanged += (_, _) => SaveSettings();
+         _chkReindex.CheckedChanged += (_, _) => SaveSettings();
+     }
 
-        if (!isOnnx && string.IsNullOrWhiteSpace(_remoteUrlBox.Text)
-            && string.IsNullOrWhiteSpace(_module.Settings.RemoteUrl))
-        {
-            // Blank URL falls back to the local proxy; allow it but confirm intent.
-            var confirm = MessageBox.Show(
-                "Remote URL is empty. The local proxy endpoint will be used. Continue?",
-                "Empty Remote URL", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-            if (confirm != DialogResult.Yes) return;
-        }
+     private void SaveSettings()
+     {
+         bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
 
-        if (isOnnx && !string.IsNullOrWhiteSpace(_onnxBox.Text) && !Directory.Exists(_onnxBox.Text))
-        {
-            MessageBox.Show("The ONNX model folder does not exist.", "Invalid Path",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+         var settings = _module.Settings;
+        var oldBackendType = settings.BackendType;
+        string oldDbPath = settings.VectorDatabasePath;
+        string oldOnnxFolder = settings.OnnxModelFolder;
+        int oldSyncInterval = settings.GitSyncIntervalMinutes;
 
-        var settings = _module.Settings;
         settings.BackendType = isOnnx ? BackendType.Onnx : BackendType.Remote;
         settings.RemoteUrl = _remoteUrlBox.Text.Trim();
         settings.RemoteModel = _remoteModelCombo.Text.Trim();
@@ -2215,7 +2286,6 @@ internal sealed class CodeVectorConfigPage : TabPage
         settings.OnnxModelFolder = _onnxBox.Text.Trim();
         settings.OnnxMaxSequenceLength = (int)_onnxMaxSeqBox.Value;
         settings.OnnxMaxThreads = (int)_onnxThreadsBox.Value;
-        settings.DefaultCollection = _collectionBox.Text.Trim();
         settings.ChunkLines = (int)_chunkLinesBox.Value;
         settings.ChunkOverlapLines = (int)_overlapBox.Value;
         settings.MaxFileSizeKb = (int)_maxSizeBox.Value;
@@ -2240,7 +2310,6 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("onnx_folder", settings.OnnxModelFolder);
         repo.SaveSetting("onnx_max_seq", settings.OnnxMaxSequenceLength.ToString());
         repo.SaveSetting("onnx_threads", settings.OnnxMaxThreads.ToString());
-        repo.SaveSetting("default_collection", settings.DefaultCollection);
         repo.SaveSetting("chunk_lines", settings.ChunkLines.ToString());
         repo.SaveSetting("chunk_overlap", settings.ChunkOverlapLines.ToString());
         repo.SaveSetting("max_file_kb", settings.MaxFileSizeKb.ToString());
@@ -2249,14 +2318,21 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("log_level", settings.McpLogLevel.ToString());
         repo.SaveSetting("search_enabled", settings.SearchEnabled ? "1" : "0");
         repo.SaveSetting("index_enabled", settings.IndexEnabled ? "1" : "0");
-           repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
-            repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
-            repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
-            repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
+        repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
+        repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
+        repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
+        repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
         repo.SaveSetting("vector_database_path", settings.VectorDatabasePath);
 
-            MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
+        if (oldDbPath != settings.VectorDatabasePath)
+            _module.InvalidateVectorDatabase();
+
+        if (oldBackendType != settings.BackendType || oldOnnxFolder != settings.OnnxModelFolder)
+            _module.InvalidateEmbeddingBackend();
+
+        if (oldSyncInterval != settings.GitSyncIntervalMinutes)
+            _module.InvalidateMirrorManager();
+    }
 }
 
 internal sealed class RepoDialog : Form
