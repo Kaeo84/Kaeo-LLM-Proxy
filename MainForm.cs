@@ -154,8 +154,6 @@ internal partial class MainForm : Form
         _cboSysLogLevel.Items.Add("Fatal");
         _cboSysLogLevel.SelectedIndex = 0;
         _cboSysLogLevel.SelectedIndexChanged += (_, _) => RefreshSystemLogs();
-        _btnSysLogRefresh.Click += (_, _) => RefreshSystemLogs();
-        _btnSysLogClear.Click += BtnSysLogClear_Click;
     }
 
     protected override void OnLoad(EventArgs e)
@@ -810,32 +808,77 @@ internal partial class MainForm : Form
                 _mcpLogCache = [];
                 _lstMcpLogs.VirtualListSize = 0;
                 _lstMcpLogs.Invalidate();
-                return;
             }
-
-            _stats.ClearLogs();
-            _logCache = [];
-            _lstLogs.VirtualListSize = 0;
-            _lstLogs.Invalidate();
+            else if (_logSubTabs.SelectedTab == _tabSysLogs)
+            {
+                _database.ClearSystemLogs();
+                AppLogger.SysLog.Clear();
+                RefreshSystemLogs();
+            }
+            else
+            {
+                _stats.ClearLogs();
+                _logCache = [];
+                _lstLogs.VirtualListSize = 0;
+                _lstLogs.Invalidate();
+            }
         });
 
     private void BtnRefreshLogs_Click(object? sender, EventArgs e) =>
-        RunOnceWhileDisabled(_btnRefreshLogs, () =>
-        {
-            RefreshLogs();
-            RefreshMcpLogs();
-        });
+        RunOnceWhileDisabled(_btnRefreshLogs, RefreshActiveLogTab);
 
     private void BtnLogDetails_Click(object? sender, EventArgs e)
     {
         if (_logSubTabs.SelectedTab == _logMcpPage)
-        {
             ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
+        else if (_logSubTabs.SelectedTab == _tabSysLogs)
+            ShowSelectedSysLogDetails();
+        else
+            ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
+    }
+
+    private void ShowSelectedSysLogDetails()
+    {
+        if (_lstSysLogs.SelectedItems.Count == 0)
+        {
+            MessageBox.Show("Select a log entry first.", "No selection",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        ShowSelectedLogDetails(_lstLogs, _logCache, LogSource.Proxy);
+        if (_lstSysLogs.SelectedItems[0].Tag is not SystemLogEntry entry)
+            return;
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Timestamp : {entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
+        sb.AppendLine($"Level     : {entry.Level}");
+        sb.AppendLine($"Source    : {entry.SourceContext ?? "—"}");
+        sb.AppendLine();
+        sb.AppendLine("── Message ──────────────────────────────────────────────────────");
+        sb.AppendLine(entry.Message);
+        if (!string.IsNullOrEmpty(entry.Exception))
+        {
+            sb.AppendLine();
+            sb.AppendLine("── Exception ──────────────────────────────────────────────────");
+            sb.AppendLine(entry.Exception);
+        }
+
+        using var form = new Form
+        {
+            Text = $"System Log — {entry.Timestamp:HH:mm:ss} [{entry.Level}]",
+            Size = new Size(780, 540),
+            MinimumSize = new Size(500, 300),
+            MaximizeBox = true,
+            FormBorderStyle = FormBorderStyle.Sizable,
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.CenterParent,
+        };
+        form.Controls.Add(CreateLogDetailsTextBox(sb.ToString()));
+        form.ShowDialog(this);
     }
+
+    private void LstSysLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedSysLogDetails();
 
     private void ShowSelectedLogDetails(ListView list, IReadOnlyList<RequestLog> cache, LogSource source)
     {
@@ -1125,6 +1168,7 @@ internal partial class MainForm : Form
                     "Warning" => Color.DarkOrange,
                     _ => SystemColors.ControlText,
                 };
+                item.Tag = entry;
 
                 _lstSysLogs.Items.Add(item);
             }
@@ -1138,32 +1182,24 @@ internal partial class MainForm : Form
         }
     }
 
-    private void BtnSysLogClear_Click(object? sender, EventArgs e)
-    {
-        try
-        {
-            _database.ClearSystemLogs();
-            AppLogger.SysLog.Clear();
-            RefreshSystemLogs();
-        }
-        catch (Exception ex)
-        {
-            _lblSysLogStatus.Text = $"Clear failed: {ex.Message}";
-            _lblSysLogStatus.ForeColor = Color.OrangeRed;
-        }
-    }
-
     private void RefreshTimer_Tick(object? sender, EventArgs e)
     {
         if (_tabControl.SelectedTab == _tabLogs && _chkAutoRefresh.Checked)
-        {
-            RefreshLogs();
-            RefreshMcpLogs();
-        }
-
-        if (_tabControl.SelectedTab == _tabSysLogs)
-            RefreshSystemLogs();
+            RefreshActiveLogTab();
     }
+
+    private void RefreshActiveLogTab()
+    {
+        if (_logSubTabs.SelectedTab == _logMcpPage)
+            RefreshMcpLogs();
+        else if (_logSubTabs.SelectedTab == _tabSysLogs)
+            RefreshSystemLogs();
+        else
+            RefreshLogs();
+    }
+
+    private void LogSubTabs_SelectionChanged(object? sender, EventArgs e) =>
+        RefreshActiveLogTab();
 
     // ── Heartbeats tab ──────────────────────────────────────────────────────
 

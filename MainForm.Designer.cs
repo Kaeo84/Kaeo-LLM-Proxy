@@ -48,8 +48,6 @@ partial class MainForm
         _flpSysLogTop = new FlowLayoutPanel();
         _cboSysLogLevel = new ComboBox();
         _lblSysLogLevel = new Label();
-        _btnSysLogRefresh = new Button();
-        _btnSysLogClear = new Button();
         _lstSysLogs = new ListView();
         _colSysLogTime = new ColumnHeader();
         _colSysLogLevel = new ColumnHeader();
@@ -791,6 +789,7 @@ partial class MainForm
         _logSubTabs.Controls.Add(_logMcpPage);
         _logSubTabs.Dock = DockStyle.Fill;
         _logSubTabs.Name = "_logSubTabs";
+        _logSubTabs.SelectedIndexChanged += LogSubTabs_SelectionChanged;
 
         // _logProxyPage
         _logProxyPage.Controls.Add(_lstLogs);
@@ -1869,8 +1868,6 @@ partial class MainForm
         _flpSysLogTop.WrapContents = false;
         _flpSysLogTop.Controls.Add(_lblSysLogLevel);
         _flpSysLogTop.Controls.Add(_cboSysLogLevel);
-        _flpSysLogTop.Controls.Add(_btnSysLogRefresh);
-        _flpSysLogTop.Controls.Add(_btnSysLogClear);
         _flpSysLogTop.Controls.Add(_lblSysLogStatus);
 
         _lblSysLogLevel.Anchor = AnchorStyles.Left;
@@ -1883,16 +1880,6 @@ partial class MainForm
         _cboSysLogLevel.Margin = new Padding(0, 0, 8, 0);
         _cboSysLogLevel.Name = "_cboSysLogLevel";
         _cboSysLogLevel.Size = new Size(100, 23);
-
-        _btnSysLogRefresh.Margin = new Padding(0, 0, 4, 0);
-        _btnSysLogRefresh.Name = "_btnSysLogRefresh";
-        _btnSysLogRefresh.Size = new Size(70, 28);
-        _btnSysLogRefresh.Text = "Refresh";
-
-        _btnSysLogClear.Margin = new Padding(0, 0, 8, 0);
-        _btnSysLogClear.Name = "_btnSysLogClear";
-        _btnSysLogClear.Size = new Size(60, 28);
-        _btnSysLogClear.Text = "Clear";
 
         _lblSysLogStatus.Anchor = AnchorStyles.Left;
         _lblSysLogStatus.AutoSize = true;
@@ -1908,6 +1895,7 @@ partial class MainForm
         _lstSysLogs.MultiSelect = false;
         _lstSysLogs.Name = "_lstSysLogs";
         _lstSysLogs.View = View.Details;
+        _lstSysLogs.DoubleClick += LstSysLogs_DoubleClick;
         _lstSysLogs.Columns.Add(_colSysLogTime);
         _lstSysLogs.Columns.Add(_colSysLogLevel);
         _lstSysLogs.Columns.Add(_colSysLogMsg);
@@ -2354,8 +2342,6 @@ partial class MainForm
     private FlowLayoutPanel _flpSysLogTop;
     private ComboBox _cboSysLogLevel;
     private Label _lblSysLogLevel;
-    private Button _btnSysLogRefresh;
-    private Button _btnSysLogClear;
     private ListView _lstSysLogs;
     private ColumnHeader _colSysLogTime;
     private ColumnHeader _colSysLogLevel;
