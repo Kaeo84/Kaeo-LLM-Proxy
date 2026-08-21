@@ -1,4 +1,4 @@
-﻿using Kaeo.LlmProxy.Modules;
+using Kaeo.LlmProxy.Modules;
 using LibGit2Sharp;
 using Microsoft.Data.Sqlite;
 using Microsoft.ML.OnnxRuntime;
@@ -194,19 +194,25 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	}
 
 	private const string SharedSchema = """
-		CREATE TABLE IF NOT EXISTS mcp_codevector_settings (
-			key TEXT PRIMARY KEY, value TEXT NOT NULL);
-		CREATE TABLE IF NOT EXISTS mcp_codevector_repos (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			collection_name TEXT NOT NULL UNIQUE,
-			remote_url TEXT NOT NULL,
-			branch TEXT NOT NULL DEFAULT 'main',
-			credential_name TEXT NULL,
-			last_sync_utc TEXT NULL,
-			last_sync_status TEXT NULL);
-		""";
-
-	private static void ApplySharedSchema(IModuleDatabase db) => db.ExecuteSchemaScript(SharedSchema);
+        CREATE TABLE IF NOT EXISTS mcp_codevector_settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS mcp_codevector_repos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        collection_name TEXT NOT NULL UNIQUE,
+        remote_url TEXT NOT NULL,
+        branch TEXT NOT NULL DEFAULT 'main',
+        credential_name TEXT NULL,
+        mirror_path TEXT NULL,
+        last_sync_utc TEXT NULL,
+        last_sync_status TEXT NULL);
+        """;
+        private static void ApplySharedSchema(IModuleDatabase db)
+    {
+        db.ExecuteSchemaScript(SharedSchema);
+        var columns = db.Query("PRAGMA table_info(mcp_codevector_repos)", r => r.GetString(1));
+        if (!columns.Contains("mirror_path", StringComparer.OrdinalIgnoreCase))
+            db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN mirror_path TEXT NULL", _ => { });
+    }
 
 	private const string HelpText = """
 		CODE VECTOR STORE MODULE
@@ -248,7 +254,6 @@ internal sealed class CodeVectorSettings
 	/// Root directory where git mirrors are checked out. Defaults to <c>moduleDataDir/mirrors</c>.
 	/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
 	/// </summary>
-	public string GitMirrorPath { get; set; } = string.Empty;
     public string VectorDatabasePath { get; set; } = string.Empty;
 }
 // ── Repository ─────────────────────────────────────────────────────────────
@@ -303,7 +308,7 @@ internal sealed class CodeVectorRepository
     public IReadOnlyList<MirrorRegistration> LoadMirrors()
     {
         return _db.Query(
-            "SELECT id, collection_name, remote_url, branch, credential_name, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
+            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
             r => new MirrorRegistration
             {
                 Id = r.GetInt32(0),
@@ -311,17 +316,18 @@ internal sealed class CodeVectorRepository
                 RemoteUrl = r.GetString(2),
                 Branch = r.GetString(3),
                 CredentialName = r.IsDBNull(4) ? null : r.GetString(4),
-                LastSyncUtc = r.IsDBNull(5) ? null : r.GetString(5),
-                LastSyncStatus = r.IsDBNull(6) ? null : r.GetString(6),
+                MirrorPath = r.IsDBNull(5) ? null : r.GetString(5),
+                LastSyncUtc = r.IsDBNull(6) ? null : r.GetString(6),
+                LastSyncStatus = r.IsDBNull(7) ? null : r.GetString(7),
             });
     }
 
-    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName)
+    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null)
     {
         _db.Execute(
-            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name) VALUES ($col, $url, $branch, $cred) " +
-            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name",
-            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); });
+            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path) VALUES ($col, $url, $branch, $cred, $path) " +
+            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path",
+            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); });
         return LoadMirrors().First(m => m.CollectionName == collectionName);
     }
 
@@ -353,6 +359,7 @@ internal sealed class MirrorRegistration
     public string RemoteUrl { get; set; } = string.Empty;
     public string Branch { get; set; } = "main";
     public string? CredentialName { get; set; }
+    public string? MirrorPath { get; set; }
     public string? LastSyncUtc { get; set; }
     public string? LastSyncStatus { get; set; }
 }
@@ -1039,7 +1046,7 @@ internal sealed class IndexingEngine
 
 internal sealed class GitMirrorManager
 {
-    private readonly string _mirrorRoot;
+    private readonly string _moduleDataDir;
     private readonly CodeVectorRepository _repository;
     private readonly IndexingEngine _indexer;
     private readonly CodeVectorSettings _settings;
@@ -1049,15 +1056,12 @@ internal sealed class GitMirrorManager
 
     public GitMirrorManager(string moduleDataDir, CodeVectorRepository repository, IndexingEngine indexer, CodeVectorSettings settings, CodeVectorActivityLogger? activity, ISecretProvider secrets)
      {
-         _mirrorRoot = string.IsNullOrWhiteSpace(settings.GitMirrorPath)
-             ? Path.Combine(moduleDataDir, "mirrors")
-             : settings.GitMirrorPath;
+         _moduleDataDir = moduleDataDir;
          _repository = repository;
          _indexer = indexer;
          _settings = settings;
          _activity = activity;
          _secrets = secrets;
-         Directory.CreateDirectory(_mirrorRoot);
      }
 
     public void StartTimer()
@@ -1069,9 +1073,9 @@ internal sealed class GitMirrorManager
 
     public void StopTimer() { _timer?.Dispose(); _timer = null; }
 
-    public async Task<MirrorRegistration> RegisterMirrorAsync(string collectionName, string remoteUrl, string branch, string? credentialName, CancellationToken ct)
+    public async Task<MirrorRegistration> RegisterMirrorAsync(string collectionName, string remoteUrl, string branch, string? credentialName, CancellationToken ct, string? mirrorPath = null)
     {
-        var mirror = _repository.UpsertMirror(collectionName, remoteUrl, branch, credentialName);
+        var mirror = _repository.UpsertMirror(collectionName, remoteUrl, branch, credentialName, mirrorPath);
         await SyncMirrorAsync(mirror, ct);
         return mirror;
     }
@@ -1081,7 +1085,7 @@ internal sealed class GitMirrorManager
         _activity?.Log("sync_start", mirror.CollectionName, $"Syncing {mirror.RemoteUrl} [{mirror.Branch}]");
         try
         {
-            var mirrorPath = Path.Combine(_mirrorRoot, mirror.CollectionName);
+            var mirrorPath = ResolveMirrorPath(mirror);
             if (!Repository.IsValid(mirrorPath))
             {
                 var cloneOptions = new CloneOptions { BranchName = mirror.Branch, FetchOptions = { TagFetchMode = TagFetchMode.None } };
@@ -1124,7 +1128,7 @@ internal sealed class GitMirrorManager
 
     public async Task IndexMirrorFilesAsync(MirrorRegistration mirror, CancellationToken ct)
     {
-        var mirrorPath = Path.Combine(_mirrorRoot, mirror.CollectionName);
+        var mirrorPath = ResolveMirrorPath(mirror);
         if (!Repository.IsValid(mirrorPath))
         {
             _activity?.Log("index_error", mirror.CollectionName, "Mirror not yet cloned. Run Sync first.");
@@ -1160,6 +1164,19 @@ internal sealed class GitMirrorManager
             }
         }
         _activity?.Log("sync_complete", mirror.CollectionName, $"Discovered {trackedFiles.Count} files, queued {queued}, skipped {skipped}");
+    }
+
+    private string ResolveMirrorPath(MirrorRegistration mirror)
+    {
+        string basePath = string.IsNullOrWhiteSpace(mirror.MirrorPath)
+            ? Path.Combine(_moduleDataDir, "mirrors")
+            : mirror.MirrorPath;
+        string resolvedBasePath = Path.IsPathRooted(basePath)
+            ? basePath
+            : Path.Combine(_moduleDataDir, basePath);
+        string mirrorPath = Path.Combine(resolvedBasePath, mirror.CollectionName);
+        Directory.CreateDirectory(resolvedBasePath);
+        return mirrorPath;
     }
 
     private static void WalkTree(Tree tree, string prefix, List<string> files)
@@ -1434,7 +1451,6 @@ internal sealed class CodeVectorConfigPage : TabPage
     private NumericUpDown _maxSizeBox = null!;
     private NumericUpDown _topKBox = null!;
     private NumericUpDown _syncBox = null!;
-    private TextBox _checkoutPathBox = null!;
     private TextBox _vectorDatabasePathBox = null!;
     private ComboBox _logLevelCombo = null!;
     private CheckBox _chkSearch = null!;
@@ -1645,10 +1661,6 @@ internal sealed class CodeVectorConfigPage : TabPage
         _syncBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 0, Maximum = 1440, Value = _module.Settings.GitSyncIntervalMinutes, Margin = new Padding(3) };
         layout.Controls.Add(_syncBox, 1, row++);
 
-        layout.Controls.Add(new Label { Text = "Mirror Path:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
-        _checkoutPathBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.GitMirrorPath, Margin = new Padding(3) };
-        layout.Controls.Add(_checkoutPathBox, 1, row++);
-
         layout.Controls.Add(new Label { Text = "Log Level:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
         _logLevelCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, Margin = new Padding(3) };
         _logLevelCombo.Items.AddRange(["None", "Connectivity", "Full"]);
@@ -1689,7 +1701,8 @@ internal sealed class CodeVectorConfigPage : TabPage
                    };
                    _reposListView.Columns.Add("Collection", 140);
                    _reposListView.Columns.Add("Remote URL", 260);
-                   _reposListView.Columns.Add("Branch", 70);
+                    _reposListView.Columns.Add("Branch", 70);
+                    _reposListView.Columns.Add("Mirror Path", 220);
                    _reposListView.Columns.Add("Last Sync", 140);
                    _reposListView.Columns.Add("Status", 100);
                    layout.Controls.Add(_reposListView, 0, 0);
@@ -1839,6 +1852,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                            var lvi = new ListViewItem(m.CollectionName);
                            lvi.SubItems.Add(m.RemoteUrl);
                            lvi.SubItems.Add(m.Branch);
+                            lvi.SubItems.Add(m.MirrorPath ?? "default");
                            lvi.SubItems.Add(m.LastSyncUtc ?? "never");
                            lvi.SubItems.Add(m.LastSyncStatus ?? "pending");
                            lvi.Tag = m;
@@ -1859,7 +1873,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        try
                        {
-                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None);
+                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath);
                            RefreshRepos();
                        }
                        catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -1876,7 +1890,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        try
                        {
                            _module.Repository.DeleteMirror(m.CollectionName);
-                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None);
+                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath);
                            RefreshRepos();
                        }
                        catch (Exception ex) { MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -2241,7 +2255,6 @@ internal sealed class CodeVectorConfigPage : TabPage
             repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
             repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
             repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
-            repo.SaveSetting("git_mirror_path", settings.GitMirrorPath);
         repo.SaveSetting("vector_database_path", settings.VectorDatabasePath);
 
             MessageBox.Show("Settings saved. Restart required for backend changes to take effect.", "Settings Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -2253,11 +2266,13 @@ internal sealed class RepoDialog : Form
     private readonly TextBox _collectionBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
     private readonly TextBox _urlBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
     private readonly TextBox _branchBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3), Text = "main" };
+    private readonly TextBox _mirrorPathBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
     private readonly ComboBox _credentialCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
 
     public string CollectionName => _collectionBox.Text.Trim();
     public string RemoteUrl => _urlBox.Text.Trim();
     public string Branch => string.IsNullOrWhiteSpace(_branchBox.Text) ? "main" : _branchBox.Text.Trim();
+    public string? MirrorPath => string.IsNullOrWhiteSpace(_mirrorPathBox.Text) ? null : _mirrorPathBox.Text.Trim();
     public string? CredentialName => string.IsNullOrWhiteSpace(_credentialCombo.Text) ? null : _credentialCombo.Text.Trim();
 
     public RepoDialog(MirrorRegistration? existing)
@@ -2267,7 +2282,7 @@ internal sealed class RepoDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         MinimizeBox = false;
         MaximizeBox = false;
-        ClientSize = new Size(460, 220);
+        ClientSize = new Size(520, 260);
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(10), AutoSize = true };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -2279,15 +2294,17 @@ internal sealed class RepoDialog : Form
         layout.Controls.Add(_urlBox, 1, 1);
         layout.Controls.Add(new Label { Text = "Branch:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 2);
         layout.Controls.Add(_branchBox, 1, 2);
-        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 3);
-        layout.Controls.Add(_credentialCombo, 1, 3);
+        layout.Controls.Add(new Label { Text = "Mirror Path:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 3);
+        layout.Controls.Add(_mirrorPathBox, 1, 3);
+        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 4);
+        layout.Controls.Add(_credentialCombo, 1, 4);
 
         var btnPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
         var okBtn = new Button { Text = "OK", AutoSize = true, DialogResult = DialogResult.OK, Margin = new Padding(3) };
         var cancelBtn = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, Margin = new Padding(3) };
         btnPanel.Controls.Add(cancelBtn);
         btnPanel.Controls.Add(okBtn);
-        layout.Controls.Add(btnPanel, 0, 4);
+        layout.Controls.Add(btnPanel, 0, 5);
         layout.SetColumnSpan(btnPanel, 2);
 
         Controls.Add(layout);
@@ -2299,6 +2316,7 @@ internal sealed class RepoDialog : Form
             _collectionBox.Text = existing.CollectionName;
             _urlBox.Text = existing.RemoteUrl;
             _branchBox.Text = existing.Branch;
+            _mirrorPathBox.Text = existing.MirrorPath ?? "";
             _credentialCombo.Text = existing.CredentialName ?? "";
         }
     }
