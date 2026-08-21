@@ -1196,6 +1196,18 @@ internal sealed class AppDatabase : IDisposable
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    exception TEXT NULL,
+                    source_context TEXT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp_utc ON system_logs(timestamp_utc);
+                CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level);
                 """;
             command.ExecuteNonQuery();
 
@@ -2127,6 +2139,66 @@ internal sealed class AppDatabase : IDisposable
                 results.Add(map(reader));
 
             return results;
+        }
+    }
+
+    /// <summary>
+    /// Returns the most recent system log entries (newest first).
+    /// </summary>
+    /// <param name="levelFilter">Optional level name to filter by (e.g. "Error"). Null returns all.</param>
+    /// <param name="limit">Maximum number of entries to return. Default 500.</param>
+    public IReadOnlyList<SystemLogEntry> GetSystemLogs(string? levelFilter = null, int limit = 500)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+
+            if (string.IsNullOrEmpty(levelFilter))
+            {
+                command.CommandText =
+                    "SELECT timestamp_utc, level, message, exception, source_context " +
+                    "FROM system_logs ORDER BY id DESC LIMIT $limit";
+                command.Parameters.AddWithValue("$limit", limit);
+            }
+            else
+            {
+                command.CommandText =
+                    "SELECT timestamp_utc, level, message, exception, source_context " +
+                    "FROM system_logs WHERE level = $level ORDER BY id DESC LIMIT $limit";
+                command.Parameters.AddWithValue("$level", levelFilter);
+                command.Parameters.AddWithValue("$limit", limit);
+            }
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<SystemLogEntry> results = [];
+
+            while (reader.Read())
+            {
+                DateTime timestamp = DateTime.Parse(reader.GetString(0),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind);
+                string level = reader.GetString(1);
+                string message = reader.GetString(2);
+                string? exception = reader.IsDBNull(3) ? null : reader.GetString(3);
+                string? sourceContext = reader.IsDBNull(4) ? null : reader.GetString(4);
+
+                results.Add(new SystemLogEntry(timestamp, level, message, exception, sourceContext));
+            }
+
+            return results;
+        }
+    }
+
+    /// <summary>Removes all system log entries from the database.</summary>
+    public void ClearSystemLogs()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM system_logs";
+            command.ExecuteNonQuery();
         }
     }
 

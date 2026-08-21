@@ -137,10 +137,25 @@ internal partial class MainForm : Form
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => UpdateMcpApiExplorerUrlLabel();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _chkMcpCollectRequest.CheckedChanged += (_, _) => OnMcpSettingChanged();
+        _chkMcpCollectResponse.CheckedChanged += (_, _) => OnMcpSettingChanged();
         _nudMcpPort.Validated += (_, _) => OnMcpSettingChanged();
         _cboMcpListenAddress.SelectedIndexChanged += (_, _) => OnMcpSettingChanged();
         _cboMcpListenAddress.Validated += (_, _) => OnMcpSettingChanged();
         _btnMcpApply.Click += (_, _) => OnMcpSettingChanged();
+
+        // System Logs tab
+        _cboSysLogLevel.Items.Add("(All)");
+        _cboSysLogLevel.Items.Add("Verbose");
+        _cboSysLogLevel.Items.Add("Debug");
+        _cboSysLogLevel.Items.Add("Information");
+        _cboSysLogLevel.Items.Add("Warning");
+        _cboSysLogLevel.Items.Add("Error");
+        _cboSysLogLevel.Items.Add("Fatal");
+        _cboSysLogLevel.SelectedIndex = 0;
+        _cboSysLogLevel.SelectedIndexChanged += (_, _) => RefreshSystemLogs();
+        _btnSysLogRefresh.Click += (_, _) => RefreshSystemLogs();
+        _btnSysLogClear.Click += BtnSysLogClear_Click;
     }
 
     protected override void OnLoad(EventArgs e)
@@ -152,6 +167,7 @@ internal partial class MainForm : Form
         RefreshMcpStats();
         RefreshLogs();
         RefreshMcpLogs();
+        RefreshSystemLogs();
         RefreshHeartbeats();
         RefreshCredentials();
         RefreshModules();
@@ -200,6 +216,8 @@ internal partial class MainForm : Form
 
             _chkMcpEnabled.Checked = settings.Enabled;
             _chkMcpApiExplorer.Checked = settings.EnableApiExplorer;
+            _chkMcpCollectRequest.Checked = settings.CollectRequestDetails;
+            _chkMcpCollectResponse.Checked = settings.CollectResponseDetails;
             _nudMcpPort.Value = Math.Clamp(settings.ListenPort, (int)_nudMcpPort.Minimum, (int)_nudMcpPort.Maximum);
             PopulateListenAddressOptions(_cboMcpListenAddress, settings.ListenAddress);
             UpdateMcpApiExplorerUrlLabel();
@@ -218,6 +236,8 @@ internal partial class MainForm : Form
             ListenPort = (int)_nudMcpPort.Value,
             ListenAddress = _cboMcpListenAddress.Text.Trim(),
             EnableApiExplorer = _chkMcpApiExplorer.Checked,
+            CollectRequestDetails = _chkMcpCollectRequest.Checked,
+            CollectResponseDetails = _chkMcpCollectResponse.Checked,
             AuthCredentialName = null,
         };
 
@@ -1069,6 +1089,70 @@ internal partial class MainForm : Form
         return sb.ToString().TrimEnd();
     }
 
+    // ── System Logs tab ─────────────────────────────────────────────────────
+
+    private void RefreshSystemLogs()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+
+        try
+        {
+            string? levelFilter = _cboSysLogLevel.SelectedIndex > 0
+                ? _cboSysLogLevel.Items[_cboSysLogLevel.SelectedIndex].ToString()
+                : null;
+
+            IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(levelFilter, 500);
+
+            bool dbHealthy = AppLogger.DbSink?.IsUsingDatabase ?? true;
+            _lblSysLogStatus.Text = dbHealthy
+                ? $"Database ({entries.Count} entries)"
+                : "Fallback file active (DB unavailable)";
+            _lblSysLogStatus.ForeColor = dbHealthy ? SystemColors.ControlText : Color.OrangeRed;
+
+            _lstSysLogs.BeginUpdate();
+            _lstSysLogs.Items.Clear();
+
+            foreach (SystemLogEntry entry in entries)
+            {
+                var item = new ListViewItem(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
+                item.SubItems.Add(entry.Level);
+                item.SubItems.Add(entry.Message);
+                item.SubItems.Add(entry.SourceContext ?? "");
+
+                item.ForeColor = entry.Level switch
+                {
+                    "Error" or "Fatal" => Color.OrangeRed,
+                    "Warning" => Color.DarkOrange,
+                    _ => SystemColors.ControlText,
+                };
+
+                _lstSysLogs.Items.Add(item);
+            }
+
+            _lstSysLogs.EndUpdate();
+        }
+        catch (Exception ex)
+        {
+            _lblSysLogStatus.Text = $"Error: {ex.Message}";
+            _lblSysLogStatus.ForeColor = Color.OrangeRed;
+        }
+    }
+
+    private void BtnSysLogClear_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            _database.ClearSystemLogs();
+            AppLogger.SysLog.Clear();
+            RefreshSystemLogs();
+        }
+        catch (Exception ex)
+        {
+            _lblSysLogStatus.Text = $"Clear failed: {ex.Message}";
+            _lblSysLogStatus.ForeColor = Color.OrangeRed;
+        }
+    }
+
     private void RefreshTimer_Tick(object? sender, EventArgs e)
     {
         if (_tabControl.SelectedTab == _tabLogs && _chkAutoRefresh.Checked)
@@ -1076,6 +1160,9 @@ internal partial class MainForm : Form
             RefreshLogs();
             RefreshMcpLogs();
         }
+
+        if (_tabControl.SelectedTab == _tabSysLogs)
+            RefreshSystemLogs();
     }
 
     // ── Heartbeats tab ──────────────────────────────────────────────────────

@@ -29,6 +29,8 @@ partial class MainForm
         _tlpMcp = new TableLayoutPanel();
         _chkMcpEnabled = new CheckBox();
         _chkMcpApiExplorer = new CheckBox();
+        _chkMcpCollectRequest = new CheckBox();
+        _chkMcpCollectResponse = new CheckBox();
         _lblMcpApiExplorerUrl = new Label();
         _lblMcpSpecUrl = new Label();
         _lblMcpListenAddress = new Label();
@@ -41,6 +43,19 @@ partial class MainForm
         _btnMcpApply = new Button();
         _tabTest = new TabPage();
         _tabHeartbeats = new TabPage();
+        _tabSysLogs = new TabPage();
+        _tlpSysLogs = new TableLayoutPanel();
+        _flpSysLogTop = new FlowLayoutPanel();
+        _cboSysLogLevel = new ComboBox();
+        _lblSysLogLevel = new Label();
+        _btnSysLogRefresh = new Button();
+        _btnSysLogClear = new Button();
+        _lstSysLogs = new ListView();
+        _colSysLogTime = new ColumnHeader();
+        _colSysLogLevel = new ColumnHeader();
+        _colSysLogMsg = new ColumnHeader();
+        _colSysLogSrc = new ColumnHeader();
+        _lblSysLogStatus = new Label();
         _tabHelp = new TabPage();
         _helpTabs = new TabControl();
 
@@ -296,6 +311,9 @@ partial class MainForm
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
         _tabHeartbeats.SuspendLayout();
+        _tabSysLogs.SuspendLayout();
+        _tlpSysLogs.SuspendLayout();
+        _flpSysLogTop.SuspendLayout();
         _tabHelp.SuspendLayout();
         _helpTabs.SuspendLayout();
         _tlpHeartbeats.SuspendLayout();
@@ -769,6 +787,7 @@ partial class MainForm
 
         // _logSubTabs — per-service request logs
         _logSubTabs.Controls.Add(_logProxyPage);
+        _logSubTabs.Controls.Add(_tabSysLogs);
         _logSubTabs.Controls.Add(_logMcpPage);
         _logSubTabs.Dock = DockStyle.Fill;
         _logSubTabs.Name = "_logSubTabs";
@@ -1570,12 +1589,16 @@ partial class MainForm
         _tlpMcp.Controls.Add(_nudMcpPort, 1, 4);
         _tlpMcp.Controls.Add(_lblMcpListenAddress, 0, 5);
         _tlpMcp.Controls.Add(_cboMcpListenAddress, 1, 5);
-        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 6);
-        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 6);
-        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 8);
+        _tlpMcp.Controls.Add(_chkMcpCollectRequest, 0, 6);
+        _tlpMcp.Controls.Add(_chkMcpCollectResponse, 0, 7);
+        _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 8);
+        _tlpMcp.Controls.Add(_lblMcpStatus, 1, 8);
+        _tlpMcp.Controls.Add(_flpMcpButtons, 0, 10);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
-        _tlpMcp.RowCount = 9;
+        _tlpMcp.RowCount = 11;
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1587,6 +1610,8 @@ partial class MainForm
         _tlpMcp.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMcp.SetColumnSpan(_chkMcpEnabled, 2);
         _tlpMcp.SetColumnSpan(_chkMcpApiExplorer, 2);
+        _tlpMcp.SetColumnSpan(_chkMcpCollectRequest, 2);
+        _tlpMcp.SetColumnSpan(_chkMcpCollectResponse, 2);
         _tlpMcp.SetColumnSpan(_lblMcpApiExplorerUrl, 2);
         _tlpMcp.SetColumnSpan(_lblMcpSpecUrl, 2);
         _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
@@ -1625,6 +1650,18 @@ partial class MainForm
         _cboMcpListenAddress.DropDownStyle = ComboBoxStyle.DropDown;
         _cboMcpListenAddress.Margin = new Padding(0, 0, 0, 8);
         _cboMcpListenAddress.Name = "_cboMcpListenAddress";
+
+        _chkMcpCollectRequest.AccessibleName = "Collect MCP request details";
+        _chkMcpCollectRequest.AutoSize = true;
+        _chkMcpCollectRequest.Margin = new Padding(0, 4, 0, 4);
+        _chkMcpCollectRequest.Name = "_chkMcpCollectRequest";
+        _chkMcpCollectRequest.Text = "Log request bodies";
+
+        _chkMcpCollectResponse.AccessibleName = "Collect MCP response details";
+        _chkMcpCollectResponse.AutoSize = true;
+        _chkMcpCollectResponse.Margin = new Padding(0, 4, 0, 8);
+        _chkMcpCollectResponse.Name = "_chkMcpCollectResponse";
+        _chkMcpCollectResponse.Text = "Log response bodies";
 
         _lblMcpPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpPort.AutoSize = true;
@@ -1803,6 +1840,89 @@ partial class MainForm
         _tabHeartbeats.Name = "_tabHeartbeats";
         _tabHeartbeats.Padding = new Padding(8);
         _tabHeartbeats.Text = "Heartbeats";
+
+        // _tabSysLogs
+        _tabSysLogs.Controls.Add(_tlpSysLogs);
+        _tabSysLogs.Dock = DockStyle.Fill;
+        _tabSysLogs.Name = "_tabSysLogs";
+        _tabSysLogs.Padding = new Padding(8);
+        _tabSysLogs.Text = "System Logs";
+
+        // _tlpSysLogs — 1 column: top bar AutoSize | list fills remaining
+        _tlpSysLogs.ColumnCount = 1;
+        _tlpSysLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpSysLogs.Controls.Add(_flpSysLogTop, 0, 0);
+        _tlpSysLogs.Controls.Add(_lstSysLogs, 0, 1);
+        _tlpSysLogs.Dock = DockStyle.Fill;
+        _tlpSysLogs.Name = "_tlpSysLogs";
+        _tlpSysLogs.RowCount = 2;
+        _tlpSysLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpSysLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpSysLogTop
+        _flpSysLogTop.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _flpSysLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpSysLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpSysLogTop.Margin = new Padding(0, 0, 0, 6);
+        _flpSysLogTop.Name = "_flpSysLogTop";
+        _flpSysLogTop.WrapContents = false;
+        _flpSysLogTop.Controls.Add(_lblSysLogLevel);
+        _flpSysLogTop.Controls.Add(_cboSysLogLevel);
+        _flpSysLogTop.Controls.Add(_btnSysLogRefresh);
+        _flpSysLogTop.Controls.Add(_btnSysLogClear);
+        _flpSysLogTop.Controls.Add(_lblSysLogStatus);
+
+        _lblSysLogLevel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblSysLogLevel.AutoSize = true;
+        _lblSysLogLevel.Margin = new Padding(0, 6, 4, 3);
+        _lblSysLogLevel.Name = "_lblSysLogLevel";
+        _lblSysLogLevel.Text = "Level:";
+
+        _cboSysLogLevel.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cboSysLogLevel.Margin = new Padding(0, 3, 8, 3);
+        _cboSysLogLevel.Name = "_cboSysLogLevel";
+        _cboSysLogLevel.Size = new Size(100, 23);
+
+        _btnSysLogRefresh.Margin = new Padding(0, 3, 4, 3);
+        _btnSysLogRefresh.Name = "_btnSysLogRefresh";
+        _btnSysLogRefresh.Size = new Size(70, 28);
+        _btnSysLogRefresh.Text = "Refresh";
+
+        _btnSysLogClear.Margin = new Padding(0, 3, 8, 3);
+        _btnSysLogClear.Name = "_btnSysLogClear";
+        _btnSysLogClear.Size = new Size(60, 28);
+        _btnSysLogClear.Text = "Clear";
+
+        _lblSysLogStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblSysLogStatus.AutoSize = true;
+        _lblSysLogStatus.Margin = new Padding(0, 6, 0, 3);
+        _lblSysLogStatus.Name = "_lblSysLogStatus";
+        _lblSysLogStatus.Text = "";
+
+        // _lstSysLogs
+        _lstSysLogs.Dock = DockStyle.Fill;
+        _lstSysLogs.FullRowSelect = true;
+        _lstSysLogs.GridLines = true;
+        _lstSysLogs.HideSelection = false;
+        _lstSysLogs.MultiSelect = false;
+        _lstSysLogs.Name = "_lstSysLogs";
+        _lstSysLogs.View = View.Details;
+        _lstSysLogs.Columns.Add(_colSysLogTime);
+        _lstSysLogs.Columns.Add(_colSysLogLevel);
+        _lstSysLogs.Columns.Add(_colSysLogMsg);
+        _lstSysLogs.Columns.Add(_colSysLogSrc);
+
+        _colSysLogTime.Text = "Time";
+        _colSysLogTime.Width = 140;
+
+        _colSysLogLevel.Text = "Level";
+        _colSysLogLevel.Width = 70;
+
+        _colSysLogMsg.Text = "Message";
+        _colSysLogMsg.Width = 500;
+
+        _colSysLogSrc.Text = "Source";
+        _colSysLogSrc.Width = 180;
 
         // _tabHelp — pages built in code (MainForm.BuildHelpContent)
         _tabHelp.Controls.Add(_helpTabs);
@@ -1990,6 +2110,12 @@ partial class MainForm
         _tlpTestTop.ResumeLayout(false);
         _tlpTestTop.PerformLayout();
         _tabHeartbeats.ResumeLayout(false);
+        _tabSysLogs.ResumeLayout(false);
+        _tabSysLogs.PerformLayout();
+        _tlpSysLogs.ResumeLayout(false);
+        _tlpSysLogs.PerformLayout();
+        _flpSysLogTop.ResumeLayout(false);
+        _flpSysLogTop.PerformLayout();
         _helpTabs.ResumeLayout(false);
         _tabHelp.ResumeLayout(false);
         _grpListener.ResumeLayout(false);
@@ -2190,6 +2316,8 @@ partial class MainForm
     private TableLayoutPanel _tlpMcp;
     private CheckBox _chkMcpEnabled;
     private CheckBox _chkMcpApiExplorer;
+    private CheckBox _chkMcpCollectRequest;
+    private CheckBox _chkMcpCollectResponse;
     private Label _lblMcpApiExplorerUrl;
     private Label _lblMcpSpecUrl;
     private Label _lblMcpListenAddress;
@@ -2218,6 +2346,21 @@ partial class MainForm
     private TextBox _txtTestPrompt;
     private TextBox _txtTestResponse;
     private Label _lblTestStatus;
+
+    // System Logs tab
+    private TabPage _tabSysLogs;
+    private TableLayoutPanel _tlpSysLogs;
+    private FlowLayoutPanel _flpSysLogTop;
+    private ComboBox _cboSysLogLevel;
+    private Label _lblSysLogLevel;
+    private Button _btnSysLogRefresh;
+    private Button _btnSysLogClear;
+    private ListView _lstSysLogs;
+    private ColumnHeader _colSysLogTime;
+    private ColumnHeader _colSysLogLevel;
+    private ColumnHeader _colSysLogMsg;
+    private ColumnHeader _colSysLogSrc;
+    private Label _lblSysLogStatus;
 
     // Heartbeats tab
     private TabPage _tabHeartbeats;

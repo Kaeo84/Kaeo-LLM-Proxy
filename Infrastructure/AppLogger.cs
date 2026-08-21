@@ -1,18 +1,30 @@
 using Kaeo.LlmProxy.Core.Models;
 using Serilog;
 using Serilog.Events;
-using Serilog.Formatting.Compact;
 
 namespace Kaeo.LlmProxy.Infrastructure;
 
 /// <summary>
 /// Bootstraps Serilog for application diagnostic logging.
-/// Writes CLEF (Compact Log Event Format) files under {LogDirectory}/app/.
-/// Files roll when they exceed the configured size limit; oldest retained files are pruned.
+/// Primary persistent store is the <c>system_logs</c> table in the application database.
+/// Falls back to a CLEF flat file under {LogDirectory}/app/ when the database is unavailable.
+/// An in-memory sink provides real-time access for the System Logs GUI tab.
 /// </summary>
 internal static class AppLogger
 {
     private static bool _initialized;
+
+    /// <summary>
+    /// In-memory sink for real-time display in the System Logs tab.
+    /// Accessible from MainForm without coupling to the Serilog pipeline.
+    /// </summary>
+    public static SystemLogSink SysLog { get; private set; } = new();
+
+    /// <summary>
+    /// The DB-backed sink instance. Exposed so the GUI can check whether the DB is healthy
+    /// and whether logs are being written to the fallback file.
+    /// </summary>
+    public static SystemLogDbSink? DbSink { get; private set; }
 
     /// <summary>
     /// Configures and assigns <see cref="Log.Logger"/> from the supplied settings.
@@ -22,34 +34,34 @@ internal static class AppLogger
     {
         // Close any existing logger before reconfiguring.
         if (_initialized)
+        {
             Log.CloseAndFlush();
+            DbSink?.Dispose();
+        }
 
         string appLogDir = Path.Combine(settings.LogDirectory, "app");
         Directory.CreateDirectory(appLogDir);
 
-        string logFilePath = Path.Combine(appLogDir, "app-.clef");
-
         if (!Enum.TryParse<LogEventLevel>(settings.MinimumLevel, ignoreCase: true, out LogEventLevel level))
             level = LogEventLevel.Information;
 
+        var syslog = new SystemLogSink();
+        SysLog = syslog;
+
+        string dbPath = settings.GetApplicationDatabasePath();
+        string fallbackPath = Path.Combine(appLogDir, "system-logs.fallback.clef");
+        var dbSink = new SystemLogDbSink(dbPath, fallbackPath);
+        DbSink = dbSink;
+
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Is(level)
-            .WriteTo.File(
-                formatter: new CompactJsonFormatter(),
-                path: logFilePath,
-                rollingInterval: RollingInterval.Infinite,
-                rollOnFileSizeLimit: true,
-                fileSizeLimitBytes: (long)settings.AppLogFileSizeLimitMb * 1024 * 1024,
-                retainedFileCountLimit: settings.AppLogRetainedFileCount,
-                // shared: true allows multiple application instances (AllowMultipleInstances) to
-                // write to the same log file concurrently via mutex-protected IO instead of each
-                // instance throwing IOException and silently losing its diagnostic logs.
-                shared: true,
-                buffered: false)
+            .WriteTo.Sink(syslog)
+            .WriteTo.Sink(dbSink)
             .CreateLogger();
 
         _initialized = true;
-        Log.Information("AppLogger initialized. Level={Level} LogDir={LogDir}", level, appLogDir);
+        Log.Information("AppLogger initialized. Level={Level} DbPath={DbPath} Fallback={Fallback}",
+            level, dbPath, fallbackPath);
     }
 
     /// <summary>Flushes and closes the current logger. Call on application exit.</summary>
