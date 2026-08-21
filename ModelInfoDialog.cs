@@ -40,7 +40,7 @@ internal sealed class ModelInfoDialog : Form
         };
         layout.Controls.Add(textBox, 0, 0);
 
-        var closeButton = new Button { Text = "Close", DialogResult = DialogResult.Cancel, Anchor = AnchorStyles.Right };
+        var closeButton = new Button { Text = "Close", Anchor = AnchorStyles.Right };
         closeButton.Click += (_, _) => Close();
         layout.Controls.Add(closeButton, 0, 1);
 

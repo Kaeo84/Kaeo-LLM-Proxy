@@ -526,6 +526,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 await WriteJsonAsync(resp,
                     new { error = $"'{path}' is not supported. llama.cpp has no model-management API." }, ct);
             }
+            else if (method == "GET" && path == "/v1/models")
+            {
+                log.UpstreamPath = "(local mapping — no upstream call)";
+                await HandleV1ModelsAsync(resp, log, ct);
+            }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
             {
@@ -2088,6 +2093,36 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, tagsJson, ct);
     }
 
+    // ── /v1/models → OpenAI-format model list with context_length ───────────
+
+    private async Task HandleV1ModelsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    {
+        var response = new LlamaCppModelsResponse
+        {
+            Data = [.. _settings.ModelMappings
+                .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
+                .OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase)
+                .Select(m =>
+                {
+                    string name = string.IsNullOrWhiteSpace(m.ProxyName) ? m.ModelName : m.ProxyName;
+                    return new LlamaCppModel
+                    {
+                        Id = name,
+                        OwnedBy = "kaeo-proxy",
+                        ContextLength = m.GetEffectiveContextWindow(),
+                    };
+                })],
+        };
+
+        string json = JsonSerializer.Serialize(response, _jsonOptions);
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = json;
+
+        log.StatusCode = 200;
+        log.Status = RequestStatus.Success;
+        await WriteJsonRawAsync(resp, json, ct);
+    }
+
     // ── /api/ps → running model stub ────────────────────────────────────────
 
     private async Task HandlePsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -2205,6 +2240,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ModifiedAt = DateTime.UtcNow.ToString("o"),
             Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }),
             Capabilities = BuildCapabilities(mapping, mapping.ModelName),
+            ContextLength = mapping.GetEffectiveContextWindow(),
         };
     }
 
@@ -3992,10 +4028,38 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             },
             "/v1/models": {
               "get": {
-                "summary": "OpenAI-compatible model list (passthrough)",
+                "summary": "OpenAI-compatible model list",
+                "description": "Returns all enabled model mappings in OpenAI format, including the effective context_length (tokens) for each model.",
                 "operationId": "openAiModels",
-                "tags": ["OpenAI Passthrough"],
-                "responses": { "200": { "description": "OpenAI model list" } }
+                "tags": ["Discovery"],
+                "responses": {
+                  "200": {
+                    "description": "OpenAI model list with context_length per model",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "type": "object",
+                          "properties": {
+                            "object": { "type": "string" },
+                            "data": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": { "type": "string" },
+                                  "object": { "type": "string" },
+                                  "created": { "type": "integer", "format": "int64" },
+                                  "owned_by": { "type": "string" },
+                                  "context_length": { "type": "integer", "description": "Effective context window in tokens." }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             },
             "/v1/embeddings": {
@@ -4033,7 +4097,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     "type": "array",
                     "items": { "type": "string", "enum": ["completion", "tools", "thinking", "vision"] },
                     "description": "Advertised model capabilities. 'vision' is present only when explicitly enabled per-mapping."
-                  }
+                  },
+                  "context_length": { "type": "integer", "description": "Effective context window in tokens, used by clients for compaction thresholds." }
                 }
               },
               "ShowResponse": {

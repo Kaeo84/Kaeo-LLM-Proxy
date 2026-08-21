@@ -117,6 +117,9 @@ internal sealed class OllamaModelEntry
 
     /// <summary>Ollama-style capability tokens (e.g. completion, tools, vision) advertised for this model.</summary>
     [JsonPropertyName("capabilities")] public List<string>? Capabilities { get; set; }
+
+    /// <summary>Effective context window (tokens) advertised for this model, used by clients for compaction thresholds.</summary>
+    [JsonPropertyName("context_length")] public int? ContextLength { get; set; }
 }
 
 internal sealed class OllamaModelDetails
@@ -205,6 +208,9 @@ internal sealed class LlamaCppModel
     [JsonPropertyName("object")] public string Object { get; set; } = "model";
     [JsonPropertyName("created")] public long Created { get; set; }
     [JsonPropertyName("owned_by")] public string OwnedBy { get; set; } = "llama.cpp";
+
+    /// <summary>Effective context window (tokens) advertised by the proxy for this model.</summary>
+    [JsonPropertyName("context_length")] public int? ContextLength { get; set; }
 }
 
 internal sealed class LlamaCppModelsResponse

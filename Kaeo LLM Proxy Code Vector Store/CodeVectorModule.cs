@@ -245,6 +245,7 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
         branch TEXT NOT NULL DEFAULT 'main',
         credential_name TEXT NULL,
         mirror_path TEXT NULL,
+        path_prefix TEXT NULL,
         last_sync_utc TEXT NULL,
         last_sync_status TEXT NULL);
         """;
@@ -254,6 +255,8 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
         var columns = db.Query("PRAGMA table_info(mcp_codevector_repos)", r => r.GetString(1));
         if (!columns.Contains("mirror_path", StringComparer.OrdinalIgnoreCase))
             db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN mirror_path TEXT NULL", _ => { });
+        if (!columns.Contains("path_prefix", StringComparer.OrdinalIgnoreCase))
+            db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN path_prefix TEXT NULL", _ => { });
     }
 
 	private const string HelpText = """
@@ -292,11 +295,17 @@ internal sealed class CodeVectorSettings
 	public int GitSyncIntervalMinutes { get; set; } = 15;
 	public CodeVectorMcpLogLevel McpLogLevel { get; set; } = CodeVectorMcpLogLevel.Connectivity;
 
-	/// <summary>
-	/// Root directory where git mirrors are checked out. Defaults to <c>moduleDataDir/mirrors</c>.
-	/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
-	/// </summary>
-    public string VectorDatabasePath { get; set; } = string.Empty;
+		/// <summary>
+		/// Maximum number of concurrent embedding requests to the remote backend.
+		/// Controls both parallel file workers and in-flight batch requests. Min: 1, Max: 16. Default: 4.
+		/// </summary>
+		public int RemoteParallelism { get; set; } = 4;
+
+		/// <summary>
+		/// Root directory where git mirrors are checked out. Defaults to <c>moduleDataDir/mirrors</c>.
+		/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
+		/// </summary>
+		public string VectorDatabasePath { get; set; } = string.Empty;
 }
 // ── Repository ─────────────────────────────────────────────────────────────
 
@@ -335,6 +344,7 @@ internal sealed class CodeVectorRepository
                 case "reindex_enabled": s.ReindexEnabled = v == "1"; break;
                 case "sync_interval": if (int.TryParse(v, out var si)) s.GitSyncIntervalMinutes = si; break;
                 case "log_level": if (Enum.TryParse<CodeVectorMcpLogLevel>(v, true, out var ll)) s.McpLogLevel = ll; break;
+                case "remote_parallelism": if (int.TryParse(v, out var rp)) s.RemoteParallelism = rp; break;
                 case "vector_database_path": s.VectorDatabasePath = v; break;
             }
         }
@@ -350,7 +360,7 @@ internal sealed class CodeVectorRepository
     public IReadOnlyList<MirrorRegistration> LoadMirrors()
     {
         return _db.Query(
-            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
+            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
             r => new MirrorRegistration
             {
                 Id = r.GetInt32(0),
@@ -359,17 +369,18 @@ internal sealed class CodeVectorRepository
                 Branch = r.GetString(3),
                 CredentialName = r.IsDBNull(4) ? null : r.GetString(4),
                 MirrorPath = r.IsDBNull(5) ? null : r.GetString(5),
-                LastSyncUtc = r.IsDBNull(6) ? null : r.GetString(6),
-                LastSyncStatus = r.IsDBNull(7) ? null : r.GetString(7),
+                PathPrefix = r.IsDBNull(6) ? null : r.GetString(6),
+                LastSyncUtc = r.IsDBNull(7) ? null : r.GetString(7),
+                LastSyncStatus = r.IsDBNull(8) ? null : r.GetString(8),
             });
     }
 
-    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null)
+    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null, string? pathPrefix = null)
     {
         _db.Execute(
-            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path) VALUES ($col, $url, $branch, $cred, $path) " +
-            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path",
-            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); });
+            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path, path_prefix) VALUES ($col, $url, $branch, $cred, $path, $prefix) " +
+            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path, path_prefix = excluded.path_prefix",
+            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); AddParam(cmd, "$prefix", (object?)pathPrefix ?? DBNull.Value); });
         return LoadMirrors().First(m => m.CollectionName == collectionName);
     }
 
@@ -402,6 +413,7 @@ internal sealed class MirrorRegistration
     public string Branch { get; set; } = "main";
     public string? CredentialName { get; set; }
     public string? MirrorPath { get; set; }
+    public string? PathPrefix { get; set; }
     public string? LastSyncUtc { get; set; }
     public string? LastSyncStatus { get; set; }
 }
@@ -955,7 +967,8 @@ internal sealed class IndexingEngine
     private readonly Channel<IndexJob> _queue;
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentQueue<QueueItemInfo> _pendingJobs = new();
-    private Task? _worker;
+    private Task[]? _workers;
+    private SemaphoreSlim? _embedSemaphore;
     private volatile QueueItemInfo? _currentJob;
 
     public IndexingEngine(CodeVectorDatabase db, IEmbeddingBackend backend, CodeVectorSettings settings, CodeVectorActivityLogger? activity)
@@ -964,25 +977,36 @@ internal sealed class IndexingEngine
         _backend = backend;
         _settings = settings;
         _activity = activity;
-        _queue = Channel.CreateUnbounded<IndexJob>(new UnboundedChannelOptions { SingleReader = true });
+        _queue = Channel.CreateUnbounded<IndexJob>(new UnboundedChannelOptions { SingleReader = false });
     }
 
-    public bool IsRunning => _worker is { IsCompleted: false };
+    public bool IsRunning => _workers is { Length: > 0 } && _workers.Any(w => !w.IsCompleted);
     public int QueueDepth => _pendingJobs.Count;
+    public int ActiveWorkerCount => _workers is null ? 0 : _workers.Count(w => !w.IsCompleted);
     public QueueItemInfo? CurrentJob => _currentJob;
 
     public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => _pendingJobs.ToArray();
 
     public void Start()
     {
-        if (_worker is not null) return;
-        _worker = Task.Run(() => ProcessQueueAsync(_cts.Token));
+        if (_workers is not null) return;
+        int parallelism = Math.Clamp(_settings.RemoteParallelism, 1, 16);
+        _embedSemaphore = new SemaphoreSlim(parallelism);
+        _workers = new Task[parallelism];
+        for (int i = 0; i < parallelism; i++)
+            _workers[i] = Task.Run(() => ProcessQueueAsync(_cts.Token));
     }
 
     public async Task StopAsync()
     {
         _cts.Cancel();
-        if (_worker is not null) try { await _worker; } catch (OperationCanceledException) { }
+        if (_workers is not null)
+        {
+            try { await Task.WhenAll(_workers); } catch (OperationCanceledException) { }
+            _workers = null;
+        }
+        _embedSemaphore?.Dispose();
+        _embedSemaphore = null;
     }
 
     public void EnqueueIndexFile(string collection, string path, string content, string source = "agent")
@@ -1058,21 +1082,42 @@ internal sealed class IndexingEngine
         _db.DeleteFileChunks(fileId);
 
         const int batchSize = 16;
+        var batchTasks = new List<Func<Task>>();
         for (int i = 0; i < chunks.Count; i += batchSize)
         {
             ct.ThrowIfCancellationRequested();
             var batch = chunks.Skip(i).Take(batchSize).ToList();
             var texts = batch.Select(c => c.Text).ToList();
-            _activity?.Log("embed_batch", $"{collection}:{path}", $"Embedding batch {i / batchSize + 1} ({batch.Count} chunks, offset {i})");
-            float[][] embeddings;
-            try { embeddings = await _backend.EmbedBatchAsync(texts, ct); }
-            catch (Exception ex) { _activity?.Log("error", $"{collection}:{path}", $"Embedding failed: {ex.Message}"); return; }
-            for (int j = 0; j < batch.Count; j++)
+            int batchNum = i / batchSize + 1;
+
+            batchTasks.Add(async () =>
             {
-                var chunk = batch[j];
-                var embedding = j < embeddings.Length ? embeddings[j] : [];
-                _db.InsertChunk(fileId, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
-            }
+                _activity?.Log("embed_batch", $"{collection}:{path}", $"Embedding batch {batchNum} ({batch.Count} chunks, offset {i})");
+                await _embedSemaphore!.WaitAsync(ct);
+                try
+                {
+                    float[][] embeddings = await _backend.EmbedBatchAsync(texts, ct);
+                    for (int j = 0; j < batch.Count; j++)
+                    {
+                        var chunk = batch[j];
+                        var embedding = j < embeddings.Length ? embeddings[j] : [];
+                        _db.InsertChunk(fileId, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
+                    }
+                }
+                finally
+                {
+                    _embedSemaphore!.Release();
+                }
+            });
+        }
+        try
+        {
+            await Task.WhenAll(batchTasks.Select(f => f()));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _activity?.Log("error", $"{collection}:{path}", $"Embedding failed: {ex.Message}");
+            return;
         }
         _activity?.Log("file_complete", $"{collection}:{path}", $"Indexed {chunks.Count} chunks");
     }
@@ -1128,9 +1173,9 @@ internal sealed class GitMirrorManager
 
     public void StopTimer() { _timer?.Dispose(); _timer = null; }
 
-    public async Task<MirrorRegistration> RegisterMirrorAsync(string collectionName, string remoteUrl, string branch, string? credentialName, CancellationToken ct, string? mirrorPath = null)
+    public async Task<MirrorRegistration> RegisterMirrorAsync(string collectionName, string remoteUrl, string branch, string? credentialName, CancellationToken ct, string? mirrorPath = null, string? pathPrefix = null)
     {
-        var mirror = _repository.UpsertMirror(collectionName, remoteUrl, branch, credentialName, mirrorPath);
+        var mirror = _repository.UpsertMirror(collectionName, remoteUrl, branch, credentialName, mirrorPath, pathPrefix);
         await SyncMirrorAsync(mirror, ct);
         return mirror;
     }
@@ -1198,6 +1243,13 @@ internal sealed class GitMirrorManager
         var workDir = repo.Info.WorkingDirectory;
         var trackedFiles = new List<string>();
         WalkTree(repo.Head!.Tip.Tree, string.Empty, trackedFiles);
+
+        if (!string.IsNullOrWhiteSpace(mirror.PathPrefix))
+        {
+            var prefix = mirror.PathPrefix.TrimEnd('/');
+            trackedFiles = trackedFiles.Where(f => f == prefix || f.StartsWith(prefix + "/", StringComparison.Ordinal)).ToList();
+        }
+
         int queued = 0, skipped = 0;
         foreach (var relPath in trackedFiles)
         {
@@ -1403,11 +1455,12 @@ internal sealed class CodeVectorTools
         [Description("Collection name")] string collection,
         [Description("Git remote URL")] string remoteUrl,
         [Description("Branch name (default: main)")] string branch = "main",
-        [Description("Credential name for authentication (optional)")] string? credentialName = null)
+        [Description("Credential name for authentication (optional)")] string? credentialName = null,
+        [Description("Path prefix to filter indexing, e.g. 'dotnet' for only that subfolder (optional)")] string? pathPrefix = null)
     {
         try
         {
-            var mirror = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None);
+            var mirror = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix);
             return $"Mirror '{collection}' registered and synced successfully";
         }
         catch (Exception ex) { return $"Mirror sync failed: {ex.Message}"; }
@@ -1492,6 +1545,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private Button _showModelButton = null!;
     private ComboBox _credentialCombo = null!;
     private NumericUpDown _timeoutBox = null!;
+    private NumericUpDown _parallelismBox = null!;
     private Label _fetchStatusLabel = null!;
     private Button _testConnectionButton = null!;
     private GroupBox _onnxGroup = null!;
@@ -1519,6 +1573,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private Label _engineStatusLabel = null!;
     private Label _queueStatusLabel = null!;
     private Label _currentStatusLabel = null!;
+    private Label _workersStatusLabel = null!;
     private Label _logSummaryLabel = null!;
     private ListView _queueListView = null!;
     private ListView _logListView = null!;
@@ -1644,6 +1699,10 @@ internal sealed class CodeVectorConfigPage : TabPage
         _timeoutBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 5, Maximum = 300, Value = _module.Settings.RemoteTimeoutSeconds, Margin = new Padding(3) };
         layout.Controls.Add(_timeoutBox, 1, row++);
 
+        layout.Controls.Add(new Label { Text = "Parallelism:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
+        _parallelismBox = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1, Maximum = 16, Value = _module.Settings.RemoteParallelism, Margin = new Padding(3) };
+        layout.Controls.Add(_parallelismBox, 1, row++);
+
         _fetchStatusLabel = new Label { Text = "", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3) };
         layout.Controls.Add(_fetchStatusLabel, 1, row);
 
@@ -1749,6 +1808,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _reposListView.Columns.Add("Remote URL", 260);
                     _reposListView.Columns.Add("Branch", 70);
                     _reposListView.Columns.Add("Mirror Path", 220);
+                   _reposListView.Columns.Add("Path Prefix", 100);
                    _reposListView.Columns.Add("Last Sync", 140);
                    _reposListView.Columns.Add("Status", 100);
                    layout.Controls.Add(_reposListView, 0, 0);
@@ -1788,8 +1848,9 @@ internal sealed class CodeVectorConfigPage : TabPage
                    var statusPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
                    _engineStatusLabel = new Label { Text = "Engine: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
                    _queueStatusLabel = new Label { Text = "Queue: 0", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
-                   _currentStatusLabel = new Label { Text = "Current: —", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
-                   statusPanel.Controls.AddRange([_engineStatusLabel, _queueStatusLabel, _currentStatusLabel]);
+                   _currentStatusLabel = new Label { Text = "Current: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
+                   _workersStatusLabel = new Label { Text = "Workers: 0", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+                   statusPanel.Controls.AddRange([_engineStatusLabel, _queueStatusLabel, _currentStatusLabel, _workersStatusLabel]);
                    layout.Controls.Add(statusPanel, 0, 0);
 
                    _logSummaryLabel = new Label { Text = "Logged: 0 | Errors: 0", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 4) };
@@ -1849,6 +1910,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        _engineStatusLabel.Text = running ? "Engine: Running" : "Engine: Stopped";
                        _engineStatusLabel.ForeColor = running ? Color.Green : SystemColors.GrayText;
                        _queueStatusLabel.Text = $"Queue: {engine.QueueDepth}";
+                       _workersStatusLabel.Text = $"Workers: {engine.ActiveWorkerCount}";
                        var current = engine.CurrentJob;
                        _currentStatusLabel.Text = current is null ? "Current: —" : $"Current: {current.Path}";
 
@@ -1903,6 +1965,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                            lvi.SubItems.Add(m.RemoteUrl);
                            lvi.SubItems.Add(m.Branch);
                             lvi.SubItems.Add(m.MirrorPath ?? "default");
+                           lvi.SubItems.Add(m.PathPrefix ?? "");
                            lvi.SubItems.Add(m.LastSyncUtc ?? "never");
                            lvi.SubItems.Add(m.LastSyncStatus ?? "pending");
                            lvi.Tag = m;
@@ -1923,10 +1986,10 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        try
                        {
-                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath);
-                           RefreshRepos();
-                       }
-                       catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix);
+                            RefreshRepos();
+                        }
+                        catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                    }
                }
 
@@ -1940,10 +2003,10 @@ internal sealed class CodeVectorConfigPage : TabPage
                        try
                        {
                            _module.Repository.DeleteMirror(m.CollectionName);
-                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath);
-                           RefreshRepos();
-                       }
-                       catch (Exception ex) { MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                                 _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix);
+                                RefreshRepos();
+                            }
+                            catch (Exception ex) { MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                    }
                }
 
@@ -2281,6 +2344,7 @@ internal sealed class CodeVectorConfigPage : TabPage
          _remoteModelCombo.TextChanged += (_, _) => SaveSettings();
          _credentialCombo.TextChanged += (_, _) => SaveSettings();
          _timeoutBox.ValueChanged += (_, _) => SaveSettings();
+         _parallelismBox.ValueChanged += (_, _) => SaveSettings();
          _onnxBox.Validated += (_, _) => SaveSettings();
          _onnxMaxSeqBox.ValueChanged += (_, _) => SaveSettings();
          _onnxThreadsBox.ValueChanged += (_, _) => SaveSettings();
@@ -2303,16 +2367,18 @@ internal sealed class CodeVectorConfigPage : TabPage
          bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
 
          var settings = _module.Settings;
-        var oldBackendType = settings.BackendType;
-        string oldDbPath = settings.VectorDatabasePath;
-        string oldOnnxFolder = settings.OnnxModelFolder;
-        int oldSyncInterval = settings.GitSyncIntervalMinutes;
+         var oldBackendType = settings.BackendType;
+         string oldDbPath = settings.VectorDatabasePath;
+         string oldOnnxFolder = settings.OnnxModelFolder;
+         int oldSyncInterval = settings.GitSyncIntervalMinutes;
+         int oldParallelism = settings.RemoteParallelism;
 
         settings.BackendType = isOnnx ? BackendType.Onnx : BackendType.Remote;
         settings.RemoteUrl = _remoteUrlBox.Text.Trim();
         settings.RemoteModel = _remoteModelCombo.Text.Trim();
         settings.RemoteCredentialName = _credentialCombo.Text.Trim();
         settings.RemoteTimeoutSeconds = (int)_timeoutBox.Value;
+        settings.RemoteParallelism = (int)_parallelismBox.Value;
         settings.OnnxModelFolder = _onnxBox.Text.Trim();
         settings.OnnxMaxSequenceLength = (int)_onnxMaxSeqBox.Value;
         settings.OnnxMaxThreads = (int)_onnxThreadsBox.Value;
@@ -2337,6 +2403,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("remote_model", settings.RemoteModel);
         repo.SaveSetting("remote_credential", settings.RemoteCredentialName);
         repo.SaveSetting("remote_timeout", settings.RemoteTimeoutSeconds.ToString());
+        repo.SaveSetting("remote_parallelism", settings.RemoteParallelism.ToString());
         repo.SaveSetting("onnx_folder", settings.OnnxModelFolder);
         repo.SaveSetting("onnx_max_seq", settings.OnnxMaxSequenceLength.ToString());
         repo.SaveSetting("onnx_threads", settings.OnnxMaxThreads.ToString());
@@ -2362,6 +2429,9 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         if (oldSyncInterval != settings.GitSyncIntervalMinutes)
             _module.InvalidateMirrorManager();
+
+        if (oldParallelism != settings.RemoteParallelism)
+            _module.InvalidateEmbeddingBackend();
     }
 }
 
@@ -2371,12 +2441,14 @@ internal sealed class RepoDialog : Form
     private readonly TextBox _urlBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
     private readonly TextBox _branchBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3), Text = "main" };
     private readonly TextBox _mirrorPathBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
+    private readonly TextBox _pathPrefixBox = new() { Dock = DockStyle.Fill, Margin = new Padding(3) };
     private readonly ComboBox _credentialCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
 
     public string CollectionName => _collectionBox.Text.Trim();
     public string RemoteUrl => _urlBox.Text.Trim();
     public string Branch => string.IsNullOrWhiteSpace(_branchBox.Text) ? "main" : _branchBox.Text.Trim();
     public string? MirrorPath => string.IsNullOrWhiteSpace(_mirrorPathBox.Text) ? null : _mirrorPathBox.Text.Trim();
+    public string? PathPrefix => string.IsNullOrWhiteSpace(_pathPrefixBox.Text) ? null : _pathPrefixBox.Text.Trim();
     public string? CredentialName => string.IsNullOrWhiteSpace(_credentialCombo.Text) ? null : _credentialCombo.Text.Trim();
 
     public RepoDialog(MirrorRegistration? existing)
@@ -2400,15 +2472,17 @@ internal sealed class RepoDialog : Form
         layout.Controls.Add(_branchBox, 1, 2);
         layout.Controls.Add(new Label { Text = "Mirror Path:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 3);
         layout.Controls.Add(_mirrorPathBox, 1, 3);
-        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 4);
-        layout.Controls.Add(_credentialCombo, 1, 4);
+        layout.Controls.Add(new Label { Text = "Path Prefix:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 4);
+        layout.Controls.Add(_pathPrefixBox, 1, 4);
+        layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 6, 3) }, 0, 5);
+        layout.Controls.Add(_credentialCombo, 1, 5);
 
         var btnPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
         var okBtn = new Button { Text = "OK", AutoSize = true, DialogResult = DialogResult.OK, Margin = new Padding(3) };
         var cancelBtn = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, Margin = new Padding(3) };
         btnPanel.Controls.Add(cancelBtn);
         btnPanel.Controls.Add(okBtn);
-        layout.Controls.Add(btnPanel, 0, 5);
+        layout.Controls.Add(btnPanel, 0, 6);
         layout.SetColumnSpan(btnPanel, 2);
 
         Controls.Add(layout);
@@ -2421,6 +2495,7 @@ internal sealed class RepoDialog : Form
             _urlBox.Text = existing.RemoteUrl;
             _branchBox.Text = existing.Branch;
             _mirrorPathBox.Text = existing.MirrorPath ?? "";
+            _pathPrefixBox.Text = existing.PathPrefix ?? "";
             _credentialCombo.Text = existing.CredentialName ?? "";
         }
     }
@@ -2462,7 +2537,8 @@ internal sealed class ModelInfoDialog : Form
         };
         layout.Controls.Add(textBox, 0, 0);
 
-        var closeButton = new Button { Text = "Close", DialogResult = DialogResult.Cancel, Anchor = AnchorStyles.Right };
+        var closeButton = new Button { Text = "Close", Anchor = AnchorStyles.Right };
+        closeButton.Click += (_, _) => Close();
         layout.Controls.Add(closeButton, 0, 1);
 
         AcceptButton = closeButton;
