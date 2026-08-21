@@ -29,6 +29,9 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	private GitMirrorManager? _mirrorManager;
 	private VectorSearchEngine? _searchEngine;
 	private CodeVectorActivityLogger? _activity;
+    private readonly object _vectorDatabaseLock = new();
+    private string? _moduleDataDir;
+    private bool _started;
 
 	public string Id => "kaeo.codevector";
 	public string Name => "Code Vector Store";
@@ -65,23 +68,10 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_repository = new CodeVectorRepository(context.Database);
 		_settings = _repository.LoadSettings();
 
-		string moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
-		Directory.CreateDirectory(moduleDataDir);
-
-        string vectorDbPath = string.IsNullOrWhiteSpace(_settings.VectorDatabasePath)
-            ? Path.Combine(moduleDataDir, "codevector.db")
-            : (Path.IsPathRooted(_settings.VectorDatabasePath)
-                ? _settings.VectorDatabasePath
-                : Path.Combine(moduleDataDir, _settings.VectorDatabasePath));
-        string? vectorDbDirectory = Path.GetDirectoryName(vectorDbPath);
-        if (!string.IsNullOrWhiteSpace(vectorDbDirectory))
-            Directory.CreateDirectory(vectorDbDirectory);
-		_vectorDb = new CodeVectorDatabase(vectorDbPath);
+        _moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
+        Directory.CreateDirectory(_moduleDataDir);
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
 		_embeddingBackend = CreateEmbeddingBackend(_settings, context.Secrets, context.Host);
-		_indexingEngine = new IndexingEngine(_vectorDb, _embeddingBackend, _settings, _activity);
-		_mirrorManager = new GitMirrorManager(moduleDataDir, _repository, _indexingEngine, _settings, _activity, context.Secrets);
-		_searchEngine = new VectorSearchEngine(_vectorDb);
 	}
 
 	public System.Windows.Forms.TabPage CreateConfigPage() => new CodeVectorConfigPage(this);
@@ -91,20 +81,91 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 
 	public Task StartAsync(CancellationToken cancellationToken = default)
 	{
-		_indexingEngine?.Start();
-		_mirrorManager?.StartTimer();
+        _started = true;
+        if (_indexingEngine is not null)
+            _indexingEngine.Start();
+        if (_mirrorManager is not null)
+            _mirrorManager.StartTimer();
 		StatusChanged?.Invoke(this, "Running");
 		return Task.CompletedTask;
 	}
 
 	public async Task StopAsync()
 	{
-		_mirrorManager?.StopTimer();
+        _started = false;
+        _mirrorManager?.StopTimer();
 		if (_indexingEngine is { IsRunning: true })
 			await _indexingEngine.StopAsync();
 		_embeddingBackend?.Dispose();
+        _vectorDb?.Dispose();
 		StatusChanged?.Invoke(this, "Stopped");
 	}
+
+    private CodeVectorDatabase EnsureVectorDatabase()
+    {
+        if (_vectorDb is not null)
+            return _vectorDb;
+
+        lock (_vectorDatabaseLock)
+        {
+            if (_vectorDb is not null)
+                return _vectorDb;
+
+            string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
+            string vectorDbPath = string.IsNullOrWhiteSpace(_settings.VectorDatabasePath)
+                ? Path.Combine(moduleDataDir, "codevector.db")
+                : (Path.IsPathRooted(_settings.VectorDatabasePath)
+                    ? _settings.VectorDatabasePath
+                    : Path.Combine(moduleDataDir, _settings.VectorDatabasePath));
+            string? vectorDbDirectory = Path.GetDirectoryName(vectorDbPath);
+            if (!string.IsNullOrWhiteSpace(vectorDbDirectory))
+                Directory.CreateDirectory(vectorDbDirectory);
+
+            _vectorDb = new CodeVectorDatabase(vectorDbPath);
+            return _vectorDb;
+        }
+    }
+
+    private IndexingEngine EnsureIndexingEngine()
+    {
+        if (_indexingEngine is not null)
+            return _indexingEngine;
+
+        lock (_vectorDatabaseLock)
+        {
+            _indexingEngine ??= new IndexingEngine(EnsureVectorDatabase(), EmbeddingBackend, _settings, _activity);
+            if (_started)
+                _indexingEngine.Start();
+            return _indexingEngine;
+        }
+    }
+
+    private GitMirrorManager EnsureMirrorManager()
+    {
+        if (_mirrorManager is not null)
+            return _mirrorManager;
+
+        lock (_vectorDatabaseLock)
+        {
+            string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
+            _mirrorManager ??= new GitMirrorManager(moduleDataDir, Repository, EnsureIndexingEngine(), _settings, _activity, Secrets);
+            if (_started)
+                _mirrorManager.StartTimer();
+            return _mirrorManager;
+        }
+    }
+
+    private VectorSearchEngine EnsureSearchEngine()
+    {
+        if (_searchEngine is not null)
+            return _searchEngine;
+
+        lock (_vectorDatabaseLock)
+        {
+            _searchEngine ??= new VectorSearchEngine(EnsureVectorDatabase());
+            return _searchEngine;
+        }
+    }
 
 	public System.Windows.Forms.TabPage CreateHelpPage()
 	{
