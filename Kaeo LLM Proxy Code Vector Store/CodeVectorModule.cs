@@ -31,6 +31,7 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	private CodeVectorActivityLogger? _activity;
     private readonly object _vectorDatabaseLock = new();
     private string? _moduleDataDir;
+    private string? _dataDirectory;
     private bool _started;
 
 	public string Id => "kaeo.codevector";
@@ -68,6 +69,7 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_repository = new CodeVectorRepository(context.Database);
 		_settings = _repository.LoadSettings();
 
+        _dataDirectory = context.DataDirectory;
         _moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
         Directory.CreateDirectory(_moduleDataDir);
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
@@ -111,12 +113,12 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
             if (_vectorDb is not null)
                 return _vectorDb;
 
-            string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
+            string dataDirectory = _dataDirectory ?? throw new InvalidOperationException("Module not initialized.");
             string vectorDbPath = string.IsNullOrWhiteSpace(_settings.VectorDatabasePath)
-                ? Path.Combine(moduleDataDir, "codevector.db")
+                ? Path.Combine(dataDirectory, "codevectordb")
                 : (Path.IsPathRooted(_settings.VectorDatabasePath)
                     ? _settings.VectorDatabasePath
-                    : Path.Combine(moduleDataDir, _settings.VectorDatabasePath));
+                    : Path.Combine(_moduleDataDir ?? throw new InvalidOperationException("Module not initialized."), _settings.VectorDatabasePath));
             string? vectorDbDirectory = Path.GetDirectoryName(vectorDbPath);
             if (!string.IsNullOrWhiteSpace(vectorDbDirectory))
                 Directory.CreateDirectory(vectorDbDirectory);
@@ -1968,7 +1970,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         {
             Title = "Select Vector Database Location",
             Filter = "SQLite database (*.db)|*.db|All files (*.*)|*.*",
-            FileName = Path.GetFileName(string.IsNullOrWhiteSpace(_vectorDatabasePathBox.Text) ? "codevector.db" : _vectorDatabasePathBox.Text),
+            FileName = Path.GetFileName(string.IsNullOrWhiteSpace(_vectorDatabasePathBox.Text) ? "codevectordb" : _vectorDatabasePathBox.Text),
             OverwritePrompt = false,
         };
 
