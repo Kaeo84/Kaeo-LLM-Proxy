@@ -43,16 +43,12 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 
 	internal CodeVectorRepository Repository =>
 		_repository ?? throw new InvalidOperationException("Module not initialized.");
-	internal CodeVectorDatabase VectorDb =>
-		_vectorDb ?? throw new InvalidOperationException("Module not initialized.");
+    internal CodeVectorDatabase VectorDb => EnsureVectorDatabase();
 	internal IEmbeddingBackend EmbeddingBackend =>
 		_embeddingBackend ?? throw new InvalidOperationException("Embedding backend not initialized.");
-	internal IndexingEngine Indexer =>
-		_indexingEngine ?? throw new InvalidOperationException("Module not initialized.");
-	internal GitMirrorManager MirrorManager =>
-		_mirrorManager ?? throw new InvalidOperationException("Module not initialized.");
-	internal VectorSearchEngine SearchEngine =>
-		_searchEngine ?? throw new InvalidOperationException("Module not initialized.");
+    internal IndexingEngine Indexer => EnsureIndexingEngine();
+    internal GitMirrorManager MirrorManager => EnsureMirrorManager();
+    internal VectorSearchEngine SearchEngine => EnsureSearchEngine();
 	internal CodeVectorActivityLogger Activity =>
 		_activity ?? throw new InvalidOperationException("Module not initialized.");
 	internal ISecretProvider Secrets =>
