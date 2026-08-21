@@ -14,6 +14,15 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
     private const string ServerListenPortKey = "listen_port";
     private const string ServerApiExplorerKey = "enable_api_explorer";
     private const string ServerAuthCredentialKey = "auth_credential_name";
+    private const string ServerCollectRequestKey = "collect_request_details";
+    private const string ServerCollectResponseKey = "collect_response_details";
+#if DEBUG
+    private const bool defaultRequestDefault = true;
+    private const bool defaultResponseDefault = true;
+#else
+    private const bool defaultRequestDefault = false;
+    private const bool defaultResponseDefault = false;
+#endif
 
     private readonly AppDatabase _database = database;
 
@@ -28,6 +37,8 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
             ListenPort = ClampPort(ReadInt(values, ServerListenPortKey, McpServerSettings.DefaultPort)),
             EnableApiExplorer = ReadBool(values, ServerApiExplorerKey, false),
             AuthCredentialName = ReadOptionalString(values, ServerAuthCredentialKey),
+            CollectRequestDetails = ReadBool(values, ServerCollectRequestKey, defaultRequestDefault),
+            CollectResponseDetails = ReadBool(values, ServerCollectResponseKey, defaultResponseDefault),
         };
     }
 
@@ -40,6 +51,8 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
         UpsertKeyValue(ServerListenPortKey, ClampPort(settings.ListenPort).ToString());
         UpsertKeyValue(ServerApiExplorerKey, settings.EnableApiExplorer ? "1" : "0");
         UpsertKeyValue(ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty);
+        UpsertKeyValue(ServerCollectRequestKey, settings.CollectRequestDetails ? "1" : "0");
+        UpsertKeyValue(ServerCollectResponseKey, settings.CollectResponseDetails ? "1" : "0");
     }
 
     private static int ClampPort(int port) => Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort);

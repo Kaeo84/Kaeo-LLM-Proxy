@@ -381,10 +381,19 @@ internal sealed class McpServerHost : IAsyncDisposable
             return;
         }
 
+        // Read the full body into a buffer so it can be captured for the log AND deserialized.
+        byte[] bodyBytes;
+        await using var bodyBuffer = new MemoryStream();
+        await request.InputStream.CopyToAsync(bodyBuffer, ct);
+        bodyBytes = bodyBuffer.ToArray();
+
+        if (_settings.CollectRequestDetails && bodyBytes.Length > 0)
+            log.RequestBody = Encoding.UTF8.GetString(bodyBytes);
+
         JsonRpcMessage? message;
         try
         {
-            message = await JsonSerializer.DeserializeAsync(request.InputStream, s_messageTypeInfo, ct);
+            message = JsonSerializer.Deserialize(bodyBytes, s_messageTypeInfo);
         }
         catch (JsonException)
         {
@@ -455,9 +464,17 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         // Response headers are committed lazily: the callback runs immediately before the
         // transport writes its first byte, so status/content type land on the real response.
+        Stream outputStream = response.OutputStream;
+        MemoryStream? responseCapture = null;
+        if (_settings.CollectResponseDetails)
+        {
+            responseCapture = new MemoryStream();
+            outputStream = new TeeStream(response.OutputStream, responseCapture);
+        }
+
         bool wroteResponse = await session.Transport.HandlePostRequestAsync(
             message,
-            response.OutputStream,
+            outputStream,
             firstMessage =>
             {
                 response.StatusCode = 200;
@@ -467,6 +484,9 @@ internal sealed class McpServerHost : IAsyncDisposable
                 return default;
             },
             ct);
+
+        if (responseCapture is not null && responseCapture.Length > 0)
+            log.ResponseBody = Encoding.UTF8.GetString(responseCapture.ToArray());
 
         if (!wroteResponse)
         {
@@ -799,5 +819,52 @@ internal sealed class McpServerHost : IAsyncDisposable
         byte[] bytes = Encoding.UTF8.GetBytes(text);
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes, ct);
+    }
+}
+
+/// <summary>
+/// Writes all bytes to both the primary stream (the real HTTP response) and a secondary
+/// capture stream (for log recording). Does not dispose either stream on its own —
+/// the caller owns the lifecycle of both.
+/// </summary>
+internal sealed class TeeStream : Stream
+{
+    private readonly Stream _primary;
+    private readonly Stream _secondary;
+
+    public TeeStream(Stream primary, Stream secondary)
+    {
+        _primary = primary;
+        _secondary = secondary;
+    }
+
+    public override bool CanRead => false;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        _secondary.Write(buffer, offset, count);
+        _primary.Write(buffer, offset, count);
+    }
+
+    public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        _secondary.Write(buffer, offset, count);
+        return _primary.WriteAsync(buffer, offset, count, cancellationToken);
+    }
+
+    public override void Flush() => _primary.Flush();
+    public override Task FlushAsync(CancellationToken cancellationToken) => _primary.FlushAsync(cancellationToken);
+
+    protected override void Dispose(bool disposing)
+    {
+        // Intentionally does not dispose _primary or _secondary; the caller owns them.
     }
 }

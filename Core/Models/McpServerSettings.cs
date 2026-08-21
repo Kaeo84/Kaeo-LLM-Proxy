@@ -29,4 +29,24 @@ internal sealed class McpServerSettings
     /// Null/empty disables authentication.
     /// </summary>
     public string? AuthCredentialName { get; set; }
+
+    /// <summary>
+    /// When true, the raw JSON-RPC request body is captured in the MCP log entry.
+    /// </summary>
+    public bool CollectRequestDetails { get; set; } =
+#if DEBUG
+        true;
+#else
+        false;
+#endif
+
+    /// <summary>
+    /// When true, the SSE/JSON-RPC response body is captured in the MCP log entry.
+    /// </summary>
+    public bool CollectResponseDetails { get; set; } =
+#if DEBUG
+        true;
+#else
+        false;
+#endif
 }
