@@ -12,7 +12,7 @@
 	<ItemGroup>
 		<!-- Private=false: the contracts assembly ships with the host and unifies at runtime,
 				 keeping this module's output a single DLL. -->
-		<ProjectReference Include="..\Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" Private="false" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" />
 	</ItemGroup>
 
 	<ItemGroup>

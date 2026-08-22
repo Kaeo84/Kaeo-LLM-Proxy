@@ -12,7 +12,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" />
+    <ProjectReference Include="Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" />
+    <ProjectReference Include="Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" />
+    <ProjectReference Include="Kaeo LLM Proxy Services\Kaeo LLM Proxy Services.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,16 +24,25 @@
   <!-- The host project lives at the repository root; keep sibling project sources out of its
        default glob so each library compiles only its own files. -->
   <ItemGroup>
+    <Compile Remove="Kaeo LLM Proxy Core\**" />
+    <Compile Remove="Kaeo LLM Proxy Infrastructure\**" />
+    <Compile Remove="Kaeo LLM Proxy Services\**" />
     <Compile Remove="Kaeo LLM Proxy Modules\**" />
     <Compile Remove="Kaeo LLM Proxy Web Search\**" />
     <Compile Remove="Kaeo LLM Proxy SSH\**" />
     <Compile Remove="Kaeo LLM Proxy Code Vector Store\**" />
     <Compile Remove="Kaeo LLM Proxy.Tests\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy Core\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy Infrastructure\**" />
+    <EmbeddedResource Remove="Kaeo LLM Proxy Services\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Modules\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Web Search\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy SSH\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Code Vector Store\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy.Tests\**" />
+    <None Remove="Kaeo LLM Proxy Core\**" />
+    <None Remove="Kaeo LLM Proxy Infrastructure\**" />
+    <None Remove="Kaeo LLM Proxy Services\**" />
     <None Remove="Kaeo LLM Proxy Modules\**" />
     <None Remove="Kaeo LLM Proxy Web Search\**" />
     <None Remove="Kaeo LLM Proxy SSH\**" />
@@ -49,13 +60,9 @@
     <None Include="Kaeo LLM Proxy Code Vector Store\_gen4.ps1" />
     <None Include="Kaeo LLM Proxy Code Vector Store\_gen5.ps1" />
     <None Include="Kaeo LLM Proxy Code Vector Store\_gen6.ps1" />
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
-    <PackageReference Include="ModelContextProtocol" Version="2.0.0" />
-    <!-- Override transitive SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q) -->
-    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
+    <!-- The App uses Serilog directly (startup logging); the other packages now live in the
+         Core / Infrastructure / Services libraries and flow in transitively. -->
     <PackageReference Include="Serilog" Version="4.4.0" />
-    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
-    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
 
   <!-- Module system: copy all module outputs (DLL + large deps) to $(OutputPath)Modules/ -->

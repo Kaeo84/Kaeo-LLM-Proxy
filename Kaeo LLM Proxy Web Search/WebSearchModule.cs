@@ -1,4 +1,4 @@
-using Kaeo.LlmProxy.Modules;
+using Kaeo.LlmProxy.Core.Modules;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Net;

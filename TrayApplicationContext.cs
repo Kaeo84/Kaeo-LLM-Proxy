@@ -1,9 +1,10 @@
 using Kaeo.LlmProxy.Core.Models;
-using Kaeo.LlmProxy.Core.Services;
+using Kaeo.LlmProxy.Services;
+using Kaeo.LlmProxy.Services.Mcp;
 using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
-using Kaeo.LlmProxy.Modules;
+using Kaeo.LlmProxy.Core.Modules;
 using Serilog;
 
 namespace Kaeo.LlmProxy;

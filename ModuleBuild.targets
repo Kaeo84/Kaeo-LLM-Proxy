@@ -39,9 +39,9 @@
 	  <!-- Exclude the module's own DLL -->
 	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
 		Condition="'%(ModuleEmbedCandidate.Filename)%(ModuleEmbedCandidate.Extension)' == '$(AssemblyName).dll'" />
-	  <!-- Exclude the contracts assembly -->
-	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Modules'" />
+		<!-- Exclude the Core assembly (contracts + models + security) which ships with the host -->
+		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Core'" />
 	  <!-- Exclude large dependencies -->
 	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
 		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'" />

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
-using Kaeo.LlmProxy.Core.Services;
+using Kaeo.LlmProxy.Services;
 using Xunit;
 
 namespace Kaeo.LlmProxy.Tests;

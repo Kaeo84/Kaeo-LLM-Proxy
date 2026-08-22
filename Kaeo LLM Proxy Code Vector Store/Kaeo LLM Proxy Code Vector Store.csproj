@@ -12,7 +12,7 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\Kaeo LLM Proxy Modules\Kaeo LLM Proxy Modules.csproj" Private="false" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" />
 	</ItemGroup>
 
 	<ItemGroup>

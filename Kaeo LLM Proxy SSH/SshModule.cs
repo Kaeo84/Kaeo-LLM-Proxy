@@ -1,4 +1,4 @@
-using Kaeo.LlmProxy.Modules;
+using Kaeo.LlmProxy.Core.Modules;
 using System.Data.Common;
 using System.Collections.Concurrent;
 using System.Diagnostics;

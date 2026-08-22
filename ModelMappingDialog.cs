@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
-using Kaeo.LlmProxy.Core.Services;
+using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Infrastructure;
 
 namespace Kaeo.LlmProxy;

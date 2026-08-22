@@ -1,4 +1,4 @@
-using Kaeo.LlmProxy.Modules;
+using Kaeo.LlmProxy.Core.Modules;
 using LibGit2Sharp;
 using Microsoft.Data.Sqlite;
 using Microsoft.ML.OnnxRuntime;
