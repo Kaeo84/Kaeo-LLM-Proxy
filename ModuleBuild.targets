@@ -14,11 +14,11 @@
 	to ModuleLargeDependencyNames (semicolon-separated) in the module's .csproj.
   -->
 
-  <PropertyGroup>
+	<PropertyGroup>
 	<!-- Semicolon-separated list of assembly names to exclude from embedding.
 		 These stay as separate files alongside the module DLL. -->
 	<ModuleLargeDependencyNames>Microsoft.ML.OnnxRuntime;Microsoft.Windows.SDK.NET</ModuleLargeDependencyNames>
-  </PropertyGroup>
+	</PropertyGroup>
 
   <!-- ═══════════════════════════════════════════════════════════════════
 	   Target for MODULE projects: embed small runtime dependencies
@@ -36,17 +36,18 @@
 	  <ModuleEmbedCandidate Include="@(ReferenceCopyLocalPaths)"
 		Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'
 				   AND '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''" />
-	  <!-- Exclude the module's own DLL -->
-	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.Filename)%(ModuleEmbedCandidate.Extension)' == '$(AssemblyName).dll'" />
-		<!-- Exclude the Core assembly (contracts + models + security) which ships with the host -->
+		<!-- Exclude the module's own DLL -->
 		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Core'" />
-	  <!-- Exclude large dependencies -->
-	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'" />
-	  <ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.Windows.SDK.NET'" />
+		Condition="'%(ModuleEmbedCandidate.Filename)%(ModuleEmbedCandidate.Extension)' == '$(AssemblyName).dll'" />
+		<!-- Exclude host-shared assemblies (contracts + infrastructure) which ship with the host
+			 and unify with the host's copies at runtime -->
+		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Core'
+						 OR '%(ModuleEmbedCandidate.Filename)' == 'Kaeo LLM Proxy Infrastructure'" />
+		<!-- Exclude large dependencies -->
+		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'
+						 OR '%(ModuleEmbedCandidate.Filename)' == 'Microsoft.Windows.SDK.NET'" />
 	</ItemGroup>
 
 	<Message Importance="High"
@@ -60,11 +61,20 @@
 		<OtherFlags>$(OtherFlags) $(_ModuleResourceFlags)</OtherFlags>
 	</PropertyGroup>
 
-	<!-- Remove from the copy-to-output list (they're now in the DLL) -->
+	<!-- Remove embedded dependencies from the copy-to-output list (they're now in the DLL) -->
 	<ItemGroup Condition="'@(ModuleEmbedCandidate)' != ''">
-	  <ReferenceCopyLocalPaths Remove="@(ModuleEmbedCandidate)" />
+		<ReferenceCopyLocalPaths Remove="@(ModuleEmbedCandidate)" />
 	</ItemGroup>
-  </Target>
+
+	<!-- Remove host-shared assemblies from the copy-to-output list entirely. They unify with
+		 the host's copies at runtime (the module load context defers to the default context),
+		 so the module ships no redundant managed copy or debug symbols. -->
+	<ItemGroup>
+		<ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+		Condition="'%(ReferenceCopyLocalPaths.Filename)' == 'Kaeo LLM Proxy Core'
+						 OR '%(ReferenceCopyLocalPaths.Filename)' == 'Kaeo LLM Proxy Infrastructure'" />
+	</ItemGroup>
+	</Target>
 
   <!-- ═══════════════════════════════════════════════════════════════════
 	   Target for HOST project: copy all module outputs to Modules/

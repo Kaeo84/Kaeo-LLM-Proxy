@@ -12,19 +12,19 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" />
+		<!-- Shared libraries (contracts + infrastructure): compile-time only. The host always
+				runs these and supplies the runtime copies, so the module's types unify with the
+				host's at load time. ExcludeAssets=runtime;native drops the whole transitive subtree
+				(Sqlite, Serilog, MCP, native e_sqlite3, ...) from the module's runtime graph; the
+				ModuleBuild.targets host-shared list then strips the Core/Infrastructure assemblies
+				themselves from the shipped output. -->
+		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" ExcludeAssets="runtime;native" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" Private="false" ExcludeAssets="runtime;native" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- Compile-time only: the host supplies the runtime copies to unify types. -->
-		<PackageReference Include="ModelContextProtocol" Version="2.0.0" ExcludeAssets="runtime" />
-		<PackageReference Include="Serilog" Version="4.4.0" ExcludeAssets="runtime" />
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" ExcludeAssets="runtime" />
-	</ItemGroup>
-
-	<ItemGroup>
-		<!-- Runtime dependencies: shipped beside the module DLL and loaded into the module's own
-				 assembly load context. -->
+		<!-- Runtime dependencies unique to this module: shipped beside the module DLL and
+			loaded into the module's own assembly load context. -->
 		<PackageReference Include="LibGit2Sharp" Version="0.30.0" />
 		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.0" />
 	</ItemGroup>
