@@ -245,12 +245,33 @@ internal sealed partial class DuckDuckGoSearchProvider : ISearchProvider
             ? "https://duckduckgo.com/html/"
             : config.Endpoint.Trim();
 
-        using HttpRequestMessage request = new(HttpMethod.Post, endpoint);
-        request.Content = new FormUrlEncodedContent([new KeyValuePair<string, string>("q", query)]);
+        // DuckDuckGo's /html/ endpoint returns a 302 domain redirect (duckduckgo.com →
+        // html.duckduckgo.com) before the results page. Follow redirects keeping the POST
+        // body since the Location header does not carry the query. A browser-like User-Agent
+        // reduces the chance of a bot-detection challenge redirect.
+        string html;
+        Uri currentUrl = new(endpoint);
 
-        using HttpResponseMessage response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        string html = await response.Content.ReadAsStringAsync(cancellationToken);
+        for (int hop = 0; ; hop++)
+        {
+            using HttpRequestMessage request = new(HttpMethod.Post, currentUrl);
+            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+            request.Content = new FormUrlEncodedContent([new KeyValuePair<string, string>("q", query)]);
+
+            using HttpResponseMessage response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if ((int)response.StatusCode is >= 300 and <= 308 && response.Headers.Location is not null)
+            {
+                if (hop >= 5)
+                    throw new HttpRequestException($"Too many redirects while searching DuckDuckGo from '{endpoint}'.");
+                currentUrl = new Uri(currentUrl, response.Headers.Location);
+                continue;
+            }
+
+            response.EnsureSuccessStatusCode();
+            html = await response.Content.ReadAsStringAsync(cancellationToken);
+            break;
+        }
 
         return ParseResults(html, maxResults);
     }
