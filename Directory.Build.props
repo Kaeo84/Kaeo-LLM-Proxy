@@ -1,0 +1,16 @@
+<Project>
+
+  <!--
+	Target win-x64 only for now. The app uses WinForms (WindowsDesktop framework),
+	whose runtime pack only exists for win-* RIDs. This trims NuGet native assets
+	(LibGit2Sharp, OnnxRuntime, SQLitePCLRaw) to win-x64 only instead of ~24 RIDs.
+
+	When the GUI is replaced with a cross-platform UI, switch to:
+	  <RuntimeIdentifiers>win-x64;linux-x64;osx-x64</RuntimeIdentifiers>
+	(linux-x64 = glibc; add linux-musl-x64 for Alpine, osx-arm64 for Apple Silicon)
+  -->
+  <PropertyGroup>
+	<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+</Project>
