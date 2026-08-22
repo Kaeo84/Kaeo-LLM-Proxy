@@ -240,6 +240,21 @@ internal sealed class ModelMapping
     public bool? SupportsVision { get; set; }
 
     /// <summary>
+    /// When true, advertises that this model supports reasoning effort configuration to clients
+    /// such as Visual Studio Copilot. Enables the collapsible thinking panel for models that emit
+    /// <c>reasoning_content</c>. Default: null (not advertised).
+    /// </summary>
+    public bool? SupportsReasoningEffort { get; set; }
+
+    /// <summary>
+    /// Adaptive thinking mode advertised to clients. Maps to Copilot's <c>adaptive_thinking</c>
+    /// capability: "unsupported", "optional", or "required". Null means not advertised.
+    /// "required" indicates the model only accepts adaptive thinking and rejects
+    /// <c>thinking.type='enabled'</c> with HTTP 400.
+    /// </summary>
+    public string? AdaptiveThinking { get; set; }
+
+    /// <summary>
     /// When true, this mapping participates in streaming heartbeat emission while waiting for upstream tokens.
     /// The global <see cref="AppSettings.EnableStreamingHeartbeats"/> must also be enabled. Default: true.
     /// </summary>
@@ -430,6 +445,8 @@ internal sealed class ModelMapping
         ModelName = ModelName,
         EnableThinkingCompatibility = EnableThinkingCompatibility,
         SupportsVision = SupportsVision,
+        SupportsReasoningEffort = SupportsReasoningEffort,
+        AdaptiveThinking = AdaptiveThinking,
         EnableHeartbeats = EnableHeartbeats,
         CredentialName = CredentialName,
         UpstreamType = UpstreamType,

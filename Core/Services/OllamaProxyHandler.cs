@@ -256,7 +256,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (format.HasFlag(ReasoningEffortFormat.QwenCloud))
             request.ExtraBody = new LlamaCppExtraBody { EnableThinking = true, ReasoningEffort = effort };
         if (format.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs))
-            request.ChatTemplateKwargs = new LlamaCppChatTemplateKwargs { ReasoningEffort = effort };
+            request.ChatTemplateKwargs = new LlamaCppChatTemplateKwargs { EnableThinking = true, ReasoningEffort = effort };
     }
 
     /// <summary>
@@ -293,33 +293,51 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (response.IsSuccessStatusCode)
             return (false, string.Empty);
 
-        if ((int)response.StatusCode != 500)
+        // llama.cpp returns 400 for exceed_context_size_error; other providers may use 413 or 500.
+        int status = (int)response.StatusCode;
+        if (status != 400 && status != 413 && status != 500)
             return (false, string.Empty);
+
+        string body = await response.Content.ReadAsStringAsync(ct);
+        return (IsContextOverflowBody(body), body);
+    }
+
+    /// <summary>
+    /// Checks an already-read error body string for context overflow indicators.
+    /// Use this when the body has already been consumed from the response stream.
+    /// </summary>
+    private static bool IsContextOverflowBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return false;
 
         try
         {
-            string body = await response.Content.ReadAsStringAsync(ct);
-            if (string.IsNullOrWhiteSpace(body))
-                return (false, body);
-
             // Try to parse as structured error
             LlamaCppErrorResponse? errorResp = JsonSerializer.Deserialize<LlamaCppErrorResponse>(body, _jsonOptions);
             string? errorMessage = errorResp?.Error?.Message;
+            string? errorType = errorResp?.Error?.Type;
+
+            // Most reliable: the structured error type from llama.cpp
+            if (!string.IsNullOrWhiteSpace(errorType)
+                && errorType.Contains("context", StringComparison.OrdinalIgnoreCase))
+                return true;
 
             if (string.IsNullOrWhiteSpace(errorMessage))
                 errorMessage = body;
 
-            // Check for common context overflow patterns
-            bool isOverflow = errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
-                && (errorMessage.Contains("exceeded", StringComparison.OrdinalIgnoreCase)
+            // Check for common context overflow patterns across providers.
+            // "exceed" matches both "exceeds" (llama.cpp) and "exceeded" (OpenAI/Anthropic).
+            return errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
+                && (errorMessage.Contains("exceed", StringComparison.OrdinalIgnoreCase)
                  || errorMessage.Contains("too large", StringComparison.OrdinalIgnoreCase)
-                 || errorMessage.Contains("too long", StringComparison.OrdinalIgnoreCase));
-
-            return (isOverflow, body);
+                 || errorMessage.Contains("too long", StringComparison.OrdinalIgnoreCase)
+                 || errorMessage.Contains("max tokens", StringComparison.OrdinalIgnoreCase)
+                 || errorMessage.Contains("token limit", StringComparison.OrdinalIgnoreCase));
         }
         catch
         {
-            return (false, string.Empty);
+            return false;
         }
     }
 
@@ -776,16 +794,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (_settings.CollectResponseDetails && log.ResponseBody is null)
                 log.ResponseBody = errorBody;
 
+            // Detect context overflow so we can rewrite the status to 413 for clients
+            // (e.g. Copilot) that trigger compaction on that code.
+            int clientStatusCode = IsContextOverflowBody(errorBody) ? 413 : (int)upstreamResp.StatusCode;
+
             if (headersPreCommitted)
             {
                 // Headers already sent as 200/SSE — emit the error as a data frame so the
                 // client sees it rather than getting a silent stream close.
-                string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{(int)upstreamResp.StatusCode}}}}}\n\n";
+                string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{clientStatusCode}}}}}\n\n";
                 byte[] errorFrameBytes = Encoding.UTF8.GetBytes(errorFrame);
                 await resp.OutputStream.WriteAsync(errorFrameBytes, ct);
             }
             else
             {
+                resp.StatusCode = clientStatusCode;
                 byte[] errorBytes = System.Text.Encoding.UTF8.GetBytes(errorBody);
                 await resp.OutputStream.WriteAsync(errorBytes, ct);
             }
@@ -1934,12 +1957,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         writer.WriteEndObject();
     }
 
-    /// <summary>Writes the <c>"chat_template_kwargs": { "reasoning_effort": "..." }</c> object
-    /// used by local inference servers such as llama.cpp and vLLM.</summary>
+    /// <summary>Writes the <c>"chat_template_kwargs": { "enable_thinking": true,
+    /// "reasoning_effort": "..." }</c> object used by local inference servers such as
+    /// llama.cpp and vLLM. The <c>enable_thinking</c> flag is required by Qwen3 chat
+    /// templates to activate thinking mode before <c>reasoning_effort</c> takes effect.</summary>
     private static void WriteChatTemplateKwargsObject(Utf8JsonWriter writer, string effort)
     {
         writer.WritePropertyName("chat_template_kwargs");
         writer.WriteStartObject();
+        writer.WriteBoolean("enable_thinking", true);
         writer.WriteString("reasoning_effort", effort);
         writer.WriteEndObject();
     }
@@ -2269,6 +2295,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         if (mapping?.EnableThinkingCompatibility ?? true)
             caps.Add("thinking");
+
+        if (mapping?.SupportsReasoningEffort ?? false)
+            caps.Add("reasoning");
 
         string lowered = modelId?.ToLowerInvariant() ?? string.Empty;
         if (lowered.Contains("embed", StringComparison.Ordinal)
@@ -2613,7 +2642,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                             log.ResponseBody = errorBody;
                         log.SummarizationRetries = retryCount;
                         log.OriginalMessageCount = originalMessageCount;
-                        resp.StatusCode = (int)upstreamResp.StatusCode;
+                        // Return 413 so clients like Copilot recognize this as a context limit
+                        // error and can trigger their own compaction (ContextLimitRetry).
+                        resp.StatusCode = 413;
                         resp.Close();
                         return;
                     }
@@ -2643,7 +2674,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     log.SummarizedMessageCount = messages.Count;
                 }
 
-                resp.StatusCode = (int)upstreamResp.StatusCode;
+                // For context overflow, return 413 so clients like Copilot recognize this as a
+                // context limit error and can trigger their own compaction (ContextLimitRetry).
+                resp.StatusCode = isContextOverflow ? 413 : (int)upstreamResp.StatusCode;
                 resp.Close();
                 return;
             }

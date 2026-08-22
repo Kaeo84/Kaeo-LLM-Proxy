@@ -163,6 +163,8 @@ internal sealed class AppDatabase : IDisposable
                     model_name,
                     enable_thinking_compatibility,
                     supports_vision,
+                    supports_reasoning_effort,
+                    adaptive_thinking,
                     enable_heartbeats,
                     upstream_type,
                     upstream_url,
@@ -228,6 +230,8 @@ internal sealed class AppDatabase : IDisposable
                         model_name,
                         enable_thinking_compatibility,
                         supports_vision,
+                        supports_reasoning_effort,
+                        adaptive_thinking,
                         enable_heartbeats,
                         upstream_type,
                         upstream_url,
@@ -258,6 +262,8 @@ internal sealed class AppDatabase : IDisposable
                         $modelName,
                         $enableThinkingCompatibility,
                         $supportsVision,
+                        $supportsReasoningEffort,
+                        $adaptiveThinking,
                         $enableHeartbeats,
                         $upstreamType,
                         $upstreamUrl,
@@ -1117,6 +1123,8 @@ internal sealed class AppDatabase : IDisposable
                     model_name TEXT NOT NULL,
                     enable_thinking_compatibility INTEGER NOT NULL,
                     supports_vision INTEGER NULL,
+                    supports_reasoning_effort INTEGER NULL,
+                    adaptive_thinking TEXT NULL,
                     enable_heartbeats INTEGER NOT NULL,
                     upstream_type INTEGER NOT NULL,
                     upstream_url TEXT NOT NULL,
@@ -1383,6 +1391,24 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added supports_vision column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "supports_reasoning_effort"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_reasoning_effort INTEGER NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added supports_reasoning_effort column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "adaptive_thinking"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN adaptive_thinking TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added adaptive_thinking column.");
         }
 
         if (!ColumnExists(connection, "model_mappings", "credential_name"))
@@ -1659,6 +1685,10 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$supportsVision", mapping.SupportsVision.HasValue
             ? ToSqliteBoolean(mapping.SupportsVision.Value)
             : DBNull.Value);
+        command.Parameters.AddWithValue("$supportsReasoningEffort", mapping.SupportsReasoningEffort.HasValue
+            ? ToSqliteBoolean(mapping.SupportsReasoningEffort.Value)
+            : DBNull.Value);
+        command.Parameters.AddWithValue("$adaptiveThinking", DbValue(mapping.AdaptiveThinking));
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
         command.Parameters.AddWithValue("$upstreamUrl", mapping.UpstreamUrl);
@@ -1693,41 +1723,43 @@ internal sealed class AppDatabase : IDisposable
         ModelName = reader.GetString(2),
         EnableThinkingCompatibility = ReadBoolean(reader, 3),
         SupportsVision = reader.IsDBNull(4) ? null : ReadBoolean(reader, 4),
-        EnableHeartbeats = ReadBoolean(reader, 5),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
-            ? (UpstreamType)reader.GetInt32(6)
+        SupportsReasoningEffort = reader.IsDBNull(5) ? null : ReadBoolean(reader, 5),
+        AdaptiveThinking = reader.IsDBNull(6) ? null : reader.GetString(6),
+        EnableHeartbeats = ReadBoolean(reader, 7),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(8))
+            ? (UpstreamType)reader.GetInt32(8)
             : UpstreamType.OpenAI,
-        UpstreamUrl = reader.GetString(7),
-        UpstreamTimeoutSeconds = reader.GetInt32(8),
-        RepeatPenalty = reader.GetDouble(9),
-        Temperature = reader.GetDouble(10),
-        EnableAutoSummarization = ReadBoolean(reader, 11),
-        PreserveRecentMessageCount = reader.GetInt32(12),
-        MaxSummarizationRetries = reader.GetInt32(13),
-        InstructionSetName = reader.IsDBNull(14) ? null : reader.GetString(14),
-        RedactRequestBodies = ReadBoolean(reader, 15),
-        RedactResponseBodies = ReadBoolean(reader, 16),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 17),
-        CredentialName = reader.IsDBNull(18) ? null : reader.GetString(18),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(19))
-            ? (ThinkingMode)reader.GetInt32(19)
+        UpstreamUrl = reader.GetString(9),
+        UpstreamTimeoutSeconds = reader.GetInt32(10),
+        RepeatPenalty = reader.GetDouble(11),
+        Temperature = reader.GetDouble(12),
+        EnableAutoSummarization = ReadBoolean(reader, 13),
+        PreserveRecentMessageCount = reader.GetInt32(14),
+        MaxSummarizationRetries = reader.GetInt32(15),
+        InstructionSetName = reader.IsDBNull(16) ? null : reader.GetString(16),
+        RedactRequestBodies = ReadBoolean(reader, 17),
+        RedactResponseBodies = ReadBoolean(reader, 18),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 19),
+        CredentialName = reader.IsDBNull(20) ? null : reader.GetString(20),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(21))
+            ? (ThinkingMode)reader.GetInt32(21)
             : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(20),
-        SynthesizeOpenAiMetadata = ReadBoolean(reader, 21),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(22))
-            ? (SamplingPriority)reader.GetInt32(22)
-            : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(23))
-            ? (SamplingPriority)reader.GetInt32(23)
-            : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(24))
+        ContextWindowTokens = reader.GetInt32(22),
+        SynthesizeOpenAiMetadata = ReadBoolean(reader, 23),
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(24))
             ? (SamplingPriority)reader.GetInt32(24)
             : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(25) ? null : reader.GetString(25),
-        ReasoningEffortValues = reader.IsDBNull(26)
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(25))
+            ? (SamplingPriority)reader.GetInt32(25)
+            : SamplingPriority.ClientApp,
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(26))
+            ? (SamplingPriority)reader.GetInt32(26)
+            : SamplingPriority.ClientApp,
+        ReasoningEffort = reader.IsDBNull(27) ? null : reader.GetString(27),
+        ReasoningEffortValues = reader.IsDBNull(28)
             ? []
-            : [.. reader.GetString(26).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(27)),
+            : [.. reader.GetString(28).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(29)),
     };
 
     /// <summary>

@@ -322,6 +322,7 @@ internal sealed class LlamaCppExtraBody
 /// </summary>
 internal sealed class LlamaCppChatTemplateKwargs
 {
+    [JsonPropertyName("enable_thinking")] public bool? EnableThinking { get; set; }
     [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
 }
 

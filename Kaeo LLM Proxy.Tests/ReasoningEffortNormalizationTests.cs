@@ -205,7 +205,9 @@ public class ReasoningEffortNormalizationTests
 
         Assert.False(root.TryGetProperty("reasoning_effort", out _));
         Assert.False(root.TryGetProperty("reasoning", out _));
-        Assert.Equal("medium", root.GetProperty("chat_template_kwargs").GetProperty("reasoning_effort").GetString());
+        JsonElement kwargs = root.GetProperty("chat_template_kwargs");
+        Assert.True(kwargs.GetProperty("enable_thinking").GetBoolean());
+        Assert.Equal("medium", kwargs.GetProperty("reasoning_effort").GetString());
     }
 
     [Fact]
@@ -219,7 +221,7 @@ public class ReasoningEffortNormalizationTests
 
         JsonElement kwargs = root.GetProperty("chat_template_kwargs");
         Assert.Equal("high", kwargs.GetProperty("reasoning_effort").GetString());
-        Assert.False(kwargs.TryGetProperty("enable_thinking", out _));
+        Assert.True(kwargs.GetProperty("enable_thinking").GetBoolean());
     }
 
     [Fact]
