@@ -10,7 +10,7 @@ using System.ComponentModel;
 using ModelContextProtocol.Server;
 using Renci.SshNet.Common;
 
-namespace Kaeo.LlmProxy.Ssh;
+namespace Kaeo.LlmProxy.Module.Ssh;
 
 /// <summary>
 /// The SSH Command module entry point discovered by the host via <see cref="IKaeoModule"/>.
@@ -171,7 +171,7 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
     /// safe to run on every startup.
     /// </summary>
     private const string SchemaScript = """
--- Kaeo LLM Proxy SSH module baseline schema.
+-- Kaeo LLM Proxy Module SSH module baseline schema.
 -- Idempotent: safe to run on every startup.
 
 -- Named SSH connections the AI client can open by name.

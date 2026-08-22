@@ -77,6 +77,6 @@ internal static class HelpPages
         """;
 
     internal const string ModulesPlaceholder = """
-        No loaded module provides help content yet. Import an MCP sub-module that implements IHelpModule (for example Kaeo LLM Proxy Web Search) and its documentation appears here.
+        No loaded module provides help content yet. Import an MCP sub-module that implements IHelpModule (for example Kaeo LLM Proxy Module Web Search) and its documentation appears here.
         """;
 }

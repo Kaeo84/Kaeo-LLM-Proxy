@@ -2,29 +2,31 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
-		<RootNamespace>Kaeo.LlmProxy.Ssh</RootNamespace>
-		<AssemblyName>Kaeo LLM Proxy SSH</AssemblyName>
+		<RootNamespace>Kaeo.LlmProxy.Module.CodeVector</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy Module Code Vector Store</AssemblyName>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWindowsForms>true</UseWindowsForms>
-		<!-- Class libraries do not copy NuGet runtime assemblies by default; this module must
-				 ship them beside its DLL so the module load context can resolve them. -->
+		<!-- Module must ship neighbor runtime assemblies into its folder. -->
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 	</PropertyGroup>
 
 	<ItemGroup>
-		<!-- Private=false: the contracts assembly ships with the host and unifies at runtime,
-				 keeping this module's core output a single DLL. -->
 		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- Compile-time only: at runtime these unify with the host's copies. -->
+		<!-- Compile-time only: the host supplies the runtime copies to unify types. -->
 		<PackageReference Include="ModelContextProtocol" Version="2.0.0" ExcludeAssets="runtime" />
 		<PackageReference Include="Serilog" Version="4.4.0" ExcludeAssets="runtime" />
-		<!-- Runtime dependency: ships beside the module DLL and loads into the module's own
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" ExcludeAssets="runtime" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Runtime dependencies: shipped beside the module DLL and loaded into the module's own
 				 assembly load context. -->
-		<PackageReference Include="SSH.NET" Version="2026.0.0" />
+		<PackageReference Include="LibGit2Sharp" Version="0.30.0" />
+		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.0" />
 	</ItemGroup>
 
 	<PropertyGroup>

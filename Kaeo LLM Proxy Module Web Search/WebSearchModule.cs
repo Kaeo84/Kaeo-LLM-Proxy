@@ -9,7 +9,7 @@ using Serilog;
 using System.ComponentModel;
 using ModelContextProtocol.Server;
 
-namespace Kaeo.LlmProxy.WebSearch;
+namespace Kaeo.LlmProxy.Module.WebSearch;
 
 /// <summary>
 /// The Web Search sub-module entry point discovered by the host via <see cref="IKaeoModule"/>.
@@ -88,7 +88,7 @@ public sealed class WebSearchModule : IKaeoModule, IMcpToolModule, IHelpModule
     /// safe to run on every startup.
     /// </summary>
     private const string SchemaScript = """
--- Kaeo LLM Proxy Web Search module baseline schema.
+-- Kaeo LLM Proxy Module Web Search module baseline schema.
 -- Idempotent: safe to run on every startup.
 
 -- Web search provider catalog with per-provider settings.

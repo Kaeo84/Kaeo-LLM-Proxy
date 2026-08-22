@@ -3,8 +3,8 @@
   <Project Path="Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
   <Project Path="Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
   <Project Path="Kaeo LLM Proxy Services/Kaeo LLM Proxy Services.csproj" />
-  <Project Path="Kaeo LLM Proxy Code Vector Store/Kaeo LLM Proxy Code Vector Store.csproj" />
-  <Project Path="Kaeo LLM Proxy Web Search\Kaeo LLM Proxy Web Search.csproj" />
-  <Project Path="Kaeo LLM Proxy SSH\Kaeo LLM Proxy SSH.csproj" />
+  <Project Path="Kaeo LLM Proxy Module Code Vector Store/Kaeo LLM Proxy Module Code Vector Store.csproj" />
+  <Project Path="Kaeo LLM Proxy Module Web Search\Kaeo LLM Proxy Module Web Search.csproj" />
+  <Project Path="Kaeo LLM Proxy Module SSH\Kaeo LLM Proxy Module SSH.csproj" />
   <Project Path="Kaeo LLM Proxy.Tests\Kaeo LLM Proxy.Tests.csproj" />
 </Solution>

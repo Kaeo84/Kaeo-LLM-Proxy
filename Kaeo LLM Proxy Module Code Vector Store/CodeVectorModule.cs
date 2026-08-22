@@ -14,7 +14,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 
-namespace Kaeo.LlmProxy.CodeVector;
+namespace Kaeo.LlmProxy.Module.CodeVector;
 
 public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableModule, IHelpModule
 {

@@ -2,8 +2,8 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
-		<RootNamespace>Kaeo.LlmProxy.WebSearch</RootNamespace>
-		<AssemblyName>Kaeo LLM Proxy Web Search</AssemblyName>
+		<RootNamespace>Kaeo.LlmProxy.Module.WebSearch</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy Module Web Search</AssemblyName>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWindowsForms>true</UseWindowsForms>
