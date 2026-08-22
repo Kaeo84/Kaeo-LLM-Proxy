@@ -13,13 +13,9 @@
 		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" />
 	</ItemGroup>
 
-	<ItemGroup>
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
-		<PackageReference Include="ModelContextProtocol" Version="2.0.0" />
-		<!-- Override transitive SQLitePCLRaw.lib.e_sqlite3 2.1.11 (GHSA-2m69-gcr7-jv3q) -->
-		<PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
-		<PackageReference Include="Serilog" Version="4.4.0" />
-	</ItemGroup>
+	<!-- Serilog, ModelContextProtocol, and Microsoft.Data.Sqlite (with the pinned
+		 SQLitePCLRaw.lib.e_sqlite3 2.1.12 override for GHSA-2m69-gcr7-jv3q) all flow
+		 transitively from Infrastructure, so this library declares no packages of its own. -->
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="Kaeo LLM Proxy" />

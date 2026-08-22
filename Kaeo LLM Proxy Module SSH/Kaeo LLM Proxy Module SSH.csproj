@@ -13,17 +13,18 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<!-- Private=false: the contracts assembly ships with the host and unifies at runtime,
-				 keeping this module's core output a single DLL. -->
-		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" />
+		<!-- Shared libraries (contracts + infrastructure): compile-time only. The host always
+			 runs these and supplies the runtime copies, so the module's types unify with the
+			 host's at load time. ExcludeAssets=runtime;native drops the whole transitive subtree
+			 (Serilog, MCP, ...) from the module's runtime graph; the ModuleBuild.targets
+			 host-shared list then strips the Core/Infrastructure assemblies themselves. -->
+		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" ExcludeAssets="runtime;native" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" Private="false" ExcludeAssets="runtime;native" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<!-- Compile-time only: at runtime these unify with the host's copies. -->
-		<PackageReference Include="ModelContextProtocol" Version="2.0.0" ExcludeAssets="runtime" />
-		<PackageReference Include="Serilog" Version="4.4.0" ExcludeAssets="runtime" />
-		<!-- Runtime dependency: ships beside the module DLL and loads into the module's own
-				 assembly load context. -->
+		<!-- Runtime dependency unique to this module: ships beside the module DLL and loads
+			 into the module's own assembly load context. -->
 		<PackageReference Include="SSH.NET" Version="2026.0.0" />
 	</ItemGroup>
 

@@ -54,12 +54,6 @@
     <Content Include="Assets\AppIcon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen.ps1" />
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen1.ps1" />
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen3.ps1" />
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen4.ps1" />
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen5.ps1" />
-    <None Include="Kaeo LLM Proxy Module Code Vector Store\_gen6.ps1" />
     <!-- The App uses Serilog directly (startup logging); the other packages now live in the
          Core / Infrastructure / Services libraries and flow in transitively. -->
     <PackageReference Include="Serilog" Version="4.4.0" />
