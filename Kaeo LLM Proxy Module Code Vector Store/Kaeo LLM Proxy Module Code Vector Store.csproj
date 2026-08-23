@@ -26,6 +26,7 @@
 		<!-- Runtime dependencies unique to this module: shipped beside the module DLL and
 			loaded into the module's own assembly load context. -->
 		<PackageReference Include="LibGit2Sharp" Version="0.30.0" />
+		<PackageReference Include="LibGit2Sharp.NativeBinaries" Version="2.0.322" />
 		<PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.0" />
 	</ItemGroup>
 

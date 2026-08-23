@@ -29,13 +29,17 @@
 		  Condition="'$(IsModuleProject)' == 'true'">
 
 	<!-- Build the list of files to embed from ReferenceCopyLocalPaths.
-		 Filter: .dll extension AND empty DestinationSubDirectory (managed assemblies go to root,
-		 RID-specific native DLLs go to runtimes/{rid}/native subdirectories).
+		 Filter: .dll extension AND empty DestinationSubDirectory (managed assemblies resolve to
+		 the output root). Native assets are excluded below because, when building with a
+		 RuntimeIdentifier, RID-specific native DLLs are ALSO flattened to the output root (empty
+		 DestinationSubDirectory) and would otherwise be wrongly embedded. Native libraries must
+		 ship as separate files on disk so the native loader can find them; embedding them as
+		 resources breaks native resolution at load time.
 		 Exclude the module's own DLL, contracts, and large dependencies. -->
 	<ItemGroup>
-	  <ModuleEmbedCandidate Include="@(ReferenceCopyLocalPaths)"
+		<ModuleEmbedCandidate Include="@(ReferenceCopyLocalPaths)"
 		Condition="'%(ReferenceCopyLocalPaths.Extension)' == '.dll'
-				   AND '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''" />
+					 AND '%(ReferenceCopyLocalPaths.DestinationSubDirectory)' == ''" />
 		<!-- Exclude the module's own DLL -->
 		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
 		Condition="'%(ModuleEmbedCandidate.Filename)%(ModuleEmbedCandidate.Extension)' == '$(AssemblyName).dll'" />
@@ -48,10 +52,17 @@
 		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
 		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'
 						 OR '%(ModuleEmbedCandidate.Filename)' == 'Microsoft.Windows.SDK.NET'" />
+		<!-- Exclude RID-specific native assets. Their source path lives under runtimes/{rid}/native/
+			 in the NuGet cache; when a RuntimeIdentifier is set they flatten to the output root and
+			 would otherwise be embedded. Native libraries must remain separate files on disk so the
+			 native loader can find them. Add new native-providing package IDs here as needed. -->
+		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
+		Condition="'%(ModuleEmbedCandidate.NuGetPackageId)' == 'LibGit2Sharp.NativeBinaries'
+					 OR '%(ModuleEmbedCandidate.NuGetPackageId)' == 'Microsoft.ML.OnnxRuntime'" />
 	</ItemGroup>
 
 	<Message Importance="High"
-	  Text="ModuleBuild: Embedding @(ModuleEmbedCandidate->Count()) dependencies: @(ModuleEmbedCandidate->'%(Filename)%(Extension)', ', ')" />
+		Text="ModuleBuild: Embedding @(ModuleEmbedCandidate->Count()) dependencies: @(ModuleEmbedCandidate->'%(Filename)%(Extension)', ', ')" />
 
 	<!-- Pass /resource: parameters directly to the Csc compiler via OtherFlags.
 		 This bypasses the EmbeddedResource item pipeline which doesn't reliably
