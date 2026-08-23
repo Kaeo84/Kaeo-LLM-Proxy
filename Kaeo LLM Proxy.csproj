@@ -27,7 +27,6 @@
     <Compile Remove="Kaeo LLM Proxy Core\**" />
     <Compile Remove="Kaeo LLM Proxy Infrastructure\**" />
     <Compile Remove="Kaeo LLM Proxy Services\**" />
-    <Compile Remove="Kaeo LLM Proxy Modules\**" />
     <Compile Remove="Kaeo LLM Proxy Module Web Search\**" />
     <Compile Remove="Kaeo LLM Proxy Module SSH\**" />
     <Compile Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
@@ -35,7 +34,6 @@
     <EmbeddedResource Remove="Kaeo LLM Proxy Core\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Infrastructure\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Services\**" />
-    <EmbeddedResource Remove="Kaeo LLM Proxy Modules\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Module Web Search\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Module SSH\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
@@ -43,7 +41,6 @@
     <None Remove="Kaeo LLM Proxy Core\**" />
     <None Remove="Kaeo LLM Proxy Infrastructure\**" />
     <None Remove="Kaeo LLM Proxy Services\**" />
-    <None Remove="Kaeo LLM Proxy Modules\**" />
     <None Remove="Kaeo LLM Proxy Module Web Search\**" />
     <None Remove="Kaeo LLM Proxy Module SSH\**" />
     <None Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
