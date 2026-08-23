@@ -108,7 +108,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     total_tokens,
                     cached_prompt_tokens,
-                    reasoning_tokens
+                    reasoning_tokens,
+                    draft_n,
+                    draft_n_accepted
                 )
                 VALUES (
                     $timestampUtc,
@@ -132,7 +134,9 @@ internal sealed class AppDatabase : IDisposable
                     $responseBytes,
                     $totalTokens,
                     $cachedPromptTokens,
-                    $reasoningTokens
+                    $reasoningTokens,
+                    $draftN,
+                    $draftNAccepted
                 );
                 """;
 
@@ -664,7 +668,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     total_tokens,
                     cached_prompt_tokens,
-                    reasoning_tokens
+                    reasoning_tokens,
+                    draft_n,
+                    draft_n_accepted
                 FROM requests
                 ORDER BY timestamp_utc DESC
                 LIMIT $count;
@@ -712,7 +718,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     total_tokens,
                     cached_prompt_tokens,
-                    reasoning_tokens
+                    reasoning_tokens,
+                    draft_n,
+                    draft_n_accepted
                 FROM (
                     SELECT
                         timestamp_utc,
@@ -733,7 +741,9 @@ internal sealed class AppDatabase : IDisposable
                         response_bytes,
                         total_tokens,
                         cached_prompt_tokens,
-                        reasoning_tokens
+                        reasoning_tokens,
+                        draft_n,
+                        draft_n_accepted
                     FROM {{RequestTable(source)}}
                     ORDER BY timestamp_utc DESC
                     LIMIT $count
@@ -788,7 +798,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes,
                     total_tokens,
                     cached_prompt_tokens,
-                    reasoning_tokens
+                    reasoning_tokens,
+                    draft_n,
+                    draft_n_accepted
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1049,7 +1061,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes INTEGER NOT NULL,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    draft_n INTEGER NOT NULL DEFAULT 0,
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1079,7 +1093,9 @@ internal sealed class AppDatabase : IDisposable
                     response_bytes INTEGER NOT NULL,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    draft_n INTEGER NOT NULL DEFAULT 0,
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1232,6 +1248,14 @@ internal sealed class AppDatabase : IDisposable
             "ALTER TABLE requests ADD COLUMN upstream_request_body TEXT NULL;");
         AddColumnIfMissing(connection, "mcp_requests", "upstream_request_body",
             "ALTER TABLE mcp_requests ADD COLUMN upstream_request_body TEXT NULL;");
+        AddColumnIfMissing(connection, "requests", "draft_n",
+            "ALTER TABLE requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
+        AddColumnIfMissing(connection, "requests", "draft_n_accepted",
+            "ALTER TABLE requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
+        AddColumnIfMissing(connection, "mcp_requests", "draft_n",
+            "ALTER TABLE mcp_requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
+        AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
+            "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
     }
 
     /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
@@ -1626,6 +1650,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$totalTokens", entry.TotalTokens);
             command.Parameters.AddWithValue("$cachedPromptTokens", entry.CachedPromptTokens);
             command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
+            command.Parameters.AddWithValue("$draftN", entry.DraftN);
+            command.Parameters.AddWithValue("$draftNAccepted", entry.DraftNAccepted);
         }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -1754,6 +1780,8 @@ internal sealed class AppDatabase : IDisposable
         TotalTokens = reader.GetInt32(19),
         CachedPromptTokens = reader.GetInt32(20),
         ReasoningTokens = reader.GetInt32(21),
+        DraftN = reader.GetInt32(22),
+        DraftNAccepted = reader.GetInt32(23),
     };
 
     /// <summary>
@@ -1786,6 +1814,8 @@ internal sealed class AppDatabase : IDisposable
         TotalTokens = reader.GetInt32(16),
         CachedPromptTokens = reader.GetInt32(17),
         ReasoningTokens = reader.GetInt32(18),
+        DraftN = reader.GetInt32(19),
+        DraftNAccepted = reader.GetInt32(20),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()

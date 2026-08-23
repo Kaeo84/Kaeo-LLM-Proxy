@@ -129,7 +129,10 @@ partial class MainForm
         _colModel = new ColumnHeader();
         _colStatus = new ColumnHeader();
         _colDuration = new ColumnHeader();
-        _colTokens = new ColumnHeader();
+        _colPromptTokens = new ColumnHeader();
+        _colCompletionTokens = new ColumnHeader();
+        _colCachedTokens = new ColumnHeader();
+        _colDraftAccept = new ColumnHeader();
         _colBytes = new ColumnHeader();
         _logSubTabs = new TabControl();
         _logProxyPage = new TabPage();
@@ -868,7 +871,10 @@ partial class MainForm
         _lstLogs.Columns.Add(_colModel);
         _lstLogs.Columns.Add(_colStatus);
         _lstLogs.Columns.Add(_colDuration);
-        _lstLogs.Columns.Add(_colTokens);
+        _lstLogs.Columns.Add(_colPromptTokens);
+        _lstLogs.Columns.Add(_colCompletionTokens);
+        _lstLogs.Columns.Add(_colCachedTokens);
+        _lstLogs.Columns.Add(_colDraftAccept);
         _lstLogs.Columns.Add(_colBytes);
         _lstLogs.FullRowSelect = true;
         _lstLogs.GridLines = true;
@@ -890,8 +896,14 @@ partial class MainForm
         _colStatus.Width = 60;
         _colDuration.Text = "ms";
         _colDuration.Width = 60;
-        _colTokens.Text = "Tokens";
-        _colTokens.Width = 80;
+        _colPromptTokens.Text = "Prompt";
+        _colPromptTokens.Width = 70;
+        _colCompletionTokens.Text = "Completion";
+        _colCompletionTokens.Width = 80;
+        _colCachedTokens.Text = "Cached";
+        _colCachedTokens.Width = 70;
+        _colDraftAccept.Text = "Draft%";
+        _colDraftAccept.Width = 65;
         _colBytes.Text = "Bytes (req/resp)";
         _colBytes.Width = 110;
 
@@ -2178,7 +2190,10 @@ partial class MainForm
     private ColumnHeader _colModel;
     private ColumnHeader _colStatus;
     private ColumnHeader _colDuration;
-    private ColumnHeader _colTokens;
+    private ColumnHeader _colPromptTokens;
+    private ColumnHeader _colCompletionTokens;
+    private ColumnHeader _colCachedTokens;
+    private ColumnHeader _colDraftAccept;
     private ColumnHeader _colBytes;
     private TabControl _logSubTabs;
     private TabPage _logProxyPage;

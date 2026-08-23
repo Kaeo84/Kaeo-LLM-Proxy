@@ -57,6 +57,17 @@ internal sealed class RequestLog
     public int ReasoningTokens { get; set; }
 
     /// <summary>
+    /// Number of draft tokens proposed (<c>timings.draft_n</c>). Zero when no draft was used.
+    /// </summary>
+    public int DraftN { get; set; }
+
+    /// <summary>
+    /// Number of draft tokens accepted by the target model (<c>timings.draft_n_accepted</c>).
+    /// Zero when no draft was used.
+    /// </summary>
+    public int DraftNAccepted { get; set; }
+
+    /// <summary>
     /// When set, references the <see cref="ExceptionDetail.Id"/> stored in the exceptions
     /// collection for the full stack trace and inner exception chain.
     /// </summary>

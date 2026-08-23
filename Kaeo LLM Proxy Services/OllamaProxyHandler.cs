@@ -873,9 +873,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ? activeMapping.ThinkingMode
             : ThinkingMode.LeaveInline;
 
-        // Capture the terminal usage chunk (prompt/completion/cached/reasoning tokens) on every
-        // passthrough path without buffering the forwarded body.
-        Action<LlamaCppUsage> onUsage = usage => FillTokenStats(log, usage);
+        // Capture the terminal usage chunk (prompt/completion/cached/reasoning tokens + draft timings)
+        // on every passthrough path without buffering the forwarded body.
+        Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
         bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
             || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
 
@@ -924,7 +924,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     ct,
                     body =>
                     {
-                        FillTokenStats(log, TryParseUsage(body));
+                        FillTokenStats(log, TryParseChunk(body));
                         log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
                     });
             }
@@ -971,7 +971,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 countingStream,
                 thinkingMode,
                 ct,
-                body => FillTokenStats(log, TryParseUsage(body)));
+                body => FillTokenStats(log, TryParseChunk(body)));
         }
         else
         {
@@ -1128,7 +1128,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         int heartbeatIntervalSeconds,
         CancellationToken ct,
         Action? onHeartbeatSent = null,
-        Action<LlamaCppUsage>? onUsage = null)
+        Action<LlamaCppStreamChunk>? onUsage = null)
     {
         byte[] buffer = new byte[81920];
         byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
@@ -1173,7 +1173,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         int heartbeatIntervalSeconds,
         CancellationToken ct,
         Action? onHeartbeatSent = null,
-        Action<LlamaCppUsage>? onUsage = null,
+        Action<LlamaCppStreamChunk>? onUsage = null,
         Stream? rawCapture = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
@@ -1359,7 +1359,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// passes through untouched. A trailing partial line is held until the next
     /// <see cref="Feed"/> call or <see cref="Flush"/> at end of stream.
     /// </summary>
-    private sealed class SseUsageSniffer(Action<LlamaCppUsage> onUsage)
+    private sealed class SseUsageSniffer(Action<LlamaCppStreamChunk> onUsage)
     {
         private readonly StringBuilder _pending = new();
 
@@ -1404,7 +1404,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 LlamaCppStreamChunk? chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(data, _jsonOptions);
                 if (chunk?.Usage is not null)
-                    onUsage(chunk.Usage);
+                    onUsage(chunk);
             }
             catch (JsonException ex)
             {
@@ -2696,8 +2696,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             LlamaCppChoice? firstChoice = chunk?.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = firstChoice?.Message ?? firstChoice?.Delta;
             string? upstreamFinishReason = firstChoice?.FinishReason;
-            LlamaCppUsage? usage = chunk?.Usage;
-            FillTokenStats(log, usage);
+            FillTokenStats(log, chunk);
             log.ResponseBytes = Encoding.UTF8.GetByteCount(respBody);
 
             List<OllamaToolCall>? toolCalls = MapToolCallsToOllama(delta?.ToolCalls);
@@ -2722,8 +2721,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Message = new OllamaMessage("assistant", content) { ToolCalls = toolCalls },
                 Done = true,
                 DoneReason = toolCalls?.Count > 0 ? "tool_calls" : upstreamFinishReason ?? "stop",
-                PromptEvalCount = usage?.PromptTokens,
-                EvalCount = usage?.CompletionTokens,
+                PromptEvalCount = log.PromptTokens > 0 ? log.PromptTokens : null,
+                EvalCount = log.CompletionTokens > 0 ? log.CompletionTokens : null,
             };
 
             await WriteJsonAsync(resp, ollamaResp, ct);
@@ -2858,7 +2857,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (chunk is null) continue;
 
-            FillTokenStats(log, chunk.Usage);
+            FillTokenStats(log, chunk);
 
             LlamaCppChoice? choice = chunk.Choices?.FirstOrDefault();
             string token = choice?.Text ?? string.Empty;
@@ -2967,7 +2966,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (chunk is null) continue;
 
-            FillTokenStats(log, chunk.Usage);
+            FillTokenStats(log, chunk);
 
             LlamaCppChoice? choice = chunk.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = choice?.Delta;
@@ -3983,6 +3982,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         """;
 
+    private static void FillTokenStats(RequestLog log, LlamaCppStreamChunk? chunk)
+    {
+        FillTokenStats(log, chunk?.Usage);
+
+        LlamaCppTimings? timings = chunk?.Timings;
+        if (timings is not null)
+        {
+            log.DraftN = timings.DraftN;
+            log.DraftNAccepted = timings.DraftNAccepted;
+        }
+    }
+
     private static void FillTokenStats(RequestLog log, LlamaCppUsage? usage)
     {
         if (usage is null) return;
@@ -3993,12 +4004,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         log.ReasoningTokens = usage.CompletionTokensDetails?.ReasoningTokens ?? 0;
     }
 
-    /// <summary>Parses a complete (non-streaming) chat/completion JSON body for its usage block; null when absent or unparseable.</summary>
-    private static LlamaCppUsage? TryParseUsage(string body)
+    /// <summary>Parses a complete (non-streaming) chat/completion JSON body for its chunk (usage + timings); null when absent or unparseable.</summary>
+    private static LlamaCppStreamChunk? TryParseChunk(string body)
     {
         try
         {
-            return JsonSerializer.Deserialize<LlamaCppStreamChunk>(body, _jsonOptions)?.Usage;
+            return JsonSerializer.Deserialize<LlamaCppStreamChunk>(body, _jsonOptions);
         }
         catch (JsonException)
         {

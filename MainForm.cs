@@ -758,7 +758,10 @@ internal partial class MainForm : Form
         item.SubItems.Add(log.Model);
         item.SubItems.Add(log.Status.ToString());
         item.SubItems.Add($"{log.DurationMs:F0}");
-        item.SubItems.Add($"{log.PromptTokens}+{log.CompletionTokens}");
+        item.SubItems.Add(log.PromptTokens > 0 ? log.PromptTokens.ToString() : string.Empty);
+        item.SubItems.Add(log.CompletionTokens > 0 ? log.CompletionTokens.ToString() : string.Empty);
+        item.SubItems.Add(log.CachedPromptTokens > 0 ? log.CachedPromptTokens.ToString() : string.Empty);
+        item.SubItems.Add(log.DraftN > 0 ? $"{(double)log.DraftNAccepted / log.DraftN * 100:F0}%" : string.Empty);
         item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
         item.Tag = log;
 

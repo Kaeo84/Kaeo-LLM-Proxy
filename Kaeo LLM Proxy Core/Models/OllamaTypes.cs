@@ -350,6 +350,20 @@ internal sealed class LlamaCppStreamChunk
     [JsonPropertyName("object")] public string Object { get; set; } = string.Empty;
     [JsonPropertyName("choices")] public List<LlamaCppChoice> Choices { get; set; } = [];
     [JsonPropertyName("usage")] public LlamaCppUsage? Usage { get; set; }
+    [JsonPropertyName("timings")] public LlamaCppTimings? Timings { get; set; }
+}
+
+internal sealed class LlamaCppTimings
+{
+    [JsonPropertyName("cache_n")] public int CacheN { get; set; }
+    [JsonPropertyName("prompt_n")] public int PromptN { get; set; }
+    [JsonPropertyName("prompt_ms")] public double PromptMs { get; set; }
+    [JsonPropertyName("predicted_n")] public int PredictedN { get; set; }
+    [JsonPropertyName("predicted_ms")] public double PredictedMs { get; set; }
+    [JsonPropertyName("predicted_per_token_ms")] public double PredictedPerTokenMs { get; set; }
+    [JsonPropertyName("predicted_per_second")] public double PredictedPerSecond { get; set; }
+    [JsonPropertyName("draft_n")] public int DraftN { get; set; }
+    [JsonPropertyName("draft_n_accepted")] public int DraftNAccepted { get; set; }
 }
 
 internal sealed class LlamaCppChoice

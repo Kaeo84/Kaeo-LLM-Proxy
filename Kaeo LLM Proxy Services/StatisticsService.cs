@@ -217,6 +217,8 @@ internal sealed class StatisticsService : IDisposable
         TotalTokens = source.TotalTokens,
         CachedPromptTokens = source.CachedPromptTokens,
         ReasoningTokens = source.ReasoningTokens,
+        DraftN = source.DraftN,
+        DraftNAccepted = source.DraftNAccepted,
         ExceptionId = source.ExceptionId,
         RequestBody = null,
         ResponseBody = null,
