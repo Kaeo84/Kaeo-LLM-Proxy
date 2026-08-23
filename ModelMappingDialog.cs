@@ -72,11 +72,6 @@ internal sealed class ModelMappingDialog : Form
     private readonly ComboBox _cmbAdaptiveThinking = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
-    private readonly CheckBox _chkEnableAutoSummarization = new();
-    private readonly Label _lblPreserveRecentCount = new();
-    private readonly NumericUpDown _nudPreserveRecentCount = new();
-    private readonly Label _lblMaxSummarizationRetries = new();
-    private readonly NumericUpDown _nudMaxSummarizationRetries = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
     private readonly CheckBox _chkRedactSensitiveJsonFields = new();
@@ -409,26 +404,7 @@ internal sealed class ModelMappingDialog : Form
     private void UpdateThinkingReasoningGroupState() =>
         _grpThinkingReasoning.Enabled = EnableThinkingCompatibility;
 
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool EnableAutoSummarization
-    {
-        get => _chkEnableAutoSummarization.Checked;
-        set => _chkEnableAutoSummarization.Checked = value;
-    }
 
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private int PreserveRecentMessageCount
-    {
-        get => (int)_nudPreserveRecentCount.Value;
-        set => _nudPreserveRecentCount.Value = Math.Clamp(value, (int)_nudPreserveRecentCount.Minimum, (int)_nudPreserveRecentCount.Maximum);
-    }
-
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private int MaxSummarizationRetries
-    {
-        get => (int)_nudMaxSummarizationRetries.Value;
-        set => _nudMaxSummarizationRetries.Value = Math.Clamp(value, (int)_nudMaxSummarizationRetries.Minimum, (int)_nudMaxSummarizationRetries.Maximum);
-    }
 
     private void PopulateInstructionSets(IEnumerable<InstructionSet> instructionSets)
     {
@@ -569,20 +545,12 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
         _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
         _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 17);
-        _tlpMain.SetColumnSpan(_chkEnableAutoSummarization, 3);
-        _tlpMain.Controls.Add(_chkEnableAutoSummarization, 0, 18);
-        _tlpMain.Controls.Add(_lblPreserveRecentCount, 0, 19);
-        _tlpMain.SetColumnSpan(_nudPreserveRecentCount, 2);
-        _tlpMain.Controls.Add(_nudPreserveRecentCount, 1, 19);
-        _tlpMain.Controls.Add(_lblMaxSummarizationRetries, 0, 20);
-        _tlpMain.SetColumnSpan(_nudMaxSummarizationRetries, 2);
-        _tlpMain.Controls.Add(_nudMaxSummarizationRetries, 1, 20);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 21);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 18);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 22);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 19);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 23);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 20);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -940,38 +908,6 @@ internal sealed class ModelMappingDialog : Form
             "When checked, the proxy synthesizes OpenAI /v1/models metadata with the\n"
             + "configured context window and reasoning capabilities instead of\n"
             + "passing through the upstream model list.");
-
-        _chkEnableAutoSummarization.AutoSize = true;
-        _chkEnableAutoSummarization.Margin = new Padding(0, 8, 0, 2);
-        _chkEnableAutoSummarization.Text = "Enable automatic context summarization on overflow";
-        _chkEnableAutoSummarization.Checked = true;
-        _toolTip.SetToolTip(_chkEnableAutoSummarization, "When the model's context window is exceeded, summarize older history and retry.");
-
-        _lblPreserveRecentCount.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblPreserveRecentCount.AutoSize = true;
-        _lblPreserveRecentCount.Margin = new Padding(0, 4, 8, 4);
-        _lblPreserveRecentCount.Text = "Preserve Recent Exchanges:";
-
-        _nudPreserveRecentCount.Dock = DockStyle.Left;
-        _nudPreserveRecentCount.Margin = new Padding(0, 4, 0, 4);
-        _nudPreserveRecentCount.Maximum = 20;
-        _nudPreserveRecentCount.Minimum = 2;
-        _nudPreserveRecentCount.Size = new Size(90, 25);
-        _nudPreserveRecentCount.Value = 4;
-        _toolTip.SetToolTip(_nudPreserveRecentCount, "Number of recent user/assistant exchanges to keep verbatim (2-20).");
-
-        _lblMaxSummarizationRetries.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblMaxSummarizationRetries.AutoSize = true;
-        _lblMaxSummarizationRetries.Margin = new Padding(0, 4, 8, 4);
-        _lblMaxSummarizationRetries.Text = "Max Summarization Retries:";
-
-        _nudMaxSummarizationRetries.Dock = DockStyle.Left;
-        _nudMaxSummarizationRetries.Margin = new Padding(0, 4, 0, 4);
-        _nudMaxSummarizationRetries.Maximum = 3;
-        _nudMaxSummarizationRetries.Minimum = 1;
-        _nudMaxSummarizationRetries.Size = new Size(90, 25);
-        _nudMaxSummarizationRetries.Value = 2;
-        _toolTip.SetToolTip(_nudMaxSummarizationRetries, "Maximum summarization retry attempts on context overflow (1-3).");
 
         _chkRedactRequestBodies.AutoSize = true;
         _chkRedactRequestBodies.Margin = new Padding(0, 8, 0, 2);
@@ -1448,9 +1384,6 @@ internal sealed class ModelMappingDialog : Form
         dlg.UpdateThinkingReasoningGroupState();
         dlg._suppressReasoningPrefill = false;
         dlg.TryPrefillReasoningEffortProfile(mapping.ModelName);
-        dlg.EnableAutoSummarization = mapping.EnableAutoSummarization;
-        dlg.PreserveRecentMessageCount = mapping.PreserveRecentMessageCount;
-        dlg.MaxSummarizationRetries = mapping.MaxSummarizationRetries;
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
         dlg.RedactResponseBodies = mapping.RedactResponseBodies;
         dlg.RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields;
@@ -1486,9 +1419,6 @@ internal sealed class ModelMappingDialog : Form
         mapping.ReasoningEffort = dlg.ReasoningEffort;
         mapping.ReasoningEffortValues = dlg.ReasoningEffortValues;
         mapping.ReasoningEffortFormat = dlg.ReasoningEffortFormat;
-        mapping.EnableAutoSummarization = dlg.EnableAutoSummarization;
-        mapping.PreserveRecentMessageCount = dlg.PreserveRecentMessageCount;
-        mapping.MaxSummarizationRetries = dlg.MaxSummarizationRetries;
         mapping.RedactRequestBodies = dlg.RedactRequestBodies;
         mapping.RedactResponseBodies = dlg.RedactResponseBodies;
         mapping.RedactSensitiveJsonFields = dlg.RedactSensitiveJsonFields;

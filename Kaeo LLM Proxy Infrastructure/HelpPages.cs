@@ -43,7 +43,7 @@ internal static class HelpPages
     internal const string Settings = """
         Settings controls how the proxy listens and behaves. The Listener group (port/address) saves explicitly and requires a proxy restart; everything else persists immediately when changed.
 
-        Model mappings map an exposed proxy model name to a specific upstream server and model, with per-model sampling, timeout, credential, thinking, and summarization options. Credentials stores named API keys encrypted at rest that mappings and modules reference by name.
+        Model mappings map an exposed proxy model name to a specific upstream server and model, with per-model sampling, timeout, credential, and thinking options. Credentials stores named API keys encrypted at rest that mappings and modules reference by name.
 
         "Run as administrator on launch" re-launches the app elevated at the next start (release builds only) so non-localhost listener bindings are permitted; debug builds never elevate and listen on localhost instead.
         """;
@@ -69,7 +69,7 @@ internal static class HelpPages
         """;
 
     internal const string Test = """
-        The Test console sends chat requests through the proxy using your configured model mappings, with temperature and repeat-penalty controls and streamed output. It is the quickest way to verify a mapping, upstream connectivity, and thinking/summarization behavior without an external client.
+        The Test console sends chat requests through the proxy using your configured model mappings, with temperature and repeat-penalty controls and streamed output. It is the quickest way to verify a mapping, upstream connectivity, and thinking behavior without an external client.
         """;
 
     internal const string Heartbeats = """

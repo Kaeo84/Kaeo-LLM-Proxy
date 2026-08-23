@@ -205,13 +205,6 @@ internal sealed class RuntimeSettings
     /// specification at /openapi/v1/openapi.json. Default: false.
     /// </summary>
     public bool EnableApiExplorer { get; set; } = false;
-
-    /// <summary>
-    /// When true, the proxy automatically summarizes older conversation history and retries a
-    /// chat request when the upstream reports a context-window overflow. This global master switch
-    /// must be enabled in addition to the per-mapping EnableAutoSummarization flag. Default: true.
-    /// </summary>
-    public bool EnableAutoSummarization { get; set; } = true;
 }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
@@ -363,26 +356,6 @@ internal sealed class ModelMapping
     public ReasoningEffortFormat ReasoningEffortFormat { get; set; } = ReasoningEffortFormat.Legacy;
 
     /// <summary>
-    /// Enable automatic context summarization when the model's context window is exceeded.
-    /// When enabled, the proxy will automatically summarize older conversation history
-    /// and retry the request with condensed context. Default: true.
-    /// </summary>
-    public bool EnableAutoSummarization { get; set; } = true;
-
-    /// <summary>
-    /// Number of recent message exchanges to preserve when summarizing context.
-    /// Older messages will be summarized into a single condensed message.
-    /// One exchange = user message + assistant response. Min: 2, Max: 20. Default: 4.
-    /// </summary>
-    public int PreserveRecentMessageCount { get; set; } = 4;
-
-    /// <summary>
-    /// Maximum number of times to retry with summarization on context overflow.
-    /// Prevents infinite retry loops. Min: 1, Max: 3. Default: 2.
-    /// </summary>
-    public int MaxSummarizationRetries { get; set; } = 2;
-
-    /// <summary>
     /// Optional name of the instruction set to inject into requests for this model.
     /// When specified, the instructions will be prepended to the conversation.
     /// </summary>
@@ -411,7 +384,7 @@ internal sealed class ModelMapping
     /// Model context window size in tokens. When 0 (default), uses <see cref="DefaultContextWindowTokens"/>.
     /// Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).
     /// This value is advertised to clients via /api/show model_info and used by clients like GitHub Copilot
-    /// to determine context summarization thresholds.
+    /// to determine context compaction thresholds.
     /// </summary>
     public int ContextWindowTokens { get; set; }
 
@@ -461,9 +434,6 @@ internal sealed class ModelMapping
         ReasoningEffort = ReasoningEffort,
         ReasoningEffortValues = [.. ReasoningEffortValues],
         ReasoningEffortFormat = ReasoningEffortFormat,
-        EnableAutoSummarization = EnableAutoSummarization,
-        PreserveRecentMessageCount = PreserveRecentMessageCount,
-        MaxSummarizationRetries = MaxSummarizationRetries,
         InstructionSetName = InstructionSetName,
         RedactRequestBodies = RedactRequestBodies,
         RedactResponseBodies = RedactResponseBodies,
@@ -672,15 +642,6 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
-    /// <summary>
-    /// When true, the proxy automatically summarizes older conversation history and retries a chat
-    /// request when the upstream reports a context-window overflow. Global master switch that must be
-    /// enabled in addition to the per-mapping <see cref="ModelMapping.EnableAutoSummarization"/> flag.
-    /// Default: true.
-    /// </summary>
-    [JsonIgnore]
-    public bool EnableAutoSummarization { get; set; } = true;
-
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
@@ -759,8 +720,6 @@ internal sealed class AppSettings
             if (mapping.UpstreamTimeoutSeconds <= 0)
                 mapping.UpstreamTimeoutSeconds = 300;
 
-            mapping.PreserveRecentMessageCount = Math.Clamp(mapping.PreserveRecentMessageCount, 2, 20);
-            mapping.MaxSummarizationRetries = Math.Clamp(mapping.MaxSummarizationRetries, 1, 3);
             mapping.Temperature = Math.Clamp(mapping.Temperature, 0.0, 2.0);
             mapping.RepeatPenalty = Math.Clamp(mapping.RepeatPenalty, 0.0, 2.0);
 
@@ -789,7 +748,6 @@ internal sealed class AppSettings
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
-        EnableAutoSummarization = EnableAutoSummarization,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -807,7 +765,6 @@ internal sealed class AppSettings
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
-        EnableAutoSummarization = runtimeSettings.EnableAutoSummarization;
     }
 
     /// <summary>

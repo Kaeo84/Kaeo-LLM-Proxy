@@ -222,9 +222,6 @@ internal sealed class StatisticsService : IDisposable
         ResponseBody = null,
         RequestBytes = source.RequestBytes,
         ResponseBytes = source.ResponseBytes,
-        SummarizationRetries = source.SummarizationRetries,
-        OriginalMessageCount = source.OriginalMessageCount,
-        SummarizedMessageCount = source.SummarizedMessageCount,
     };
 
     public IReadOnlyList<RequestLog> GetRecentLogs()

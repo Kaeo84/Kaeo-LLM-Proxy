@@ -106,9 +106,6 @@ internal sealed class AppDatabase : IDisposable
                     response_body,
                     request_bytes,
                     response_bytes,
-                    summarization_retries,
-                    original_message_count,
-                    summarized_message_count,
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
@@ -133,9 +130,6 @@ internal sealed class AppDatabase : IDisposable
                     $responseBody,
                     $requestBytes,
                     $responseBytes,
-                    $summarizationRetries,
-                    $originalMessageCount,
-                    $summarizedMessageCount,
                     $totalTokens,
                     $cachedPromptTokens,
                     $reasoningTokens
@@ -171,9 +165,6 @@ internal sealed class AppDatabase : IDisposable
                     upstream_timeout_seconds,
                     repeat_penalty,
                     temperature,
-                    enable_auto_summarization,
-                    preserve_recent_message_count,
-                    max_summarization_retries,
                     instruction_set_name,
                     redact_request_bodies,
                     redact_response_bodies,
@@ -238,9 +229,6 @@ internal sealed class AppDatabase : IDisposable
                         upstream_timeout_seconds,
                         repeat_penalty,
                         temperature,
-                        enable_auto_summarization,
-                        preserve_recent_message_count,
-                        max_summarization_retries,
                         instruction_set_name,
                         redact_request_bodies,
                         redact_response_bodies,
@@ -270,9 +258,6 @@ internal sealed class AppDatabase : IDisposable
                         $upstreamTimeoutSeconds,
                         $repeatPenalty,
                         $temperature,
-                        $enableAutoSummarization,
-                        $preserveRecentMessageCount,
-                        $maxSummarizationRetries,
                         $instructionSetName,
                         $redactRequestBodies,
                         $redactResponseBodies,
@@ -524,7 +509,6 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization,
                     run_as_administrator
                 FROM runtime_settings
                 WHERE id = $id;
@@ -547,8 +531,7 @@ internal sealed class AppDatabase : IDisposable
                 StreamingHeartbeatIntervalSeconds = reader.GetInt32(7),
                 EnablePerformanceSampling = ReadBoolean(reader, 8),
                 EnableApiExplorer = ReadBoolean(reader, 9),
-                EnableAutoSummarization = ReadBoolean(reader, 10),
-                RunAsAdministrator = ReadBoolean(reader, 11),
+                RunAsAdministrator = ReadBoolean(reader, 10),
             };
         }
     }
@@ -575,7 +558,6 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    enable_auto_summarization,
                     run_as_administrator
                 )
                 VALUES (
@@ -590,7 +572,6 @@ internal sealed class AppDatabase : IDisposable
                     $streamingHeartbeatIntervalSeconds,
                     $enablePerformanceSampling,
                     $enableApiExplorer,
-                    $enableAutoSummarization,
                     $runAsAdministrator
                 )
                 ON CONFLICT(id) DO UPDATE SET
@@ -604,7 +585,6 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
-                    enable_auto_summarization = excluded.enable_auto_summarization,
                     run_as_administrator = excluded.run_as_administrator;
                 """;
 
@@ -619,7 +599,6 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
-            command.Parameters.AddWithValue("$enableAutoSummarization", ToSqliteBoolean(settings.EnableAutoSummarization));
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
             command.ExecuteNonQuery();
         }
@@ -677,9 +656,6 @@ internal sealed class AppDatabase : IDisposable
                     response_body,
                     request_bytes,
                     response_bytes,
-                    summarization_retries,
-                    original_message_count,
-                    summarized_message_count,
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
@@ -728,9 +704,6 @@ internal sealed class AppDatabase : IDisposable
                     exception_id,
                     request_bytes,
                     response_bytes,
-                    summarization_retries,
-                    original_message_count,
-                    summarized_message_count,
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
@@ -752,9 +725,6 @@ internal sealed class AppDatabase : IDisposable
                         exception_id,
                         request_bytes,
                         response_bytes,
-                        summarization_retries,
-                        original_message_count,
-                        summarized_message_count,
                         total_tokens,
                         cached_prompt_tokens,
                         reasoning_tokens
@@ -810,9 +780,6 @@ internal sealed class AppDatabase : IDisposable
                     response_body,
                     request_bytes,
                     response_bytes,
-                    summarization_retries,
-                    original_message_count,
-                    summarized_message_count,
                     total_tokens,
                     cached_prompt_tokens,
                     reasoning_tokens
@@ -1074,9 +1041,6 @@ internal sealed class AppDatabase : IDisposable
                     response_body TEXT NULL,
                     request_bytes INTEGER NOT NULL,
                     response_bytes INTEGER NOT NULL,
-                    summarization_retries INTEGER NOT NULL,
-                    original_message_count INTEGER NULL,
-                    summarized_message_count INTEGER NULL,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     reasoning_tokens INTEGER NOT NULL DEFAULT 0
@@ -1107,9 +1071,6 @@ internal sealed class AppDatabase : IDisposable
                     response_body TEXT NULL,
                     request_bytes INTEGER NOT NULL,
                     response_bytes INTEGER NOT NULL,
-                    summarization_retries INTEGER NOT NULL,
-                    original_message_count INTEGER NULL,
-                    summarized_message_count INTEGER NULL,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     reasoning_tokens INTEGER NOT NULL DEFAULT 0
@@ -1131,9 +1092,6 @@ internal sealed class AppDatabase : IDisposable
                     upstream_timeout_seconds INTEGER NOT NULL,
                     repeat_penalty REAL NOT NULL,
                     temperature REAL NOT NULL,
-                    enable_auto_summarization INTEGER NOT NULL,
-                    preserve_recent_message_count INTEGER NOT NULL,
-                    max_summarization_retries INTEGER NOT NULL,
                     instruction_set_name TEXT NULL,
                     redact_request_bodies INTEGER NOT NULL,
                     redact_response_bodies INTEGER NOT NULL,
@@ -1185,7 +1143,6 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
-                    enable_auto_summarization INTEGER NOT NULL DEFAULT 1,
                     run_as_administrator INTEGER NOT NULL DEFAULT 0
                 );
 
@@ -1323,7 +1280,7 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Adds columns to pre-existing runtime_settings tables that were created before they
     /// were introduced: <c>enable_performance_sampling</c>, <c>enable_api_explorer</c>,
-    /// <c>enable_auto_summarization</c>, and <c>run_as_administrator</c>.
+    /// and <c>run_as_administrator</c>.
     /// </summary>
     private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
     {
@@ -1348,16 +1305,6 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated runtime_settings table: added enable_api_explorer column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "enable_auto_summarization"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN enable_auto_summarization INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added enable_auto_summarization column.");
         }
 
         if (!ColumnExists(connection, "runtime_settings", "run_as_administrator"))
@@ -1668,10 +1615,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$responseBody", DbValue(entry.ResponseBody));
         command.Parameters.AddWithValue("$requestBytes", entry.RequestBytes);
         command.Parameters.AddWithValue("$responseBytes", entry.ResponseBytes);
-            command.Parameters.AddWithValue("$summarizationRetries", entry.SummarizationRetries);
-            command.Parameters.AddWithValue("$originalMessageCount", entry.OriginalMessageCount.HasValue ? entry.OriginalMessageCount.Value : DBNull.Value);
-            command.Parameters.AddWithValue("$summarizedMessageCount", entry.SummarizedMessageCount.HasValue ? entry.SummarizedMessageCount.Value : DBNull.Value);
-            command.Parameters.AddWithValue("$totalTokens", entry.TotalTokens);
+        command.Parameters.AddWithValue("$totalTokens", entry.TotalTokens);
             command.Parameters.AddWithValue("$cachedPromptTokens", entry.CachedPromptTokens);
             command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
         }
@@ -1695,9 +1639,6 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$upstreamTimeoutSeconds", mapping.UpstreamTimeoutSeconds);
         command.Parameters.AddWithValue("$repeatPenalty", mapping.RepeatPenalty);
         command.Parameters.AddWithValue("$temperature", mapping.Temperature);
-        command.Parameters.AddWithValue("$enableAutoSummarization", ToSqliteBoolean(mapping.EnableAutoSummarization));
-        command.Parameters.AddWithValue("$preserveRecentMessageCount", mapping.PreserveRecentMessageCount);
-        command.Parameters.AddWithValue("$maxSummarizationRetries", mapping.MaxSummarizationRetries);
         command.Parameters.AddWithValue("$instructionSetName", DbValue(mapping.InstructionSetName));
         command.Parameters.AddWithValue("$redactRequestBodies", ToSqliteBoolean(mapping.RedactRequestBodies));
         command.Parameters.AddWithValue("$redactResponseBodies", ToSqliteBoolean(mapping.RedactResponseBodies));
@@ -1733,33 +1674,30 @@ internal sealed class AppDatabase : IDisposable
         UpstreamTimeoutSeconds = reader.GetInt32(10),
         RepeatPenalty = reader.GetDouble(11),
         Temperature = reader.GetDouble(12),
-        EnableAutoSummarization = ReadBoolean(reader, 13),
-        PreserveRecentMessageCount = reader.GetInt32(14),
-        MaxSummarizationRetries = reader.GetInt32(15),
-        InstructionSetName = reader.IsDBNull(16) ? null : reader.GetString(16),
-        RedactRequestBodies = ReadBoolean(reader, 17),
-        RedactResponseBodies = ReadBoolean(reader, 18),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 19),
-        CredentialName = reader.IsDBNull(20) ? null : reader.GetString(20),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(21))
-            ? (ThinkingMode)reader.GetInt32(21)
+        InstructionSetName = reader.IsDBNull(13) ? null : reader.GetString(13),
+        RedactRequestBodies = ReadBoolean(reader, 14),
+        RedactResponseBodies = ReadBoolean(reader, 15),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 16),
+        CredentialName = reader.IsDBNull(17) ? null : reader.GetString(17),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(18))
+            ? (ThinkingMode)reader.GetInt32(18)
             : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(22),
-        SynthesizeOpenAiMetadata = ReadBoolean(reader, 23),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(24))
-            ? (SamplingPriority)reader.GetInt32(24)
+        ContextWindowTokens = reader.GetInt32(19),
+        SynthesizeOpenAiMetadata = ReadBoolean(reader, 20),
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
+            ? (SamplingPriority)reader.GetInt32(21)
             : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(25))
-            ? (SamplingPriority)reader.GetInt32(25)
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(22))
+            ? (SamplingPriority)reader.GetInt32(22)
             : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(26))
-            ? (SamplingPriority)reader.GetInt32(26)
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(23))
+            ? (SamplingPriority)reader.GetInt32(23)
             : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(27) ? null : reader.GetString(27),
-        ReasoningEffortValues = reader.IsDBNull(28)
+        ReasoningEffort = reader.IsDBNull(24) ? null : reader.GetString(24),
+        ReasoningEffortValues = reader.IsDBNull(25)
             ? []
-            : [.. reader.GetString(28).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(29)),
+            : [.. reader.GetString(25).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(26)),
     };
 
     /// <summary>
@@ -1801,12 +1739,9 @@ internal sealed class AppDatabase : IDisposable
         ResponseBody = reader.IsDBNull(16) ? null : reader.GetString(16),
         RequestBytes = reader.GetInt64(17),
         ResponseBytes = reader.GetInt64(18),
-        SummarizationRetries = reader.GetInt32(19),
-        OriginalMessageCount = reader.IsDBNull(20) ? null : reader.GetInt32(20),
-        SummarizedMessageCount = reader.IsDBNull(21) ? null : reader.GetInt32(21),
-        TotalTokens = reader.GetInt32(22),
-        CachedPromptTokens = reader.GetInt32(23),
-        ReasoningTokens = reader.GetInt32(24),
+        TotalTokens = reader.GetInt32(19),
+        CachedPromptTokens = reader.GetInt32(20),
+        ReasoningTokens = reader.GetInt32(21),
     };
 
     /// <summary>
@@ -1836,12 +1771,9 @@ internal sealed class AppDatabase : IDisposable
         ResponseBody = null,
         RequestBytes = reader.GetInt64(14),
         ResponseBytes = reader.GetInt64(15),
-        SummarizationRetries = reader.GetInt32(16),
-        OriginalMessageCount = reader.IsDBNull(17) ? null : reader.GetInt32(17),
-        SummarizedMessageCount = reader.IsDBNull(18) ? null : reader.GetInt32(18),
-        TotalTokens = reader.GetInt32(19),
-        CachedPromptTokens = reader.GetInt32(20),
-        ReasoningTokens = reader.GetInt32(21),
+        TotalTokens = reader.GetInt32(16),
+        CachedPromptTokens = reader.GetInt32(17),
+        ReasoningTokens = reader.GetInt32(18),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()

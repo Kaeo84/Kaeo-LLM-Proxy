@@ -124,7 +124,6 @@ internal partial class MainForm : Form
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
-        _chkAutoSummarization.CheckedChanged += (_, _) => SaveGeneralSettings();
         _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
         _cmbMinLevel.SelectedIndexChanged += (_, _) => SaveLoggingSettings();
         _txtAppLogSize.Validated += (_, _) => SaveLoggingSettings();
@@ -1446,7 +1445,6 @@ internal partial class MainForm : Form
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
-        _chkAutoSummarization.Checked = _settings.EnableAutoSummarization;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
         _txtHeartbeatInterval.Text = _settings.StreamingHeartbeatIntervalSeconds.ToString();
 
@@ -1536,7 +1534,6 @@ internal partial class MainForm : Form
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
-        _settings.EnableAutoSummarization = _chkAutoSummarization.Checked;
 
         _stats.UpdateMaxEntries(maxLogs);
         _mcpStats.UpdateMaxEntries(maxLogs);

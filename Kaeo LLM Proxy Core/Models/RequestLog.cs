@@ -90,20 +90,4 @@ internal sealed class RequestLog
 
     /// <summary>Size of the outbound response body in bytes. -1 when unknown.</summary>
     public long ResponseBytes { get; set; }
-
-    /// <summary>
-    /// Number of times the request was retried due to context overflow and auto-summarization.
-    /// Zero means no retries were needed. Positive values indicate summarization occurred.
-    /// </summary>
-    public int SummarizationRetries { get; set; }
-
-    /// <summary>
-    /// Original message count before summarization. Only populated when summarization occurs.
-    /// </summary>
-    public int? OriginalMessageCount { get; set; }
-
-    /// <summary>
-    /// Message count after summarization. Only populated when summarization occurs.
-    /// </summary>
-    public int? SummarizedMessageCount { get; set; }
 }

@@ -180,7 +180,6 @@ partial class MainForm
         _chkApiExplorer = new CheckBox();
         _lblApiExplorerUrl = new Label();
         _lblApiSpecUrl = new Label();
-        _chkAutoSummarization = new CheckBox();
 
         _grpLogging = new GroupBox();
         _tlpLogging = new TableLayoutPanel();
@@ -963,16 +962,14 @@ partial class MainForm
         _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
         _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 10);
-        _tlpSettings.SetColumnSpan(_chkAutoSummarization, 2);
-        _tlpSettings.Controls.Add(_chkAutoSummarization, 0, 11);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 12);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 13);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 14);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 15);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1079,11 +1076,6 @@ partial class MainForm
         _lblApiSpecUrl.Name = "_lblApiSpecUrl";
         _lblApiSpecUrl.ForeColor = SystemColors.GrayText;
         _lblApiSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
-
-        _chkAutoSummarization.AutoSize = true;
-        _chkAutoSummarization.Margin = new Padding(4, 4, 4, 8);
-        _chkAutoSummarization.Name = "_chkAutoSummarization";
-        _chkAutoSummarization.Text = "Automatically summarize context and retry on context overflow";
 
         _chkStreamingHeartbeats.AutoSize = true;
         _chkStreamingHeartbeats.Margin = new Padding(4, 4, 4, 4);
@@ -2233,7 +2225,6 @@ partial class MainForm
     private CheckBox _chkApiExplorer;
     private Label _lblApiExplorerUrl;
     private Label _lblApiSpecUrl;
-    private CheckBox _chkAutoSummarization;
     private CheckBox _chkStreamingHeartbeats;
     private Label _lblHeartbeatInterval;
     private TextBox _txtHeartbeatInterval;
