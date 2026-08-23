@@ -178,7 +178,9 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_priority,
                     reasoning_effort,
                     reasoning_effort_values,
-                    reasoning_effort_format
+                    reasoning_effort_format,
+                    proactive_overflow_percent,
+                    proactive_overflow_tokens
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -242,7 +244,9 @@ internal sealed class AppDatabase : IDisposable
                         reasoning_effort_priority,
                         reasoning_effort,
                         reasoning_effort_values,
-                        reasoning_effort_format
+                        reasoning_effort_format,
+                        proactive_overflow_percent,
+                        proactive_overflow_tokens
                     )
                     VALUES (
                         $proxyName,
@@ -271,7 +275,9 @@ internal sealed class AppDatabase : IDisposable
                         $reasoningEffortPriority,
                         $reasoningEffort,
                         $reasoningEffortValues,
-                        $reasoningEffortFormat
+                        $reasoningEffortFormat,
+                        $proactiveOverflowPercent,
+                        $proactiveOverflowTokens
                     );
                     """;
 
@@ -1105,7 +1111,9 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
                     reasoning_effort TEXT NULL,
                     reasoning_effort_values TEXT NULL,
-                    reasoning_effort_format INTEGER NOT NULL DEFAULT 1
+                    reasoning_effort_format INTEGER NOT NULL DEFAULT 1,
+                    proactive_overflow_percent INTEGER NOT NULL DEFAULT 0,
+                    proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1655,6 +1663,8 @@ internal sealed class AppDatabase : IDisposable
             ? DbValue(string.Join(", ", mapping.ReasoningEffortValues))
             : DBNull.Value);
         command.Parameters.AddWithValue("$reasoningEffortFormat", (int)mapping.ReasoningEffortFormat);
+        command.Parameters.AddWithValue("$proactiveOverflowPercent", mapping.ProactiveOverflowPercent);
+        command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1698,6 +1708,8 @@ internal sealed class AppDatabase : IDisposable
             ? []
             : [.. reader.GetString(25).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
         ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(26)),
+        ProactiveOverflowPercent = reader.GetInt32(27),
+        ProactiveOverflowTokens = reader.GetInt32(28),
     };
 
     /// <summary>

@@ -42,6 +42,10 @@ internal sealed class ModelMappingDialog : Form
     private readonly TextBox _txtUpstreamTimeout = new();
     private readonly Label _lblContextWindow = new();
     private readonly TextBox _txtContextWindow = new();
+    private readonly Label _lblProactiveOverflowPercent = new();
+    private readonly NumericUpDown _nudProactiveOverflowPercent = new();
+    private readonly Label _lblProactiveOverflowTokens = new();
+    private readonly NumericUpDown _nudProactiveOverflowTokens = new();
     private readonly Label _lblTemperature = new();
     private readonly NumericUpDown _nudTemperature = new();
     private readonly Label _lblRepeatPenalty = new();
@@ -250,6 +254,20 @@ internal sealed class ModelMappingDialog : Form
     {
         get => int.TryParse(_txtContextWindow.Text, out int v) && v >= 0 ? v : 0;
         set => _txtContextWindow.Text = value <= 0 ? string.Empty : value.ToString();
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int ProactiveOverflowPercent
+    {
+        get => (int)_nudProactiveOverflowPercent.Value;
+        set => _nudProactiveOverflowPercent.Value = Math.Clamp(value, 0, 100);
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int ProactiveOverflowTokens
+    {
+        get => (int)_nudProactiveOverflowTokens.Value;
+        set => _nudProactiveOverflowTokens.Value = Math.Clamp(value, 0, (int)_nudProactiveOverflowTokens.Maximum);
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -518,39 +536,47 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_txtContextWindow, 2);
         _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
 
-        _tlpMain.Controls.Add(_lblTempPriority, 0, 8);
+        _tlpMain.Controls.Add(_lblProactiveOverflowPercent, 0, 8);
+        _tlpMain.SetColumnSpan(_nudProactiveOverflowPercent, 2);
+        _tlpMain.Controls.Add(_nudProactiveOverflowPercent, 1, 8);
+
+        _tlpMain.Controls.Add(_lblProactiveOverflowTokens, 0, 9);
+        _tlpMain.SetColumnSpan(_nudProactiveOverflowTokens, 2);
+        _tlpMain.Controls.Add(_nudProactiveOverflowTokens, 1, 9);
+
+        _tlpMain.Controls.Add(_lblTempPriority, 0, 10);
         _tlpMain.SetColumnSpan(_cmbTempPriority, 2);
-        _tlpMain.Controls.Add(_cmbTempPriority, 1, 8);
+        _tlpMain.Controls.Add(_cmbTempPriority, 1, 10);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 9);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 11);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 9);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 11);
 
-        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 10);
+        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 12);
         _tlpMain.SetColumnSpan(_cmbRepeatPenaltyPriority, 2);
-        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 10);
+        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 12);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 11);
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 13);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 11);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 13);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 12);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 14);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 13);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 15);
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 14);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 16);
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 15);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 17);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 18);
         _tlpMain.SetColumnSpan(_chkSynthesizeOpenAiMetadata, 3);
-        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 17);
+        _tlpMain.Controls.Add(_chkSynthesizeOpenAiMetadata, 0, 19);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 18);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 20);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 19);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 21);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 20);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 22);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -648,6 +674,36 @@ internal sealed class ModelMappingDialog : Form
             _txtContextWindow,
             $"Model context window size in tokens. Leave empty to use the default ({ModelMapping.DefaultContextWindowTokens:N0}).\n"
             + "Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).");
+
+        _lblProactiveOverflowPercent.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblProactiveOverflowPercent.AutoSize = true;
+        _lblProactiveOverflowPercent.Margin = new Padding(0, 8, 8, 4);
+        _lblProactiveOverflowPercent.Text = "Proactive 413 at (% of context):";
+
+        _nudProactiveOverflowPercent.Dock = DockStyle.Left;
+        _nudProactiveOverflowPercent.Margin = new Padding(0, 4, 0, 4);
+        _nudProactiveOverflowPercent.Maximum = 100;
+        _nudProactiveOverflowPercent.Minimum = 0;
+        _nudProactiveOverflowPercent.Size = new Size(90, 25);
+        _nudProactiveOverflowPercent.Value = 0;
+        _toolTip.SetToolTip(_nudProactiveOverflowPercent,
+            "When the estimated request size exceeds this percentage of the context window,\n"
+            + "return 413 immediately without calling upstream. 0 disables.");
+
+        _lblProactiveOverflowTokens.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblProactiveOverflowTokens.AutoSize = true;
+        _lblProactiveOverflowTokens.Margin = new Padding(0, 4, 8, 4);
+        _lblProactiveOverflowTokens.Text = "Proactive 413 at (tokens):";
+
+        _nudProactiveOverflowTokens.Dock = DockStyle.Left;
+        _nudProactiveOverflowTokens.Margin = new Padding(0, 4, 0, 4);
+        _nudProactiveOverflowTokens.Maximum = 1_000_000;
+        _nudProactiveOverflowTokens.Minimum = 0;
+        _nudProactiveOverflowTokens.Size = new Size(120, 25);
+        _nudProactiveOverflowTokens.Value = 0;
+        _toolTip.SetToolTip(_nudProactiveOverflowTokens,
+            "Absolute token threshold. Takes precedence over the percentage above.\n"
+            + "0 disables. Estimated as ~4 chars/token of the serialized request.");
 
         _lblTemperature.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTemperature.AutoSize = true;
@@ -1373,6 +1429,8 @@ internal sealed class ModelMappingDialog : Form
         dlg._chkSynthesizeOpenAiMetadata.Checked = mapping.SynthesizeOpenAiMetadata;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.ContextWindowTokens = mapping.ContextWindowTokens;
+        dlg.ProactiveOverflowPercent = mapping.ProactiveOverflowPercent;
+        dlg.ProactiveOverflowTokens = mapping.ProactiveOverflowTokens;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
         dlg.ReasoningEffortPriority = mapping.ReasoningEffortPriority;
@@ -1413,6 +1471,8 @@ internal sealed class ModelMappingDialog : Form
         mapping.SynthesizeOpenAiMetadata = dlg._chkSynthesizeOpenAiMetadata.Checked;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.ContextWindowTokens = dlg.ContextWindowTokens;
+        mapping.ProactiveOverflowPercent = dlg.ProactiveOverflowPercent;
+        mapping.ProactiveOverflowTokens = dlg.ProactiveOverflowTokens;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
         mapping.ReasoningEffortPriority = dlg.ReasoningEffortPriority;

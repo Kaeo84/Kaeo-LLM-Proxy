@@ -409,6 +409,33 @@ internal sealed class ModelMapping
     public bool SynthesizeOpenAiMetadata { get; set; }
 
     /// <summary>
+    /// Proactive context-overflow threshold as a percentage of the effective context window (1–100).
+    /// When the proxy estimates the incoming request exceeds this percentage of the context window,
+    /// it returns 413 immediately without calling upstream. 0 disables (default).
+    /// </summary>
+    public int ProactiveOverflowPercent { get; set; }
+
+    /// <summary>
+    /// Proactive context-overflow threshold as an absolute token count.
+    /// When set (> 0), takes precedence over <see cref="ProactiveOverflowPercent"/>.
+    /// 0 disables (default).
+    /// </summary>
+    public int ProactiveOverflowTokens { get; set; }
+
+    /// <summary>
+    /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
+    /// Absolute token count takes precedence over percentage.
+    /// </summary>
+    public int GetProactiveOverflowThreshold()
+    {
+        if (ProactiveOverflowTokens > 0)
+            return ProactiveOverflowTokens;
+        if (ProactiveOverflowPercent > 0)
+            return (int)(GetEffectiveContextWindow() * ProactiveOverflowPercent / 100.0);
+        return 0;
+    }
+
+    /// <summary>
     /// Creates a deep copy of this ModelMapping instance with all properties cloned.
     /// </summary>
     public ModelMapping Clone() => new()
@@ -440,6 +467,8 @@ internal sealed class ModelMapping
         RedactSensitiveJsonFields = RedactSensitiveJsonFields,
         ContextWindowTokens = ContextWindowTokens,
         SynthesizeOpenAiMetadata = SynthesizeOpenAiMetadata,
+        ProactiveOverflowPercent = ProactiveOverflowPercent,
+        ProactiveOverflowTokens = ProactiveOverflowTokens,
     };
 }
 

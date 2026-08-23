@@ -342,6 +342,44 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Estimates the token count of a serialized request body using a ~4 chars/token heuristic.
+    /// Intentionally conservative (overestimates) so the proactive 413 fires slightly early rather
+    /// than missing an overflow.
+    /// </summary>
+    private static int EstimateTokenCount(string body) => body.Length / 4;
+
+    /// <summary>
+    /// When the mapping's proactive overflow threshold is exceeded, writes a 413 response and
+    /// returns true so the caller skips the upstream call. Returns false when the request may proceed.
+    /// </summary>
+    private static async Task<bool> TryProactiveOverflowAsync(
+        ModelMapping? mapping,
+        string body,
+        string model,
+        HttpListenerResponse resp,
+        RequestLog log,
+        CancellationToken ct)
+    {
+        int threshold = mapping?.GetProactiveOverflowThreshold() ?? 0;
+        if (threshold <= 0)
+            return false;
+
+        int estimated = EstimateTokenCount(body);
+        if (estimated <= threshold)
+            return false;
+
+        log.Status = RequestStatus.Error;
+        log.StatusCode = 413;
+        log.ErrorMessage = $"Proactive context overflow: estimated {estimated} tokens exceeds threshold {threshold}";
+        resp.StatusCode = 413;
+        await WriteJsonAsync(resp, new
+        {
+            error = $"Estimated context size ({estimated} tokens) exceeds proactive overflow threshold ({threshold} tokens) for model '{model}'. Compaction needed.",
+        }, ct);
+        return true;
+    }
+
+    /// <summary>
     /// Sends <paramref name="req"/> to the resolved upstream URL, enforcing the per-mapping timeout
     /// via a linked <see cref="CancellationTokenSource"/>.
     /// </summary>
@@ -701,6 +739,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
                 isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
                 log.Streaming = isStreamingRequest;
+
+                // Proactive context-overflow check for OpenAI-native passthrough requests.
+                if (await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, ct))
+                    return;
+
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
                 upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
@@ -2591,6 +2634,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // reasoning_effort can be compared against the client body in the request log.
         if (_settings.CollectRequestDetails)
             log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
+
+        // Proactive context-overflow check: if the estimated token count exceeds the mapping's
+        // configured threshold, return 413 immediately so clients (e.g. Copilot) compact before
+        // we pay for an upstream round-trip that is guaranteed to overflow.
+        if (await TryProactiveOverflowAsync(mapping, upstreamBody, ollamaReq.Model, resp, log, ct))
+            return;
 
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
