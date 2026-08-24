@@ -117,60 +117,78 @@ internal sealed class ModuleHost
         ArgumentException.ThrowIfNullOrWhiteSpace(assemblyPath);
         string fullPath = Path.GetFullPath(assemblyPath);
 
-        if (!File.Exists(fullPath))
-            throw new FileNotFoundException($"The module file '{fullPath}' does not exist.", fullPath);
-
-        if (_database.FindModuleRegistryByPath(fullPath) is not null)
-            throw new InvalidOperationException($"This module is already registered:\n{fullPath}");
-
-        ModuleAssemblyLoadContext loadContext = new(fullPath);
-        IKaeoModule module;
         try
         {
-            Assembly assembly = loadContext.LoadFromAssemblyPath(fullPath);
-            module = CreateModuleInstance(assembly);
+            if (!File.Exists(fullPath))
+                throw new FileNotFoundException($"The module file '{fullPath}' does not exist.", fullPath);
+
+            if (_database.FindModuleRegistryByPath(fullPath) is not null)
+                throw new InvalidOperationException($"This module is already registered:\n{fullPath}");
+
+            ModuleAssemblyLoadContext loadContext = new(fullPath);
+            IKaeoModule module;
+            try
+            {
+                Assembly assembly = loadContext.LoadFromAssemblyPath(fullPath);
+                module = CreateModuleInstance(assembly);
+            }
+            catch
+            {
+                loadContext.Unload();
+                throw;
+            }
+
+            // Two assemblies must not fight over the same settings keys and schema objects.
+            if (_database.LoadModuleRegistry().Any(e =>
+                    string.Equals(e.ModuleId, module.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                loadContext.Unload();
+                throw new InvalidOperationException($"A module with id '{module.Id}' is already registered.");
+            }
+
+            ModuleRegistryEntry entry = new()
+            {
+                AssemblyPath = fullPath,
+                ModuleId = module.Id,
+                Name = module.Name,
+                Version = module.Version,
+                IsEnabled = true,
+                RegisteredUtc = DateTime.UtcNow,
+            };
+
+            try
+            {
+                string importDataDirectory = Path.GetDirectoryName(_database.DatabasePath) ?? AppContext.BaseDirectory;
+                module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, importDataDirectory));
+            }
+            catch
+            {
+                loadContext.Unload();
+                throw;
+            }
+
+            _database.InsertModuleRegistry(entry);
+            _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
+
+            Log.Information("Imported module {Name} {Version} from {Path}", module.Name, module.Version, fullPath);
+            ModulesChanged?.Invoke(this, EventArgs.Empty);
+            return entry;
         }
-        catch
+        catch (Exception ex)
         {
-            loadContext.Unload();
+            // Surface the full failure (message + stack) to the file log AND to the MCP activity
+            // log (database + Logs tab, MCP sub-tab) so a failed import is visible in the UI
+            // without needing to read the file log.
+            Log.Warning(ex, "Failed to import module {Path}", fullPath);
+            _activityLog.Write(new McpActivityEntry("Module", "import")
+            {
+                Target = Path.GetFileName(fullPath),
+                IsError = true,
+                ErrorMessage = ex.ToString(),
+                RequestDetail = $"Import module: {fullPath}",
+            });
             throw;
         }
-
-        // Two assemblies must not fight over the same settings keys and schema objects.
-        if (_database.LoadModuleRegistry().Any(e =>
-                string.Equals(e.ModuleId, module.Id, StringComparison.OrdinalIgnoreCase)))
-        {
-            loadContext.Unload();
-            throw new InvalidOperationException($"A module with id '{module.Id}' is already registered.");
-        }
-
-        ModuleRegistryEntry entry = new()
-        {
-            AssemblyPath = fullPath,
-            ModuleId = module.Id,
-            Name = module.Name,
-            Version = module.Version,
-            IsEnabled = true,
-            RegisteredUtc = DateTime.UtcNow,
-        };
-
-        try
-        {
-            string importDataDirectory = Path.GetDirectoryName(_database.DatabasePath) ?? AppContext.BaseDirectory;
-            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, importDataDirectory));
-        }
-        catch
-        {
-            loadContext.Unload();
-            throw;
-        }
-
-        _database.InsertModuleRegistry(entry);
-        _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
-
-        Log.Information("Imported module {Name} {Version} from {Path}", module.Name, module.Version, fullPath);
-        ModulesChanged?.Invoke(this, EventArgs.Empty);
-        return entry;
     }
 
     /// <summary>
@@ -317,8 +335,7 @@ internal sealed class ModuleHost
                 && t is { IsAbstract: false, IsInterface: false, IsGenericTypeDefinition: false })];
 
         if (candidates.Count == 0)
-            throw new InvalidOperationException(
-                "The assembly is not a Kaeo LLM Proxy module: no class implements IKaeoModule.");
+            throw new InvalidOperationException(BuildNoModuleDiagnostic(assembly, types));
 
         if (candidates.Count > 1)
             throw new InvalidOperationException(
@@ -336,6 +353,60 @@ internal sealed class ModuleHost
                 $"The module '{moduleType.FullName}' could not be constructed (a parameterless constructor is required): {ex.Message}",
                 ex);
         }
+    }
+
+    /// <summary>
+    /// Builds a detailed diagnostic explaining why no <see cref="IKaeoModule"/> implementation was
+    /// found. Distinguishes the two failure modes: the assembly has no module-like types at all
+    /// (wrong file selected), versus the assembly's IKaeoModule resolving to a different assembly
+    /// instance than the host's (type identity mismatch from a stale or mis-built module).
+    /// </summary>
+    private static string BuildNoModuleDiagnostic(Assembly assembly, Type[] types)
+    {
+        List<string> lines =
+        [
+            "The assembly is not a Kaeo LLM Proxy module: no class implements IKaeoModule.",
+            "",
+            $"  Module assembly : {assembly.FullName}",
+            $"  Module location : {assembly.Location}",
+            $"  Host IKaeoModule: {typeof(IKaeoModule).Assembly.FullName} @ {typeof(IKaeoModule).Assembly.Location}",
+            "",
+        ];
+
+        IEnumerable<Type> ikInterfaces = types
+            .SelectMany(t => t.GetInterfaces())
+            .Where(i => i.Name == "IKaeoModule")
+            .Distinct();
+
+        if (ikInterfaces.Any())
+        {
+            lines.Add("IKaeoModule interfaces found on module types (identity check):");
+            foreach (Type i in ikInterfaces)
+            {
+                bool same = ReferenceEquals(i, typeof(IKaeoModule));
+                lines.Add($"  {i.FullName} [{i.Assembly.GetName().Name}, v{i.Assembly.GetName().Version}] @ {i.Assembly.Location}");
+                lines.Add($"    same type identity as host's IKaeoModule? {same}");
+                if (!same)
+                {
+                    lines.Add("    ^^ TYPE IDENTITY MISMATCH: the module's IKaeoModule came from a different");
+                    lines.Add("       'Kaeo LLM Proxy Core' assembly instance than the host's. This happens when");
+                    lines.Add("       a stale/mis-built module bundles its own Core, or the host is an older");
+                    lines.Add("       build whose load context does not unify shared assemblies.");
+                }
+            }
+        }
+        else
+        {
+            lines.Add("No IKaeoModule interface found on any type in the assembly.");
+            lines.Add("This usually means the selected file is not a Kaeo LLM Proxy module at all");
+            lines.Add("(e.g. a stale build, a combined 'Kaeo LLM Proxy Modules.dll', or a dependency).");
+            lines.Add("");
+            lines.Add("Public non-nested classes in the assembly:");
+            foreach (Type t in types.Where(t => t.IsClass && !t.IsNested && !t.IsAbstract))
+                lines.Add($"  {t.FullName}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private void TryUpdateEntry(ModuleRegistryEntry entry)
