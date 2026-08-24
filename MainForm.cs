@@ -2400,11 +2400,16 @@ internal partial class MainForm : Form
 
     private void BtnImportModule_Click(object? sender, EventArgs e)
     {
+        // Open in the app's own Modules/ subdirectory — where the build copies the freshly
+        // built module DLLs — so the user sees the current modules first instead of whatever
+        // folder was last browsed.
+        string modulesDir = Path.Combine(AppContext.BaseDirectory, "Modules");
         using OpenFileDialog dialog = new()
         {
             Title = "Import Kaeo LLM Proxy Module",
             Filter = "Kaeo LLM Proxy modules (*.dll)|*.dll",
             Multiselect = false,
+            InitialDirectory = Directory.Exists(modulesDir) ? modulesDir : AppContext.BaseDirectory,
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.FileName))
