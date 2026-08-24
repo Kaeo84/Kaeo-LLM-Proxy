@@ -20,13 +20,17 @@
 	<ModuleLargeDependencyNames>Microsoft.ML.OnnxRuntime;Microsoft.Windows.SDK.NET</ModuleLargeDependencyNames>
 	</PropertyGroup>
 
-  <!-- ═══════════════════════════════════════════════════════════════════
-	   Target for MODULE projects: embed small runtime dependencies
-	   Runs before CoreCompile so resources reach the Csc task.
-	   ═══════════════════════════════════════════════════════════════════ -->
-  <Target Name="EmbedSmallModuleDependencies"
-		  BeforeTargets="CoreCompile"
-		  Condition="'$(IsModuleProject)' == 'true'">
+	<!-- ═══════════════════════════════════════════════════════════════════
+		 Target for MODULE projects: embed small runtime dependencies
+		 Runs before CoreCompile. The SDK's _GenerateCompileInputs target
+		 (a CoreCompile dependency) populates _CoreCompileResourceInputs
+		 from EmbeddedResource items, then our target adds module-specific
+		 dependencies directly to _CoreCompileResourceInputs — the exact
+		 item group the Csc task reads for its Resources parameter.
+		 ═══════════════════════════════════════════════════════════════════ -->
+	<Target Name="EmbedSmallModuleDependencies"
+			BeforeTargets="CoreCompile"
+			Condition="'$(IsModuleProject)' == 'true'">
 
 	<!-- Build the list of files to embed from ReferenceCopyLocalPaths.
 		 Filter: .dll extension AND empty DestinationSubDirectory (managed assemblies resolve to
@@ -52,25 +56,32 @@
 		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
 		Condition="'%(ModuleEmbedCandidate.Filename)' == 'Microsoft.ML.OnnxRuntime'
 						 OR '%(ModuleEmbedCandidate.Filename)' == 'Microsoft.Windows.SDK.NET'" />
-		<!-- Exclude RID-specific native assets. Their source path lives under runtimes/{rid}/native/
-			 in the NuGet cache; when a RuntimeIdentifier is set they flatten to the output root and
-			 would otherwise be embedded. Native libraries must remain separate files on disk so the
-			 native loader can find them. Add new native-providing package IDs here as needed. -->
+		<!-- Exclude RID-specific native assets that must remain separate files on disk. Their
+			 source path lives under runtimes/{rid}/native/ in the NuGet cache; when a
+			 RuntimeIdentifier is set they flatten to the output root and would otherwise be
+			 embedded. The Code Vector Store module embeds its LibGit2Sharp native library
+			 (git2-*.dll) as a moduledep/ resource and extracts it at runtime (see
+			 CodeVectorModule.EnsureLibGit2NativeLibraryAvailable), so it is intentionally NOT
+			 excluded here. OnnxRuntime native stays separate (large). Add other native-providing
+			 package IDs here as needed. -->
 		<ModuleEmbedCandidate Remove="@(ModuleEmbedCandidate)"
-		Condition="'%(ModuleEmbedCandidate.NuGetPackageId)' == 'LibGit2Sharp.NativeBinaries'
-					 OR '%(ModuleEmbedCandidate.NuGetPackageId)' == 'Microsoft.ML.OnnxRuntime'" />
+			Condition="'%(ModuleEmbedCandidate.NuGetPackageId)' == 'Microsoft.ML.OnnxRuntime'" />
 	</ItemGroup>
 
 	<Message Importance="High"
 		Text="ModuleBuild: Embedding @(ModuleEmbedCandidate->Count()) dependencies: @(ModuleEmbedCandidate->'%(Filename)%(Extension)', ', ')" />
 
-	<!-- Pass /resource: parameters directly to the Csc compiler via OtherFlags.
-		 This bypasses the EmbeddedResource item pipeline which doesn't reliably
-		 reach Csc in .NET SDK projects. -->
-	<PropertyGroup Condition="'@(ModuleEmbedCandidate)' != ''">
-		<_ModuleResourceFlags>@(ModuleEmbedCandidate->'/resource:moduledep/%(Filename)%(Extension);%(Identity)', ' ')</_ModuleResourceFlags>
-		<OtherFlags>$(OtherFlags) $(_ModuleResourceFlags)</OtherFlags>
-	</PropertyGroup>
+	<!-- Add dependency DLLs directly to _CoreCompileResourceInputs — the item group the
+		 Csc task reads for its Resources parameter. LogicalName produces /resource:file,
+		 moduledep/name.dll flags; WithCulture=false satisfies the Csc condition filter.
+		 This bypasses the GenerateResource/CreateManifestResourceNames pipeline (which
+		 doesn't exist in projects without .resx files) and feeds resources straight to csc. -->
+	<ItemGroup Condition="'@(ModuleEmbedCandidate)' != ''">
+		<_CoreCompileResourceInputs Include="@(ModuleEmbedCandidate)">
+			<LogicalName>moduledep/%(Filename)%(Extension)</LogicalName>
+			<WithCulture>false</WithCulture>
+		</_CoreCompileResourceInputs>
+	</ItemGroup>
 
 	<!-- Remove embedded dependencies from the copy-to-output list (they're now in the DLL) -->
 	<ItemGroup Condition="'@(ModuleEmbedCandidate)' != ''">
@@ -128,6 +139,38 @@
 
 	<Message Importance="Normal"
 		Text="ModuleBuild: Copied @(_ModuleOutputFiles->Count()) files to $(ModulesOutputDir)" />
+	</Target>
+
+	<!-- ═══════════════════════════════════════════════════════════════════
+		 Target for MODULE projects: copy this module's own build output into the
+		 host's Modules/ folder. Runs after every module build so the host's
+		 Modules/ directory always holds the latest module, even when only that
+		 module (not the host) is built. The host's CopyModulesToHostOutput target
+		 still runs on host builds to refresh all modules at once.
+		 ═══════════════════════════════════════════════════════════════════ -->
+	<Target Name="CopyModuleToHostOutput"
+			AfterTargets="Build"
+			Condition="'$(IsModuleProject)' == 'true'">
+
+	<!-- The host lives at the repo root (where this targets file is). All projects share
+		 the same TFM/RID, so the host's Modules/ folder is at a predictable path. -->
+	<PropertyGroup>
+		<_HostModulesDir>$(MSBuildThisFileDirectory)bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\Modules</_HostModulesDir>
+	</PropertyGroup>
+
+	<MakeDir Directories="$(_HostModulesDir)" />
+
+	<!-- This module's own build output (module DLL + deps.json + shipped dependencies). -->
+	<ItemGroup>
+		<_ModuleOwnOutput Include="$(OutputPath)**\*.*" />
+	</ItemGroup>
+
+	<Copy SourceFiles="@(_ModuleOwnOutput)"
+			DestinationFiles="@(_ModuleOwnOutput->'$(_HostModulesDir)\%(RecursiveDir)%(Filename)%(Extension)')"
+			SkipUnchangedFiles="true" />
+
+	<Message Importance="Normal"
+		Text="ModuleBuild: Copied @(_ModuleOwnOutput->Count()) files from this module to $(_HostModulesDir)" />
 	</Target>
 
 	<!-- ═══════════════════════════════════════════════════════════════════════

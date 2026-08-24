@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.InteropServices;
 using Kaeo.LlmProxy.Core.Modules;
 using Serilog;
 
@@ -96,10 +98,107 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_repository = new CodeVectorRepository(context.Database);
 		_settings = _repository.LoadSettings();
 
-        _dataDirectory = context.DataDirectory;
-        _moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
+		_dataDirectory = context.DataDirectory;
+		_moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
 		_embeddingBackend = EmbeddingBackendFactory.Create(_settings, context.Secrets, context.Host);
+
+		// Make the embedded LibGit2Sharp native library available before any git operation
+		// triggers its first native load (Repository.Clone/Fetch, etc.).
+		EnsureLibGit2NativeLibraryAvailable();
+	}
+
+	/// <summary>
+	/// Makes the embedded LibGit2Sharp native library (git2-*.dll) available to the native
+	/// loader. The native DLL is embedded into this module's assembly at build time as a
+	/// 'moduledep/' manifest resource (see ModuleBuild.targets). At init we extract it to a
+	/// stable directory under the module data dir and point LibGit2Sharp at it via its
+	/// built-in NativeLibraryPath property, with a NativeLibrary.SetDllImportResolver safety
+	/// net. This keeps the module self-contained: no separate native file needs to sit beside
+	/// the module DLL, which was the source of intermittent "native library not found" errors.
+	/// </summary>
+	private void EnsureLibGit2NativeLibraryAvailable()
+	{
+		try
+		{
+			string? moduleDataDir = _moduleDataDir;
+			if (moduleDataDir is null)
+				return;
+
+			Assembly moduleAssembly = Assembly.GetExecutingAssembly();
+			string? resourceName = moduleAssembly.GetManifestResourceNames()
+				.FirstOrDefault(n => n.StartsWith("moduledep/git2-", StringComparison.OrdinalIgnoreCase)
+					&& n.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+
+			if (resourceName is null)
+			{
+				// Not embedded (e.g. built before the embedding change); fall back to the
+				// on-disk resolution handled by the module load context.
+				Log.Debug("No embedded LibGit2Sharp native resource found; relying on on-disk resolution.");
+				return;
+			}
+
+			string nativeFileName = Path.GetFileName(resourceName);
+			string nativeDir = Path.Combine(moduleDataDir, "native");
+			Directory.CreateDirectory(nativeDir);
+			string nativePath = Path.Combine(nativeDir, nativeFileName);
+
+			using (Stream? stream = moduleAssembly.GetManifestResourceStream(resourceName))
+			{
+				if (stream is null)
+				{
+					Log.Warning("Embedded resource {Resource} not found at runtime.", resourceName);
+					return;
+				}
+				long size = stream.Length;
+				if (!File.Exists(nativePath) || new FileInfo(nativePath).Length != size)
+				{
+					using var file = File.Create(nativePath);
+					stream.CopyTo(file);
+					Log.Information("Extracted LibGit2Sharp native library to {Path}", nativePath);
+				}
+			}
+
+			Assembly libgit2sharpAssembly = typeof(LibGit2Sharp.Repository).Assembly;
+
+			// Primary: point LibGit2Sharp at the extracted native library via its built-in
+			// NativeLibraryPath property. Best-effort via reflection so we don't hard-depend
+			// on the exact API surface at compile time.
+			foreach (Type type in libgit2sharpAssembly.GetExportedTypes())
+			{
+				PropertyInfo? prop = type.GetProperty("NativeLibraryPath", BindingFlags.Public | BindingFlags.Static);
+				if (prop is { CanWrite: true })
+				{
+					prop.SetValue(null, nativeDir);
+					Log.Debug("Set LibGit2Sharp {Type}.NativeLibraryPath = {Dir}", type.FullName, nativeDir);
+					break;
+				}
+			}
+
+			// Safety net: register a DllImport resolver so any NativeLibrary.TryLoad("git2-...")
+			// resolves to the extracted file. Guarded against double registration (LibGit2Sharp
+			// may register its own resolver, in which case NativeLibraryPath above is in effect).
+			try
+			{
+				NativeLibrary.SetDllImportResolver(libgit2sharpAssembly, (requestedName, _, _) =>
+				{
+					string baseName = Path.GetFileNameWithoutExtension(requestedName);
+					string candidate = Path.Combine(nativeDir, baseName + ".dll");
+					if (File.Exists(candidate))
+						return NativeLibrary.Load(candidate);
+					return IntPtr.Zero;
+				});
+				Log.Debug("Registered LibGit2Sharp native DllImport resolver for {Dir}", nativeDir);
+			}
+			catch (Exception ex)
+			{
+				Log.Debug(ex, "LibGit2Sharp native resolver already registered; relying on NativeLibraryPath.");
+			}
+		}
+		catch (Exception ex)
+		{
+			Log.Warning(ex, "Failed to prepare LibGit2Sharp native library; git mirrors may fail to load.");
+		}
 	}
 
 	public System.Windows.Forms.TabPage CreateConfigPage() => new CodeVectorConfigPage(this);
