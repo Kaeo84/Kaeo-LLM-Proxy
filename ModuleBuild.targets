@@ -102,22 +102,44 @@
 
 	<MakeDir Directories="$(ModulesOutputDir)" />
 
-	<!-- Collect all files recursively from each module's build output -->
+	<!-- Collect all files from each module's build output. The build is RID-specific
+			 (Directory.Build.props sets RuntimeIdentifier), so each module's output lives under
+			 bin\{Config}\{TFM}\{RID}\. Root the glob at that RID folder so %(RecursiveDir) is
+			 relative to it — otherwise the module's own RID folder gets duplicated into
+			 $(ModulesOutputDir) (e.g. Modules\win-x64\), which the host never probes. The host's
+			 $(OutputPath) already includes the RID, so modules land flat in $(ModulesOutputDir).
+			 When no RID is set the empty $(RuntimeIdentifier) collapses and this falls back to
+			 collecting directly from the TFM output folder. -->
 	<ItemGroup>
-	  <_ModuleOutputFiles Include="%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)\**\*.*"
-		Condition="Exists('%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)')" />
+		<_ModuleOutputFiles Include="%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\**\*.*"
+		Condition="Exists('%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)')" />
+		<_ModuleOutputFiles Include="%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)\**\*.*"
+		Condition="'$(RuntimeIdentifier)' == '' and Exists('%(ModuleProject.Identity)\bin\$(Configuration)\$(TargetFramework)')" />
 	</ItemGroup>
 
-	<!-- Create subdirectories needed to preserve the module's directory structure -->
+	<!-- Create subdirectories needed to preserve any sub-structure below the RID folder
+			 (e.g. runtimes/{rid}/native/) -->
 	<MakeDir Directories="@(_ModuleOutputFiles->'$(ModulesOutputDir)\%(RecursiveDir)')" />
 
-	<!-- Copy preserving relative paths so runtimes/{rid}/native/ stays intact -->
+	<!-- Copy preserving relative paths below the RID folder -->
 	<Copy SourceFiles="@(_ModuleOutputFiles)"
-		  DestinationFiles="@(_ModuleOutputFiles->'$(ModulesOutputDir)\%(RecursiveDir)%(Filename)%(Extension)')"
-		  SkipUnchangedFiles="true" />
+			DestinationFiles="@(_ModuleOutputFiles->'$(ModulesOutputDir)\%(RecursiveDir)%(Filename)%(Extension)')"
+			SkipUnchangedFiles="true" />
 
 	<Message Importance="Normal"
-	  Text="ModuleBuild: Copied @(_ModuleOutputFiles->Count()) files to $(ModulesOutputDir)" />
-  </Target>
+		Text="ModuleBuild: Copied @(_ModuleOutputFiles->Count()) files to $(ModulesOutputDir)" />
+	</Target>
+
+	<!-- ═══════════════════════════════════════════════════════════════════════
+		 Target for HOST project: remove the Modules folder on Clean so stale module
+		 files (from a removed/renamed module, or a previous layout) do not linger.
+		 The Modules folder is created by CopyModulesToHostOutput and is not part of
+		 the normal build output, so the default Clean target never removes it.
+		 ═══════════════════════════════════════════════════════════════════════ -->
+	<Target Name="CleanModulesFromHostOutput"
+			AfterTargets="Clean"
+			Condition="'$(CopyModulesToHost)' == 'true'">
+	<RemoveDir Directories="$(OutputPath)Modules" />
+	</Target>
 
 </Project>
