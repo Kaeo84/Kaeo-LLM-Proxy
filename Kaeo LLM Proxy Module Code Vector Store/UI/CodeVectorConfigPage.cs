@@ -47,6 +47,10 @@ internal sealed class CodeVectorConfigPage : TabPage
     private Label _logSummaryLabel = null!;
     private ListView _queueListView = null!;
     private ListView _logListView = null!;
+    private Button _startEngineButton = null!;
+    private Button _stopEngineButton = null!;
+    private Button _clearQueueButton = null!;
+    private ToolTip _statusTooltip = null!;
     private System.Windows.Forms.Timer? _refreshTimer;
     private long _lastRefreshedLogged = -1;
 
@@ -308,23 +312,37 @@ internal sealed class CodeVectorConfigPage : TabPage
                private GroupBox BuildStatusGroup()
                {
                    var group = new GroupBox { Text = "Status", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(10), Margin = new Padding(0, 4, 0, 4) };
-                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 4 };
+                   var layout = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1, RowCount = 5 };
                    layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+                   layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                    layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 200));
                    layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));
 
                    var statusPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
-                   _engineStatusLabel = new Label { Text = "Engine: â€”", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
+                   _engineStatusLabel = new Label { Text = "Engine: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
                    _queueStatusLabel = new Label { Text = "Queue: 0", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
-                   _currentStatusLabel = new Label { Text = "Current: â€”", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
+                   _currentStatusLabel = new Label { Text = "Current: —", AutoSize = true, Margin = new Padding(3, 6, 14, 3) };
                    _workersStatusLabel = new Label { Text = "Workers: 0", AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
                    statusPanel.Controls.AddRange([_engineStatusLabel, _queueStatusLabel, _currentStatusLabel, _workersStatusLabel]);
                    layout.Controls.Add(statusPanel, 0, 0);
 
+                   _statusTooltip = new ToolTip();
+                   _statusTooltip.SetToolTip(_engineStatusLabel, "Engine is stopped");
+
+                   var buttonPanel = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 4) };
+                   _startEngineButton = new Button { Text = "Start Engine", AutoSize = true, Margin = new Padding(3) };
+                   _startEngineButton.Click += StartEngineButton_Click;
+                   _stopEngineButton = new Button { Text = "Stop Engine", AutoSize = true, Margin = new Padding(3) };
+                   _stopEngineButton.Click += StopEngineButton_Click;
+                   _clearQueueButton = new Button { Text = "Clear Queue", AutoSize = true, Margin = new Padding(3) };
+                   _clearQueueButton.Click += ClearQueueButton_Click;
+                   buttonPanel.Controls.AddRange([_startEngineButton, _stopEngineButton, _clearQueueButton]);
+                   layout.Controls.Add(buttonPanel, 0, 1);
+
                    _logSummaryLabel = new Label { Text = "Logged: 0 | Errors: 0", AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 0, 0, 4) };
-                   layout.Controls.Add(_logSummaryLabel, 0, 1);
+                   layout.Controls.Add(_logSummaryLabel, 0, 2);
 
                    _queueListView = new ListView
                    {
@@ -339,7 +357,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _queueListView.Columns.Add("Collection", 130);
                    _queueListView.Columns.Add("Path", 250);
                    _queueListView.Columns.Add("Source", 60);
-                   layout.Controls.Add(_queueListView, 0, 2);
+                   layout.Controls.Add(_queueListView, 0, 3);
 
                    var logHeader = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
                    logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -365,7 +383,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    _logListView.Columns.Add("Target", 160);
                    _logListView.Columns.Add("Detail", 230);
                    logHeader.Controls.Add(_logListView, 0, 1);
-                   layout.Controls.Add(logHeader, 0, 3);
+                   layout.Controls.Add(logHeader, 0, 4);
 
                    group.Controls.Add(layout);
                    return group;
@@ -377,12 +395,18 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        var engine = _module.Indexer;
                        var running = engine.IsRunning;
+                       var stopReason = _module.EngineStopReason;
                        _engineStatusLabel.Text = running ? "Engine: Running" : "Engine: Stopped";
                        _engineStatusLabel.ForeColor = running ? Color.Green : SystemColors.GrayText;
+                       _statusTooltip.SetToolTip(_engineStatusLabel, running ? "Engine is running" : (stopReason is null ? "Engine is stopped" : $"Engine stopped: {stopReason}"));
                        _queueStatusLabel.Text = $"Queue: {engine.QueueDepth}";
                        _workersStatusLabel.Text = $"Workers: {engine.ActiveWorkerCount}";
                        var current = engine.CurrentJob;
-                       _currentStatusLabel.Text = current is null ? "Current: â€”" : $"Current: {current.Path}";
+                       _currentStatusLabel.Text = current is null ? "Current: —" : $"Current: {current.Path}";
+
+                       _startEngineButton.Enabled = !running;
+                       _stopEngineButton.Enabled = running;
+                       _clearQueueButton.Enabled = engine.QueueDepth > 0;
 
                        var activity = _module.Activity;
                        _logSummaryLabel.Text = $"Logged: {activity.TotalLogged} | Errors: {activity.ErrorCount}";
@@ -421,6 +445,36 @@ internal sealed class CodeVectorConfigPage : TabPage
                        _engineStatusLabel.Text = $"Status error: {ex.Message}";
                        _engineStatusLabel.ForeColor = Color.OrangeRed;
                    }
+               }
+
+               private void StartEngineButton_Click(object? sender, EventArgs e)
+               {
+                   try
+                   {
+                       _module.StartEngine();
+                       RefreshStatus();
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Start Engine Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+               }
+
+               private async void StopEngineButton_Click(object? sender, EventArgs e)
+               {
+                   try
+                   {
+                       await _module.StopEngineAsync("stopped from UI");
+                       RefreshStatus();
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Stop Engine Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+               }
+
+               private void ClearQueueButton_Click(object? sender, EventArgs e)
+               {
+                   try
+                   {
+                       _module.Indexer.ClearQueue();
+                       RefreshStatus();
+                   }
+                   catch (Exception ex) { MessageBox.Show(ex.Message, "Clear Queue Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
                }
 
                private void RefreshRepos()

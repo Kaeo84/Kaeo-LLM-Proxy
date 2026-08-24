@@ -120,8 +120,13 @@ internal sealed class GitMirrorManager
             try
             {
                 var content = await File.ReadAllTextAsync(fullPath, ct);
-                _indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror");
-                queued++;
+                // onlyIfChanged skips files whose content hash matches the stored hash, so a
+                // sync cycle only queues what actually changed (and nothing at all when the
+                // engine is stopped) instead of re-queueing every file each interval.
+                if (_indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror", onlyIfChanged: true))
+                    queued++;
+                else
+                    skipped++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

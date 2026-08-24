@@ -107,25 +107,48 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	public bool IsRunning => _indexingEngine?.IsRunning == true;
 	public event EventHandler<string>? StatusChanged;
 
+	/// <summary>Why the indexing engine last stopped, or null while it is running.</summary>
+	internal string? EngineStopReason => _indexingEngine?.StopReason;
+
+	/// <summary>
+	/// Starts (or restarts) only the indexing engine. Does not touch the mirror sync timer or
+	/// dispose the embedding backend / vector database.
+	/// </summary>
+	internal void StartEngine()
+	{
+		Indexer.Start();
+	}
+
+	/// <summary>
+	/// Stops only the indexing engine, recording why. Does not dispose the embedding backend or
+	/// vector database, so search and re-indexing remain available after a stop.
+	/// </summary>
+	internal Task StopEngineAsync(string? reason = null)
+	{
+		if (_indexingEngine is not { IsRunning: true })
+			return Task.CompletedTask;
+		return _indexingEngine.StopAsync(reason);
+	}
+
 	public Task StartAsync(CancellationToken cancellationToken = default)
 	{
-        _started = true;
-        if (_indexingEngine is not null)
-            _indexingEngine.Start();
-        if (_mirrorManager is not null)
-            _mirrorManager.StartTimer();
+		_started = true;
+		if (_indexingEngine is not null)
+			_indexingEngine.Start();
+		if (_mirrorManager is not null)
+			_mirrorManager.StartTimer();
 		StatusChanged?.Invoke(this, "Running");
 		return Task.CompletedTask;
 	}
 
 	public async Task StopAsync()
 	{
-        _started = false;
-        _mirrorManager?.StopTimer();
+		_started = false;
+		_mirrorManager?.StopTimer();
 		if (_indexingEngine is { IsRunning: true })
-			await _indexingEngine.StopAsync();
+			await _indexingEngine.StopAsync("module stopped");
 		_embeddingBackend?.Dispose();
-        _vectorDb?.Dispose();
+		_vectorDb?.Dispose();
 		StatusChanged?.Invoke(this, "Stopped");
 	}
 

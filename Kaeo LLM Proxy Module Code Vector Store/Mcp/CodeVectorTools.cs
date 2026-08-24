@@ -50,8 +50,10 @@ internal sealed class CodeVectorTools
         try
         {
             if (content.Length > _module.Settings.MaxFileSizeKb * 1024) return $"File too large (max {_module.Settings.MaxFileSizeKb} KB)";
-            _module.Indexer.EnqueueIndexFile(collection, path, content, "agent");
-            return $"Queued {path} for indexing in collection '{collection}'";
+            bool queued = _module.Indexer.EnqueueIndexFile(collection, path, content, "agent");
+            return queued
+                ? $"Queued {path} for indexing in collection '{collection}'"
+                : $"Not queued: the indexing engine is not running. Start it from the Code Vector Store config tab and re-submit.";
         }
         catch (Exception ex) { return $"Index failed: {ex.Message}"; }
     }
