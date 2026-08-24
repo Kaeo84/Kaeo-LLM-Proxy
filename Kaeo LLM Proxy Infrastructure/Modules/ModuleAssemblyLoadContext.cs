@@ -123,6 +123,22 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         if (assemblyName.Name is null)
             return null;
 
+        // 0. If the assembly is already loaded in the default context, reuse that exact
+        //    instance. This is the strongest guarantee that shared contract types (e.g.
+        //    IKaeoModule) keep a single type identity between the host and this module.
+        try
+        {
+            foreach (Assembly a in AssemblyLoadContext.Default.Assemblies)
+            {
+                if (string.Equals(a.GetName().Name, assemblyName.Name, StringComparison.OrdinalIgnoreCase))
+                    return null;
+            }
+        }
+        catch
+        {
+            // Ignore enumeration failures; fall through to the other resolution steps.
+        }
+
         // 1. If the host's deps.json can resolve this assembly, defer to the default
         //    context so shared assemblies (contracts, Serilog, Microsoft.Data.Sqlite, ...)
         //    unify with the host's copies. Using the host's deps.json (not mere file
@@ -160,16 +176,13 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             Log.Debug(ex, "Module AssemblyDependencyResolver failed for {Assembly} in {Context}", assemblyName.Name, Name);
         }
 
-        // 4. Application (EXE) directory: the module's NuGet dependencies may have been
-        //    copied to the host output by the solution build but not into the module's
-        //    subdirectory. Load directly to avoid a failed deferral to the default context
-        //    (which requires the assembly to be in the host's deps.json).
-        string hostFileCandidate = Path.Combine(AppContext.BaseDirectory, $"{assemblyName.Name}.dll");
-        if (File.Exists(hostFileCandidate))
-            return LoadFromAssemblyPath(hostFileCandidate);
-
-        // 5. Not found anywhere: defer to the default context (app deps.json, OS probing).
-        Log.Debug("Assembly {Assembly} not found in module dir {ModuleDir} or host dir; deferring to default context",
+        // 4. Not found in the module's own location: defer to the default context. The
+        //    default context probes the host's base directory, so a shared assembly (contracts,
+        //    Core, ...) sitting beside the host executable loads as a single instance there —
+        //    keeping its type identity unified with the host. Loading it into this context
+        //    instead would create a second, non-unified copy (e.g. a second IKaeoModule type
+        //    that the host's typeof(IKaeoModule).IsAssignableFrom cannot see).
+        Log.Debug("Assembly {Assembly} not found in module dir {ModuleDir}; deferring to default context",
             assemblyName.Name, _moduleDirectory);
         return null;
     }
