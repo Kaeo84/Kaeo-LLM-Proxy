@@ -78,10 +78,13 @@ internal sealed class GitMirrorManager
             _repository.UpdateMirrorSync(mirror.Id, DateTime.UtcNow.ToString("o"), "success");
             _activity?.Log("sync_success", mirror.CollectionName, "Mirror synced successfully");
         }
-        catch (Exception ex) when (ex is IOException or LibGit2SharpException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _activity?.Log("error", mirror.CollectionName, $"Mirror sync failed: {ex.Message}");
+            // Full exception (type, inner exceptions, stack) goes to the MCP activity log so
+            // native load failures and other unexpected errors are diagnosable in the Logs tab.
+            _activity?.Log("error", mirror.CollectionName, $"Mirror sync failed: {ex}");
             _repository.UpdateMirrorSync(mirror.Id, null, $"failed: {ex.Message}");
+            throw;
         }
     }
 

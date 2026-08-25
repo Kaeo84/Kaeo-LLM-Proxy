@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.InteropServices;
 using Kaeo.LlmProxy.Core.Modules;
 using Serilog;
 
@@ -112,10 +111,10 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	/// Makes the embedded LibGit2Sharp native library (git2-*.dll) available to the native
 	/// loader. The native DLL is embedded into this module's assembly at build time as a
 	/// 'moduledep/' manifest resource (see ModuleBuild.targets). At init we extract it to a
-	/// stable directory under the module data dir and point LibGit2Sharp at it via its
-	/// built-in NativeLibraryPath property, with a NativeLibrary.SetDllImportResolver safety
-	/// net. This keeps the module self-contained: no separate native file needs to sit beside
-	/// the module DLL, which was the source of intermittent "native library not found" errors.
+	/// stable directory under the module data dir and point LibGit2Sharp at it via
+	/// GlobalSettings.NativeLibraryPath, which its DllImport resolver consults on the first
+	/// native load. This keeps the module self-contained: no separate native file needs to
+	/// sit beside the module DLL.
 	/// </summary>
 	private void EnsureLibGit2NativeLibraryAvailable()
 	{
@@ -159,40 +158,22 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 				}
 			}
 
-			Assembly libgit2sharpAssembly = typeof(LibGit2Sharp.Repository).Assembly;
-
-			// Primary: point LibGit2Sharp at the extracted native library via its built-in
-			// NativeLibraryPath property. Best-effort via reflection so we don't hard-depend
-			// on the exact API surface at compile time.
-			foreach (Type type in libgit2sharpAssembly.GetExportedTypes())
-			{
-				PropertyInfo? prop = type.GetProperty("NativeLibraryPath", BindingFlags.Public | BindingFlags.Static);
-				if (prop is { CanWrite: true })
-				{
-					prop.SetValue(null, nativeDir);
-					Log.Debug("Set LibGit2Sharp {Type}.NativeLibraryPath = {Dir}", type.FullName, nativeDir);
-					break;
-				}
-			}
-
-			// Safety net: register a DllImport resolver so any NativeLibrary.TryLoad("git2-...")
-			// resolves to the extracted file. Guarded against double registration (LibGit2Sharp
-			// may register its own resolver, in which case NativeLibraryPath above is in effect).
+			// Point LibGit2Sharp at the extracted directory via its built-in
+			// GlobalSettings.NativeLibraryPath (LibGit2Sharp appends the git2 file name
+			// itself). Must be set before the first native call. Do NOT register our own
+			// NativeLibrary.SetDllImportResolver here: LibGit2Sharp's NativeMethods type
+			// initializer registers its own resolver, and a pre-existing registration makes
+			// that initializer throw InvalidOperationException — the exact
+			// "type initializer for 'LibGit2Sharp.Core.NativeMethods' threw an exception"
+			// failure this method is meant to prevent.
 			try
 			{
-				NativeLibrary.SetDllImportResolver(libgit2sharpAssembly, (requestedName, _, _) =>
-				{
-					string baseName = Path.GetFileNameWithoutExtension(requestedName);
-					string candidate = Path.Combine(nativeDir, baseName + ".dll");
-					if (File.Exists(candidate))
-						return NativeLibrary.Load(candidate);
-					return IntPtr.Zero;
-				});
-				Log.Debug("Registered LibGit2Sharp native DllImport resolver for {Dir}", nativeDir);
+				LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
+				Log.Debug("Set LibGit2Sharp GlobalSettings.NativeLibraryPath = {Dir}", nativeDir);
 			}
-			catch (Exception ex)
+			catch (LibGit2Sharp.LibGit2SharpException ex)
 			{
-				Log.Debug(ex, "LibGit2Sharp native resolver already registered; relying on NativeLibraryPath.");
+				Log.Warning(ex, "Could not set LibGit2Sharp NativeLibraryPath; relying on default resolution.");
 			}
 		}
 		catch (Exception ex)

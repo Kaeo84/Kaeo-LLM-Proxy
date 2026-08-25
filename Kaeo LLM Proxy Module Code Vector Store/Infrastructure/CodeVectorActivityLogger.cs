@@ -29,7 +29,8 @@ internal sealed class CodeVectorActivityLogger
         if (isError) Interlocked.Increment(ref _errorCount);
         Interlocked.Increment(ref _totalLogged);
 
-        if (level != CodeVectorMcpLogLevel.None)
+        // Errors always reach the MCP log; the configured level gates only informational entries.
+        if (isError || level != CodeVectorMcpLogLevel.None)
         {
             _activityLog.Write(new McpActivityEntry("CodeVector", operation)
             {

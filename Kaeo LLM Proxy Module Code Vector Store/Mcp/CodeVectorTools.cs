@@ -38,7 +38,11 @@ internal sealed class CodeVectorTools
             }
             return sb.ToString();
         }
-        catch (Exception ex) { return $"Search failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            _module.Activity.Log("error", collection ?? "", $"Search failed: {ex}");
+            return $"Search failed: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Index a file's content into the vector store")]
@@ -55,7 +59,11 @@ internal sealed class CodeVectorTools
                 ? $"Queued {path} for indexing in collection '{collection}'"
                 : $"Not queued: the indexing engine is not running. Start it from the Code Vector Store config tab and re-submit.";
         }
-        catch (Exception ex) { return $"Index failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            _module.Activity.Log("error", collection, $"Index failed: {ex}");
+            return $"Index failed: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Register and sync a git repository mirror")]
@@ -71,7 +79,11 @@ internal sealed class CodeVectorTools
             var mirror = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix);
             return $"Mirror '{collection}' registered and synced successfully";
         }
-        catch (Exception ex) { return $"Mirror sync failed: {ex.Message}"; }
+        catch (Exception ex)
+        {
+            _module.Activity.Log("error", collection, $"Mirror sync failed: {ex.Message}");
+            return $"Mirror sync failed: {ex.Message}";
+        }
     }
 
     [McpServerTool, Description("Get status of collections and mirrors")]

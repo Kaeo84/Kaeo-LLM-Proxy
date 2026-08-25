@@ -530,7 +530,11 @@ internal sealed class CodeVectorConfigPage : TabPage
                                  _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix);
                                 RefreshRepos();
                             }
-                            catch (Exception ex) { MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                            catch (Exception ex)
+                            {
+                                _module.Activity.Log("error", m.CollectionName, $"Edit repo failed: {ex}");
+                                MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            }
                    }
                }
 
@@ -556,10 +560,14 @@ internal sealed class CodeVectorConfigPage : TabPage
                    if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    try
                    {
-                       await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
-                       _module.Activity.Log("ui_index", m.CollectionName, $"Re-indexed files for {m.CollectionName}");
-                   }
-                   catch (Exception ex) { MessageBox.Show(ex.Message, "Index Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                           await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                           _module.Activity.Log("ui_index", m.CollectionName, $"Re-indexed files for {m.CollectionName}");
+                       }
+                       catch (Exception ex)
+                       {
+                           _module.Activity.Log("error", m.CollectionName, $"Index failed: {ex}");
+                           MessageBox.Show(ex.Message, "Index Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       }
                }
 
                private async void SyncRepoButton_Click(object? sender, EventArgs e)
@@ -567,10 +575,14 @@ internal sealed class CodeVectorConfigPage : TabPage
                    if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    try
                    {
-                       await _module.MirrorManager.SyncMirrorAsync(m, CancellationToken.None);
-                       RefreshRepos();
-                   }
-                   catch (Exception ex) { MessageBox.Show(ex.Message, "Sync Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                           await _module.MirrorManager.SyncMirrorAsync(m, CancellationToken.None);
+                           RefreshRepos();
+                       }
+                       catch (Exception ex)
+                       {
+                           _module.Activity.Log("error", m.CollectionName, $"Sync failed: {ex.Message}");
+                           MessageBox.Show(ex.Message, "Sync Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       }
                }
 
                private void RepoStatusButton_Click(object? sender, EventArgs e)
@@ -595,11 +607,15 @@ internal sealed class CodeVectorConfigPage : TabPage
                    try
                    {
                        // Reindex = clear the collection, then re-walk the mirror and re-enqueue all files.
-                       _module.VectorDb.DeleteCollection(m.CollectionName);
-                       await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
-                       _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex: collection cleared + files re-queued");
-                   }
-                   catch (Exception ex) { MessageBox.Show(ex.Message, "Reindex Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                           _module.VectorDb.DeleteCollection(m.CollectionName);
+                           await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                           _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex: collection cleared + files re-queued");
+                       }
+                       catch (Exception ex)
+                       {
+                           _module.Activity.Log("error", m.CollectionName, $"Reindex failed: {ex}");
+                           MessageBox.Show(ex.Message, "Reindex Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       }
                }
 
                private void BackendCombo_SelectedIndexChanged(object? sender, EventArgs e)
