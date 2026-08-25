@@ -29,7 +29,12 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
         {
             ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion },
             ServerInstructions =
-                "Provides tools contributed by loaded modules; use tools/list to discover them.",
+                "MCP server of the Kaeo LLM Proxy host. All tools are contributed by loaded " +
+                "modules (for example web_search/web_fetch for web search, ssh_* for remote " +
+                "command execution, and code_* for the code vector store); the exact tool set " +
+                "depends on which modules are installed and enabled. Call tools/list to " +
+                "discover the available tools - each tool's description and input schema " +
+                "explain when and how to call it.",
         };
 
         foreach (object target in _moduleHost.GetMcpToolTargets(session))

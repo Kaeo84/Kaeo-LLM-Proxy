@@ -5,6 +5,13 @@ using System.Text;
 
 namespace Kaeo.LlmProxy.Module.CodeVector;
 
+/// <summary>
+/// The MCP tools exposed by the Code Vector Store module: semantic search, single-file
+/// indexing, mirror registration/sync, status inspection, and maintenance. Engine state is
+/// checked per invocation, and failures are reported as text results so the calling agent
+/// always sees what went wrong.
+/// </summary>
+[McpServerToolType]
 internal sealed class CodeVectorTools
 {
     private readonly CodeVectorModule _module;
@@ -16,12 +23,16 @@ internal sealed class CodeVectorTools
         _session = session;
     }
 
-    [McpServerTool, Description("Search code semantically using vector embeddings")]
+    [McpServerTool(Name = "code_search"), Description(
+        "Semantic search across the code vector store: embeds the query and returns the most " +
+        "similar indexed code chunks, each with file path, line range, and similarity score. " +
+        "Use this instead of text search to find functions, classes, or patterns by meaning. " +
+        "Call code_list_collections first when you do not know which collection to search.")]
     public async Task<string> CodeSearch(
-        [Description("The search query")] string query,
-        [Description("Collection name (optional)")] string? collection = null,
-        [Description("Number of results to return (default 5)")] int topK = 5,
-        [Description("Filter by file path prefix (optional)")] string? pathFilter = null)
+        [Description("Natural language description or code snippet to search for.")] string query,
+        [Description("Collection to search in. Optional; searches every collection when omitted. Call code_list_collections to discover names.")] string? collection = null,
+        [Description("Maximum number of results to return. Optional; defaults to 5.")] int topK = 5,
+        [Description("Only include files whose path starts with this prefix, e.g. 'src/Services'. Optional.")] string? pathFilter = null)
     {
         try
         {
@@ -45,11 +56,17 @@ internal sealed class CodeVectorTools
         }
     }
 
-    [McpServerTool, Description("Index a file's content into the vector store")]
+    [McpServerTool(Name = "code_index"), Description(
+        "Indexes a single file into the vector store: chunks the content, generates " +
+        "embeddings, and upserts the chunks. Call this whenever a file is created or modified " +
+        "outside a registered mirror so search results stay current; files inside a registered " +
+        "git mirror or watched directory are synced automatically and do not need this. The " +
+        "file is queued for background indexing, which requires the indexing engine to be " +
+        "running.")]
     public string CodeIndex(
-        [Description("Collection name")] string collection,
-        [Description("File path")] string path,
-        [Description("File content")] string content)
+        [Description("Name of the collection the file belongs to. Call code_list_collections to discover names.")] string collection,
+        [Description("Relative path of the file within the collection, e.g. 'src/Services/OrderService.cs'. Keys the chunks and deduplicates re-indexed files.")] string path,
+        [Description("Full text content of the file. Limited by the module's max file size setting.")] string content)
     {
         try
         {
@@ -66,14 +83,18 @@ internal sealed class CodeVectorTools
         }
     }
 
-    [McpServerTool, Description("Register and sync a git repository mirror, or watch a local directory/file share")]
+    [McpServerTool(Name = "code_sync_repo"), Description(
+        "Registers a code source for a collection and syncs it into the vector store: either " +
+        "a git repository (cloned/pulled on the configured branch) or a local directory/file " +
+        "share that is watched for changes. Re-syncs an already registered source on every " +
+        "call. Use code_status afterwards to check the last sync result.")]
     public async Task<string> CodeSyncRepo(
-        [Description("Collection name")] string collection,
-        [Description("Git remote URL (ignored when localDirectory is set)")] string remoteUrl,
-        [Description("Branch name (default: main)")] string branch = "main",
-        [Description("Credential name for authentication (optional)")] string? credentialName = null,
-        [Description("Path prefix to filter indexing, e.g. 'dotnet' for only that subfolder (optional)")] string? pathPrefix = null,
-        [Description("Local directory or file-share path to watch instead of a git repo (optional). When set, remoteUrl/branch are ignored and changes are picked up locally without a push.")] string? localDirectory = null)
+        [Description("Name of the collection to register the source for. Created when it does not exist yet.")] string collection,
+        [Description("Git remote URL to clone/pull from, e.g. 'https://github.com/org/repo.git'. Ignored when localDirectory is set.")] string? remoteUrl = null,
+        [Description("Git branch to track. Optional; defaults to 'main'. Ignored when localDirectory is set.")] string branch = "main",
+        [Description("Name of a credential in the host's central credential store used for repository authentication. Optional.")] string? credentialName = null,
+        [Description("Only index files whose path starts with this prefix, e.g. 'dotnet' for a single subfolder. Optional; indexes everything when omitted.")] string? pathPrefix = null,
+        [Description("Local directory or file-share path to watch instead of a git repository. When set, remoteUrl and branch are ignored and file changes are picked up locally without a push.")] string? localDirectory = null)
     {
         try
         {
@@ -82,6 +103,8 @@ internal sealed class CodeVectorTools
                 _ = await _module.MirrorManager.RegisterMirrorAsync(collection, localDirectory, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix, sourceKind: MirrorRegistration.SourceKindDir, sourcePath: localDirectory);
                 return $"Local directory mirror '{collection}' ({localDirectory}) registered and synced successfully";
             }
+            if (string.IsNullOrWhiteSpace(remoteUrl))
+                return "Provide either a git remoteUrl or a localDirectory to sync.";
             _ = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix);
             return $"Mirror '{collection}' registered and synced successfully";
         }
@@ -92,7 +115,11 @@ internal sealed class CodeVectorTools
         }
     }
 
-    [McpServerTool, Description("List all collections with file and chunk counts, to discover what is indexed and where to search")]
+    [McpServerTool(Name = "code_list_collections"), Description(
+        "Lists every collection in the vector store with its file count, chunk count, " +
+        "embedding model, and vector dimension. Use this to discover what code is indexed and " +
+        "which collection name to pass to code_search, code_index, and the other " +
+        "collection-scoped tools.")]
     public string CodeListCollections()
     {
         try
@@ -112,7 +139,12 @@ internal sealed class CodeVectorTools
         }
     }
 
-    [McpServerTool, Description("Get status of collections and mirrors")]
+    [McpServerTool(Name = "code_status"), Description(
+        "Reports the overall state of the Code Vector Store: the active embedding backend and " +
+        "model, the vector dimension, every collection with file and chunk counts, and every " +
+        "registered mirror (git repository or watched directory) with its source and last " +
+        "sync time/status. Use this to confirm the store is healthy before searching or after " +
+        "syncing.")]
     public string CodeStatus()
     {
         try
@@ -147,10 +179,14 @@ internal sealed class CodeVectorTools
         catch (Exception ex) { return $"Status check failed: {ex.Message}"; }
     }
 
-    [McpServerTool, Description("Delete a collection or path prefix from the vector store")]
+    [McpServerTool(Name = "code_remove"), Description(
+        "Deletes indexed data from the vector store. With a path prefix, removes only the " +
+        "files whose path starts with that prefix; without one, deletes the ENTIRE collection. " +
+        "This is destructive and cannot be undone - call it only to purge stale or unwanted " +
+        "code context, and re-index or re-sync afterwards if the data is still needed.")]
     public string CodeRemove(
-        [Description("Collection name")] string collection,
-        [Description("Path prefix to delete (optional, deletes entire collection if omitted)")] string? pathPrefix = null)
+        [Description("Name of the collection to delete from.")] string collection,
+        [Description("Path prefix selecting the files to delete, e.g. 'src/Legacy'. Optional but strongly recommended: when omitted, the entire collection is deleted.")] string? pathPrefix = null)
     {
         try
         {
@@ -168,8 +204,13 @@ internal sealed class CodeVectorTools
         catch (Exception ex) { return $"Remove failed: {ex.Message}"; }
     }
 
-    [McpServerTool, Description("Reindex all files in a collection")]
-    public string CodeReindex([Description("Collection name")] string collection)
+    [McpServerTool(Name = "code_reindex"), Description(
+        "Queues a full re-embedding of every file in a collection: all chunks are regenerated " +
+        "and upserted. Use this after the embedding model or chunking settings changed, or " +
+        "when search results look stale. Requires the indexing engine to be running; check " +
+        "progress with code_status.")]
+    public string CodeReindex(
+        [Description("Name of the collection to reindex. Call code_list_collections to discover names.")] string collection)
     {
         try
         {

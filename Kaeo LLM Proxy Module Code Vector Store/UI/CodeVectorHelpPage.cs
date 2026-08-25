@@ -21,7 +21,14 @@ internal static class CodeVectorHelpPage
     private const string HelpText = """
         CODE VECTOR STORE MODULE
         Provides embeddings and a vector store for code search via MCP tools.
-        TOOLS: code_search, code_index, code_sync_repo, code_status, code_remove, code_reindex
+        TOOLS:
+          code_search            Semantic search across indexed code chunks.
+          code_index             Index/refresh a single file (agent push).
+          code_sync_repo         Register and sync a git mirror or watched directory.
+          code_list_collections  List collections with file/chunk counts.
+          code_status            Backend, collection, and mirror status.
+          code_remove            Delete a collection or a path prefix within one.
+          code_reindex           Re-embed every file in a collection.
         BACKENDS: Remote (HTTP /v1/embeddings), Local ONNX (CPU, model.onnx + vocab.txt)
         SYNC: Agent push via code_index, Git mirror via LibGit2Sharp with periodic pull.
         """;
