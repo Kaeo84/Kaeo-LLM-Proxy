@@ -1245,7 +1245,7 @@ internal partial class MainForm : Form
 
             rows.Add(new HeartbeatDisplayRow(
                 modelName,
-                mapping.EnableHeartbeats && _settings.EnableStreamingHeartbeats,
+                mapping.IsEnabled && mapping.EnableHeartbeats && _settings.EnableStreamingHeartbeats,
                 snapshot?.Attempts ?? 0,
                 snapshot?.Count ?? 0,
                 snapshot?.Failures ?? 0,
@@ -1352,6 +1352,11 @@ internal partial class MainForm : Form
         }
 
         public readonly string Model;
+        /// <summary>
+        /// Effective heartbeat-enabled state: the model is enabled in settings, heartbeats are
+        /// enabled for that model, and the global streaming-heartbeat switch is on. Any of
+        /// these being false makes this model not send heartbeats.
+        /// </summary>
         public readonly bool Enabled;
         public readonly long Attempts;
         public readonly long Count;
