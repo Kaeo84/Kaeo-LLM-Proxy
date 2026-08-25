@@ -279,7 +279,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        HeaderStyle = ColumnHeaderStyle.Nonclickable,
                    };
                    _reposListView.Columns.Add("Collection", 140);
-                   _reposListView.Columns.Add("Remote URL", 260);
+                   _reposListView.Columns.Add("Source", 260);
                     _reposListView.Columns.Add("Branch", 70);
                     _reposListView.Columns.Add("Mirror Path", 220);
                    _reposListView.Columns.Add("Path Prefix", 100);
@@ -503,6 +503,12 @@ internal sealed class CodeVectorConfigPage : TabPage
                private MirrorRegistration? GetSelectedRepo()
                    => _reposListView.SelectedItems.Count > 0 ? _reposListView.SelectedItems[0].Tag as MirrorRegistration : null;
 
+               /// <summary>Resolves the effective source (git URL or local directory path) and kind for a mirror dialog.</summary>
+               private static (string Kind, string Source) ResolveMirrorSource(RepoDialog dlg)
+                   => dlg.IsLocalDirectory
+                       ? (MirrorRegistration.SourceKindDir, dlg.DirectoryPath!)
+                       : (MirrorRegistration.SourceKindGit, dlg.RemoteUrl);
+
                private void AddRepoButton_Click(object? sender, EventArgs e)
                {
                    using var dlg = new RepoDialog(null);
@@ -510,7 +516,8 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        try
                        {
-                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix);
+                            var (kind, source) = ResolveMirrorSource(dlg);
+                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
                             RefreshRepos();
                         }
                         catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -526,15 +533,16 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        try
                        {
+                           var (kind, source) = ResolveMirrorSource(dlg);
                            _module.Repository.DeleteMirror(m.CollectionName);
-                                 _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, dlg.RemoteUrl, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix);
-                                RefreshRepos();
-                            }
-                            catch (Exception ex)
-                            {
-                                _module.Activity.Log("error", m.CollectionName, $"Edit repo failed: {ex}");
-                                MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            }
+                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
+                           RefreshRepos();
+                       }
+                       catch (Exception ex)
+                       {
+                           _module.Activity.Log("error", m.CollectionName, $"Edit repo failed: {ex}");
+                           MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       }
                    }
                }
 
@@ -592,7 +600,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    var col = collections.FirstOrDefault(c => c.Name == m.CollectionName);
                    var sb = new StringBuilder();
                    sb.AppendLine($"Collection: {m.CollectionName}");
-                   sb.AppendLine($"Remote: {m.RemoteUrl} [{m.Branch}]");
+                   sb.AppendLine($"Source: {m.DescribeSource}");
                    sb.AppendLine($"Last Sync: {m.LastSyncUtc ?? "never"}");
                    sb.AppendLine($"Sync Status: {m.LastSyncStatus ?? "pending"}");
                    if (col is not null) sb.AppendLine($"Indexed: {col.FileCount} files, {col.ChunkCount} chunks");

@@ -66,23 +66,49 @@ internal sealed class CodeVectorTools
         }
     }
 
-    [McpServerTool, Description("Register and sync a git repository mirror")]
+    [McpServerTool, Description("Register and sync a git repository mirror, or watch a local directory/file share")]
     public async Task<string> CodeSyncRepo(
         [Description("Collection name")] string collection,
-        [Description("Git remote URL")] string remoteUrl,
+        [Description("Git remote URL (ignored when localDirectory is set)")] string remoteUrl,
         [Description("Branch name (default: main)")] string branch = "main",
         [Description("Credential name for authentication (optional)")] string? credentialName = null,
-        [Description("Path prefix to filter indexing, e.g. 'dotnet' for only that subfolder (optional)")] string? pathPrefix = null)
+        [Description("Path prefix to filter indexing, e.g. 'dotnet' for only that subfolder (optional)")] string? pathPrefix = null,
+        [Description("Local directory or file-share path to watch instead of a git repo (optional). When set, remoteUrl/branch are ignored and changes are picked up locally without a push.")] string? localDirectory = null)
     {
         try
         {
-            var mirror = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix);
+            if (!string.IsNullOrWhiteSpace(localDirectory))
+            {
+                _ = await _module.MirrorManager.RegisterMirrorAsync(collection, localDirectory, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix, sourceKind: MirrorRegistration.SourceKindDir, sourcePath: localDirectory);
+                return $"Local directory mirror '{collection}' ({localDirectory}) registered and synced successfully";
+            }
+            _ = await _module.MirrorManager.RegisterMirrorAsync(collection, remoteUrl, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix);
             return $"Mirror '{collection}' registered and synced successfully";
         }
         catch (Exception ex)
         {
             _module.Activity.Log("error", collection, $"Mirror sync failed: {ex.Message}");
             return $"Mirror sync failed: {ex.Message}";
+        }
+    }
+
+    [McpServerTool, Description("List all collections with file and chunk counts, to discover what is indexed and where to search")]
+    public string CodeListCollections()
+    {
+        try
+        {
+            var collections = _module.VectorDb.ListCollections();
+            if (collections.Count == 0) return "No collections are indexed yet. Register a mirror (git repo or local directory) to index code.";
+            var sb = new StringBuilder();
+            sb.AppendLine($"Found {collections.Count} collection(s):");
+            foreach (var col in collections)
+                sb.AppendLine($"  - {col.Name}: {col.FileCount} files, {col.ChunkCount} chunks (model: {col.EmbeddingModel}, dim: {col.Dimension})");
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            _module.Activity.Log("error", "", $"List collections failed: {ex.Message}");
+            return $"List collections failed: {ex.Message}";
         }
     }
 
@@ -107,12 +133,13 @@ internal sealed class CodeVectorTools
             }
             if (mirrors.Count > 0)
             {
-                sb.AppendLine("Git Mirrors:");
+                sb.AppendLine("Mirrors:");
                 foreach (var mirror in mirrors)
                 {
                     var lastSync = mirror.LastSyncUtc ?? "never";
-                    sb.AppendLine($"  â€¢ {mirror.CollectionName}: {mirror.RemoteUrl} [{mirror.Branch}]");
-                    sb.AppendLine($"    Last sync: {lastSync}");
+                    var status = mirror.LastSyncStatus ?? "pending";
+                    sb.AppendLine($"  - {mirror.CollectionName}: {mirror.DescribeSource}");
+                    sb.AppendLine($"    Last sync: {lastSync} | Status: {status}");
                 }
             }
             return sb.ToString();

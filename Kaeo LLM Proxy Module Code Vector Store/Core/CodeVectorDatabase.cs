@@ -211,6 +211,23 @@ internal sealed class CodeVectorDatabase : IDisposable
         }
     }
 
+    public void DeleteFile(string collectionName, string path)
+    {
+        lock (_lock)
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $col AND path = $path)";
+            AddParam(cmd, "$col", collectionName);
+            AddParam(cmd, "$path", path);
+            cmd.ExecuteNonQuery();
+            using var cmd2 = _connection.CreateCommand();
+            cmd2.CommandText = "DELETE FROM codevector_files WHERE collection_name = $col AND path = $path";
+            AddParam(cmd2, "$col", collectionName);
+            AddParam(cmd2, "$path", path);
+            cmd2.ExecuteNonQuery();
+        }
+    }
+
     public IReadOnlyList<string> ListFilePaths(string collectionName, string source)
     {
         lock (_lock)

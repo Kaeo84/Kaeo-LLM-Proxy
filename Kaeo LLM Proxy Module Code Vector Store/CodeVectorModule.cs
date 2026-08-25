@@ -280,7 +280,7 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
         lock (_vectorDatabaseLock)
         {
             string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
-            _mirrorManager ??= new GitMirrorManager(moduleDataDir, Repository, EnsureIndexingEngine(), _settings, _activity, Secrets);
+            _mirrorManager ??= new GitMirrorManager(moduleDataDir, Repository, EnsureVectorDatabase(), EnsureIndexingEngine(), _settings, _activity, Secrets);
             if (_started)
                 _mirrorManager.StartTimer();
             return _mirrorManager;

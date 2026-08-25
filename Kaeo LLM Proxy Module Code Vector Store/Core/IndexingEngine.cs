@@ -132,6 +132,24 @@ internal sealed class IndexingEngine
         return true;
     }
 
+    /// <summary>
+    /// Enqueues deletion of a single file's chunks (and its file row) from the collection.
+    /// Used by mirror sync to drop files that no longer exist in the source. Returns true
+    /// when queued; false when the engine is stopped (mirrors the <see cref="EnqueueIndexFile"/> gate).
+    /// </summary>
+    public bool EnqueueDeleteFile(string collection, string path)
+    {
+        if (!IsRunning)
+        {
+            _activity?.Log("skip", $"{collection}:{path}", "Engine stopped; delete not queued");
+            return false;
+        }
+        var info = new QueueItemInfo("DeleteFile", collection, path, "-");
+        _pendingJobs.Enqueue(info);
+        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeleteFile, Collection = collection, Path = path, Info = info });
+        return true;
+    }
+
     public void EnqueueDeletePath(string collection, string pathPrefix)
     {
         var info = new QueueItemInfo("DeletePath", collection, pathPrefix, "-");
@@ -165,6 +183,7 @@ internal sealed class IndexingEngine
                     switch (job.Type)
                     {
                         case JobType.IndexFile: await IndexFileAsync(job.Collection!, job.Path!, job.Content!, job.Source!, ct); break;
+                        case JobType.DeleteFile: DeleteFileAsync(job.Collection!, job.Path!); break;
                         case JobType.DeletePath: _db.DeleteFilesByPathPrefix(job.Collection!, job.Path!); break;
                         case JobType.DeleteCollection: _db.DeleteCollection(job.Collection!); break;
                         case JobType.Reindex: _activity?.Log("reindex", job.Collection!, "Reindex requested"); break;
@@ -263,13 +282,19 @@ internal sealed class IndexingEngine
         _activity?.Log("file_complete", $"{collection}:{path}", $"Indexed {chunks.Count} chunks");
     }
 
+    private void DeleteFileAsync(string collection, string path)
+    {
+        _db.DeleteFile(collection, path);
+        _activity?.Log("file_deleted", $"{collection}:{path}", "Removed stale file from index");
+    }
+
     private static string ComputeSha256(string content)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private enum JobType { IndexFile, DeletePath, DeleteCollection, Reindex }
+    private enum JobType { IndexFile, DeleteFile, DeletePath, DeleteCollection, Reindex }
     private sealed class IndexJob
     {
         public JobType Type { get; init; }

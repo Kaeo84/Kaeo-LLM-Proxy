@@ -54,7 +54,7 @@ internal sealed class CodeVectorRepository
     public IReadOnlyList<MirrorRegistration> LoadMirrors()
     {
         return _db.Query(
-            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
+            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
             r => new MirrorRegistration
             {
                 Id = r.GetInt32(0),
@@ -64,17 +64,19 @@ internal sealed class CodeVectorRepository
                 CredentialName = r.IsDBNull(4) ? null : r.GetString(4),
                 MirrorPath = r.IsDBNull(5) ? null : r.GetString(5),
                 PathPrefix = r.IsDBNull(6) ? null : r.GetString(6),
-                LastSyncUtc = r.IsDBNull(7) ? null : r.GetString(7),
-                LastSyncStatus = r.IsDBNull(8) ? null : r.GetString(8),
+                SourceKind = r.IsDBNull(7) ? MirrorRegistration.SourceKindGit : r.GetString(7),
+                SourcePath = r.IsDBNull(8) ? null : r.GetString(8),
+                LastSyncUtc = r.IsDBNull(9) ? null : r.GetString(9),
+                LastSyncStatus = r.IsDBNull(10) ? null : r.GetString(10),
             });
     }
 
-    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null, string? pathPrefix = null)
+    public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null, string? pathPrefix = null, string sourceKind = MirrorRegistration.SourceKindGit, string? sourcePath = null)
     {
         _db.Execute(
-            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path, path_prefix) VALUES ($col, $url, $branch, $cred, $path, $prefix) " +
-            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path, path_prefix = excluded.path_prefix",
-            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); AddParam(cmd, "$prefix", (object?)pathPrefix ?? DBNull.Value); });
+            "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path) VALUES ($col, $url, $branch, $cred, $path, $prefix, $kind, $src) " +
+            "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path, path_prefix = excluded.path_prefix, source_kind = excluded.source_kind, source_path = excluded.source_path",
+            cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); AddParam(cmd, "$prefix", (object?)pathPrefix ?? DBNull.Value); AddParam(cmd, "$kind", sourceKind); AddParam(cmd, "$src", (object?)sourcePath ?? DBNull.Value); });
         return LoadMirrors().First(m => m.CollectionName == collectionName);
     }
 
@@ -110,6 +112,10 @@ internal sealed class CodeVectorRepository
             db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN mirror_path TEXT NULL", _ => { });
         if (!columns.Contains("path_prefix", StringComparer.OrdinalIgnoreCase))
             db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN path_prefix TEXT NULL", _ => { });
+        if (!columns.Contains("source_kind", StringComparer.OrdinalIgnoreCase))
+            db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'git'", _ => { });
+        if (!columns.Contains("source_path", StringComparer.OrdinalIgnoreCase))
+            db.Execute("ALTER TABLE mcp_codevector_repos ADD COLUMN source_path TEXT NULL", _ => { });
     }
 
     private const string SharedSchema = """
@@ -123,6 +129,8 @@ internal sealed class CodeVectorRepository
         credential_name TEXT NULL,
         mirror_path TEXT NULL,
         path_prefix TEXT NULL,
+        source_kind TEXT NOT NULL DEFAULT 'git',
+        source_path TEXT NULL,
         last_sync_utc TEXT NULL,
         last_sync_status TEXT NULL);
         """;
