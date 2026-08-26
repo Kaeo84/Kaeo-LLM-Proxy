@@ -239,7 +239,7 @@ internal sealed class IndexingEngine
         _activity?.Log("file_start", $"{collection}:{path}", $"Chunked into {chunks.Count} pieces, source={source}");
         _db.GetOrCreateCollection(collection, _backend.ModelName, _backend.Dimension);
         var fileId = _db.UpsertFile(collection, path, hash, source, chunks.Count);
-        _db.DeleteFileChunks(fileId);
+        _db.DeleteFileChunks(fileId, collection);
 
         const int batchSize = 16;
         var batchTasks = new List<Func<Task>>();
@@ -261,7 +261,7 @@ internal sealed class IndexingEngine
                     {
                         var chunk = batch[j];
                         var embedding = j < embeddings.Length ? embeddings[j] : [];
-                        _db.InsertChunk(fileId, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
+                        _db.InsertChunk(fileId, collection, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
                     }
                 }
                 finally
