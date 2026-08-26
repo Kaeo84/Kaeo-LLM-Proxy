@@ -32,3 +32,16 @@ table is unavailable.
 - [x] 6. `IndexingEngine`: pass collection name into `InsertChunk`/`DeleteFileChunks`
 - [x] 7. Build and fix any compilation errors
 - [x] 8. Commit to git
+
+## Follow-up (verification via Local Test MCP)
+- [x] Functional test via Local Test MCP: `code_search` read path returns relevant results; `code_index`
+      write path re-indexes and the file becomes the top hit (round-trip OK).
+- [x] Gap found: legacy collection `Kaeo-LLM-Proxy` stored `dimension = 0`, which would keep the
+      native path's `queryDim == storedDim` guard from ever engaging.
+- [x] Fix: `GetOrCreateCollection` repairs stored dimension 0 from the active backend's dimension;
+      `EnsureVecTable` infers the dimension from existing chunks and persists it. Committed as
+      `1c3f151`.
+- [ ] User action: restart the app (running Local Test instance is an older binary; the cached
+      `CodeVectorDatabase` instance predates the `_vecAvailable` field). After restart, the first
+      index/search repairs the dimension, creates + backfills `cv_vec_{id}_2560`, and native KNN
+      engages. Confirm via log: "sqlite-vec extension loaded" and "created native vector table".
