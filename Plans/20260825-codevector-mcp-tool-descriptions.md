@@ -24,4 +24,4 @@ Rewrite the attribute metadata in `Kaeo LLM Proxy Module Code Vector Store/Mcp/C
 - [x] 3. Update host server-level MCP descriptions — McpServerOptionsFactory instructions and McpApiExplorer OpenAPI info text
 - [x] 4. Document MCP tool authoring contract in .github/copilot-instructions.md
 - [x] 5. Build the solution and verify no errors
-- [ ] 6. Commit changes to git
+- [x] 6. Commit changes to git
