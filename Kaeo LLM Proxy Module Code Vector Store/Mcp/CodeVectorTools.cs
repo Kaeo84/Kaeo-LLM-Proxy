@@ -31,12 +31,13 @@ internal sealed class CodeVectorTools
     public async Task<string> CodeSearch(
         [Description("Natural language description or code snippet to search for.")] string query,
         [Description("Collection to search in. Optional; searches every collection when omitted. Call code_list_collections to discover names.")] string? collection = null,
-        [Description("Maximum number of results to return. Optional; defaults to 5.")] int topK = 5,
+        [Description("Maximum number of results to return. Optional; defaults to the store's Default Top K setting when omitted.")] int? topK = null,
         [Description("Only include files whose path starts with this prefix, e.g. 'src/Services'. Optional.")] string? pathFilter = null)
     {
         try
         {
-            var results = await _module.SearchEngine.SearchAsync(query, _module.EmbeddingBackend, collection, topK, pathFilter, CancellationToken.None);
+            int effectiveTopK = topK is > 0 ? topK.Value : _module.Settings.DefaultTopK;
+            var results = await _module.SearchEngine.SearchAsync(query, _module.EmbeddingBackend, collection, effectiveTopK, pathFilter, CancellationToken.None);
             if (results.Count == 0) return "No results found.";
             var sb = new StringBuilder();
             sb.AppendLine($"Found {results.Count} result(s):\n");

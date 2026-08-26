@@ -12,7 +12,7 @@ internal static class CodeVectorHelpPage
             Dock = System.Windows.Forms.DockStyle.Fill,
             BorderStyle = System.Windows.Forms.BorderStyle.None,
             BackColor = System.Drawing.SystemColors.Window,
-            Text = HelpText,
+            Text = HelpText + "\n" + CodeVectorSettingsHelp.BuildText(),
         };
         page.Controls.Add(body);
         return page;

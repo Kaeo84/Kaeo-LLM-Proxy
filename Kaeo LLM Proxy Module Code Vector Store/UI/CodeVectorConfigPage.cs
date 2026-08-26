@@ -30,6 +30,8 @@ internal sealed class CodeVectorConfigPage : TabPage
     private NumericUpDown _topKBox = null!;
     private NumericUpDown _syncBox = null!;
     private TextBox _vectorDatabasePathBox = null!;
+    private LinkLabel _helpLink = null!;
+    private ToolTip _helpTooltip = null!;
     private ComboBox _logLevelCombo = null!;
     private CheckBox _chkSearch = null!;
     private CheckBox _chkIndex = null!;
@@ -59,6 +61,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         _module = module;
         BuildUi();
         WireAutoSave();
+        WireHelpTooltips();
         UpdateBackendVisibility();
         RefreshRepos();
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 2000 };
@@ -78,12 +81,23 @@ internal sealed class CodeVectorConfigPage : TabPage
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = 8,
             Padding = new Padding(14, 8, 14, 8),
         };
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int row = 0; row < main.RowCount; row++)
             main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        // Header with Help link
+        var headerPanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 0, 0, 8) };
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        headerPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        headerPanel.Controls.Add(new Label { Text = "Code Vector Store", AutoSize = true, Anchor = AnchorStyles.Left, Font = new Font(Font.FontFamily, Font.Size, FontStyle.Bold), Margin = new Padding(3, 6, 6, 3) }, 0, 0);
+        _helpLink = new LinkLabel { Text = "Help", AutoSize = true, Anchor = AnchorStyles.Right, Margin = new Padding(6, 6, 3, 3) };
+        _helpLink.LinkClicked += HelpLink_Click;
+        headerPanel.Controls.Add(_helpLink, 1, 0);
+        main.Controls.Add(headerPanel, 0, 0);
 
         // Vector database location
         var databasePanel = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, Margin = new Padding(0, 0, 0, 8) };
@@ -96,7 +110,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         browseDatabaseButton.Click += BrowseDatabaseButton_Click;
         databasePanel.Controls.Add(_vectorDatabasePathBox, 1, 0);
         databasePanel.Controls.Add(browseDatabaseButton, 2, 0);
-        main.Controls.Add(databasePanel, 0, 0);
+        main.Controls.Add(databasePanel, 0, 1);
 
         // Backend selector
         var backendPanel = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 0, 0, 8) };
@@ -108,27 +122,27 @@ internal sealed class CodeVectorConfigPage : TabPage
         _backendCombo.SelectedItem = _module.Settings.BackendType.ToString();
         _backendCombo.SelectedIndexChanged += BackendCombo_SelectedIndexChanged;
         backendPanel.Controls.Add(_backendCombo, 1, 0);
-        main.Controls.Add(backendPanel, 0, 1);
+        main.Controls.Add(backendPanel, 0, 2);
 
         // Remote group
         _remoteGroup = BuildRemoteGroup();
-        main.Controls.Add(_remoteGroup, 0, 2);
+        main.Controls.Add(_remoteGroup, 0, 3);
 
         // ONNX group
         _onnxGroup = BuildOnnxGroup();
-        main.Controls.Add(_onnxGroup, 0, 3);
+        main.Controls.Add(_onnxGroup, 0, 4);
 
         // General settings
         _generalGroup = BuildGeneralGroup();
-        main.Controls.Add(_generalGroup, 0, 4);
+        main.Controls.Add(_generalGroup, 0, 5);
 
         // Git Repos
         _reposGroup = BuildReposGroup();
-        main.Controls.Add(_reposGroup, 0, 5);
+        main.Controls.Add(_reposGroup, 0, 6);
 
         // Status
         _statusGroup = BuildStatusGroup();
-        main.Controls.Add(_statusGroup, 0, 6);
+        main.Controls.Add(_statusGroup, 0, 7);
 
         Controls.Add(main);
     }
@@ -882,6 +896,49 @@ internal sealed class CodeVectorConfigPage : TabPage
          {
              _testConnectionButton.Enabled = true;
          }
+     }
+
+     private void WireHelpTooltips()
+     {
+         _helpTooltip = new ToolTip();
+         SetHelpTip(_vectorDatabasePathBox, "Vector Database");
+         SetHelpTip(_backendCombo, "Backend");
+         SetHelpTip(_remoteUrlBox, "Remote URL");
+         SetHelpTip(_fetchModelsButton, "Fetch Models");
+         SetHelpTip(_remoteModelCombo, "Remote Model");
+         SetHelpTip(_showModelButton, "Model Info");
+         SetHelpTip(_testConnectionButton, "Test Connection");
+         SetHelpTip(_credentialCombo, "Credential");
+         SetHelpTip(_timeoutBox, "Timeout (s)");
+         SetHelpTip(_parallelismBox, "Parallelism");
+         SetHelpTip(_onnxBox, "ONNX Model Folder");
+         SetHelpTip(_onnxMaxSeqBox, "ONNX Max Sequence");
+         SetHelpTip(_onnxThreadsBox, "ONNX Threads");
+         SetHelpTip(_chunkLinesBox, "Chunk Lines");
+         SetHelpTip(_overlapBox, "Overlap Lines");
+         SetHelpTip(_maxSizeBox, "Max File (KB)");
+         SetHelpTip(_topKBox, "Default Top K");
+         SetHelpTip(_syncBox, "Git Sync (min)");
+         SetHelpTip(_logLevelCombo, "Log Level");
+         SetHelpTip(_chkSearch, "Tools");
+         SetHelpTip(_chkIndex, "Tools");
+         SetHelpTip(_chkSync, "Tools");
+         SetHelpTip(_chkStatus, "Tools");
+         SetHelpTip(_chkRemove, "Tools");
+         SetHelpTip(_chkReindex, "Tools");
+     }
+
+     private void SetHelpTip(Control control, string setting)
+     {
+         var description = CodeVectorSettingsHelp.Describe(setting);
+         if (description is not null)
+             _helpTooltip.SetToolTip(control, description);
+     }
+
+     private void HelpLink_Click(object? sender, LinkLabelLinkClickedEventArgs e)
+     {
+         using var dlg = new CodeVectorSettingsHelpDialog();
+         dlg.ShowDialog(FindForm());
      }
 
      private void WireAutoSave()
