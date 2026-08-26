@@ -31,4 +31,4 @@ table is unavailable.
 - [x] 5. `CodeVectorDatabase`: native KNN search with cosine conversion + brute-force fallback
 - [x] 6. `IndexingEngine`: pass collection name into `InsertChunk`/`DeleteFileChunks`
 - [x] 7. Build and fix any compilation errors
-- [ ] 8. Commit to git
+- [x] 8. Commit to git
