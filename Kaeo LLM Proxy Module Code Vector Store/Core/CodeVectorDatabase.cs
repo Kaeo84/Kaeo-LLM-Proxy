@@ -83,11 +83,24 @@ internal sealed class CodeVectorDatabase : IDisposable
             long id;
             using (var cmd = _connection.CreateCommand())
             {
-                cmd.CommandText = "SELECT rowid FROM codevector_collections WHERE name = $name";
+                cmd.CommandText = "SELECT rowid, dimension FROM codevector_collections WHERE name = $name";
                 AddParam(cmd, "$name", name);
-                var result = cmd.ExecuteScalar();
-                if (result is not null)
-                    id = Convert.ToInt64(result);
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    id = reader.GetInt64(0);
+                    int storedDim = reader.GetInt32(1);
+                    // Self-heal legacy collections created before dimension tracking (stored as 0).
+                    if (storedDim <= 0 && dimension > 0)
+                    {
+                        using var update = _connection.CreateCommand();
+                        update.CommandText = "UPDATE codevector_collections SET dimension = $dim WHERE rowid = $id";
+                        AddParam(update, "$dim", dimension);
+                        AddParam(update, "$id", id);
+                        update.ExecuteNonQuery();
+                        Log.Information("CodeVector: repaired stored dimension {Dim} for collection {Collection}", dimension, name);
+                    }
+                }
                 else
                 {
                     using var insert = _connection.CreateCommand();
@@ -381,6 +394,25 @@ internal sealed class CodeVectorDatabase : IDisposable
         if (!reader.Read()) return null;
         long colId = reader.GetInt64(0);
         int dimension = reader.GetInt32(1);
+        if (dimension <= 0)
+        {
+            // Legacy collection with unknown dimension: infer it from an existing chunk and persist it.
+            using var infer = _connection.CreateCommand();
+            infer.CommandText = "SELECT length(c.embedding) / 4 FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col LIMIT 1";
+            AddParam(infer, "$col", collectionName);
+            var inferred = infer.ExecuteScalar();
+            dimension = inferred is null ? 0 : Convert.ToInt32(inferred);
+            if (dimension > 0)
+            {
+                using var update = _connection.CreateCommand();
+                update.CommandText = "UPDATE codevector_collections SET dimension = $dim WHERE rowid = $id";
+                AddParam(update, "$dim", dimension);
+                AddParam(update, "$id", colId);
+                update.ExecuteNonQuery();
+                Log.Information("CodeVector: inferred stored dimension {Dim} for collection {Collection}", dimension, collectionName);
+            }
+            if (dimension <= 0) return null;
+        }
         string table = VecTableName(colId, dimension);
 
         using var exists = _connection.CreateCommand();
