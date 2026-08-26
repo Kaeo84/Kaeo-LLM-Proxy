@@ -1459,19 +1459,10 @@ internal partial class MainForm : Form
         _dgvMappings.Rows.Clear();
         foreach (ModelMapping mapping in _settings.ModelMappings)
         {
-            int idx = _dgvMappings.Rows.Add(
-                mapping.IsEnabled ? "Yes" : "No",
-                mapping.ProxyName,
-                mapping.ModelName,
-                mapping.UpstreamUrl,
-                mapping.UpstreamType.ToDisplayName());
-
-            DataGridViewRow row = _dgvMappings.Rows[idx];
-
             // Carry the full per-row advanced configuration on the row Tag — these fields are
             // edited in the modal Configure dialog. Clone so no property is dropped when the
             // grid is rebuilt (e.g. after instruction-set edits).
-            row.Tag = mapping.Clone();
+            AddMappingRow(mapping.Clone());
         }
 
         // Load instructions list
@@ -1493,6 +1484,24 @@ internal partial class MainForm : Form
         {
             _loadingSettings = false;
         }
+    }
+
+    /// <summary>
+    /// Adds a mapping to the grid. Display columns show only summary values; the full
+    /// per-model configuration is carried on the row Tag and edited via the Configure dialog.
+    /// </summary>
+    private int AddMappingRow(ModelMapping mapping)
+    {
+        int idx = _dgvMappings.Rows.Add(
+            mapping.IsEnabled ? "Yes" : "No",
+            mapping.ProxyName,
+            mapping.ModelName,
+            mapping.InstructionSetName ?? string.Empty,
+            mapping.ReasoningEffort ?? string.Empty,
+            mapping.SupportsVision == true ? "Yes" : "No");
+
+        _dgvMappings.Rows[idx].Tag = mapping;
+        return idx;
     }
 
     /// <summary>
@@ -1650,10 +1659,9 @@ internal partial class MainForm : Form
         {
             string? proxyName  = row.Cells[_colProxyName.Name].Value?.ToString();
             string? modelName  = row.Cells[_colModelName.Name].Value?.ToString();
-            string? upstreamUrl = row.Cells[_colUpstreamUrl.Name].Value?.ToString() ?? string.Empty;
-            string? upstreamStr = row.Cells[_colUpstreamType.Name].Value?.ToString();
 
-            // Advanced per-model settings live on the row Tag and are edited via the Configure dialog.
+            // Advanced per-model settings (including the upstream URL and type) live on the
+            // row Tag and are edited via the Configure dialog.
             ModelMapping? advanced = row.Tag as ModelMapping;
 
             if (string.IsNullOrWhiteSpace(proxyName) || string.IsNullOrWhiteSpace(modelName))
@@ -1667,7 +1675,9 @@ internal partial class MainForm : Form
                 return false;
             }
 
-            // Validate upstream URL is required
+            // Validate upstream URL is required (carried on the row Tag; the grid no longer
+            // displays the URL column).
+            string upstreamUrl = advanced?.UpstreamUrl ?? string.Empty;
             if (string.IsNullOrWhiteSpace(upstreamUrl) ||
                 !Uri.TryCreate(upstreamUrl, UriKind.Absolute, out _))
             {
@@ -1675,15 +1685,11 @@ internal partial class MainForm : Form
                 return false;
             }
 
-            UpstreamType upstream = UpstreamTypeExtensions.FromDisplayName(upstreamStr);
-
             // Clone the advanced configuration carried on the row Tag so every per-model
             // property survives the commit; only the grid-editable fields are overridden.
             ModelMapping committedMapping = advanced?.Clone() ?? new ModelMapping();
             committedMapping.ProxyName = trimmedProxy;
             committedMapping.ModelName = modelName.Trim();
-            committedMapping.UpstreamUrl = upstreamUrl.Trim();
-            committedMapping.UpstreamType = upstream;
 
             committed.Add(committedMapping);
         }
@@ -1807,15 +1813,8 @@ internal partial class MainForm : Form
         if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], CollectUpstreamUrls(), _settings, _stats, out _))
             return;
 
-        int idx = _dgvMappings.Rows.Add(
-            mapping.IsEnabled ? "Yes" : "No",
-            mapping.ProxyName,
-            mapping.ModelName,
-            mapping.UpstreamUrl,
-            mapping.UpstreamType.ToDisplayName());
-
+        int idx = AddMappingRow(mapping);
         DataGridViewRow row = _dgvMappings.Rows[idx];
-        row.Tag = mapping;
 
         _dgvMappings.ClearSelection();
         row.Selected = true;
@@ -1853,9 +1852,9 @@ internal partial class MainForm : Form
         }
 
         // Reflect the current row values in the dialog so it can edit and fetch
-        // models for this specific upstream.
+        // models for this specific upstream. The upstream URL stays on the mapping
+        // itself (the grid no longer displays it).
         mapping.ProxyName = row.Cells[_colProxyName.Name].Value?.ToString() ?? string.Empty;
-        mapping.UpstreamUrl = row.Cells[_colUpstreamUrl.Name].Value?.ToString() ?? string.Empty;
         mapping.ModelName = row.Cells[_colModelName.Name].Value?.ToString() ?? string.Empty;
 
         List<string> existingItems = string.IsNullOrWhiteSpace(mapping.ModelName)
@@ -1869,8 +1868,9 @@ internal partial class MainForm : Form
             row.Cells[_colMappingEnabled.Name].Value = mapping.IsEnabled ? "Yes" : "No";
             row.Cells[_colProxyName.Name].Value = mapping.ProxyName;
             row.Cells[_colModelName.Name].Value = mapping.ModelName;
-            row.Cells[_colUpstreamUrl.Name].Value = mapping.UpstreamUrl;
-            row.Cells[_colUpstreamType.Name].Value = mapping.UpstreamType.ToDisplayName();
+            row.Cells[_colInstructionSet.Name].Value = mapping.InstructionSetName ?? string.Empty;
+            row.Cells[_colReasoningEffort.Name].Value = mapping.ReasoningEffort ?? string.Empty;
+            row.Cells[_colVision.Name].Value = mapping.SupportsVision == true ? "Yes" : "No";
 
             CommitMappingsFromGrid();
         }
@@ -1941,15 +1941,8 @@ internal partial class MainForm : Form
         ModelMapping duplicatedMapping = originalMapping.Clone();
         duplicatedMapping.ProxyName = GenerateUniqueProxyName(originalMapping.ProxyName);
 
-        int idx = _dgvMappings.Rows.Add(
-            duplicatedMapping.IsEnabled ? "Yes" : "No",
-            duplicatedMapping.ProxyName,
-            duplicatedMapping.ModelName,
-            duplicatedMapping.UpstreamUrl,
-            duplicatedMapping.UpstreamType.ToDisplayName());
-
+        int idx = AddMappingRow(duplicatedMapping);
         DataGridViewRow newRow = _dgvMappings.Rows[idx];
-        newRow.Tag = duplicatedMapping;
 
         _dgvMappings.ClearSelection();
         newRow.Selected = true;

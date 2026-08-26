@@ -164,8 +164,9 @@ partial class MainForm
         _colMappingEnabled = new DataGridViewTextBoxColumn();
         _colProxyName = new DataGridViewTextBoxColumn();
         _colModelName = new DataGridViewTextBoxColumn();
-        _colUpstreamUrl = new DataGridViewTextBoxColumn();
-        _colUpstreamType = new DataGridViewTextBoxColumn();
+        _colInstructionSet = new DataGridViewTextBoxColumn();
+        _colReasoningEffort = new DataGridViewTextBoxColumn();
+        _colVision = new DataGridViewTextBoxColumn();
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
@@ -1119,8 +1120,9 @@ partial class MainForm
         _dgvMappings.Columns.Add(_colMappingEnabled);
         _dgvMappings.Columns.Add(_colProxyName);
         _dgvMappings.Columns.Add(_colModelName);
-        _dgvMappings.Columns.Add(_colUpstreamUrl);
-        _dgvMappings.Columns.Add(_colUpstreamType);
+        _dgvMappings.Columns.Add(_colInstructionSet);
+        _dgvMappings.Columns.Add(_colReasoningEffort);
+        _dgvMappings.Columns.Add(_colVision);
         _dgvMappings.Dock = DockStyle.Fill;
         _dgvMappings.Margin = new Padding(4, 4, 4, 4);
         _dgvMappings.MinimumSize = new Size(0, 120);
@@ -1139,15 +1141,19 @@ partial class MainForm
         _colModelName.Name = "_colModelName";
         _colModelName.FillWeight = 120;
 
-        _colUpstreamUrl.HeaderText = "Upstream URL";
-        _colUpstreamUrl.Name = "_colUpstreamUrl";
-        _colUpstreamUrl.FillWeight = 160;
-        _colUpstreamUrl.DefaultCellStyle.NullValue = string.Empty;
+        _colInstructionSet.HeaderText = "Instruction Set";
+        _colInstructionSet.Name = "_colInstructionSet";
+        _colInstructionSet.FillWeight = 120;
+        _colInstructionSet.DefaultCellStyle.NullValue = string.Empty;
 
-        _colUpstreamType.HeaderText = "Compatibility";
-        _colUpstreamType.Name = "_colUpstreamType";
-        _colUpstreamType.Width = 110;
-        _colUpstreamType.FillWeight = 60;
+        _colReasoningEffort.HeaderText = "Reasoning Effort";
+        _colReasoningEffort.Name = "_colReasoningEffort";
+        _colReasoningEffort.FillWeight = 90;
+        _colReasoningEffort.DefaultCellStyle.NullValue = string.Empty;
+
+        _colVision.HeaderText = "Vision";
+        _colVision.Name = "_colVision";
+        _colVision.FillWeight = 50;
 
         _flpMappingButtons.AutoSize = true;
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -2221,8 +2227,9 @@ partial class MainForm
     private DataGridViewTextBoxColumn _colMappingEnabled;
     private DataGridViewTextBoxColumn _colProxyName;
     private DataGridViewTextBoxColumn _colModelName;
-    private DataGridViewTextBoxColumn _colUpstreamUrl;
-    private DataGridViewTextBoxColumn _colUpstreamType;
+    private DataGridViewTextBoxColumn _colInstructionSet;
+    private DataGridViewTextBoxColumn _colReasoningEffort;
+    private DataGridViewTextBoxColumn _colVision;
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
