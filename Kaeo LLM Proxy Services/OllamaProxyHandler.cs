@@ -2428,6 +2428,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private async Task HandleGenerateAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         string body = await ReadBodyAsync(req, ct);
         log.RequestBytes = Encoding.UTF8.GetByteCount(body);
         OllamaGenerateRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaGenerateRequest>(body, resp, log, ct);
@@ -2526,6 +2527,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log,
                 _settings.CollectResponseDetails,
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
+                sw,
                 ct);
         }
         else
@@ -2541,14 +2543,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (_settings.CollectResponseDetails)
                 log.ResponseBody = RedactResponseBodyForLog(text, ollamaReq.Model);
 
+            long elapsedNs = ElapsedNanos(sw);
             var ollamaResp = new OllamaGenerateResponse
             {
                 Model = ollamaReq.Model,
                 Response = text,
                 Done = true,
                 DoneReason = "stop",
+                TotalDuration = elapsedNs,
+                LoadDuration = 0L,
                 PromptEvalCount = usage?.PromptTokens,
                 EvalCount = usage?.CompletionTokens,
+                EvalDuration = elapsedNs,
             };
 
             await WriteJsonAsync(resp, ollamaResp, ct);
@@ -2560,6 +2566,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private async Task HandleChatAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         string body = await ReadBodyAsync(req, ct);
         log.RequestBytes = Encoding.UTF8.GetByteCount(body);
         OllamaChatRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaChatRequest>(body, resp, log, ct);
@@ -2684,6 +2691,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
                 ShouldEmitHeartbeats(ollamaReq.Model),
                 _settings.StreamingHeartbeatIntervalSeconds,
+                sw,
                 ct,
                 () => _stats.IncrementHeartbeat(ollamaReq.Model));
         }
@@ -2701,10 +2709,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             List<OllamaToolCall>? toolCalls = MapToolCallsToOllama(delta?.ToolCalls);
 
-            // Mirror reasoning_content to content if content is empty
+            // The upstream's thinking/reasoning trace is emitted in the Ollama-native
+            // message.thinking field rather than inlined into content.
             string? content = delta?.Content;
-            if (string.IsNullOrEmpty(content) && !string.IsNullOrEmpty(delta?.ReasoningContent))
-                content = delta.ReasoningContent;
+            string? thinking = string.IsNullOrEmpty(delta?.ReasoningContent) ? null : delta.ReasoningContent;
 
             ToolCallExtraction toolCallExtraction = ExtractXmlToolCalls(content);
             if (toolCalls is null)
@@ -2715,14 +2723,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (_settings.CollectResponseDetails)
                 log.ResponseBody = RedactResponseBodyForLog(content ?? string.Empty, ollamaReq.Model);
 
+            long elapsedNs = ElapsedNanos(sw);
             var ollamaResp = new OllamaChatResponse
             {
                 Model = ollamaReq.Model,
-                Message = new OllamaMessage("assistant", content) { ToolCalls = toolCalls },
+                Message = new OllamaMessage("assistant", content) { ToolCalls = toolCalls, Thinking = thinking },
                 Done = true,
                 DoneReason = toolCalls?.Count > 0 ? "tool_calls" : upstreamFinishReason ?? "stop",
+                TotalDuration = elapsedNs,
+                LoadDuration = 0L,
                 PromptEvalCount = log.PromptTokens > 0 ? log.PromptTokens : null,
                 EvalCount = log.CompletionTokens > 0 ? log.CompletionTokens : null,
+                EvalDuration = elapsedNs,
             };
 
             await WriteJsonAsync(resp, ollamaResp, ct);
@@ -2798,6 +2810,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     // ── Streaming helpers ───────────────────────────────────────────────────
 
+    /// <summary>Elapsed stopwatch time in nanoseconds — Ollama's duration unit.</summary>
+    private static long ElapsedNanos(Stopwatch sw) => (long)(sw.Elapsed.TotalSeconds * 1_000_000_000);
+
     private static async Task StreamCompletionToOllamaAsync(
         HttpResponseMessage upstreamResp,
         HttpListenerResponse resp,
@@ -2805,6 +2820,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         RequestLog log,
         bool collectResponse,
         Func<string, string> redactResponse,
+        Stopwatch sw,
         CancellationToken ct)
     {
         await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
@@ -2831,14 +2847,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 reachedDone = true;
                 if (terminalChunkSent) break;
 
+                long elapsedNs = ElapsedNanos(sw);
                 var doneChunk = new OllamaGenerateResponse
                 {
                     Model = modelName,
                     Response = string.Empty,
                     Done = true,
                     DoneReason = "stop",
+                    TotalDuration = elapsedNs,
+                    LoadDuration = 0L,
                     PromptEvalCount = log.PromptTokens > 0 ? log.PromptTokens : null,
                     EvalCount = log.CompletionTokens > 0 ? log.CompletionTokens : null,
+                    EvalDuration = elapsedNs,
                 };
                 string doneJson = JsonSerializer.Serialize(doneChunk, _jsonOptions);
                 responseBytes += Encoding.UTF8.GetByteCount(doneJson);
@@ -2902,6 +2922,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Func<string, string> redactResponse,
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
+        Stopwatch sw,
         CancellationToken ct,
         Action? onHeartbeatSent = null)
     {
@@ -2940,14 +2961,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (terminalChunkSent)
                     break;
 
+                long elapsedNs = ElapsedNanos(sw);
                 var doneChunk = new OllamaChatResponse
                 {
                     Model = modelName,
                     Message = new OllamaMessage("assistant", string.Empty),
                     Done = true,
                     DoneReason = "stop",
+                    TotalDuration = elapsedNs,
+                    LoadDuration = 0L,
                     PromptEvalCount = log.PromptTokens > 0 ? log.PromptTokens : null,
                     EvalCount = log.CompletionTokens > 0 ? log.CompletionTokens : null,
+                    EvalDuration = elapsedNs,
                 };
                 string doneJson = JsonSerializer.Serialize(doneChunk, _jsonOptions);
                 responseBytes += Encoding.UTF8.GetByteCount(doneJson);
@@ -2970,7 +2995,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             LlamaCppChoice? choice = chunk.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = choice?.Delta;
-            string token = (string.IsNullOrEmpty(delta?.Content) ? delta?.ReasoningContent : delta?.Content) ?? string.Empty;
+            string token = delta?.Content ?? string.Empty;
+            // The upstream's thinking/reasoning trace streams into the Ollama-native
+            // message.thinking field, kept separate from message.content.
+            string? thinking = string.IsNullOrEmpty(delta?.ReasoningContent) ? null : delta.ReasoningContent;
             AppendStreamingToolCalls(toolCallBuilders, delta?.ToolCalls);
             token = CaptureXmlToolCallToken(token, xmlToolCallBuilder, ref capturingXmlToolCall);
             bool done = choice?.FinishReason != null;
@@ -2989,12 +3017,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             responseAccumulator?.Append(token);
 
+            long? terminalNs = done ? ElapsedNanos(sw) : null;
             var ollamaChunk = new OllamaChatResponse
             {
                 Model = modelName,
-                Message = new OllamaMessage("assistant", token) { ToolCalls = toolCalls },
+                Message = new OllamaMessage("assistant", token) { ToolCalls = toolCalls, Thinking = thinking },
                 Done = done,
-                DoneReason = done ? toolCalls is not null ? "tool_calls" : choice?.FinishReason ?? "stop" : null,
+                DoneReason = done ? (toolCalls is not null ? "tool_calls" : choice?.FinishReason ?? "stop") : null,
+                TotalDuration = terminalNs,
+                LoadDuration = done ? 0L : null,
+                PromptEvalCount = done && log.PromptTokens > 0 ? log.PromptTokens : null,
+                EvalCount = done && log.CompletionTokens > 0 ? log.CompletionTokens : null,
+                EvalDuration = terminalNs,
             };
 
             if (done)

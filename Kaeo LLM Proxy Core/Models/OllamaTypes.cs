@@ -40,8 +40,18 @@ internal sealed class OllamaMessage
 {
     [JsonPropertyName("role")] public string Role { get; set; } = string.Empty;
     [JsonPropertyName("content")] public string? Content { get; set; }
+
+    /// <summary>Optional deliberate thinking trace (Ollama <c>message.thinking</c>) for thinking models.</summary>
+    [JsonPropertyName("thinking")] public string? Thinking { get; set; }
+
     [JsonPropertyName("tool_calls")] public List<OllamaToolCall>? ToolCalls { get; set; }
     [JsonPropertyName("tool_call_id")] public string? ToolCallId { get; set; }
+
+    /// <summary>Optional name of the tool whose result this message carries (Ollama <c>message.tool_name</c>).</summary>
+    [JsonPropertyName("tool_name")] public string? ToolName { get; set; }
+
+    /// <summary>Optional base64-encoded images (Ollama <c>message.images</c>) for multimodal models.</summary>
+    [JsonPropertyName("images")] public List<string>? Images { get; set; }
 
     [JsonConstructor]
     public OllamaMessage() { }
@@ -68,9 +78,17 @@ internal sealed class OllamaGenerateResponse
     [JsonPropertyName("response")] public string Response { get; set; } = string.Empty;
     [JsonPropertyName("done")] public bool Done { get; set; }
     [JsonPropertyName("done_reason")] public string? DoneReason { get; set; }
-    [JsonPropertyName("prompt_eval_count")] public int? PromptEvalCount { get; set; }
-    [JsonPropertyName("eval_count")] public int? EvalCount { get; set; }
     [JsonPropertyName("total_duration")] public long? TotalDuration { get; set; }
+
+    /// <summary>Time spent loading the model, in nanoseconds. 0 for proxied (hosted) upstreams.</summary>
+    [JsonPropertyName("load_duration")] public long? LoadDuration { get; set; }
+    [JsonPropertyName("prompt_eval_count")] public int? PromptEvalCount { get; set; }
+
+    /// <summary>Time spent evaluating the prompt, in nanoseconds. Null when the upstream does not report it.</summary>
+    [JsonPropertyName("prompt_eval_duration")] public long? PromptEvalDuration { get; set; }
+    [JsonPropertyName("eval_count")] public int? EvalCount { get; set; }
+
+    /// <summary>Time spent generating the response, in nanoseconds.</summary>
     [JsonPropertyName("eval_duration")] public long? EvalDuration { get; set; }
 }
 
@@ -93,9 +111,17 @@ internal sealed class OllamaChatResponse
     [JsonPropertyName("message")] public OllamaMessage? Message { get; set; }
     [JsonPropertyName("done")] public bool Done { get; set; }
     [JsonPropertyName("done_reason")] public string? DoneReason { get; set; }
-    [JsonPropertyName("prompt_eval_count")] public int? PromptEvalCount { get; set; }
-    [JsonPropertyName("eval_count")] public int? EvalCount { get; set; }
     [JsonPropertyName("total_duration")] public long? TotalDuration { get; set; }
+
+    /// <summary>Time spent loading the model, in nanoseconds. 0 for proxied (hosted) upstreams.</summary>
+    [JsonPropertyName("load_duration")] public long? LoadDuration { get; set; }
+    [JsonPropertyName("prompt_eval_count")] public int? PromptEvalCount { get; set; }
+
+    /// <summary>Time spent evaluating the prompt, in nanoseconds. Null when the upstream does not report it.</summary>
+    [JsonPropertyName("prompt_eval_duration")] public long? PromptEvalDuration { get; set; }
+    [JsonPropertyName("eval_count")] public int? EvalCount { get; set; }
+
+    /// <summary>Time spent generating the response, in nanoseconds.</summary>
     [JsonPropertyName("eval_duration")] public long? EvalDuration { get; set; }
 }
 
