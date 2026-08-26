@@ -99,6 +99,15 @@ internal sealed class OllamaChatRequest
     [JsonPropertyName("model")] public string Model { get; set; } = string.Empty;
     [JsonPropertyName("messages")] public List<OllamaMessage> Messages { get; set; } = [];
     [JsonPropertyName("stream")] public bool Stream { get; set; } = true;
+
+    /// <summary>
+    /// Ollama's thinking switch for thinking models: a boolean or a level
+    /// ("low"/"medium"/"high"/"max"). Mapped to the upstream OpenAI <c>reasoning_effort</c>
+    /// under Client App priority; the mapping's configured value overrides under Proxy
+    /// priority.
+    /// </summary>
+    [JsonPropertyName("think")] public object? Think { get; set; }
+
     [JsonPropertyName("tools")] public List<OllamaTool>? Tools { get; set; }
     [JsonPropertyName("format")] public object? Format { get; set; }
     [JsonPropertyName("options")] public OllamaOptions? Options { get; set; }

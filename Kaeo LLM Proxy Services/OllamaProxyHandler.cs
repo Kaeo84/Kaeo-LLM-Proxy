@@ -225,29 +225,68 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Resolves the lowercased reasoning_effort to inject into a translated upstream chat
-    /// request. Ollama clients cannot send reasoning_effort, so only Proxy priority (which
-    /// overrides) produces a value; Client App and Provider priorities omit the field.
+    /// Maps the Ollama <c>think</c> request field (a boolean or a "low"/"medium"/"high"/"max"
+    /// level) to an OpenAI <c>reasoning_effort</c> value. <c>true</c> enables thinking at high
+    /// effort; <c>false</c> or a missing field produces null (the field is omitted); the named
+    /// levels pass through with "max" clamped to "high", which OpenAI-style providers accept.
     /// </summary>
-    private static string? ResolveReasoningEffort(ModelMapping? mapping) =>
-        mapping is { ReasoningEffortPriority: SamplingPriority.Proxy }
-            && !string.IsNullOrWhiteSpace(mapping.ReasoningEffort)
-                ? mapping.ReasoningEffort.Trim().ToLowerInvariant()
-                : null;
+    internal static string? MapThinkToReasoningEffort(object? think)
+    {
+        string? level = think switch
+        {
+            JsonElement je => je.ValueKind switch
+            {
+                JsonValueKind.True => "high",
+                JsonValueKind.String => je.GetString(),
+                _ => null,
+            },
+            bool flag => flag ? "high" : null,
+            string s => s,
+            _ => null,
+        };
+
+        if (string.IsNullOrWhiteSpace(level))
+            return null;
+
+        return level.Trim().ToLowerInvariant() switch
+        {
+            "low" or "medium" or "high" => level.Trim().ToLowerInvariant(),
+            "max" => "high",
+            _ => null,
+        };
+    }
 
     /// <summary>
-    /// Applies the configured reasoning effort to a translated chat request, emitting every
-    /// wire shape selected in the mapping's <see cref="ReasoningEffortFormat"/> flags: legacy
-    /// top-level field, modern nested object, the Qwen Cloud <c>extra_body</c> wrapper, and/or
-    /// <c>chat_template_kwargs</c>.
+    /// Resolves the lowercased reasoning_effort to inject into a translated upstream chat
+    /// request. Proxy priority injects the mapping's configured value (override); Client App
+    /// priority forwards the Ollama client's <c>think</c> field (already mapped to an effort
+    /// level); Provider priority omits the field.
     /// </summary>
-    private static void ApplyReasoningEffort(ModelMapping? mapping, LlamaCppChatRequest request)
+    internal static string? ResolveReasoningEffort(ModelMapping? mapping, string? clientEffort) =>
+        mapping?.ReasoningEffortPriority switch
+        {
+            SamplingPriority.Provider => null,
+            SamplingPriority.Proxy
+                => string.IsNullOrWhiteSpace(mapping.ReasoningEffort)
+                    ? null
+                    : mapping.ReasoningEffort.Trim().ToLowerInvariant(),
+            _ => clientEffort,
+        };
+
+    /// <summary>
+    /// Applies the resolved reasoning effort — the mapping's configured value under Proxy
+    /// priority, the client's <c>think</c> field under Client App priority — to a translated
+    /// chat request, emitting every wire shape selected in the mapping's
+    /// <see cref="ReasoningEffortFormat"/> flags: legacy top-level field, modern nested
+    /// object, the Qwen Cloud <c>extra_body</c> wrapper, and/or <c>chat_template_kwargs</c>.
+    /// </summary>
+    private static void ApplyReasoningEffort(ModelMapping? mapping, LlamaCppChatRequest request, object? clientThink = null)
     {
-        string? effort = ResolveReasoningEffort(mapping);
+        string? effort = ResolveReasoningEffort(mapping, MapThinkToReasoningEffort(clientThink));
         if (effort is null)
             return;
 
-        ReasoningEffortFormat format = mapping!.ReasoningEffortFormat;
+        ReasoningEffortFormat format = mapping?.ReasoningEffortFormat ?? ReasoningEffortFormat.Legacy;
 
         if (format.HasFlag(ReasoningEffortFormat.Legacy))
             request.ReasoningEffort = effort;
@@ -2632,9 +2671,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             NCtx = ollamaReq.Options?.NumCtx,
         };
 
-        // Apply the configured reasoning effort in the mapping's wire format (legacy, modern,
-        // both, or Qwen Cloud). No-op unless this mapping uses Proxy priority with a value.
-        ApplyReasoningEffort(mapping, llamaReq);
+        // Apply the reasoning effort in the mapping's wire format (legacy, modern, both, or
+        // Qwen Cloud): the client's `think` field under Client App priority, or the
+        // mapping's configured value under Proxy priority.
+        ApplyReasoningEffort(mapping, llamaReq, ollamaReq.Think);
 
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body so proxy-injected values such as
@@ -2691,6 +2731,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
                 ShouldEmitHeartbeats(ollamaReq.Model),
                 _settings.StreamingHeartbeatIntervalSeconds,
+                mapping?.ThinkingMode != ThinkingMode.StripFromOutput,
                 sw,
                 ct,
                 () => _stats.IncrementHeartbeat(ollamaReq.Model));
@@ -2710,9 +2751,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             List<OllamaToolCall>? toolCalls = MapToolCallsToOllama(delta?.ToolCalls);
 
             // The upstream's thinking/reasoning trace is emitted in the Ollama-native
-            // message.thinking field rather than inlined into content.
+            // message.thinking field rather than inlined into content, unless the mapping
+            // strips thinking from the client-facing output (StripFromOutput mode).
             string? content = delta?.Content;
-            string? thinking = string.IsNullOrEmpty(delta?.ReasoningContent) ? null : delta.ReasoningContent;
+            string? thinking = mapping?.ThinkingMode == ThinkingMode.StripFromOutput
+                || string.IsNullOrEmpty(delta?.ReasoningContent)
+                    ? null
+                    : delta.ReasoningContent;
 
             ToolCallExtraction toolCallExtraction = ExtractXmlToolCalls(content);
             if (toolCalls is null)
@@ -2922,6 +2967,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Func<string, string> redactResponse,
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
+        bool emitThinking,
         Stopwatch sw,
         CancellationToken ct,
         Action? onHeartbeatSent = null)
@@ -2997,8 +3043,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             LlamaCppDelta? delta = choice?.Delta;
             string token = delta?.Content ?? string.Empty;
             // The upstream's thinking/reasoning trace streams into the Ollama-native
-            // message.thinking field, kept separate from message.content.
-            string? thinking = string.IsNullOrEmpty(delta?.ReasoningContent) ? null : delta.ReasoningContent;
+            // message.thinking field, kept separate from message.content, unless the mapping
+            // strips thinking from the client-facing output (StripFromOutput mode).
+            string? thinking = emitThinking
+                && !string.IsNullOrEmpty(delta?.ReasoningContent)
+                    ? delta.ReasoningContent
+                    : null;
             AppendStreamingToolCalls(toolCallBuilders, delta?.ToolCalls);
             token = CaptureXmlToolCallToken(token, xmlToolCallBuilder, ref capturingXmlToolCall);
             bool done = choice?.FinishReason != null;
