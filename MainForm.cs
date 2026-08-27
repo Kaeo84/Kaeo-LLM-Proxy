@@ -753,7 +753,7 @@ internal partial class MainForm : Form
         }
 
         RequestLog log = _logCache[e.ItemIndex];
-        var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
+        var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
         item.SubItems.Add(log.Method);
         item.SubItems.Add(log.OllamaPath);
         item.SubItems.Add(log.Model);
@@ -761,6 +761,7 @@ internal partial class MainForm : Form
         item.SubItems.Add($"{log.DurationMs:F0}");
         item.SubItems.Add(log.PromptTokens > 0 ? log.PromptTokens.ToString() : string.Empty);
         item.SubItems.Add(log.CompletionTokens > 0 ? log.CompletionTokens.ToString() : string.Empty);
+        item.SubItems.Add(log.ReasoningTokens > 0 ? log.ReasoningTokens.ToString() : string.Empty);
         item.SubItems.Add(log.CachedPromptTokens > 0 ? log.CachedPromptTokens.ToString() : string.Empty);
         item.SubItems.Add(log.DraftN > 0 ? $"{(double)log.DraftNAccepted / log.DraftN * 100:F0}%" : string.Empty);
         item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));

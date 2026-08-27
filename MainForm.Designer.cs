@@ -131,6 +131,7 @@ partial class MainForm
         _colDuration = new ColumnHeader();
         _colPromptTokens = new ColumnHeader();
         _colCompletionTokens = new ColumnHeader();
+        _colReasoningTokens = new ColumnHeader();
         _colCachedTokens = new ColumnHeader();
         _colDraftAccept = new ColumnHeader();
         _colBytes = new ColumnHeader();
@@ -875,6 +876,7 @@ partial class MainForm
         _lstLogs.Columns.Add(_colDuration);
         _lstLogs.Columns.Add(_colPromptTokens);
         _lstLogs.Columns.Add(_colCompletionTokens);
+        _lstLogs.Columns.Add(_colReasoningTokens);
         _lstLogs.Columns.Add(_colCachedTokens);
         _lstLogs.Columns.Add(_colDraftAccept);
         _lstLogs.Columns.Add(_colBytes);
@@ -887,7 +889,7 @@ partial class MainForm
         _lstLogs.DoubleClick += LstLogs_DoubleClick;
 
         _colTime.Text = "Time";
-        _colTime.Width = 80;
+        _colTime.Width = 105;
         _colMethod.Text = "Method";
         _colMethod.Width = 55;
         _colPath.Text = "Path";
@@ -902,6 +904,8 @@ partial class MainForm
         _colPromptTokens.Width = 70;
         _colCompletionTokens.Text = "Completion";
         _colCompletionTokens.Width = 80;
+        _colReasoningTokens.Text = "Reasoning";
+        _colReasoningTokens.Width = 80;
         _colCachedTokens.Text = "Cached";
         _colCachedTokens.Width = 70;
         _colDraftAccept.Text = "Draft%";
@@ -2206,6 +2210,7 @@ partial class MainForm
     private ColumnHeader _colDuration;
     private ColumnHeader _colPromptTokens;
     private ColumnHeader _colCompletionTokens;
+    private ColumnHeader _colReasoningTokens;
     private ColumnHeader _colCachedTokens;
     private ColumnHeader _colDraftAccept;
     private ColumnHeader _colBytes;
