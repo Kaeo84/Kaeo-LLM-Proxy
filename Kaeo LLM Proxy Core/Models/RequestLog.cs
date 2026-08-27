@@ -96,6 +96,24 @@ internal sealed class RequestLog
     /// </summary>
     public string? ResponseBody { get; set; }
 
+    /// <summary>
+    /// The raw upstream (OpenAI-compatible) response body, captured when <c>DebugMode</c> is
+    /// enabled. This is the "before" side of the response translation: what the upstream
+    /// actually returned, before the proxy converted it into the Ollama format stored in
+    /// <see cref="ResponseBody"/> (the "after"). For streaming responses this accumulates the
+    /// raw upstream SSE <c>data:</c> lines. Null when <c>DebugMode</c> is disabled.
+    /// </summary>
+    public string? UpstreamResponseBody { get; set; }
+
+    /// <summary>
+    /// Plain multi-line text listing every settings-driven override/transformation the proxy
+    /// applied for this request (temperature, repeat_penalty, instruction-set injection,
+    /// reasoning effort, model rewrite), each marked as injected / replaced / passed through /
+    /// omitted. Captured when <c>DebugMode</c> is enabled and rendered at the top of the log
+    /// details dialog. Null when <c>DebugMode</c> is disabled.
+    /// </summary>
+    public string? DebugSummary { get; set; }
+
     /// <summary>Size of the inbound request body in bytes. Zero when there is no body.</summary>
     public long RequestBytes { get; set; }
 

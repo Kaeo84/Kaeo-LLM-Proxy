@@ -194,6 +194,14 @@ internal sealed class RuntimeSettings
         false;
 #endif
 
+    /// <summary>
+    /// When true, each request log entry captures the proxy's before/after transformation:
+    /// the raw upstream response body and a human-readable summary of every settings-driven
+    /// override applied (temperature, repeat_penalty, instruction-set injection, reasoning
+    /// effort, model rewrite). Independent of the Collect* detail flags. Default: false.
+    /// </summary>
+    public bool DebugMode { get; set; } = false;
+
     public bool EnableStreamingHeartbeats { get; set; } = true;
 
     public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
@@ -643,6 +651,17 @@ internal sealed class AppSettings
 #endif
 
     /// <summary>
+    /// When true, each request log entry captures the proxy's before/after transformation:
+    /// the raw upstream response body and a human-readable summary of every settings-driven
+    /// override applied for the model (temperature, repeat_penalty, instruction-set
+    /// injection, reasoning effort, model rewrite). Purely additive: it does not alter
+    /// <see cref="CollectRequestDetails"/> / <see cref="CollectResponseDetails"/> behavior.
+    /// Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool DebugMode { get; set; } = false;
+
+    /// <summary>
     /// When true, streaming responses emit harmless heartbeat frames while waiting for long-thinking models.
     /// Helps clients keep connections open when no model tokens are available yet. Default: true.
     /// </summary>
@@ -773,6 +792,7 @@ internal sealed class AppSettings
         ShowCloseToTrayNotification = ShowCloseToTrayNotification,
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
+        DebugMode = DebugMode,
         EnableStreamingHeartbeats = EnableStreamingHeartbeats,
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
@@ -790,6 +810,7 @@ internal sealed class AppSettings
         ShowCloseToTrayNotification = runtimeSettings.ShowCloseToTrayNotification;
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
+        DebugMode = runtimeSettings.DebugMode;
         EnableStreamingHeartbeats = runtimeSettings.EnableStreamingHeartbeats;
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;

@@ -110,7 +110,9 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens,
                     reasoning_tokens,
                     draft_n,
-                    draft_n_accepted
+                    draft_n_accepted,
+                    debug_summary,
+                    upstream_response_body
                 )
                 VALUES (
                     $timestampUtc,
@@ -136,7 +138,9 @@ internal sealed class AppDatabase : IDisposable
                     $cachedPromptTokens,
                     $reasoningTokens,
                     $draftN,
-                    $draftNAccepted
+                    $draftNAccepted,
+                    $debugSummary,
+                    $upstreamResponseBody
                 );
                 """;
 
@@ -515,6 +519,7 @@ internal sealed class AppDatabase : IDisposable
                     show_close_to_tray_notification,
                     collect_request_details,
                     collect_response_details,
+                    debug_mode,
                     enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
@@ -537,11 +542,12 @@ internal sealed class AppDatabase : IDisposable
                 ShowCloseToTrayNotification = ReadBoolean(reader, 3),
                 CollectRequestDetails = ReadBoolean(reader, 4),
                 CollectResponseDetails = ReadBoolean(reader, 5),
-                EnableStreamingHeartbeats = ReadBoolean(reader, 6),
-                StreamingHeartbeatIntervalSeconds = reader.GetInt32(7),
-                EnablePerformanceSampling = ReadBoolean(reader, 8),
-                EnableApiExplorer = ReadBoolean(reader, 9),
-                RunAsAdministrator = ReadBoolean(reader, 10),
+                DebugMode = ReadBoolean(reader, 6),
+                EnableStreamingHeartbeats = ReadBoolean(reader, 7),
+                StreamingHeartbeatIntervalSeconds = reader.GetInt32(8),
+                EnablePerformanceSampling = ReadBoolean(reader, 9),
+                EnableApiExplorer = ReadBoolean(reader, 10),
+                RunAsAdministrator = ReadBoolean(reader, 11),
             };
         }
     }
@@ -564,6 +570,7 @@ internal sealed class AppDatabase : IDisposable
                     show_close_to_tray_notification,
                     collect_request_details,
                     collect_response_details,
+                    debug_mode,
                     enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
@@ -578,6 +585,7 @@ internal sealed class AppDatabase : IDisposable
                     $showCloseToTrayNotification,
                     $collectRequestDetails,
                     $collectResponseDetails,
+                    $debugMode,
                     $enableStreamingHeartbeats,
                     $streamingHeartbeatIntervalSeconds,
                     $enablePerformanceSampling,
@@ -591,6 +599,7 @@ internal sealed class AppDatabase : IDisposable
                     show_close_to_tray_notification = excluded.show_close_to_tray_notification,
                     collect_request_details = excluded.collect_request_details,
                     collect_response_details = excluded.collect_response_details,
+                    debug_mode = excluded.debug_mode,
                     enable_streaming_heartbeats = excluded.enable_streaming_heartbeats,
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
@@ -605,6 +614,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$showCloseToTrayNotification", ToSqliteBoolean(settings.ShowCloseToTrayNotification));
             command.Parameters.AddWithValue("$collectRequestDetails", ToSqliteBoolean(settings.CollectRequestDetails));
             command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
+            command.Parameters.AddWithValue("$debugMode", ToSqliteBoolean(settings.DebugMode));
             command.Parameters.AddWithValue("$enableStreamingHeartbeats", ToSqliteBoolean(settings.EnableStreamingHeartbeats));
             command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
@@ -800,7 +810,9 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens,
                     reasoning_tokens,
                     draft_n,
-                    draft_n_accepted
+                    draft_n_accepted,
+                    debug_summary,
+                    upstream_response_body
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1063,7 +1075,9 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                     draft_n INTEGER NOT NULL DEFAULT 0,
-                    draft_n_accepted INTEGER NOT NULL DEFAULT 0
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0,
+                    debug_summary TEXT NULL,
+                    upstream_response_body TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1095,7 +1109,9 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                     draft_n INTEGER NOT NULL DEFAULT 0,
-                    draft_n_accepted INTEGER NOT NULL DEFAULT 0
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0,
+                    debug_summary TEXT NULL,
+                    upstream_response_body TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1163,6 +1179,7 @@ internal sealed class AppDatabase : IDisposable
                     show_close_to_tray_notification INTEGER NOT NULL,
                     collect_request_details INTEGER NOT NULL,
                     collect_response_details INTEGER NOT NULL,
+                    debug_mode INTEGER NOT NULL DEFAULT 0,
                     enable_streaming_heartbeats INTEGER NOT NULL,
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
@@ -1254,9 +1271,17 @@ internal sealed class AppDatabase : IDisposable
             "ALTER TABLE requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
         AddColumnIfMissing(connection, "mcp_requests", "draft_n",
             "ALTER TABLE mcp_requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
-        AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
-            "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
-    }
+            AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
+                "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
+            AddColumnIfMissing(connection, "requests", "debug_summary",
+                "ALTER TABLE requests ADD COLUMN debug_summary TEXT NULL;");
+            AddColumnIfMissing(connection, "requests", "upstream_response_body",
+                "ALTER TABLE requests ADD COLUMN upstream_response_body TEXT NULL;");
+            AddColumnIfMissing(connection, "mcp_requests", "debug_summary",
+                "ALTER TABLE mcp_requests ADD COLUMN debug_summary TEXT NULL;");
+            AddColumnIfMissing(connection, "mcp_requests", "upstream_response_body",
+                "ALTER TABLE mcp_requests ADD COLUMN upstream_response_body TEXT NULL;");
+        }
 
     /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
     private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string alterStatement)
@@ -1347,6 +1372,16 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated runtime_settings table: added run_as_administrator column.");
+        }
+
+        if (!ColumnExists(connection, "runtime_settings", "debug_mode"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN debug_mode INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added debug_mode column.");
         }
     }
 
@@ -1652,6 +1687,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
             command.Parameters.AddWithValue("$draftN", entry.DraftN);
             command.Parameters.AddWithValue("$draftNAccepted", entry.DraftNAccepted);
+            command.Parameters.AddWithValue("$debugSummary", DbValue(entry.DebugSummary));
+            command.Parameters.AddWithValue("$upstreamResponseBody", DbValue(entry.UpstreamResponseBody));
         }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -1782,6 +1819,8 @@ internal sealed class AppDatabase : IDisposable
         ReasoningTokens = reader.GetInt32(21),
         DraftN = reader.GetInt32(22),
         DraftNAccepted = reader.GetInt32(23),
+        DebugSummary = reader.IsDBNull(24) ? null : reader.GetString(24),
+        UpstreamResponseBody = reader.IsDBNull(25) ? null : reader.GetString(25),
     };
 
     /// <summary>

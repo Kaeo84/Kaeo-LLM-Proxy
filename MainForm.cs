@@ -122,6 +122,7 @@ internal partial class MainForm : Form
 #endif
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
         _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
@@ -937,6 +938,13 @@ internal partial class MainForm : Form
         }
         sb.AppendLine($"Bytes     : {FormatBytes(log.RequestBytes, log.ResponseBytes)} (request / response)");
 
+        if (!string.IsNullOrEmpty(log.DebugSummary))
+        {
+            sb.AppendLine();
+            sb.AppendLine("── Debug: applied overrides & transformations ────────────────");
+            sb.AppendLine(log.DebugSummary);
+        }
+
         if (!string.IsNullOrEmpty(log.ErrorMessage))
         {
             sb.AppendLine();
@@ -1024,13 +1032,26 @@ internal partial class MainForm : Form
             tabControl.Controls.Add(upstreamTab);
         }
 
+        if (log.UpstreamResponseBody is not null)
+        {
+            TabPage upstreamResponseTab = new()
+            {
+                Name = "_tabLogUpstreamResponseBody",
+                Padding = new Padding(8),
+                Text = "Upstream Response Body (OpenAI)",
+            };
+
+            upstreamResponseTab.Controls.Add(CreateLogDetailsTextBox(FormatBody(log.UpstreamResponseBody)));
+            tabControl.Controls.Add(upstreamResponseTab);
+        }
+
         if (log.ResponseBody is not null)
         {
             TabPage responseTab = new()
             {
                 Name = "_tabLogResponseBody",
                 Padding = new Padding(8),
-                Text = "Response Body",
+                Text = "Response Body (Ollama)",
             };
 
             TextBox responseText = CreateLogDetailsTextBox(FormatBody(log.ResponseBody));
@@ -1451,6 +1472,7 @@ internal partial class MainForm : Form
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
+        _chkDebugMode.Checked = _settings.DebugMode;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
@@ -1549,6 +1571,7 @@ internal partial class MainForm : Form
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
+        _settings.DebugMode = _chkDebugMode.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
 

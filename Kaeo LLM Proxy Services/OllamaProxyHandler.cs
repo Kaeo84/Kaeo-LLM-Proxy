@@ -2010,13 +2010,96 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             writer.WriteEndObject();
             writer.Flush();
 
-            return System.Text.Encoding.UTF8.GetString(ms.ToArray());
+            string output = System.Text.Encoding.UTF8.GetString(ms.ToArray());
+
+            // Debug mode: record every settings-driven override/transformation applied on the
+            // passthrough path (model rewrite, sampling, reasoning effort, system merging).
+            if (settings.DebugMode)
+                log.DebugSummary = BuildNormalizeDebugNotes(
+                    root,
+                    original,
+                    resolved,
+                    tempPriority,
+                    repeatPriority,
+                    proxyTemperature,
+                    proxyRepeatPenalty,
+                    normalizeMapping,
+                    reasoningPriority,
+                    proxyReasoningEffort,
+                    reasoningFormat,
+                    injectedInstructions,
+                    hasConsecutiveSystemMessages,
+                    hasTrailingAssistantPrefill);
+
+            return output;
         }
         catch
         {
             // Non-JSON or malformed body — forward as-is.
             return json;
         }
+    }
+
+    /// <summary>
+    /// Builds the multi-line debug audit trail for a <c>/v1/*</c> passthrough body from the
+    /// same per-model settings decisions applied by <see cref="NormalizeRequestBody"/>. Returns
+    /// null when no transformation was applied (the caller only reaches this when the body was
+    /// actually rewritten, so a summary is always produced here).
+    /// </summary>
+    private static string BuildNormalizeDebugNotes(
+        JsonElement root,
+        string original,
+        string resolved,
+        SamplingPriority tempPriority,
+        SamplingPriority repeatPriority,
+        double proxyTemperature,
+        double proxyRepeatPenalty,
+        ModelMapping? mapping,
+        SamplingPriority reasoningPriority,
+        string proxyReasoningEffort,
+        ReasoningEffortFormat reasoningFormat,
+        string? injectedInstructions,
+        bool hasConsecutiveSystemMessages,
+        bool hasTrailingAssistantPrefill)
+    {
+        // Extract the client's original values for before/after comparison.
+        float? clientTemperature = ReadJsonNumber(root, "temperature");
+        float? clientRepeatPenalty = ReadJsonNumber(root, "repeat_penalty");
+        string? clientReasoningEffort = root.TryGetProperty("reasoning_effort", out JsonElement re)
+            && re.ValueKind == JsonValueKind.String
+                ? re.GetString()
+                : null;
+
+        StringBuilder sb = new();
+        sb.AppendLine(DebugNotes.ModelResolution(original, resolved, !string.Equals(original, resolved, StringComparison.OrdinalIgnoreCase)));
+        sb.AppendLine(DebugNotes.SamplingDecision("temperature", tempPriority, clientTemperature, (float)proxyTemperature));
+        sb.AppendLine(DebugNotes.SamplingDecision("repeat_penalty", repeatPriority, clientRepeatPenalty, (float)proxyRepeatPenalty));
+        sb.AppendLine(DebugNotes.ReasoningEffortDecision(reasoningPriority, clientReasoningEffort, proxyReasoningEffort, reasoningFormat));
+
+        if (!string.IsNullOrWhiteSpace(injectedInstructions))
+            sb.AppendLine(DebugNotes.InstructionInjection(mapping?.InstructionSetName ?? string.Empty));
+        if (hasConsecutiveSystemMessages)
+            sb.AppendLine("messages: merged consecutive leading system messages into a single system message");
+        if (hasTrailingAssistantPrefill)
+            sb.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Reads a numeric property (number or numeric string) from a JSON element as a float, or
+    /// null when the property is absent or not numeric.
+    /// </summary>
+    private static float? ReadJsonNumber(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out JsonElement prop))
+            return null;
+
+        return prop.ValueKind == JsonValueKind.Number
+            ? (float)prop.GetDouble()
+            : prop.ValueKind == JsonValueKind.String && prop.TryGetSingle(out float value)
+                ? value
+                : null;
     }
 
     /// <summary>Writes the modern nested <c>"reasoning": { "effort": "..." }</c> object.</summary>
@@ -2614,7 +2697,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;
-        if (_settings.CollectRequestDetails)
+        bool debug = _settings.DebugMode;
+        StringBuilder? debugNotes = debug ? new StringBuilder() : null;
+        bool mapped = !string.Equals(ollamaReq.Model, resolvedModel, StringComparison.OrdinalIgnoreCase);
+        if (debugNotes is not null)
+            debugNotes.Append(DebugNotes.ModelResolution(ollamaReq.Model, resolvedModel, mapped));
+        // Capture the client (before) body when either the Collect flag or DebugMode is on.
+        if (_settings.CollectRequestDetails || debug)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
         var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
@@ -2624,11 +2713,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Map messages, preserving / synthesising tool_call IDs so OpenAI-compatible
         // upstreams can correlate assistant tool_calls with the following role:"tool" replies.
         List<LlamaCppMessage> messages = MapMessagesWithToolCorrelation(ollamaReq.Messages);
-        if (messages.Count > 0
+        bool removedAssistantPrefill = messages.Count > 0
             && ShouldApplyThinkingCompatibility(_settings, ollamaReq.Model)
-            && IsAssistantResponsePrefill(messages[^1]))
+            && IsAssistantResponsePrefill(messages[^1]);
+        if (removedAssistantPrefill)
         {
             messages.RemoveAt(messages.Count - 1);
+            if (debugNotes is not null)
+                debugNotes.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
         }
 
         // Inject custom instructions if configured for this model mapping
@@ -2639,6 +2731,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 // Prepend system message with custom instructions
                 messages.Insert(0, new LlamaCppMessage("system", instructionSet.Instructions));
+                if (debugNotes is not null)
+                    debugNotes.AppendLine(DebugNotes.InstructionInjection(instructionSet.Name));
             }
         }
 
@@ -2676,10 +2770,35 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // mapping's configured value under Proxy priority.
         ApplyReasoningEffort(mapping, llamaReq, ollamaReq.Think);
 
+        // Record every settings-driven override/transformation for the debug audit trail.
+        if (debugNotes is not null)
+        {
+            debugNotes.AppendLine(DebugNotes.SamplingDecision(
+                "temperature",
+                mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
+                ollamaReq.Options?.Temperature,
+                (float)(mapping?.Temperature ?? 0.7)));
+            debugNotes.AppendLine(DebugNotes.SamplingDecision(
+                "repeat_penalty",
+                mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
+                ollamaReq.Options?.RepeatPenalty,
+                (float)(mapping?.RepeatPenalty ?? 1.0)));
+            debugNotes.AppendLine(DebugNotes.ReasoningEffortDecision(
+                mapping?.ReasoningEffortPriority ?? SamplingPriority.ClientApp,
+                MapThinkToReasoningEffort(ollamaReq.Think),
+                mapping?.ReasoningEffort?.Trim().ToLowerInvariant(),
+                mapping?.ReasoningEffortFormat ?? ReasoningEffortFormat.Legacy));
+            if (ollamaReq.Tools is not null && ollamaReq.Tools.Count > 0)
+                debugNotes.AppendLine($"tools: mapped {ollamaReq.Tools.Count} tool definition(s)");
+            if (ollamaReq.Format is not null)
+                debugNotes.AppendLine($"response_format: resolved from client \"format\" ({FormatDescriptor(ollamaReq.Format)})");
+            log.DebugSummary = debugNotes.ToString().TrimEnd();
+        }
+
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body so proxy-injected values such as
         // reasoning_effort can be compared against the client body in the request log.
-        if (_settings.CollectRequestDetails)
+        if (_settings.CollectRequestDetails || debug)
             log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
 
         // Proactive context-overflow check: if the estimated token count exceeds the mapping's
@@ -2708,6 +2827,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
             if (_settings.CollectResponseDetails)
                 log.ResponseBody = errorBody;
+            // Debug mode captures the raw upstream response body independently of the Collect flags.
+            if (_settings.DebugMode)
+                log.UpstreamResponseBody = RedactResponseBodyForLog(errorBody, ollamaReq.Model);
 
             // For context overflow, return 413 so clients like Copilot recognize this as a
             // context limit error and can trigger their own compaction (ContextLimitRetry).
@@ -2734,11 +2856,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 mapping?.ThinkingMode != ThinkingMode.StripFromOutput,
                 sw,
                 ct,
-                () => _stats.IncrementHeartbeat(ollamaReq.Model));
+                () => _stats.IncrementHeartbeat(ollamaReq.Model),
+                collectRawUpstream: _settings.DebugMode);
         }
         else
         {
             string respBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+            // Debug mode captures the raw OpenAI upstream response body (the "before" of the
+            // response translation) independently of the Collect flags.
+            if (_settings.DebugMode)
+                log.UpstreamResponseBody = RedactResponseBodyForLog(respBody, ollamaReq.Model);
             LlamaCppStreamChunk? chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(respBody, _jsonOptions);
 
             // Non-streaming: prefer .message over .delta (OpenAI non-streaming uses message)
@@ -2970,13 +3097,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool emitThinking,
         Stopwatch sw,
         CancellationToken ct,
-        Action? onHeartbeatSent = null)
+        Action? onHeartbeatSent = null,
+        bool collectRawUpstream = false)
     {
         await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream, Encoding.UTF8);
         await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
         using PooledCharBuffer? responseAccumulator = collectResponse ? new PooledCharBuffer() : null;
+        // When debug capture is on, accumulate the raw upstream (OpenAI) SSE data lines so the
+        // "before" of the response translation is visible alongside the Ollama "after".
+        using PooledCharBuffer? rawUpstreamAccumulator = collectRawUpstream ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
         long responseBytes = 0;
@@ -3000,6 +3131,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (line.StartsWith("data: ", StringComparison.Ordinal))
                 line = line[6..];
+
+            // Capture the raw OpenAI upstream chunk (the "before" of the response translation).
+            rawUpstreamAccumulator?.Append(line);
+            rawUpstreamAccumulator?.Append('\n');
 
             if (line == "[DONE]")
             {
@@ -3093,6 +3228,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (responseAccumulator is not null)
             log.ResponseBody = redactResponse(responseAccumulator.ToString());
 
+        if (rawUpstreamAccumulator is not null && rawUpstreamAccumulator.Length > 0)
+            log.UpstreamResponseBody = redactResponse(rawUpstreamAccumulator.ToString());
+
         log.ResponseBytes = responseBytes;
         resp.Close();
         log.Status = ct.IsCancellationRequested && !reachedDone
@@ -3179,6 +3317,29 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 ["schema"] = raw,
             },
         };
+    }
+
+    /// <summary>
+    /// Returns a short human-readable description of an Ollama <c>format</c> value for the
+    /// debug audit trail. Accepts the Ollama <c>"json"</c> string, an OpenAI-style object with
+    /// a <c>type</c>, or a bare JSON schema object.
+    /// </summary>
+    private static string FormatDescriptor(object? format)
+    {
+        if (format is not JsonElement je)
+            return format is null ? "none" : format.GetType().Name;
+
+        if (je.ValueKind == JsonValueKind.String)
+            return $"\"{je.GetString()}\"";
+
+        if (je.ValueKind == JsonValueKind.Object)
+        {
+            if (je.TryGetProperty("type", out JsonElement t) && t.ValueKind == JsonValueKind.String)
+                return t.GetString() ?? "object";
+            return "json_schema (bare)";
+        }
+
+        return je.ValueKind.ToString();
     }
 
     private static LlamaCppMessage MapMessage(OllamaMessage m) =>

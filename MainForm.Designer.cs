@@ -180,6 +180,7 @@ partial class MainForm
         _chkRunAsAdmin = new CheckBox();
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
+        _chkDebugMode = new CheckBox();
         _chkPerformanceSampling = new CheckBox();
         _chkApiExplorer = new CheckBox();
         _lblApiExplorerUrl = new Label();
@@ -950,7 +951,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 16;
+        _tlpSettings.RowCount = 17;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -967,22 +968,24 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkCollectDetails, 0, 5);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
         _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 6);
+        _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
+        _tlpSettings.Controls.Add(_chkDebugMode, 0, 7);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 7);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 8);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 8);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 9);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 9);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 10);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 10);
+        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 11);
         _tlpSettings.SetColumnSpan(_lblMappings, 2);
-        _tlpSettings.Controls.Add(_lblMappings, 0, 11);
+        _tlpSettings.Controls.Add(_lblMappings, 0, 12);
         _tlpSettings.SetColumnSpan(_dgvMappings, 2);
-        _tlpSettings.Controls.Add(_dgvMappings, 0, 12);
+        _tlpSettings.Controls.Add(_dgvMappings, 0, 13);
         _tlpSettings.SetColumnSpan(_flpMappingButtons, 2);
-        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 13);
+        _tlpSettings.Controls.Add(_flpMappingButtons, 0, 14);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 14);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 15);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1065,6 +1068,11 @@ partial class MainForm
         _chkCollectResponseDetails.Margin = new Padding(4, 4, 4, 4);
         _chkCollectResponseDetails.Name = "_chkCollectResponseDetails";
         _chkCollectResponseDetails.Text = "Collect response details (captures LLM response text into each log entry)";
+
+        _chkDebugMode.AutoSize = true;
+        _chkDebugMode.Margin = new Padding(4, 4, 4, 4);
+        _chkDebugMode.Name = "_chkDebugMode";
+        _chkDebugMode.Text = "Debug mode (log before/after translation details and applied overrides)";
 
         _chkPerformanceSampling.AutoSize = true;
         _chkPerformanceSampling.Margin = new Padding(4, 4, 4, 8);
@@ -2243,6 +2251,7 @@ partial class MainForm
     private CheckBox _chkRunAsAdmin;
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
+    private CheckBox _chkDebugMode;
     private CheckBox _chkPerformanceSampling;
     private CheckBox _chkApiExplorer;
     private Label _lblApiExplorerUrl;
