@@ -928,7 +928,7 @@ partial class MainForm
         _lstMcpLogs.DoubleClick += LstMcpLogs_DoubleClick;
 
         _colMcpTime.Text = "Time";
-        _colMcpTime.Width = 80;
+        _colMcpTime.Width = 105;
         _colMcpMethod.Text = "Method";
         _colMcpMethod.Width = 55;
         _colMcpPath.Text = "Path";

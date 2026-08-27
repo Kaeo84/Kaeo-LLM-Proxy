@@ -786,7 +786,7 @@ internal partial class MainForm : Form
         }
 
         RequestLog log = _mcpLogCache[e.ItemIndex];
-        var item = new ListViewItem(log.Timestamp.ToString("HH:mm:ss"));
+        var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
         item.SubItems.Add(log.Method);
         item.SubItems.Add(log.OllamaPath);
         item.SubItems.Add(log.Status.ToString());
