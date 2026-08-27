@@ -2705,6 +2705,12 @@ internal partial class MainForm : Form
             ["messages"] = messagesArray,
             ["temperature"] = (double)_nudTestTemp.Value,
             ["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value,
+            // Ask OpenAI-compatible upstreams to include a usage block in the terminal stream
+            // chunk so the request log can report prompt/completion/reasoning/cached tokens.
+            ["stream_options"] = new JsonObject
+            {
+                ["include_usage"] = true,
+            },
         };
         string clientBody = payload.ToJsonString(_indentedJsonOptions);
 
@@ -2788,7 +2794,20 @@ internal partial class MainForm : Form
         finally
         {
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
-            log.CompletionTokens = tokenCount;
+            // Prefer the upstream usage block (prompt/completion/reasoning/cached) when the
+            // provider reports it; otherwise fall back to the streamed chunk count so the
+            // completion column still reflects activity.
+            if (streamDiagnostics.HasUsage)
+            {
+                log.PromptTokens = streamDiagnostics.PromptTokens;
+                log.CompletionTokens = streamDiagnostics.CompletionTokens;
+                log.ReasoningTokens = streamDiagnostics.ReasoningTokens;
+                log.CachedPromptTokens = streamDiagnostics.CachedPromptTokens;
+            }
+            else
+            {
+                log.CompletionTokens = tokenCount;
+            }
             string responseText = responseBuilder.ToString();
             log.ResponseBytes = Encoding.UTF8.GetByteCount(responseText);
             if (_settings.CollectResponseDetails)
@@ -2983,6 +3002,13 @@ internal partial class MainForm : Form
                 // visible response box shows the assistant message instead of raw JSON.
                 string body = await resp.Content.ReadAsStringAsync(requestCts.Token);
 
+                // The non-streaming body carries the same usage block as the terminal stream
+                // chunk; capture it so token stats are populated on this path too.
+                TryParseJsonDocument(body, out JsonDocument? nonStreamDoc);
+                if (nonStreamDoc is not null)
+                    using (nonStreamDoc)
+                        diagnostics.RecordUsage(nonStreamDoc.RootElement);
+
                 List<TestConsoleToken>? extracted = TryExtractNonStreamingTokens(body);
                 if (extracted is { Count: > 0 })
                 {
@@ -3080,6 +3106,8 @@ internal partial class MainForm : Form
                 using (JsonDocument parsed = doc)
                 {
                     JsonElement root = parsed.RootElement;
+
+                    diagnostics.RecordUsage(root);
 
                     if (TryExtractSseError(root, out string errorMessage))
                     {
@@ -3301,11 +3329,52 @@ internal partial class MainForm : Form
         public bool SawDone { get; private set; }
         public bool HasDiagnostics => DataLineCount > 0 || _firstParseFailure is not null || _firstIgnoredChunk is not null;
 
+        /// <summary>True once a usage block was observed in the stream (token counts are valid).</summary>
+        public bool HasUsage { get; private set; }
+        public int PromptTokens { get; private set; }
+        public int CompletionTokens { get; private set; }
+        public int ReasoningTokens { get; private set; }
+        public int CachedPromptTokens { get; private set; }
+
         public void RecordData(string data)
         {
             DataLineCount++;
             _firstData ??= TrimSample(data);
             _lastData = TrimSample(data);
+        }
+
+        /// <summary>
+        /// Reads the OpenAI <c>usage</c> block from a stream chunk (when present) so token
+        /// stats can be surfaced in the request log. Updates the last non-zero values seen,
+        /// since usage is reported on the terminal chunk.
+        /// </summary>
+        public void RecordUsage(JsonElement root)
+        {
+            if (!root.TryGetProperty("usage", out JsonElement usage) || usage.ValueKind != JsonValueKind.Object)
+                return;
+
+            if (usage.TryGetProperty("prompt_tokens", out JsonElement pt) && pt.ValueKind == JsonValueKind.Number)
+                PromptTokens = pt.GetInt32();
+            if (usage.TryGetProperty("completion_tokens", out JsonElement ct) && ct.ValueKind == JsonValueKind.Number)
+                CompletionTokens = ct.GetInt32();
+
+            if (usage.TryGetProperty("completion_tokens_details", out JsonElement details)
+                && details.ValueKind == JsonValueKind.Object
+                && details.TryGetProperty("reasoning_tokens", out JsonElement rt)
+                && rt.ValueKind == JsonValueKind.Number)
+            {
+                ReasoningTokens = rt.GetInt32();
+            }
+
+            if (usage.TryGetProperty("prompt_tokens_details", out JsonElement promptDetails)
+                && promptDetails.ValueKind == JsonValueKind.Object
+                && promptDetails.TryGetProperty("cached_tokens", out JsonElement cached)
+                && cached.ValueKind == JsonValueKind.Number)
+            {
+                CachedPromptTokens = cached.GetInt32();
+            }
+
+            HasUsage = true;
         }
 
         public void MarkDone() => SawDone = true;
