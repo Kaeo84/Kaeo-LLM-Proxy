@@ -2864,7 +2864,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
                 ShouldEmitHeartbeats(ollamaReq.Model),
                 _settings.StreamingHeartbeatIntervalSeconds,
-                mapping?.ThinkingMode != ThinkingMode.StripFromOutput,
+                mapping?.ThinkingMode ?? ThinkingMode.LeaveInline,
                 sw,
                 ct,
                 () => _stats.IncrementHeartbeat(ollamaReq.Model),
@@ -2889,13 +2889,31 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             List<OllamaToolCall>? toolCalls = MapToolCallsToOllama(delta?.ToolCalls);
 
             // The upstream's thinking/reasoning trace is emitted in the Ollama-native
-            // message.thinking field rather than inlined into content, unless the mapping
-            // strips thinking from the client-facing output (StripFromOutput mode).
+            // message.thinking field rather than inlined into content. The native
+            // reasoning_content field is always surfaced (unless the mapping strips thinking);
+            // in addition, inline think blocks left inside content are extracted per the
+            // mapping's ThinkingMode so Ollama clients can render a dedicated thinking section
+            // even when the upstream inlines its reasoning instead of using reasoning_content.
             string? content = delta?.Content;
-            string? thinking = mapping?.ThinkingMode == ThinkingMode.StripFromOutput
-                || string.IsNullOrEmpty(delta?.ReasoningContent)
-                    ? null
-                    : delta.ReasoningContent;
+            string? nativeThinking = mapping?.ThinkingMode == ThinkingMode.StripFromOutput
+                ? null
+                : delta?.ReasoningContent;
+            ThinkingMode thinkingMode = mapping?.ThinkingMode ?? ThinkingMode.LeaveInline;
+
+            string? extractedThinking = null;
+            if (thinkingMode != ThinkingMode.StripFromOutput
+                && thinkingMode != ThinkingMode.LeaveInline
+                && !string.IsNullOrEmpty(content))
+            {
+                (string openTag, string closeTag) = ThinkTagExtractor.TagsFor(thinkingMode);
+                (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content, openTag, closeTag);
+                content = answer;
+                extractedThinking = reasoning.Length > 0 ? reasoning : null;
+            }
+
+            string? thinking = !string.IsNullOrEmpty(extractedThinking)
+                ? (nativeThinking is null ? extractedThinking : nativeThinking + extractedThinking)
+                : nativeThinking;
 
             ToolCallExtraction toolCallExtraction = ExtractXmlToolCalls(content);
             if (toolCalls is null)
@@ -3105,7 +3123,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Func<string, string> redactResponse,
         bool enableHeartbeats,
         int heartbeatIntervalSeconds,
-        bool emitThinking,
+        ThinkingMode thinkingMode,
         Stopwatch sw,
         CancellationToken ct,
         Action? onHeartbeatSent = null,
@@ -3126,6 +3144,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Dictionary<int, StreamingToolCallBuilder> toolCallBuilders = [];
         StringBuilder xmlToolCallBuilder = new();
         bool capturingXmlToolCall = false;
+
+        // When the mapping moves or strips inline think blocks (anything other than LeaveInline
+        // / StripFromOutput), run a stateful incremental extractor so a  tag split across
+        // upstream chunks is still recognised. StripFromOutput drops the text instead of
+        // re-emitting it as message.thinking.
+        ThinkTagExtractor? inlineExtractor = null;
+        if (thinkingMode != ThinkingMode.LeaveInline && thinkingMode != ThinkingMode.StripFromOutput)
+        {
+            (string open, string close) = ThinkTagExtractor.TagsFor(thinkingMode);
+            inlineExtractor = new ThinkTagExtractor(open, close);
+        }
+        bool emitThinking = thinkingMode != ThinkingMode.StripFromOutput;
 
         while (!ct.IsCancellationRequested)
         {
@@ -3187,14 +3217,29 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             LlamaCppChoice? choice = chunk.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = choice?.Delta;
-            string token = delta?.Content ?? string.Empty;
             // The upstream's thinking/reasoning trace streams into the Ollama-native
             // message.thinking field, kept separate from message.content, unless the mapping
-            // strips thinking from the client-facing output (StripFromOutput mode).
-            string? thinking = emitThinking
-                && !string.IsNullOrEmpty(delta?.ReasoningContent)
-                    ? delta.ReasoningContent
-                    : null;
+            // strips thinking from the client-facing output (StripFromOutput mode). The native
+            // reasoning_content field is always surfaced when present; additionally, inline
+            // think blocks are separated per the mapping's ThinkingMode so Ollama clients can
+            // render a dedicated thinking section even when the upstream inlines its reasoning.
+            string? rawContent = delta?.Content;
+            string? nativeThinking = emitThinking && !string.IsNullOrEmpty(delta?.ReasoningContent)
+                ? delta.ReasoningContent
+                : null;
+
+            string? extractedThinking = null;
+            string token = rawContent ?? string.Empty;
+            if (inlineExtractor is not null)
+            {
+                (string reasoning, string content) = inlineExtractor.Process(token);
+                token = content;
+                extractedThinking = reasoning.Length > 0 ? reasoning : null;
+            }
+
+            string? thinking = !string.IsNullOrEmpty(extractedThinking)
+                ? (nativeThinking is null ? extractedThinking : nativeThinking + extractedThinking)
+                : nativeThinking;
             AppendStreamingToolCalls(toolCallBuilders, delta?.ToolCalls);
             token = CaptureXmlToolCallToken(token, xmlToolCallBuilder, ref capturingXmlToolCall);
             bool done = choice?.FinishReason != null;
@@ -3234,6 +3279,38 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             responseBytes += Encoding.UTF8.GetByteCount(chunkJson);
             await writer.WriteLineAsync(chunkJson);
             await writer.FlushAsync(ct);
+        }
+
+        // Drain any text the extractor held back because the stream ended inside an unterminated
+        // think block. Emit a final chunk carrying it (as message.thinking, or as content when the
+        // stream closed in answer mode) so the tail of the reasoning trace is not lost. Only when
+        // no terminal (finish_reason) chunk was already sent, to avoid a duplicate done marker.
+        if (inlineExtractor is not null && !terminalChunkSent)
+        {
+            (string tailReasoning, string tailAnswer) = inlineExtractor.Flush();
+            string? tailThinking = tailReasoning.Length > 0 ? tailReasoning : null;
+            string tailToken = tailAnswer.Length > 0 ? tailAnswer : string.Empty;
+            if (tailThinking is not null || tailToken.Length > 0)
+            {
+                responseAccumulator?.Append(tailToken);
+                long tailNs = ElapsedNanos(sw);
+                var tailChunk = new OllamaChatResponse
+                {
+                    Model = modelName,
+                    Message = new OllamaMessage("assistant", tailToken) { Thinking = tailThinking },
+                    Done = true,
+                    DoneReason = "stop",
+                    TotalDuration = tailNs,
+                    LoadDuration = 0L,
+                    PromptEvalCount = log.PromptTokens > 0 ? log.PromptTokens : null,
+                    EvalCount = log.CompletionTokens > 0 ? log.CompletionTokens : null,
+                    EvalDuration = tailNs,
+                };
+                string tailJson = JsonSerializer.Serialize(tailChunk, _jsonOptions);
+                responseBytes += Encoding.UTF8.GetByteCount(tailJson);
+                await writer.WriteLineAsync(tailJson);
+                await writer.FlushAsync(ct);
+            }
         }
 
         if (responseAccumulator is not null)
