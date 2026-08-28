@@ -2331,6 +2331,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         Id = name,
                         OwnedBy = "kaeo-proxy",
                         ContextLength = m.GetEffectiveContextWindow(),
+                        Capabilities = BuildCapabilities(m),
                     };
                 })],
         };
@@ -2412,7 +2413,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Model = mapping?.ProxyName ?? modelName,
             Details = CreateOllamaModelDetails(placeholderModel),
             ModelInfo = CreateOllamaModelInfo(mapping, placeholderModel),
-            Capabilities = BuildCapabilities(mapping, modelName),
+            Capabilities = BuildCapabilities(mapping),
         };
 
         string showJson = JsonSerializer.Serialize(showResp, _jsonOptions);
@@ -2460,7 +2461,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Model = modelName,
             ModifiedAt = DateTime.UtcNow.ToString("o"),
             Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }),
-            Capabilities = BuildCapabilities(mapping, mapping.ModelName),
+            Capabilities = BuildCapabilities(mapping),
             ContextLength = mapping.GetEffectiveContextWindow(),
         };
     }
@@ -2484,38 +2485,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// upstreams; "thinking" is reported when the mapping has thinking compatibility enabled;
     /// "embedding" is inferred when the model name suggests an embedding model.
     /// </summary>
-    private static List<string> BuildCapabilities(ModelMapping? mapping, string modelId)
-    {
-        List<string> caps = ["completion", "tools"];
-
-        if (mapping?.EnableThinkingCompatibility ?? true)
-            caps.Add("thinking");
-
-        // "reasoning" is advertised when the mapping actively transforms thinking into a
-        // dedicated reasoning_content surface (any mode other than LeaveInline), which is
-        // what a client needs to render a collapsible thinking panel.
-        if (mapping?.ThinkingMode is ThinkingMode mode && mode != ThinkingMode.LeaveInline)
-            caps.Add("reasoning");
-
-        string lowered = modelId?.ToLowerInvariant() ?? string.Empty;
-        if (lowered.Contains("embed", StringComparison.Ordinal)
-            || lowered.Contains("bge", StringComparison.Ordinal)
-            || lowered.Contains("e5", StringComparison.Ordinal))
-        {
-            caps.Add("embedding");
-        }
-
-        // Vision is explicit-only: there is no reliable way to infer multimodal support from an
-        // OpenAI-compatible model id (upstream /v1/models responses, e.g. Qwen Cloud, carry no
-        // modality metadata). The per-mapping override is the sole source of truth; unset means
-        // vision is not advertised.
-        if (mapping?.SupportsVision ?? false)
-        {
-            caps.Add("vision");
-        }
-
-        return caps;
-    }
+    /// <summary>
+    /// Returns the capability tokens advertised for this model: exactly the tokens the operator
+    /// checked in the Model Mapping dialog, returned in canonical order (deduped, known tokens
+    /// only). Empty when no capabilities are configured. This is the sole source of truth —
+    /// there is no name-based inference, since upstream OpenAI-compatible /v1/models responses
+    /// (e.g. Qwen Cloud) carry no metadata to derive capabilities from.
+    /// </summary>
+    private static List<string> BuildCapabilities(ModelMapping? mapping)
+        => ModelCapabilities.Normalize(mapping?.Capabilities);
 
     private static Dictionary<string, object> CreateOllamaModelInfo(ModelMapping? mapping, LlamaCppModel? model)
     {
@@ -3928,7 +3906,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             "/api/tags": {
               "get": {
                 "summary": "List available models",
-                "description": "Returns all enabled model mappings with their capabilities (completion, tools, thinking, vision).",
+                "description": "Returns all enabled model mappings with their capabilities (text, chat, reasoning, vision, audio, function_calling, embeddings, code, image_generation).",
                 "operationId": "listModels",
                 "tags": ["Discovery"],
                 "responses": {
@@ -4187,8 +4165,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                   },
                   "capabilities": {
                     "type": "array",
-                    "items": { "type": "string", "enum": ["completion", "tools", "thinking", "vision"] },
-                    "description": "Advertised model capabilities. 'vision' is present only when explicitly enabled per-mapping."
+                    "items": { "type": "string", "enum": ["text", "chat", "reasoning", "vision", "audio", "function_calling", "embeddings", "code", "image_generation"] },
+                    "description": "Advertised model capabilities. Contains exactly the capabilities enabled per-mapping."
                   },
                   "context_length": { "type": "integer", "description": "Effective context window in tokens, used by clients for compaction thresholds." }
                 }

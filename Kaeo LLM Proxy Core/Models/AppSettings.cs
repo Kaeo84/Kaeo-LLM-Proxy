@@ -241,13 +241,14 @@ internal sealed class ModelMapping
     public bool EnableThinkingCompatibility { get; set; } = true;
 
     /// <summary>
-    /// Overrides vision (image input) capability reporting for this model. Vision support is
-    /// explicit-only: when null (default), vision is reported as unsupported. Set true to
-    /// advertise the "vision" capability on the /api/tags and /api/show discovery endpoints;
+    /// Capability tokens advertised for this model on the discovery endpoints (/api/tags and
+    /// /v1/models), e.g. "text", "chat", "vision", "function_calling". Values are the canonical
+    /// wire tokens from <see cref="ModelCapabilities"/> (see its <c>Normalize</c>); the list is
+    /// emitted verbatim as the <c>capabilities</c> array. Explicit-only and default empty (opt-in) —
     /// there is no name-based inference, since upstream OpenAI-compatible /v1/models responses
-    /// (e.g. Qwen Cloud) carry no modality metadata to infer from.
+    /// (e.g. Qwen Cloud) carry no metadata to infer capabilities from.
     /// </summary>
-    public bool? SupportsVision { get; set; }
+    public List<string> Capabilities { get; set; } = [];
 
     /// <summary>
     /// When true, this mapping participates in streaming heartbeat emission while waiting for upstream tokens.
@@ -446,7 +447,7 @@ internal sealed class ModelMapping
         ProxyName = ProxyName,
         ModelName = ModelName,
         EnableThinkingCompatibility = EnableThinkingCompatibility,
-        SupportsVision = SupportsVision,
+        Capabilities = [.. Capabilities],
         EnableHeartbeats = EnableHeartbeats,
         CredentialName = CredentialName,
         UpstreamType = UpstreamType,

@@ -246,6 +246,9 @@ internal sealed class LlamaCppModel
 
     /// <summary>Effective context window (tokens) advertised by the proxy for this model.</summary>
     [JsonPropertyName("context_length")] public int? ContextLength { get; set; }
+
+    /// <summary>Capability tokens advertised for this model (e.g. text, chat, vision, function_calling).</summary>
+    [JsonPropertyName("capabilities")] public List<string>? Capabilities { get; set; }
 }
 
 internal sealed class LlamaCppModelsResponse

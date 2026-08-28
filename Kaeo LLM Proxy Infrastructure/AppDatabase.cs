@@ -164,7 +164,7 @@ internal sealed class AppDatabase : IDisposable
                     proxy_name,
                     model_name,
                     enable_thinking_compatibility,
-                    supports_vision,
+                    capabilities,
                     enable_heartbeats,
                     upstream_type,
                     upstream_url,
@@ -228,7 +228,7 @@ internal sealed class AppDatabase : IDisposable
                         is_enabled,
                         model_name,
                         enable_thinking_compatibility,
-                        supports_vision,
+                        capabilities,
                         enable_heartbeats,
                         upstream_type,
                         upstream_url,
@@ -257,7 +257,7 @@ internal sealed class AppDatabase : IDisposable
                         $isEnabled,
                         $modelName,
                         $enableThinkingCompatibility,
-                        $supportsVision,
+                        $capabilities,
                         $enableHeartbeats,
                         $upstreamType,
                         $upstreamUrl,
@@ -1115,7 +1115,7 @@ internal sealed class AppDatabase : IDisposable
                     is_enabled INTEGER NOT NULL,
                     model_name TEXT NOT NULL,
                     enable_thinking_compatibility INTEGER NOT NULL,
-                    supports_vision INTEGER NULL,
+                    capabilities TEXT NULL,
                     supports_reasoning_effort INTEGER NULL,
                     adaptive_thinking TEXT NULL,
                     enable_heartbeats INTEGER NOT NULL,
@@ -1381,7 +1381,7 @@ internal sealed class AppDatabase : IDisposable
 
     /// <summary>
     /// Adds columns to pre-existing <c>model_mappings</c> tables that were created before they
-    /// were introduced: <c>supports_vision</c>, <c>credential_name</c>, <c>thinking_mode</c>,
+    /// were introduced: <c>capabilities</c>, <c>credential_name</c>, <c>thinking_mode</c>,
     /// <c>context_window_tokens</c>, <c>synthesize_openai_metadata</c>,
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
     /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
@@ -1392,13 +1392,13 @@ internal sealed class AppDatabase : IDisposable
         if (!TableExists(connection, "model_mappings"))
             return;
 
-        if (!ColumnExists(connection, "model_mappings", "supports_vision"))
+        if (!ColumnExists(connection, "model_mappings", "capabilities"))
         {
             using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_vision INTEGER NULL;";
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN capabilities TEXT NULL;";
             command.ExecuteNonQuery();
 
-            Log.Information("Migrated model_mappings table: added supports_vision column.");
+            Log.Information("Migrated model_mappings table: added capabilities column.");
         }
 
         if (!ColumnExists(connection, "model_mappings", "supports_reasoning_effort"))
@@ -1691,8 +1691,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(mapping.IsEnabled));
         command.Parameters.AddWithValue("$modelName", mapping.ModelName);
         command.Parameters.AddWithValue("$enableThinkingCompatibility", ToSqliteBoolean(mapping.EnableThinkingCompatibility));
-        command.Parameters.AddWithValue("$supportsVision", mapping.SupportsVision.HasValue
-            ? ToSqliteBoolean(mapping.SupportsVision.Value)
+        command.Parameters.AddWithValue("$capabilities", mapping.Capabilities.Count > 0
+            ? DbValue(string.Join(",", mapping.Capabilities))
             : DBNull.Value);
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
@@ -1726,7 +1726,9 @@ internal sealed class AppDatabase : IDisposable
         ProxyName = reader.GetString(1),
         ModelName = reader.GetString(2),
         EnableThinkingCompatibility = ReadBoolean(reader, 3),
-        SupportsVision = reader.IsDBNull(4) ? null : ReadBoolean(reader, 4),
+        Capabilities = reader.IsDBNull(4)
+            ? []
+            : [.. reader.GetString(4).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
         EnableHeartbeats = ReadBoolean(reader, 5),
         UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
             ? (UpstreamType)reader.GetInt32(6)

@@ -70,7 +70,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly ComboBox _cmbThinkingHandling = new();
     private readonly GroupBox _grpClientCapabilities = new();
     private readonly TableLayoutPanel _tlpClientCapabilities = new();
-    private readonly CheckBox _chkSupportsVision = new();
+    private readonly Dictionary<string, CheckBox> _capCheckboxes = new(StringComparer.OrdinalIgnoreCase);
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
@@ -200,11 +200,33 @@ internal sealed class ModelMappingDialog : Form
         set => _chkEnableHeartbeats.Checked = value;
     }
 
+    /// <summary>
+    /// The capability tokens currently checked in the Model Capabilities group, returned in
+    /// canonical order (deduped, known tokens only). Empty when nothing is checked.
+    /// </summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool SupportsVision
+    private List<string> Capabilities
     {
-        get => _chkSupportsVision.Checked;
-        set => _chkSupportsVision.Checked = value;
+        get
+        {
+            List<string> selected = [];
+            foreach ((string token, _) in ModelCapabilities.All)
+            {
+                if (_capCheckboxes.TryGetValue(token, out CheckBox? chk) && chk.Checked)
+                    selected.Add(token);
+            }
+            return ModelCapabilities.Normalize(selected);
+        }
+        set
+        {
+            List<string> selected = ModelCapabilities.Normalize(value);
+            HashSet<string> wanted = new(selected, StringComparer.OrdinalIgnoreCase);
+            foreach ((string token, _) in ModelCapabilities.All)
+            {
+                if (_capCheckboxes.TryGetValue(token, out CheckBox? chk))
+                    chk.Checked = wanted.Contains(token);
+            }
+        }
     }
 
 
@@ -864,22 +886,30 @@ internal sealed class ModelMappingDialog : Form
         _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortFormats, 0, 4);
         _tlpThinkingReasoning.Controls.Add(_lstReasoningEffortFormats, 1, 4);
 
-        _chkSupportsVision.AutoSize = true;
-        _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
-        _chkSupportsVision.Text = "Vision (image) input";
-
-
-
         _tlpClientCapabilities.AutoSize = true;
         _tlpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
         _tlpClientCapabilities.ColumnCount = 2;
         _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpClientCapabilities.Dock = DockStyle.Fill;
-        _tlpClientCapabilities.RowCount = 1;
-        _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpClientCapabilities.Controls.Add(_chkSupportsVision, 0, 0);
-        _tlpClientCapabilities.SetColumnSpan(_chkSupportsVision, 2);
+
+        int row = 0;
+        foreach ((string token, string display) in ModelCapabilities.All)
+        {
+            _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            CheckBox chk = new()
+            {
+                AutoSize = true,
+                Margin = new Padding(0, 2, 0, 2),
+                Text = display,
+            };
+            _capCheckboxes[token] = chk;
+            _tlpClientCapabilities.Controls.Add(chk, 0, row);
+            _tlpClientCapabilities.SetColumnSpan(chk, 2);
+            row++;
+        }
+        _tlpClientCapabilities.RowCount = row;
 
         _grpClientCapabilities.AutoSize = true;
         _grpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
@@ -1360,7 +1390,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
         dlg.ThinkingMode = mapping.ThinkingMode;
-        dlg.SupportsVision = mapping.SupportsVision ?? false;
+        dlg.Capabilities = mapping.Capabilities;
 
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg._chkSynthesizeOpenAiMetadata.Checked = mapping.SynthesizeOpenAiMetadata;
@@ -1401,7 +1431,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.RepeatPenaltyPriority = dlg.RepeatPenaltyPriority;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
         mapping.ThinkingMode = dlg.ThinkingMode;
-        mapping.SupportsVision = dlg.SupportsVision;
+        mapping.Capabilities = dlg.Capabilities;
 
         mapping.EnableHeartbeats = dlg.EnableHeartbeats;
         mapping.SynthesizeOpenAiMetadata = dlg._chkSynthesizeOpenAiMetadata.Checked;

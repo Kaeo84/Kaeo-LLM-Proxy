@@ -1521,7 +1521,7 @@ internal partial class MainForm : Form
             mapping.ModelName,
             mapping.InstructionSetName ?? string.Empty,
             mapping.ReasoningEffort ?? string.Empty,
-            mapping.SupportsVision == true ? "Yes" : "No");
+            mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No");
 
         _dgvMappings.Rows[idx].Tag = mapping;
         return idx;
@@ -1894,7 +1894,7 @@ internal partial class MainForm : Form
             row.Cells[_colModelName.Name].Value = mapping.ModelName;
             row.Cells[_colInstructionSet.Name].Value = mapping.InstructionSetName ?? string.Empty;
             row.Cells[_colReasoningEffort.Name].Value = mapping.ReasoningEffort ?? string.Empty;
-            row.Cells[_colVision.Name].Value = mapping.SupportsVision == true ? "Yes" : "No";
+            row.Cells[_colVision.Name].Value = mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No";
 
             CommitMappingsFromGrid();
         }
