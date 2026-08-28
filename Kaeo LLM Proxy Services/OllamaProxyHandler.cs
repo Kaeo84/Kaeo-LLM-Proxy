@@ -2276,57 +2276,251 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             : body;
     }
 
+    /// <summary>
+    /// Replaces the values of sensitive JSON properties with a redaction marker without
+    /// re-serializing the document. Everything that is not a sensitive value — whitespace,
+    /// key order, string escaping — is preserved byte-for-byte, so a clean body is returned
+    /// as the exact same string. This keeps logged request bodies identical to what the
+    /// client actually sent. Returns the body unchanged when it is not valid JSON.
+    /// </summary>
     internal static string RedactSensitiveJsonFields(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
             return body;
 
+        // Verify the body is valid JSON; if not, return it unchanged.
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(body);
-            using MemoryStream ms = new();
-            using Utf8JsonWriter writer = new(ms, new JsonWriterOptions { Indented = true });
-            WriteRedactedJsonElement(writer, doc.RootElement);
-            writer.Flush();
-            return Encoding.UTF8.GetString(ms.ToArray());
+            using (JsonDocument.Parse(body)) { }
         }
         catch (JsonException)
         {
             return body;
         }
+
+        // Walk the raw text, preserving everything byte-for-byte except the values of
+        // properties whose names match IsSensitiveJsonProperty (recursing into nested
+        // objects/arrays so deeply-nested credentials are still redacted).
+        var output = new StringBuilder(body.Length + RedactedValueText.Length);
+        AppendValue(body, 0, output);
+        return output.ToString();
     }
 
-    private static void WriteRedactedJsonElement(Utf8JsonWriter writer, JsonElement element, string? propertyName = null)
+    /// <summary>
+    /// Appends the value starting at <paramref name="index"/> to <paramref name="output"/>.
+    /// For objects and arrays the interior is walked so nested sensitive values are redacted;
+    /// all other text (whitespace, commas, key order, string escapes, scalars) is copied
+    /// verbatim.
+    /// </summary>
+    private static void AppendValue(string body, int index, StringBuilder output)
     {
-        if (propertyName is not null && IsSensitiveJsonProperty(propertyName))
-        {
-            writer.WriteStringValue(RedactedValueText);
+        int i = SkipValueStart(body, index);
+
+        if (i >= body.Length)
             return;
-        }
 
-        switch (element.ValueKind)
+        // Copy any leading whitespace before the value verbatim.
+        output.Append(body.AsSpan(index, i - index));
+
+        char c = body[i];
+
+        if (c == '{')
         {
-            case JsonValueKind.Object:
-                writer.WriteStartObject();
-                foreach (JsonProperty property in element.EnumerateObject())
+            output.Append('{');
+            int afterOpen = i + 1;
+
+            while (true)
+            {
+                int tokenStart = afterOpen;
+                afterOpen = SkipValueStart(body, tokenStart);
+                if (afterOpen >= body.Length || body[afterOpen] == '}')
                 {
-                    writer.WritePropertyName(property.Name);
-                    WriteRedactedJsonElement(writer, property.Value, property.Name);
+                    // Copy trailing whitespace and the closing brace verbatim.
+                    output.Append(body.AsSpan(tokenStart, (afterOpen < body.Length ? afterOpen + 1 : body.Length) - tokenStart));
+                    break;
                 }
-                writer.WriteEndObject();
-                break;
 
-            case JsonValueKind.Array:
-                writer.WriteStartArray();
-                foreach (JsonElement item in element.EnumerateArray())
-                    WriteRedactedJsonElement(writer, item, propertyName);
-                writer.WriteEndArray();
-                break;
+                // A property name must be a string; anything else is copied verbatim.
+                if (body[afterOpen] != '"')
+                {
+                    output.Append(body.AsSpan(tokenStart));
+                    break;
+                }
 
-            default:
-                element.WriteTo(writer);
-                break;
+                int nameEnd = FindStringEnd(body, afterOpen);
+                string name = body[(afterOpen + 1)..nameEnd];
+
+                // A property requires a colon after the name; otherwise copy verbatim.
+                int colonIdx = SkipValueStart(body, nameEnd + 1);
+                if (colonIdx >= body.Length || body[colonIdx] != ':')
+                {
+                    output.Append(body.AsSpan(tokenStart));
+                    break;
+                }
+
+                // Copy name + colon + whitespace verbatim so the body stays byte-identical.
+                int valueStart = SkipValueStart(body, colonIdx + 1);
+                output.Append(body.AsSpan(tokenStart, valueStart - tokenStart));
+
+                if (IsSensitiveJsonProperty(name))
+                {
+                    // Replace only the value with a quoted marker; name + colon stay verbatim.
+                    output.Append('"');
+                    output.Append(RedactedValueText);
+                    output.Append('"');
+                    afterOpen = FindValueEnd(body, valueStart);
+                }
+                else if (valueStart < body.Length && (body[valueStart] == '{' || body[valueStart] == '['))
+                {
+                    // Recurse so nested sensitive properties are still redacted.
+                    AppendValue(body, valueStart, output);
+                    afterOpen = FindValueEnd(body, valueStart);
+                }
+                else
+                {
+                    int valueEnd = FindValueEnd(body, valueStart);
+                    output.Append(body.AsSpan(valueStart, valueEnd - valueStart));
+                    afterOpen = valueEnd;
+                }
+
+                int commaIdx = SkipValueStart(body, afterOpen);
+                if (commaIdx < body.Length && body[commaIdx] == ',')
+                {
+                            // Copy whitespace up to and including the comma verbatim.
+                                output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
+                                afterOpen = commaIdx + 1;
+                                continue;
+                            }
+
+                                    // No comma after this value: loop back so the header copies the closing
+                                    // brace (and any preceding whitespace) verbatim.
+                                    continue;
+                                }
+                            }
+                            else if (c == '[')
+        {
+            output.Append('[');
+            int afterOpen = i + 1;
+
+            while (true)
+            {
+                int tokenStart = afterOpen;
+                afterOpen = SkipValueStart(body, tokenStart);
+                if (afterOpen >= body.Length || body[afterOpen] == ']')
+                {
+                    // Copy trailing whitespace and the closing bracket verbatim.
+                    output.Append(body.AsSpan(tokenStart, (afterOpen < body.Length ? afterOpen + 1 : body.Length) - tokenStart));
+                    break;
+                }
+
+                int valueEnd = FindValueEnd(body, afterOpen);
+                output.Append(body.AsSpan(tokenStart, valueEnd - tokenStart));
+                afterOpen = valueEnd;
+
+                int commaIdx = SkipValueStart(body, afterOpen);
+                if (commaIdx < body.Length && body[commaIdx] == ',')
+                {
+                            // Copy whitespace up to and including the comma verbatim.
+                                output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
+                                afterOpen = commaIdx + 1;
+                                continue;
+                            }
+
+                                    // No comma after this value: loop back so the header copies the closing
+                                    // bracket (and any preceding whitespace) verbatim.
+                                    continue;
+                                }
+                            }
+                            else
+                            {
+                                int valueEnd = FindValueEnd(body, i);
+                                output.Append(body.AsSpan(i, valueEnd - i));
+                            }
+    }
+
+    /// <summary>Advances past leading whitespace before a JSON value.</summary>
+    private static int SkipValueStart(string body, int index)
+    {
+        int i = index;
+        while (i < body.Length && char.IsWhiteSpace(body[i]))
+            i++;
+        return i;
+    }
+
+    /// <summary>
+    /// Returns the index of the closing quote of a JSON string whose opening quote is at
+    /// <paramref name="index"/>.
+    /// </summary>
+    private static int FindStringEnd(string body, int index)
+    {
+        int i = index + 1;
+        while (i < body.Length)
+        {
+            if (body[i] == '\\')
+            {
+                i += 2;
+                continue;
+            }
+
+            if (body[i] == '"')
+                return i;
+            i++;
         }
+
+        return body.Length;
+    }
+
+    /// <summary>
+    /// Given the index of the first non-whitespace character of a JSON value, returns the
+    /// index just past the end of that value. Handles strings (with escapes), numbers,
+    /// literals, objects, and arrays.
+    /// </summary>
+    private static int FindValueEnd(string body, int start)
+    {
+        int i = SkipValueStart(body, start);
+        if (i >= body.Length)
+            return i;
+
+        char c = body[i];
+
+        if (c == '"')
+            return FindStringEnd(body, i) + 1;
+
+        if (c == '{' || c == '[')
+        {
+            char open = c;
+            char close = c == '{' ? '}' : ']';
+            int depth = 0;
+            while (i < body.Length)
+            {
+                char ch = body[i];
+                if (ch == '"')
+                    i = FindStringEnd(body, i) + 1;
+                else
+                {
+                    if (ch == open)
+                        depth++;
+                    else if (ch == close)
+                    {
+                        depth--;
+                        if (depth == 0)
+                            return i + 1;
+                    }
+                    i++;
+                }
+            }
+            return body.Length;
+        }
+
+        // Scalar: number, true, false, null — read until whitespace, comma, close, or end.
+        while (i < body.Length)
+        {
+            char ch = body[i];
+            if (char.IsWhiteSpace(ch) || ch == ',' || ch == '}' || ch == ']')
+                break;
+            i++;
+        }
+        return i;
     }
 
     private static bool IsSensitiveJsonProperty(string propertyName)

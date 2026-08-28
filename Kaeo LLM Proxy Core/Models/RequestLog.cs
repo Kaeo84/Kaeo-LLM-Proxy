@@ -74,8 +74,11 @@ internal sealed class RequestLog
     public int? ExceptionId { get; set; }
 
     /// <summary>
-    /// Raw request body received from the client, captured when <c>CollectRequestDetails</c>
-    /// is enabled in settings. Null when capture is disabled.
+    /// The request body received from the client, exactly as it was sent on the wire — no
+    /// proxy transformations are applied before this capture (the proxy makes no changes at
+    /// all until the upstream request body). Captured when <c>CollectRequestDetails</c> is
+    /// enabled in settings; the only alteration is redaction of sensitive fields (or a whole-body
+    /// marker) when those options are enabled. Null when capture is disabled.
     /// </summary>
     public string? RequestBody { get; set; }
 
