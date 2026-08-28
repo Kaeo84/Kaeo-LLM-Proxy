@@ -2491,7 +2491,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (mapping?.EnableThinkingCompatibility ?? true)
             caps.Add("thinking");
 
-        if (mapping?.SupportsReasoningEffort ?? false)
+        // "reasoning" is advertised when the mapping actively transforms thinking into a
+        // dedicated reasoning_content surface (any mode other than LeaveInline), which is
+        // what a client needs to render a collapsible thinking panel.
+        if (mapping?.ThinkingMode is ThinkingMode mode && mode != ThinkingMode.LeaveInline)
             caps.Add("reasoning");
 
         string lowered = modelId?.ToLowerInvariant() ?? string.Empty;

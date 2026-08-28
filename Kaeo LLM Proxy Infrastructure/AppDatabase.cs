@@ -165,8 +165,6 @@ internal sealed class AppDatabase : IDisposable
                     model_name,
                     enable_thinking_compatibility,
                     supports_vision,
-                    supports_reasoning_effort,
-                    adaptive_thinking,
                     enable_heartbeats,
                     upstream_type,
                     upstream_url,
@@ -231,8 +229,6 @@ internal sealed class AppDatabase : IDisposable
                         model_name,
                         enable_thinking_compatibility,
                         supports_vision,
-                        supports_reasoning_effort,
-                        adaptive_thinking,
                         enable_heartbeats,
                         upstream_type,
                         upstream_url,
@@ -262,8 +258,6 @@ internal sealed class AppDatabase : IDisposable
                         $modelName,
                         $enableThinkingCompatibility,
                         $supportsVision,
-                        $supportsReasoningEffort,
-                        $adaptiveThinking,
                         $enableHeartbeats,
                         $upstreamType,
                         $upstreamUrl,
@@ -1700,10 +1694,6 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$supportsVision", mapping.SupportsVision.HasValue
             ? ToSqliteBoolean(mapping.SupportsVision.Value)
             : DBNull.Value);
-        command.Parameters.AddWithValue("$supportsReasoningEffort", mapping.SupportsReasoningEffort.HasValue
-            ? ToSqliteBoolean(mapping.SupportsReasoningEffort.Value)
-            : DBNull.Value);
-        command.Parameters.AddWithValue("$adaptiveThinking", DbValue(mapping.AdaptiveThinking));
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
         command.Parameters.AddWithValue("$upstreamUrl", mapping.UpstreamUrl);
@@ -1737,42 +1727,40 @@ internal sealed class AppDatabase : IDisposable
         ModelName = reader.GetString(2),
         EnableThinkingCompatibility = ReadBoolean(reader, 3),
         SupportsVision = reader.IsDBNull(4) ? null : ReadBoolean(reader, 4),
-        SupportsReasoningEffort = reader.IsDBNull(5) ? null : ReadBoolean(reader, 5),
-        AdaptiveThinking = reader.IsDBNull(6) ? null : reader.GetString(6),
-        EnableHeartbeats = ReadBoolean(reader, 7),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(8))
-            ? (UpstreamType)reader.GetInt32(8)
+        EnableHeartbeats = ReadBoolean(reader, 5),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
+            ? (UpstreamType)reader.GetInt32(6)
             : UpstreamType.OpenAI,
-        UpstreamUrl = reader.GetString(9),
-        UpstreamTimeoutSeconds = reader.GetInt32(10),
-        RepeatPenalty = reader.GetDouble(11),
-        Temperature = reader.GetDouble(12),
-        InstructionSetName = reader.IsDBNull(13) ? null : reader.GetString(13),
-        RedactRequestBodies = ReadBoolean(reader, 14),
-        RedactResponseBodies = ReadBoolean(reader, 15),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 16),
-        CredentialName = reader.IsDBNull(17) ? null : reader.GetString(17),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(18))
-            ? (ThinkingMode)reader.GetInt32(18)
+        UpstreamUrl = reader.GetString(7),
+        UpstreamTimeoutSeconds = reader.GetInt32(8),
+        RepeatPenalty = reader.GetDouble(9),
+        Temperature = reader.GetDouble(10),
+        InstructionSetName = reader.IsDBNull(11) ? null : reader.GetString(11),
+        RedactRequestBodies = ReadBoolean(reader, 12),
+        RedactResponseBodies = ReadBoolean(reader, 13),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 14),
+        CredentialName = reader.IsDBNull(15) ? null : reader.GetString(15),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(16))
+            ? (ThinkingMode)reader.GetInt32(16)
             : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(19),
-        SynthesizeOpenAiMetadata = ReadBoolean(reader, 20),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
+        ContextWindowTokens = reader.GetInt32(17),
+        SynthesizeOpenAiMetadata = ReadBoolean(reader, 18),
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
+            ? (SamplingPriority)reader.GetInt32(19)
+            : SamplingPriority.ClientApp,
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
+            ? (SamplingPriority)reader.GetInt32(20)
+            : SamplingPriority.ClientApp,
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
             ? (SamplingPriority)reader.GetInt32(21)
             : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(22))
-            ? (SamplingPriority)reader.GetInt32(22)
-            : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(23))
-            ? (SamplingPriority)reader.GetInt32(23)
-            : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(24) ? null : reader.GetString(24),
-        ReasoningEffortValues = reader.IsDBNull(25)
+        ReasoningEffort = reader.IsDBNull(22) ? null : reader.GetString(22),
+        ReasoningEffortValues = reader.IsDBNull(23)
             ? []
-            : [.. reader.GetString(25).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(26)),
-        ProactiveOverflowPercent = reader.GetInt32(27),
-        ProactiveOverflowTokens = reader.GetInt32(28),
+            : [.. reader.GetString(23).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(24)),
+        ProactiveOverflowPercent = reader.GetInt32(25),
+        ProactiveOverflowTokens = reader.GetInt32(26),
     };
 
     /// <summary>

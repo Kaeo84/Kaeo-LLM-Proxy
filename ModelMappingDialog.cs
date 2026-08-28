@@ -71,9 +71,6 @@ internal sealed class ModelMappingDialog : Form
     private readonly GroupBox _grpClientCapabilities = new();
     private readonly TableLayoutPanel _tlpClientCapabilities = new();
     private readonly CheckBox _chkSupportsVision = new();
-    private readonly CheckBox _chkSupportsReasoningEffort = new();
-    private readonly Label _lblAdaptiveThinking = new();
-    private readonly ComboBox _cmbAdaptiveThinking = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
@@ -210,37 +207,7 @@ internal sealed class ModelMappingDialog : Form
         set => _chkSupportsVision.Checked = value;
     }
 
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool SupportsReasoningEffort
-    {
-        get => _chkSupportsReasoningEffort.Checked;
-        set => _chkSupportsReasoningEffort.Checked = value;
-    }
 
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private string? AdaptiveThinking
-    {
-        get
-        {
-            string? value = _cmbAdaptiveThinking.SelectedItem?.ToString();
-            if (string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase))
-                return null;
-            return value?.ToLowerInvariant();
-        }
-        set
-        {
-            string target = string.IsNullOrWhiteSpace(value) ? NoneLabel : value!;
-            for (int i = 0; i < _cmbAdaptiveThinking.Items.Count; i++)
-            {
-                if (string.Equals(_cmbAdaptiveThinking.Items[i]?.ToString(), target, StringComparison.OrdinalIgnoreCase))
-                {
-                    _cmbAdaptiveThinking.SelectedIndex = i;
-                    return;
-                }
-            }
-            _cmbAdaptiveThinking.SelectedIndex = 0;
-        }
-    }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private int UpstreamTimeoutSeconds
@@ -901,33 +868,7 @@ internal sealed class ModelMappingDialog : Form
         _chkSupportsVision.Margin = new Padding(0, 2, 0, 2);
         _chkSupportsVision.Text = "Vision (image) input";
 
-        _chkSupportsReasoningEffort.AutoSize = true;
-        _chkSupportsReasoningEffort.Margin = new Padding(0, 2, 0, 2);
-        _chkSupportsReasoningEffort.Text = "Reasoning effort";
-        _toolTip.SetToolTip(
-            _chkSupportsReasoningEffort,
-            "Advertises that this model supports reasoning effort configuration to clients\n"
-            + "such as Visual Studio Copilot. Enables the collapsible thinking panel for\n"
-            + "models that emit reasoning_content.");
 
-        _lblAdaptiveThinking.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblAdaptiveThinking.AutoSize = true;
-        _lblAdaptiveThinking.Margin = new Padding(0, 4, 8, 4);
-        _lblAdaptiveThinking.Text = "Adaptive thinking:";
-
-        _cmbAdaptiveThinking.Dock = DockStyle.Fill;
-        _cmbAdaptiveThinking.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cmbAdaptiveThinking.Margin = new Padding(0, 4, 0, 4);
-        _cmbAdaptiveThinking.Items.Add(NoneLabel);
-        _cmbAdaptiveThinking.Items.Add("Unsupported");
-        _cmbAdaptiveThinking.Items.Add("Optional");
-        _cmbAdaptiveThinking.Items.Add("Required");
-        _cmbAdaptiveThinking.SelectedIndex = 0;
-        _toolTip.SetToolTip(
-            _cmbAdaptiveThinking,
-            "Maps to Copilot's adaptive_thinking capability. 'Required' indicates the model\n"
-            + "only accepts adaptive thinking and rejects thinking.type='enabled' with HTTP 400.\n"
-            + "Leave as (None) to not advertise this capability.");
 
         _tlpClientCapabilities.AutoSize = true;
         _tlpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
@@ -935,23 +876,17 @@ internal sealed class ModelMappingDialog : Form
         _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpClientCapabilities.Dock = DockStyle.Fill;
-        _tlpClientCapabilities.RowCount = 3;
-        _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpClientCapabilities.RowCount = 1;
         _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpClientCapabilities.Controls.Add(_chkSupportsVision, 0, 0);
         _tlpClientCapabilities.SetColumnSpan(_chkSupportsVision, 2);
-        _tlpClientCapabilities.Controls.Add(_chkSupportsReasoningEffort, 0, 1);
-        _tlpClientCapabilities.SetColumnSpan(_chkSupportsReasoningEffort, 2);
-        _tlpClientCapabilities.Controls.Add(_lblAdaptiveThinking, 0, 2);
-        _tlpClientCapabilities.Controls.Add(_cmbAdaptiveThinking, 1, 2);
 
         _grpClientCapabilities.AutoSize = true;
         _grpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
         _grpClientCapabilities.Controls.Add(_tlpClientCapabilities);
         _grpClientCapabilities.Dock = DockStyle.Fill;
         _grpClientCapabilities.Margin = new Padding(0, 4, 0, 8);
-        _grpClientCapabilities.Text = "Client Capabilities";
+        _grpClientCapabilities.Text = "Model Capabilities";
 
         _chkEnableHeartbeats.AutoSize = true;
         _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
@@ -1426,8 +1361,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
         dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.SupportsVision = mapping.SupportsVision ?? false;
-        dlg.SupportsReasoningEffort = mapping.SupportsReasoningEffort ?? false;
-        dlg.AdaptiveThinking = mapping.AdaptiveThinking;
+
         dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg._chkSynthesizeOpenAiMetadata.Checked = mapping.SynthesizeOpenAiMetadata;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
@@ -1468,8 +1402,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
         mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.SupportsVision = dlg.SupportsVision;
-        mapping.SupportsReasoningEffort = dlg.SupportsReasoningEffort;
-        mapping.AdaptiveThinking = dlg.AdaptiveThinking;
+
         mapping.EnableHeartbeats = dlg.EnableHeartbeats;
         mapping.SynthesizeOpenAiMetadata = dlg._chkSynthesizeOpenAiMetadata.Checked;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
