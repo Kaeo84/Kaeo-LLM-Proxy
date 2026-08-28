@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <title>Kaeo LLM Proxy — Ollama-compatible proxy for llama.cpp and OpenAI-style clients</title>
-  <meta name="description" content="Kaeo LLM Proxy is a Windows system-tray application that bridges Ollama clients and OpenAI-compatible llama.cpp servers, with model mapping, tool-call translation, heartbeats, summarization, and streaming fixes.">
-  <meta name="keywords" content="LLM proxy, Ollama, llama.cpp, OpenAI compatible, C#, Windows, tool calling, streaming SSE">
+  <meta name="description" content="Kaeo LLM Proxy is a Windows system-tray application that bridges Ollama clients and OpenAI-compatible llama.cpp servers, with model mapping, tool-call translation, reasoning/thinking support, an embedded MCP server with tool modules, heartbeats, summarization, and streaming fixes.">
+  <meta name="keywords" content="LLM proxy, Ollama, llama.cpp, OpenAI compatible, MCP, Model Context Protocol, C#, Windows, tool calling, reasoning, thinking, streaming SSE">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://kaeo84.github.io/Kaeo-LLM-Proxy/">
@@ -48,11 +48,20 @@
     <li>Transparent <code>/v1/*</code> passthrough for OpenAI-compatible clients and SDKs</li>
     <li>Streaming and non-streaming chat/completion support</li>
     <li>Streaming tool-call rewriting, including conversion of inline XML tool calls</li>
-    <li><code>reasoning_content</code> compatibility fixes for clients that expect visible assistant text</li>
-    <li>Model name mapping with per-model upstream URL, timeout, API key, and behavior settings</li>
+    <li>Thinking/reasoning support: Ollama <code>think</code> input, <code>message.thinking</code> output, and <code>reasoning_content</code> compatibility for clients that expect visible assistant text</li>
+    <li>Per-model reasoning effort configuration — value list, selection, Client App / Proxy / Provider priority, and multiple upstream wire formats (top-level <code>reasoning_effort</code>, nested <code>reasoning</code>, Qwen Cloud <code>extra_body</code>, and <code>chat_template_kwargs</code>)</li>
+    <li>Per-model <em>Thinking Handling</em> mode to leave inline <code>&lt;think&gt;</code> blocks in place, move them into <code>reasoning_content</code> / <code>message.thinking</code>, strip them, or handle Qwen <code>[Thinking]</code>/<code>[Answer]</code> markers</li>
+    <li>Per-model context-window reporting (<code>context_length</code>) advertised to clients such as GitHub Copilot for accurate context metering</li>
+    <li>Vision (base64 image) input passthrough for multimodal models</li>
+    <li>Model name mapping with per-model upstream URL, timeout, credential, sampling, and behavior settings</li>
     <li>Optional instruction set injection for model-specific system prompts</li>
-    <li>Streaming heartbeats and periodic upstream heartbeat monitoring</li>
+    <li>Streaming heartbeats and periodic upstream heartbeat monitoring, with a live per-model heartbeat view</li>
     <li>Automatic conversation summarization retries when context windows overflow</li>
+    <li>Built-in <strong>MCP (Model Context Protocol) server</strong> over Streamable HTTP at <code>/mcp</code>, with an optional Scalar API explorer and OpenAPI document</li>
+    <li>Importable <strong>MCP sub-modules</strong> that contribute tools to the built-in server (Web Search, SSH, Code Vector Store), loaded in isolation with their own config and help pages</li>
+    <li>Centralized encrypted credential store referenced by name from model mappings and module providers</li>
+    <li>Request/response redaction, including field-level redaction of sensitive JSON keys (API keys, tokens, secrets)</li>
+    <li>Test console for sending chat requests through the proxy with streamed output</li>
     <li>Portable Windows tray app with LiteDB-backed request history and Serilog app logging</li>
   </ul>
 
@@ -68,23 +77,46 @@
     <tr><td><code>POST /api/embeddings</code></td><td>Forwards to <code>/v1/embeddings</code></td></tr>
     <tr><td><code>POST /api/embed</code></td><td>Alias of <code>/v1/embeddings</code></td></tr>
     <tr><td><code>/v1/*</code></td><td>Transparent passthrough with model rewriting for JSON requests</td></tr>
+    <tr><td><code>POST /mcp</code></td><td>Built-in MCP (Model Context Protocol) server — JSON-RPC 2.0 over Streamable HTTP (also served at the server root for base-URL-only clients)</td></tr>
+    <tr><td><code>GET /scalar</code></td><td>Optional interactive Scalar API explorer (when the API explorer is enabled on the MCP port)</td></tr>
+    <tr><td><code>GET /openapi/v1/openapi.json</code></td><td>Optional OpenAPI document for the MCP endpoint</td></tr>
   </table>
+
+  <h2>MCP server and modules</h2>
+  <p>
+    The proxy embeds an MCP server (default <code>http://localhost:8388/mcp</code>) that exposes the tools
+    contributed by the loaded sub-modules over the Streamable HTTP transport. Clients speak JSON-RPC 2.0:
+    post an <code>initialize</code> request to open a session (the response carries an
+    <code>Mcp-Session-Id</code> header), then send <code>tools/list</code> and <code>tools/call</code> on the
+    same session. Sub-modules are importable <code>.dll</code> assemblies built against the Kaeo LLM Proxy
+    module contracts; the host loads each in an isolated context and contributes its tools, configuration
+    page, and help content. Ships with:
+  </p>
+  <ul>
+    <li><strong>Web Search</strong> — <code>web_search</code> / <code>web_fetch</code> tools</li>
+    <li><strong>SSH</strong> — remote shell execution tools</li>
+    <li><strong>Code Vector Store</strong> — semantic code indexing and search (<code>code_index</code>, <code>code_search</code>, <code>code_status</code>, etc.)</li>
+  </ul>
 
   <h2>Recent compatibility improvements</h2>
   <ul>
     <li>Improved OpenAI/Ollama mapping fidelity, including <code>/api/ps</code> and embedding metadata support</li>
     <li>Better streamed tool-call aggregation and XML tool-call conversion</li>
     <li>Correct SSE framing so each <code>data:</code> payload is emitted as its own event</li>
-    <li>Streaming and non-streaming reasoning passthrough improvements</li>
+    <li>Streaming and non-streaming reasoning passthrough improvements, including surfacing inline thinking into <code>message.thinking</code></li>
+    <li>Per-model reasoning effort and thinking-handling configuration across multiple provider wire formats</li>
+    <li>Built-in MCP server with importable tool modules and an integrated API explorer</li>
     <li>Expanded documentation and GitHub Pages support</li>
   </ul>
 
   <h2>Configuration highlights</h2>
   <ul>
-    <li><code>ListenPort</code> and <code>ListenAddress</code> configure where the proxy listens</li>
+    <li><code>ListenPort</code> and <code>ListenAddress</code> configure where the proxy listens; a separate MCP server section (port, address, auth, API explorer) controls the <code>/mcp</code> endpoint</li>
     <li>The <code>Logging</code> section controls app logs, retention, and database location</li>
-    <li>Model mappings define the proxy-facing name, upstream model, upstream URL, timeout, API key, and feature toggles</li>
-    <li>Per-model settings can enable thinking compatibility, streaming heartbeats, summarization, instruction sets, and response redaction</li>
+    <li>Model mappings define the proxy-facing name, upstream model, upstream URL, timeout, credential, and feature toggles</li>
+    <li>Per-model settings can enable thinking compatibility, streaming heartbeats, summarization, instruction sets, response redaction, context-window override, and reasoning effort</li>
+    <li>Credentials stores named secrets encrypted at rest, referenced by name from model mappings and module providers</li>
+    <li>The MCP Modules page imports and manages the sub-modules that contribute tools to the built-in MCP server</li>
   </ul>
 
   <h2>Quick start</h2>
@@ -100,9 +132,10 @@
   <h2>Networking and security</h2>
   <ul>
     <li>Default binding is <code>localhost</code>, which keeps access local to the machine.</li>
-    <li>Binding to <code>0.0.0.0</code> or a specific external IP may require administrator rights or a URL ACL reservation.</li>
+    <li>Binding to <code>0.0.0.0</code> or a specific external IP may require administrator rights or a URL ACL reservation (for both the proxy listener and the MCP server on its own port).</li>
     <li>Prefer request/response redaction when prompts or outputs may contain sensitive information.</li>
     <li>Use HTTPS upstream endpoints where possible if the upstream is remote.</li>
+    <li>The MCP server supports an optional bearer-token credential (by name) and a field-level redaction of sensitive JSON keys when capturing MCP request/response details.</li>
   </ul>
 
   <h2>License</h2>
