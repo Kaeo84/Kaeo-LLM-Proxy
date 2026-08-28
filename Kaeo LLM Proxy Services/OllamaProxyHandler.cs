@@ -626,6 +626,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleV1ModelsAsync(resp, log, ct);
             }
+            else if (method == "GET" && path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase))
+            {
+                log.UpstreamPath = "(local mapping — no upstream call)";
+                await HandleV1ModelAsync(path, resp, log, ct);
+            }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
             {
@@ -753,6 +758,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Track which original model was requested so we can resolve the upstream URL.
         string originalModel = string.Empty;
+        bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
+            || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
         bool isStreamingRequest = false;
 
         if (req.HasEntityBody)
@@ -770,13 +777,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 originalModel = log.Model; // set by NormalizeRequestBody
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
-                // side-by-side in the request log.
-                if (_settings.CollectRequestDetails)
+                // side-by-side in the request log. Debug mode captures bodies independently of
+                // the Collect flags, mirroring the /api/chat path.
+                if (_settings.CollectRequestDetails || _settings.DebugMode)
                 {
                     log.RequestBody = RedactRequestBodyForLog(_settings, bodyText, originalModel);
                     log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, rewritten, originalModel);
                 }
-                isStreamingRequest = IsChatCompletionsPath(req.Url?.AbsolutePath) && IsStreamingJsonBody(bodyText);
+                isStreamingRequest = isCompletionPath && IsStreamingJsonBody(bodyText);
                 log.Streaming = isStreamingRequest;
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
@@ -798,11 +806,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
         ApplyApiKey(upstreamReq, apiKey);
 
-        // For streaming chat requests, pre-commit SSE headers to the client immediately and
-        // pump heartbeat comments while waiting for the upstream to send its first response
-        // header. llama.cpp does not send any HTTP headers until the first token is ready,
-        // so clients with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s)
-        // would otherwise time out silently during long prompt-processing / thinking phases.
+        // For streaming requests, pre-commit SSE headers to the client immediately and pump
+        // heartbeat comments while waiting for the upstream to send its first response header.
+        // llama.cpp does not send any HTTP headers until the first token is ready, so clients
+        // with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s) would
+        // otherwise time out silently during long prompt-processing / thinking phases.
         bool headersPreCommitted = false;
         using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task preResponseHeartbeatTask = Task.CompletedTask;
@@ -875,6 +883,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
             if (_settings.CollectResponseDetails && log.ResponseBody is null)
                 log.ResponseBody = errorBody;
+            // Debug mode captures the raw upstream error body independently of the Collect
+            // flags, mirroring the /api/chat path.
+            if (_settings.DebugMode)
+                log.UpstreamResponseBody = RedactResponseBodyForLog(errorBody, originalModel);
 
             // Detect context overflow so we can rewrite the status to 413 for clients
             // (e.g. Copilot) that trigger compaction on that code.
@@ -915,72 +927,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Capture the terminal usage chunk (prompt/completion/cached/reasoning tokens + draft timings)
         // on every passthrough path without buffering the forwarded body.
         Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
-        bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
-            || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
 
-        if (_settings.CollectResponseDetails)
-        {
-            if (isServerSentEvents)
-            {
-                if (shouldMirrorReasoningContent)
-                {
-                    // Capture the raw upstream frames for the log while the client receives the
-                    // mode-transformed stream, so stripped/moved thinking stays reviewable.
-                    using ResponseCaptureStream rawCapture = new(Stream.Null);
-                    await CopyOpenAiChatCompletionSseStreamAsync(
-                        upstreamStream,
-                        countingStream,
-                        thinkingMode,
-                        ShouldEmitHeartbeats(originalModel),
-                        _settings.StreamingHeartbeatIntervalSeconds,
-                        ct,
-                        () => _stats.IncrementHeartbeat(originalModel),
-                        onUsage,
-                        rawCapture);
-                    log.ResponseBody = RedactResponseBodyForLog(rawCapture.GetCapturedText(), originalModel);
-                }
-                else
-                {
-                    // No rewriting happens on this path; capture what is forwarded as-is.
-                    using ResponseCaptureStream captureStream = new(countingStream);
-                    await CopyStreamWithSseHeartbeatsAsync(
-                        upstreamStream,
-                        captureStream,
-                        ShouldEmitHeartbeats(originalModel),
-                        _settings.StreamingHeartbeatIntervalSeconds,
-                        ct,
-                        () => _stats.IncrementHeartbeat(originalModel),
-                        onUsage);
-                    log.ResponseBody = RedactResponseBodyForLog(captureStream.GetCapturedText(), originalModel);
-                }
-            }
-            else if (isCompletionPath)
-            {
-                await CopyNonStreamingChatResponseAsync(
-                    upstreamStream,
-                    countingStream,
-                    thinkingMode,
-                    ct,
-                    body =>
-                    {
-                        FillTokenStats(log, TryParseChunk(body));
-                        log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
-                    });
-            }
-            else
-            {
-                await CopyNonStreamingChatResponseAsync(
-                    upstreamStream,
-                    countingStream,
-                    thinkingMode,
-                    ct,
-                    body => log.ResponseBody = RedactResponseBodyForLog(body, originalModel));
-            }
-        }
-        else if (isServerSentEvents)
+        bool collectResponse = _settings.CollectResponseDetails;
+        // Debug mode captures the raw upstream response (the "before" of any transformation)
+        // independently of the Collect flags, mirroring the /api/chat path.
+        bool debugCapture = _settings.DebugMode;
+
+        if (isServerSentEvents)
         {
             if (shouldMirrorReasoningContent)
             {
+                // The chat-completions stream is rewritten (thinking mode, XML tool calls), so
+                // capture the raw upstream frames separately: ResponseBody keeps stripped/moved
+                // thinking reviewable and UpstreamResponseBody records the DebugMode "before".
+                using ResponseCaptureStream? rawCapture = collectResponse || debugCapture
+                    ? new ResponseCaptureStream(Stream.Null)
+                    : null;
                 await CopyOpenAiChatCompletionSseStreamAsync(
                     upstreamStream,
                     countingStream,
@@ -989,7 +951,36 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     _settings.StreamingHeartbeatIntervalSeconds,
                     ct,
                     () => _stats.IncrementHeartbeat(originalModel),
+                    onUsage,
+                    rawCapture);
+
+                if (rawCapture is not null)
+                {
+                    string rawText = rawCapture.GetCapturedText();
+                    if (collectResponse)
+                        log.ResponseBody = RedactResponseBodyForLog(rawText, originalModel);
+                    if (debugCapture)
+                        log.UpstreamResponseBody = RedactResponseBodyForLog(rawText, originalModel);
+                }
+            }
+            else if (collectResponse || debugCapture)
+            {
+                // No rewriting happens on this path; capture what is forwarded as-is.
+                using ResponseCaptureStream captureStream = new(countingStream);
+                await CopyStreamWithSseHeartbeatsAsync(
+                    upstreamStream,
+                    captureStream,
+                    ShouldEmitHeartbeats(originalModel),
+                    _settings.StreamingHeartbeatIntervalSeconds,
+                    ct,
+                    () => _stats.IncrementHeartbeat(originalModel),
                     onUsage);
+
+                string forwardedText = captureStream.GetCapturedText();
+                if (collectResponse)
+                    log.ResponseBody = RedactResponseBodyForLog(forwardedText, originalModel);
+                if (debugCapture)
+                    log.UpstreamResponseBody = RedactResponseBodyForLog(forwardedText, originalModel);
             }
             else
             {
@@ -1003,18 +994,25 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     onUsage);
             }
         }
-        else if (isCompletionPath)
+        else
         {
+            // Non-streaming: buffer the body once so usage stats and the optional captures all
+            // read from the raw upstream body while the transformed body streams to the client.
+            Action<string>? onBody = null;
+            if (isCompletionPath)
+                onBody += body => FillTokenStats(log, TryParseChunk(body));
+            if (collectResponse)
+                onBody += body => log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
+            if (debugCapture)
+                onBody += body => log.UpstreamResponseBody = RedactResponseBodyForLog(body, originalModel);
+
             await CopyNonStreamingChatResponseAsync(
                 upstreamStream,
                 countingStream,
                 thinkingMode,
                 ct,
-                body => FillTokenStats(log, TryParseChunk(body)));
-        }
-        else
-        {
-            await CopyNonStreamingChatResponseAsync(upstreamStream, countingStream, thinkingMode, ct);
+                onBody,
+                extractToolCalls: shouldMirrorReasoningContent);
         }
 
         log.ResponseBytes = countingStream.BytesWritten;
@@ -1042,17 +1040,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <c>&lt;think&gt;</c> blocks according to the model's <see cref="ThinkingMode"/>: moved into
     /// <c>reasoning_content</c> (<see cref="ThinkingMode.MoveToReasoningContent"/>), dropped
     /// entirely (<see cref="ThinkingMode.StripFromOutput"/>), or left unchanged
-    /// (<see cref="ThinkingMode.LeaveInline"/>). The <paramref name="onBody"/> callback always
-    /// receives the unmodified upstream body so captured logs retain any stripped thinking.
+    /// (<see cref="ThinkingMode.LeaveInline"/>). When <paramref name="extractToolCalls"/> is
+    /// set (chat-completions passthrough), inline XML tool-call blocks are additionally
+    /// converted into structured OpenAI <c>tool_calls</c>, mirroring what the streaming
+    /// <see cref="OpenAiSseRewriter"/> and the <c>/api/chat</c> path already do. The
+    /// <paramref name="onBody"/> callback always receives the unmodified upstream body so
+    /// captured logs retain any stripped thinking.
     /// </summary>
     private static async Task CopyNonStreamingChatResponseAsync(
         Stream source,
         Stream destination,
         ThinkingMode thinkingMode,
         CancellationToken ct,
-        Action<string>? onBody = null)
+        Action<string>? onBody = null,
+        bool extractToolCalls = false)
     {
-        if (thinkingMode == ThinkingMode.LeaveInline && onBody is null)
+        if (thinkingMode == ThinkingMode.LeaveInline && onBody is null && !extractToolCalls)
         {
             await source.CopyToAsync(destination, ct);
             return;
@@ -1061,9 +1064,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         string body = await reader.ReadToEndAsync(ct);
         onBody?.Invoke(body);
-        string outgoing = thinkingMode == ThinkingMode.LeaveInline
+        string outgoing = thinkingMode == ThinkingMode.LeaveInline && !extractToolCalls
             ? body
-            : TransformNonStreamingChatBody(body, thinkingMode);
+            : TransformNonStreamingChatBody(body, thinkingMode, extractToolCalls);
         byte[] bytes = Encoding.UTF8.GetBytes(outgoing);
         await destination.WriteAsync(bytes, ct);
     }
@@ -1073,10 +1076,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <c>&lt;think&gt;...&lt;/think&gt;</c> blocks from each choice's <c>message.content</c>.
     /// In <see cref="ThinkingMode.MoveToReasoningContent"/> the extracted text is re-emitted as
     /// <c>message.reasoning_content</c>; in <see cref="ThinkingMode.StripFromOutput"/> it is
-    /// discarded along with any native <c>reasoning_content</c>. Returns the original text
-    /// unchanged if parsing fails.
+    /// discarded along with any native <c>reasoning_content</c>. When
+    /// <paramref name="extractToolCalls"/> is set, inline XML tool-call blocks left in the
+    /// content are converted into structured OpenAI <c>message.tool_calls</c> (skipping choices
+    /// the upstream already answered with structured tool calls) and <c>finish_reason</c> is
+    /// forced to <c>"tool_calls"</c> — the non-streaming parity of the streaming
+    /// <see cref="OpenAiSseRewriter"/>. Returns the original text unchanged if parsing fails.
     /// </summary>
-    private static string TransformNonStreamingChatBody(string json, ThinkingMode thinkingMode)
+    internal static string TransformNonStreamingChatBody(string json, ThinkingMode thinkingMode, bool extractToolCalls = false)
     {
         try
         {
@@ -1085,6 +1092,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 return json;
 
             bool strip = thinkingMode == ThinkingMode.StripFromOutput;
+            bool extractThinking = thinkingMode != ThinkingMode.LeaveInline;
             (string openTag, string closeTag) = ThinkTagExtractor.TagsFor(thinkingMode);
 
             foreach (JsonNode? choiceNode in choices)
@@ -1097,17 +1105,35 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                 string content = message["content"] is JsonValue cv
                     && cv.TryGetValue(out string? contentStr) ? contentStr ?? string.Empty : string.Empty;
-                if (string.IsNullOrEmpty(content)) continue;
 
-                (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content, openTag, closeTag);
-                if (!strip && reasoning.Length > 0)
+                if (extractThinking && !string.IsNullOrEmpty(content))
                 {
-                    string existing = message["reasoning_content"] is JsonValue erv
-                        && erv.TryGetValue(out string? ervStr) ? ervStr ?? string.Empty : string.Empty;
-                    message["reasoning_content"] = JsonValue.Create(existing + reasoning);
+                    (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content, openTag, closeTag);
+                    if (!strip && reasoning.Length > 0)
+                    {
+                        string existing = message["reasoning_content"] is JsonValue erv
+                            && erv.TryGetValue(out string? ervStr) ? ervStr ?? string.Empty : string.Empty;
+                        message["reasoning_content"] = JsonValue.Create(existing + reasoning);
+                    }
+
+                    content = answer;
+                    message["content"] = JsonValue.Create(answer);
                 }
 
-                message["content"] = JsonValue.Create(answer);
+                // XML tool-call extraction — only for choices the upstream did not already
+                // answer with structured tool_calls (same guard as the /api/chat path).
+                if (extractToolCalls
+                    && !string.IsNullOrEmpty(content)
+                    && message["tool_calls"] is not JsonArray { Count: > 0 })
+                {
+                    ToolCallExtraction extraction = ExtractXmlToolCalls(content);
+                    if (extraction.ToolCalls is { Count: > 0 })
+                    {
+                        message["tool_calls"] = BuildOpenAiToolCallsArray(extraction.ToolCalls);
+                        message["content"] = JsonValue.Create(extraction.Content ?? string.Empty);
+                        choice["finish_reason"] = "tool_calls";
+                    }
+                }
             }
 
             return root.ToJsonString(_jsonOptions);
@@ -1116,6 +1142,35 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             return json;
         }
+    }
+
+    /// <summary>
+    /// Converts tool calls parsed from an inline XML block into the OpenAI wire shape
+    /// (<c>id</c> + <c>type: "function"</c> + serialized <c>arguments</c>), mirroring the
+    /// frames the streaming <see cref="OpenAiSseRewriter"/> synthesises.
+    /// </summary>
+    private static JsonArray BuildOpenAiToolCallsArray(List<OllamaToolCall> toolCalls)
+    {
+        JsonArray array = [];
+        foreach (OllamaToolCall toolCall in toolCalls)
+        {
+            string argumentsJson = toolCall.Function?.Arguments is null
+                ? "{}"
+                : JsonSerializer.Serialize(toolCall.Function.Arguments, _jsonOptions);
+
+            array.Add(new JsonObject
+            {
+                ["id"] = "call_" + Guid.NewGuid().ToString("N")[..16],
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = toolCall.Function?.Name ?? string.Empty,
+                    ["arguments"] = argumentsJson,
+                },
+            });
+        }
+
+        return array;
     }
 
     /// <summary>
@@ -2343,6 +2398,59 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         log.StatusCode = 200;
         log.Status = RequestStatus.Success;
         await WriteJsonRawAsync(resp, json, ct);
+    }
+
+    // ── GET /v1/models/{model} → single-model lookup from local mappings ─────
+
+    /// <summary>
+    /// Answers <c>GET /v1/models/{model}</c> entirely from the local mapping table, mirroring
+    /// <c>/api/show</c>. Upstreams vary wildly in whether/how they support a single-model lookup
+    /// (some return 404, some 400, some nothing at all), and only the proxy knows its exposed
+    /// names — building the response locally keeps model availability consistent with what
+    /// <c>/v1/models</c> reports.
+    /// </summary>
+    private async Task HandleV1ModelAsync(string path, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    {
+        string requestedModel = Uri.UnescapeDataString(path["/v1/models/".Length..]);
+        ModelMapping? mapping = _settings.FindModelMapping(requestedModel);
+        log.Model = requestedModel;
+
+        if (mapping is null)
+        {
+            log.StatusCode = 404;
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = $"Model '{requestedModel}' not found in configured mappings.";
+
+            resp.StatusCode = 404;
+            await WriteJsonAsync(resp, new
+            {
+                error = new
+                {
+                    message = $"The model '{requestedModel}' does not exist or is not enabled in the proxy configuration.",
+                    type = "invalid_request_error",
+                    param = "model",
+                    code = "model_not_found",
+                },
+            }, ct);
+            return;
+        }
+
+        string name = string.IsNullOrWhiteSpace(mapping.ProxyName) ? mapping.ModelName : mapping.ProxyName;
+        var model = new LlamaCppModel
+        {
+            Id = name,
+            OwnedBy = "kaeo-proxy",
+            ContextLength = mapping.GetEffectiveContextWindow(),
+            Capabilities = BuildCapabilities(mapping),
+        };
+
+        string modelJson = JsonSerializer.Serialize(model, _jsonOptions);
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = modelJson;
+
+        log.StatusCode = 200;
+        log.Status = RequestStatus.Success;
+        await WriteJsonRawAsync(resp, modelJson, ct);
     }
 
     // ── /api/ps → running model stub ────────────────────────────────────────
@@ -4206,6 +4314,43 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                       }
                     }
                   }
+                }
+              }
+            },
+            "/v1/models/{model}": {
+              "get": {
+                "summary": "OpenAI-compatible single model lookup",
+                "description": "Returns a single configured model mapping in OpenAI format. Answered locally from the mapping table (no upstream call), mirroring /api/show.",
+                "operationId": "openAiModel",
+                "tags": ["Discovery"],
+                "parameters": [
+                  {
+                    "name": "model",
+                    "in": "path",
+                    "required": true,
+                    "schema": { "type": "string" },
+                    "description": "Exposed proxy name (or upstream model name) of the mapping to look up."
+                  }
+                ],
+                "responses": {
+                  "200": {
+                    "description": "OpenAI model object",
+                    "content": {
+                      "application/json": {
+                        "schema": {
+                          "type": "object",
+                          "properties": {
+                            "id": { "type": "string" },
+                            "object": { "type": "string" },
+                            "created": { "type": "integer", "format": "int64" },
+                            "owned_by": { "type": "string" },
+                            "context_length": { "type": "integer", "description": "Effective context window in tokens." }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "404": { "description": "Model not found in configured mappings" }
                 }
               }
             },
