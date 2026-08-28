@@ -92,7 +92,7 @@ internal static class DebugNotes
         if (format.HasFlag(ReasoningEffortFormat.Legacy))
             parts.Add("legacy reasoning_effort");
         if (format.HasFlag(ReasoningEffortFormat.Modern))
-            parts.Add("modern reasoning.effort");
+            parts.Add("modern reasoning.enable+thinking_level");
         if (format.HasFlag(ReasoningEffortFormat.QwenCloud))
             parts.Add("Qwen Cloud extra_body");
         if (format.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs))

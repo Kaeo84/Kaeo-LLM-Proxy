@@ -291,7 +291,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (format.HasFlag(ReasoningEffortFormat.Legacy))
             request.ReasoningEffort = effort;
         if (format.HasFlag(ReasoningEffortFormat.Modern))
-            request.Reasoning = new LlamaCppReasoning { Effort = effort };
+            request.Reasoning = new LlamaCppReasoning { Enable = true, ThinkingLevel = effort };
         if (format.HasFlag(ReasoningEffortFormat.QwenCloud))
             request.ExtraBody = new LlamaCppExtraBody { EnableThinking = true, ReasoningEffort = effort };
         if (format.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs))
@@ -2131,12 +2131,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : null;
     }
 
-    /// <summary>Writes the modern nested <c>"reasoning": { "effort": "..." }</c> object.</summary>
+    /// <summary>Writes the modern nested <c>"reasoning": { "enable": true, "thinking_level": "..." }</c> object.</summary>
     private static void WriteReasoningObject(Utf8JsonWriter writer, string effort)
     {
         writer.WritePropertyName("reasoning");
         writer.WriteStartObject();
-        writer.WriteString("effort", effort);
+        writer.WriteBoolean("enable", true);
+        writer.WriteString("thinking_level", effort);
         writer.WriteEndObject();
     }
 

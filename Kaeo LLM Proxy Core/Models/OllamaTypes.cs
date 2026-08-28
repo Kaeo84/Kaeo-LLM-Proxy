@@ -327,7 +327,7 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("n_ctx")] public int? NCtx { get; set; }
     /// <summary>Non-standard reasoning intensity hint supported by some hosted providers.</summary>
     [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
-    /// <summary>Modern nested reasoning object (<c>reasoning.effort</c>) used by newer OpenAI models.</summary>
+    /// <summary>Modern nested reasoning object (<c>reasoning.enable</c> + <c>reasoning.thinking_level</c>) used by newer OpenAI models.</summary>
     [JsonPropertyName("reasoning")] public LlamaCppReasoning? Reasoning { get; set; }
     /// <summary>Qwen Cloud wrapper carrying <c>enable_thinking</c> alongside <c>reasoning_effort</c>.</summary>
     [JsonPropertyName("extra_body")] public LlamaCppExtraBody? ExtraBody { get; set; }
@@ -335,10 +335,11 @@ internal sealed class LlamaCppChatRequest
     [JsonPropertyName("chat_template_kwargs")] public LlamaCppChatTemplateKwargs? ChatTemplateKwargs { get; set; }
 }
 
-/// <summary>Modern OpenAI reasoning object carrying the effort level (e.g. gpt-5.5).</summary>
+/// <summary>Modern OpenAI reasoning object carrying the thinking level and enable flag.</summary>
 internal sealed class LlamaCppReasoning
 {
-    [JsonPropertyName("effort")] public string? Effort { get; set; }
+    [JsonPropertyName("enable")] public bool? Enable { get; set; }
+    [JsonPropertyName("thinking_level")] public string? ThinkingLevel { get; set; }
 }
 
 /// <summary>

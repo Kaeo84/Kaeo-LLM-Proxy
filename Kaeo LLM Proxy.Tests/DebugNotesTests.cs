@@ -85,7 +85,7 @@ public class DebugNotesTests
         Assert.Contains("high", line);
         Assert.Contains("injected", line);
         Assert.Contains("reasoning_effort", line);
-        Assert.Contains("reasoning.effort", line);
+        Assert.Contains("reasoning.enable+thinking_level", line);
     }
 
     [Fact]

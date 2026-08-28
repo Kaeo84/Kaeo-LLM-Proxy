@@ -108,7 +108,9 @@ public class ReasoningEffortNormalizationTests
             settings);
 
         Assert.False(root.TryGetProperty("reasoning_effort", out _));
-        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
+        JsonElement reasoning = root.GetProperty("reasoning");
+        Assert.True(reasoning.GetProperty("enable").GetBoolean());
+        Assert.Equal("high", reasoning.GetProperty("thinking_level").GetString());
     }
 
     [Fact]
@@ -124,7 +126,9 @@ public class ReasoningEffortNormalizationTests
             settings);
 
         Assert.Equal("medium", root.GetProperty("reasoning_effort").GetString());
-        Assert.Equal("medium", root.GetProperty("reasoning").GetProperty("effort").GetString());
+        JsonElement reasoning = root.GetProperty("reasoning");
+        Assert.True(reasoning.GetProperty("enable").GetBoolean());
+        Assert.Equal("medium", reasoning.GetProperty("thinking_level").GetString());
     }
 
     [Fact]
@@ -165,7 +169,9 @@ public class ReasoningEffortNormalizationTests
             settings);
 
         Assert.False(root.TryGetProperty("reasoning_effort", out _));
-        Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
+        JsonElement reasoning = root.GetProperty("reasoning");
+        Assert.True(reasoning.GetProperty("enable").GetBoolean());
+        Assert.Equal("high", reasoning.GetProperty("thinking_level").GetString());
     }
 
     [Fact]

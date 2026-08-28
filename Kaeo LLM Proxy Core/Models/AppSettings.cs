@@ -45,7 +45,7 @@ internal enum ReasoningEffortFormat
     /// <summary>Legacy top-level <c>"reasoning_effort": "value"</c> property (e.g. o3-mini).</summary>
     Legacy = 1,
 
-    /// <summary>Modern nested <c>"reasoning": { "effort": "value" }</c> object (e.g. gpt-5.5).</summary>
+    /// <summary>Modern nested <c>"reasoning": { "enable": true, "thinking_level": "value" }</c> object.</summary>
     Modern = 2,
 
     /// <summary>Qwen Cloud style: <c>"extra_body": { "enable_thinking": true, "reasoning_effort": "value" }</c>.</summary>
