@@ -855,6 +855,7 @@ internal sealed class ModelMappingDialog : Form
             new ThinkingModeOption(ThinkingMode.LeaveInline, "Leave thinking in the visible answer"),
             new ThinkingModeOption(ThinkingMode.MoveToReasoningContent, "Move thinking into reasoning_content (Qwen Cloud compatibility)"),
             new ThinkingModeOption(ThinkingMode.StripFromOutput, "Remove thinking from client output (kept in logs)"),
+            new ThinkingModeOption(ThinkingMode.QwenThinkingCompatible, "Qwen Thinking Compatible ([Thinking] → reasoning_content, [Answer] → answer)"),
         ]);
         _cmbThinkingHandling.SelectedIndex = 0;
         _toolTip.SetToolTip(
@@ -862,7 +863,9 @@ internal sealed class ModelMappingDialog : Form
             "Controls how upstream <think> reasoning is surfaced to clients.\n"
             + "Leave inline keeps it in the visible answer; moving it to reasoning_content lets\n"
             + "clients like VS render a collapsible thinking panel; removing it hides it from\n"
-            + "clients entirely while captured logs still retain the original upstream body.");
+            + "clients entirely while captured logs still retain the original upstream body.\n"
+            + "Qwen Thinking Compatible handles models that emit literal [Thinking] and [Answer]\n"
+            + "markers: the text between them becomes reasoning_content and the rest the answer.");
 
         _grpThinkingReasoning.AutoSize = true;
         _grpThinkingReasoning.AutoSizeMode = AutoSizeMode.GrowOnly;

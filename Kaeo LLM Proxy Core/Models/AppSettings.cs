@@ -87,6 +87,15 @@ internal enum ThinkingMode
     /// collection is enabled.
     /// </summary>
     StripFromOutput = 2,
+
+    /// <summary>
+    /// Qwen thinking compatibility. The model emits a literal <c>[Thinking]</c> marker at the start
+    /// of its answer, followed by the reasoning, then a <c>[Answer]</c> marker and the final
+    /// answer. The text between <c>[Thinking]</c> and <c>[Answer]</c> is re-emitted as
+    /// <c>reasoning_content</c>, the text after <c>[Answer]</c> becomes the visible answer, and
+    /// both literal markers are stripped from the client-facing output.
+    /// </summary>
+    QwenThinkingCompatible = 3,
 }
 
 internal static class UpstreamTypeExtensions

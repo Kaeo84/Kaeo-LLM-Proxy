@@ -1085,6 +1085,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 return json;
 
             bool strip = thinkingMode == ThinkingMode.StripFromOutput;
+            (string openTag, string closeTag) = ThinkTagExtractor.TagsFor(thinkingMode);
 
             foreach (JsonNode? choiceNode in choices)
             {
@@ -1098,7 +1099,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     && cv.TryGetValue(out string? contentStr) ? contentStr ?? string.Empty : string.Empty;
                 if (string.IsNullOrEmpty(content)) continue;
 
-                (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content);
+                (string reasoning, string answer) = ThinkTagExtractor.ExtractAll(content, openTag, closeTag);
                 if (!strip && reasoning.Length > 0)
                 {
                     string existing = message["reasoning_content"] is JsonValue erv
@@ -1282,8 +1283,32 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         private const string OpenTag = "<think>";
         private const string CloseTag = "</think>";
 
+        private readonly string _openTag;
+        private readonly string _closeTag;
+
         private bool _inThink;
         private string _pending = string.Empty;
+
+        // Qwen thinking compatibility markers: the model emits a literal [Thinking] marker, the
+        // reasoning, then a literal [Answer] marker and the final answer.
+        public const string QwenOpenTag = "[Thinking]";
+        public const string QwenCloseTag = "[Answer]";
+
+        public ThinkTagExtractor(string openTag = OpenTag, string closeTag = CloseTag)
+        {
+            _openTag = openTag;
+            _closeTag = closeTag;
+        }
+
+        /// <summary>
+        /// Returns the open/close tag pair for a given <see cref="ThinkingMode"/>: the Qwen
+        /// <c>[Thinking]</c>/<c>[Answer]</c> markers for <see cref="ThinkingMode.QwenThinkingCompatible"/>,
+        /// or the default <c>&lt;think&gt;</c>/<c>&lt;/think&gt;</c> blocks for every other mode.
+        /// </summary>
+        public static (string OpenTag, string CloseTag) TagsFor(ThinkingMode mode)
+            => mode == ThinkingMode.QwenThinkingCompatible
+                ? (QwenOpenTag, QwenCloseTag)
+                : (OpenTag, CloseTag);
 
         /// <summary>
         /// Feeds the next incremental fragment of <c>content</c> text. Returns the separated
@@ -1304,7 +1329,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int pos = 0;
             while (pos < work.Length)
             {
-                string activeTag = _inThink ? CloseTag : OpenTag;
+                string activeTag = _inThink ? _closeTag : _openTag;
                 int tagIndex = work.IndexOf(activeTag, pos, StringComparison.Ordinal);
 
                 if (tagIndex < 0)
@@ -1357,11 +1382,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         /// removed from the answer.
         /// </summary>
         public static (string Reasoning, string Content) ExtractAll(string content)
+            => ExtractAll(content, OpenTag, CloseTag);
+
+        public static (string Reasoning, string Content) ExtractAll(string content, string openTag, string closeTag)
         {
             if (string.IsNullOrEmpty(content))
                 return (string.Empty, string.Empty);
 
-            ThinkTagExtractor extractor = new();
+            ThinkTagExtractor extractor = new(openTag, closeTag);
             (string reasoning, string answer) = extractor.Process(content);
             (string tailReasoning, string tailAnswer) = extractor.Flush();
             return (reasoning + tailReasoning, answer + tailAnswer);
@@ -1469,6 +1497,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Per-choice incremental <think> tag extractor, used in every mode except LeaveInline.
         private readonly Dictionary<int, ThinkTagExtractor> _thinkExtractors = [];
         private readonly ThinkingMode _thinkingMode = thinkingMode;
+        private readonly (string OpenTag, string CloseTag) _thinkTags = ThinkTagExtractor.TagsFor(thinkingMode);
 
         public IEnumerable<string> Process(string rawLine)
         {
@@ -1526,7 +1555,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 {
                     if (!_thinkExtractors.TryGetValue(index, out ThinkTagExtractor? extractor))
                     {
-                        extractor = new ThinkTagExtractor();
+                        extractor = new ThinkTagExtractor(_thinkTags.OpenTag, _thinkTags.CloseTag);
                         _thinkExtractors[index] = extractor;
                     }
 

@@ -2741,7 +2741,6 @@ internal partial class MainForm : Form
 
         var responseBuilder = new StringBuilder();
         bool hasThinkingOutput = false;
-        bool hasAnswerOutput = false;
         Exception? capturedException = null;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int tokenCount = 0;
@@ -2760,7 +2759,7 @@ internal partial class MainForm : Form
                 }
 
                 tokenCount++;
-                AppendTestConsoleToken(token, responseBuilder, ref hasThinkingOutput, ref hasAnswerOutput);
+                AppendTestConsoleToken(token, responseBuilder, ref hasThinkingOutput);
             }
 
             sw.Stop();
@@ -2876,8 +2875,7 @@ internal partial class MainForm : Form
     private void AppendTestConsoleToken(
         TestConsoleToken token,
         StringBuilder responseBuilder,
-        ref bool hasThinkingOutput,
-        ref bool hasAnswerOutput)
+        ref bool hasThinkingOutput)
     {
         if (token.IsThinking)
         {
@@ -2893,13 +2891,6 @@ internal partial class MainForm : Form
             return;
         }
 
-        if (hasThinkingOutput && !hasAnswerOutput)
-        {
-            AppendTestConsoleText("\r\n\r\n[Answer]\r\n");
-            responseBuilder.Append("\r\n\r\n[Answer]\r\n");
-        }
-
-        hasAnswerOutput = true;
         AppendTestConsoleText(token.Text);
         responseBuilder.Append(token.Text);
     }
@@ -3324,10 +3315,25 @@ internal partial class MainForm : Form
         private string? _lastData;
         private string? _firstParseFailure;
         private string? _firstIgnoredChunk;
+        private string? _firstThinkingToken;
+        private StringBuilder? _rawData;
 
         public int DataLineCount { get; private set; }
         public bool SawDone { get; private set; }
         public bool HasDiagnostics => DataLineCount > 0 || _firstParseFailure is not null || _firstIgnoredChunk is not null;
+
+        /// <summary>True once at least one raw upstream data line has been captured.</summary>
+        public bool HasRawResponse => _rawData is not null;
+
+        /// <summary>The first thinking-classified content, used to detect a model-emitted "[Thinking]" prefix.</summary>
+        public string? FirstThinkingToken => _firstThinkingToken;
+
+        /// <summary>
+        /// The raw upstream JSON (each SSE data line as sent by the provider, newline-joined) for
+        /// the request log's Response Body, kept unaltered so it matches what the model actually
+        /// replied with.
+        /// </summary>
+        public string? RawResponse => _rawData?.ToString();
 
         /// <summary>True once a usage block was observed in the stream (token counts are valid).</summary>
         public bool HasUsage { get; private set; }
@@ -3341,6 +3347,25 @@ internal partial class MainForm : Form
             DataLineCount++;
             _firstData ??= TrimSample(data);
             _lastData = TrimSample(data);
+        }
+
+        /// <summary>
+        /// Records a raw upstream JSON payload (a single SSE data line for streams, or the whole
+        /// non-streaming body) so the request log can store the unaltered upstream response.
+        /// </summary>
+        public void RecordRawData(string data)
+        {
+            if (_rawData is null)
+                _rawData = new StringBuilder();
+            else if (_rawData.Length > 0)
+                _rawData.Append('\n');
+            _rawData.Append(data);
+        }
+
+        /// <summary>Remembers the first thinking-classified token for prefix detection.</summary>
+        public void RecordFirstThinkingToken(string? token)
+        {
+            _firstThinkingToken ??= token;
         }
 
         /// <summary>
