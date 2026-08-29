@@ -2715,7 +2715,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Model = mapping?.ProxyName ?? modelName,
             Details = CreateOllamaModelDetails(placeholderModel),
             ModelInfo = CreateOllamaModelInfo(mapping, placeholderModel),
-            Capabilities = BuildCapabilities(mapping),
+            Capabilities = BuildOllamaCapabilities(mapping),
         };
 
         string showJson = JsonSerializer.Serialize(showResp, _jsonOptions);
@@ -2763,8 +2763,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Model = modelName,
             ModifiedAt = DateTime.UtcNow.ToString("o"),
             Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }),
-            Capabilities = BuildCapabilities(mapping),
-            ContextLength = mapping.GetEffectiveContextWindow(),
+            Capabilities = BuildOllamaCapabilities(mapping),
         };
     }
 
@@ -2783,19 +2782,61 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Reports Ollama-style capability tokens. Tools are always supported for OpenAI-compatible
-    /// upstreams; "thinking" is reported when the mapping has thinking compatibility enabled;
-    /// "embedding" is inferred when the model name suggests an embedding model.
-    /// </summary>
-    /// <summary>
-    /// Returns the capability tokens advertised for this model: exactly the tokens the operator
-    /// checked in the Model Mapping dialog, returned in canonical order (deduped, known tokens
-    /// only). Empty when no capabilities are configured. This is the sole source of truth —
-    /// there is no name-based inference, since upstream OpenAI-compatible /v1/models responses
-    /// (e.g. Qwen Cloud) carry no metadata to derive capabilities from.
+    /// Returns the OpenAI-style capability tokens advertised for this model on the
+    /// <c>/v1/models</c> discovery endpoint: exactly the tokens the operator checked in the
+    /// Model Mapping dialog, returned in canonical order (deduped, known tokens only).
+    /// Empty when no capabilities are configured.
     /// </summary>
     private static List<string> BuildCapabilities(ModelMapping? mapping)
         => ModelCapabilities.Normalize(mapping?.Capabilities);
+
+    /// <summary>
+    /// Maps the operator-configured capability tokens to the Ollama-native capability tokens
+    /// that real Ollama emits on <c>/api/show</c> (e.g. <c>"completion"</c>, <c>"tools"</c>,
+    /// <c>"vision"</c>). The proxy's internal <see cref="ModelCapabilities"/> tokens use
+    /// OpenAI-style names (<c>"text"</c>, <c>"function_calling"</c>) which do not match the
+    /// Ollama specification and cause Ollama clients (including Visual Studio) to misinterpret
+    /// the model's capabilities.
+    /// </summary>
+    private static List<string> BuildOllamaCapabilities(ModelMapping? mapping)
+    {
+        List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
+        if (normalized.Count == 0)
+            return [];
+
+        HashSet<string> ollamaTokens = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (string token in normalized)
+        {
+            switch (token)
+            {
+                case "text":
+                case "chat":
+                case "code":
+                    ollamaTokens.Add("completion");
+                    break;
+                case "function_calling":
+                    ollamaTokens.Add("tools");
+                    break;
+                case "vision":
+                    ollamaTokens.Add("vision");
+                    break;
+                case "embeddings":
+                    ollamaTokens.Add("embedding");
+                    break;
+            }
+        }
+
+        // Return in canonical Ollama order.
+        List<string> ordered = [];
+        foreach (string t in new[] { "completion", "tools", "vision", "embedding" })
+        {
+            if (ollamaTokens.Contains(t))
+                ordered.Add(t);
+        }
+
+        return ordered;
+    }
 
     private static Dictionary<string, object> CreateOllamaModelInfo(ModelMapping? mapping, LlamaCppModel? model)
     {

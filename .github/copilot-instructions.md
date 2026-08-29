@@ -1,5 +1,59 @@
 # Copilot Instructions
 
+## MCP Tools - ALWAYS PREFER
+
+When `mcp__vs-mcp__*` tools are available, ALWAYS use them instead of Grep/Glob/LS.
+
+VS‑MCP Usage Rules for AI Assistants
+AI tools should use Visual Studio MCP whenever semantic understanding or debugging is required. MCP provides IntelliSense‑grade symbol resolution, Roslyn analysis, safe refactoring, project structure insight, and full Visual Studio Debugger access.
+
+When to Use MCP Tools
+Use MCP for symbol lookup, definitions, references, and document structure  
+(e.g., semantic navigation).
+
+Use MCP for inheritance, call graphs, and type relationships  
+(e.g., call graph analysis).
+
+Use MCP for refactoring (safe renames, formatting)
+(e.g., safe refactoring).
+
+Use MCP for builds, tests, and solution/project queries.
+
+Use MCP for runtime debugging: breakpoints, stepping, locals, evaluation
+(e.g., debugging with MCP).
+
+Use MCP for editor context: active file, cursor, selection.
+
+When Not to Use MCP
+Fall back to filesystem operations only when no MCP tool applies.
+
+Do not guess runtime behavior when the debugger can inspect it.
+
+General Rule
+If the task requires understanding what the code means rather than what text exists, use VS‑MCP.
+
+Use these rules when interacting with Visual Studio MCP:
+
+Only call MCP tools when you have all required parameters.  
+If any parameter is missing or uncertain, respond normally instead of producing a tool call.
+
+Never emit empty or partial function calls.  
+Do not output a tool name without arguments, or arguments without a tool name.
+
+Use only MCP tool names exactly as defined in the manifest.  
+Do not invent, rename, or guess tool names.
+
+Do not output malformed JSON or truncated tool calls.  
+Ensure the function call is complete, valid, and well‑formed.
+
+Only call MCP tools when the MCP server is connected and available.  
+If connection status is unclear, respond normally instead of producing a tool call.
+
+Prefer MCP tools for semantic operations, but never force a tool call.  
+If unsure whether a tool applies, respond without calling one.
+
+Never produce a function call with a null, empty, or invalid command.
+
 ## Project Guidelines
 - After every code change, always perform a git commit to the GitHub repo as the last step. The commit message should include a short summary of what the change was for and what was changed.
 - Keep module-specific dependencies isolated to their owning module; do not add module-only packages such as LibGit2Sharp to the main Proxy project. The Proxy host should remain standalone, with the Vector Store module shipping or resolving its own Git dependency.
