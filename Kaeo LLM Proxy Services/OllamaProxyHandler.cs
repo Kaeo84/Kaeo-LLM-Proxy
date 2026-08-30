@@ -2665,9 +2665,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     model = name,
                     size = 0L,
                     digest = string.Empty,
-                    details = CreateOllamaModelDetails(new LlamaCppModel { Id = m.ModelName }),
+                    details = CreateOllamaModelDetails(new LlamaCppModel { Id = m.ModelName }, m),
                     expires_at = DateTime.UtcNow.AddHours(1).ToString("o"),
                     size_vram = 0L,
+                    context_length = m.GetEffectiveContextWindow(),
+                    capabilities = BuildOllamaCapabilities(m),
                 };
             })
             .ToList();
@@ -2713,7 +2715,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         var showResp = new OllamaShowResponse
         {
             Model = mapping?.ProxyName ?? modelName,
-            Details = CreateOllamaModelDetails(placeholderModel),
+            Details = CreateOllamaModelDetails(placeholderModel, mapping),
             ModelInfo = CreateOllamaModelInfo(mapping, placeholderModel),
             Capabilities = BuildOllamaCapabilities(mapping),
         };
@@ -2762,12 +2764,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Name = modelName,
             Model = modelName,
             ModifiedAt = DateTime.UtcNow.ToString("o"),
-            Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }),
+            Details = CreateOllamaModelDetails(new LlamaCppModel { Id = mapping.ModelName }, mapping),
             Capabilities = BuildOllamaCapabilities(mapping),
         };
     }
 
-    private static OllamaModelDetails CreateOllamaModelDetails(LlamaCppModel model)
+    private static OllamaModelDetails CreateOllamaModelDetails(LlamaCppModel model, ModelMapping? mapping = null)
     {
         string family = GetModelFamily(model.Id);
 
@@ -2778,6 +2780,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             Families = [family],
             ParameterSize = GetParameterSize(model.Id),
             QuantizationLevel = GetQuantizationLevel(model.Id),
+            ContextLength = mapping?.GetEffectiveContextWindow() ?? model.ContextLength ?? 0,
         };
     }
 
@@ -2787,8 +2790,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// Model Mapping dialog, returned in canonical order (deduped, known tokens only).
     /// Empty when no capabilities are configured.
     /// </summary>
-    private static List<string> BuildCapabilities(ModelMapping? mapping)
-        => ModelCapabilities.Normalize(mapping?.Capabilities);
+    private static List<string>? BuildCapabilities(ModelMapping? mapping)
+    {
+        List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
+        return normalized.Count > 0 ? normalized : null; // Omit when empty — matches omitempty.
+    }
 
     /// <summary>
     /// Maps the operator-configured capability tokens to the Ollama-native capability tokens
@@ -2798,11 +2804,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// Ollama specification and cause Ollama clients (including Visual Studio) to misinterpret
     /// the model's capabilities.
     /// </summary>
-    private static List<string> BuildOllamaCapabilities(ModelMapping? mapping)
+    private static List<string>? BuildOllamaCapabilities(ModelMapping? mapping)
     {
         List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
         if (normalized.Count == 0)
-            return [];
+            return null; // Omit from JSON entirely — matches Ollama's Go omitempty behavior
 
         HashSet<string> ollamaTokens = new(StringComparer.OrdinalIgnoreCase);
 
@@ -2824,18 +2830,27 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 case "embeddings":
                     ollamaTokens.Add("embedding");
                     break;
+                case "reasoning":
+                    ollamaTokens.Add("thinking");
+                    break;
+                case "image_generation":
+                    ollamaTokens.Add("image");
+                    break;
+                case "audio":
+                    ollamaTokens.Add("audio");
+                    break;
             }
         }
 
-        // Return in canonical Ollama order.
+        // Return in canonical Ollama order (matches model.Capability const order in Ollama source).
         List<string> ordered = [];
-        foreach (string t in new[] { "completion", "tools", "vision", "embedding" })
+        foreach (string t in new[] { "completion", "tools", "insert", "vision", "embedding", "thinking", "image", "audio" })
         {
             if (ollamaTokens.Contains(t))
                 ordered.Add(t);
         }
 
-        return ordered;
+        return ordered.Count > 0 ? ordered : null;
     }
 
     private static Dictionary<string, object> CreateOllamaModelInfo(ModelMapping? mapping, LlamaCppModel? model)

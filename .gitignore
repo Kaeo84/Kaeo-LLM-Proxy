@@ -6,6 +6,8 @@ obj/
 # Application data folder (portable mode)
 # All runtime configuration, logs, and database files
 Data/
+copilot-sdk/
+ollama-docs/
 
 # Visual Studio
 .vs/

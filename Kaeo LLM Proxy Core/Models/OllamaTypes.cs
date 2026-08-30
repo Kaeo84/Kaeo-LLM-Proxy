@@ -166,6 +166,12 @@ internal sealed class OllamaModelDetails
     [JsonPropertyName("families")] public List<string>? Families { get; set; }
     [JsonPropertyName("parameter_size")] public string ParameterSize { get; set; } = string.Empty;
     [JsonPropertyName("quantization_level")] public string QuantizationLevel { get; set; } = string.Empty;
+
+    /// <summary>Effective context window in tokens. Matches Ollama's <c>ModelDetails.ContextLength</c>.</summary>
+    [JsonPropertyName("context_length")] public int ContextLength { get; set; }
+
+    /// <summary>Embedding dimension. Matches Ollama's <c>ModelDetails.EmbeddingLength</c>.</summary>
+    [JsonPropertyName("embedding_length")] public int EmbeddingLength { get; set; }
 }
 
 // ─────────────────────────── /api/show ────────────────────────
