@@ -114,12 +114,6 @@ internal partial class MainForm : Form
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
-#if DEBUG
-        // Debug builds never force elevation so the running instance stays attachable;
-        // disable the control so it does not suggest otherwise.
-        _chkRunAsAdmin.Enabled = false;
-        _chkRunAsAdmin.Text += " (disabled in debug builds)";
-#endif
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
