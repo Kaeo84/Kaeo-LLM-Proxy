@@ -69,8 +69,13 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblThinkingHandling = new();
     private readonly ComboBox _cmbThinkingHandling = new();
     private readonly GroupBox _grpClientCapabilities = new();
-    private readonly TableLayoutPanel _tlpClientCapabilities = new();
-    private readonly Dictionary<string, CheckBox> _capCheckboxes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly TableLayoutPanel _tlpCapGroup = new();
+    private readonly FlowLayoutPanel _flpCapButtons = new();
+    private readonly Button _btnCapAutoDetect = new();
+    private readonly Button _btnCapAdd = new();
+    private readonly Button _btnCapRemove = new();
+    private readonly Label _lblCapStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 4) };
+    private readonly DataGridView _dgvCapabilities = new();
     private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkSynthesizeOpenAiMetadata = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
@@ -201,30 +206,35 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>
-    /// The capability tokens currently checked in the Model Capabilities group, returned in
-    /// canonical order (deduped, known tokens only). Empty when nothing is checked.
+    /// The capability tokens currently enabled in the Model Capabilities table, returned in
+    /// canonical order (known tokens first, then custom tokens in row order; deduped). Disabled
+    /// rows and blank rows are excluded.
     /// </summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     private List<string> Capabilities
     {
         get
         {
-            List<string> selected = [];
-            foreach ((string token, _) in ModelCapabilities.All)
+            List<string> tokens = [];
+            foreach (DataGridViewRow row in _dgvCapabilities.Rows)
             {
-                if (_capCheckboxes.TryGetValue(token, out CheckBox? chk) && chk.Checked)
-                    selected.Add(token);
+                if (row.IsNewRow)
+                    continue;
+                bool enabled = row.Cells[1].Value is true;
+                string? token = row.Cells[0].Value?.ToString();
+                if (enabled && !string.IsNullOrWhiteSpace(token))
+                    tokens.Add(token.Trim());
             }
-            return ModelCapabilities.Normalize(selected);
+            return ModelCapabilities.Normalize(tokens);
         }
         set
         {
-            List<string> selected = ModelCapabilities.Normalize(value);
-            HashSet<string> wanted = new(selected, StringComparer.OrdinalIgnoreCase);
-            foreach ((string token, _) in ModelCapabilities.All)
+            _dgvCapabilities.Rows.Clear();
+            foreach (string token in value ?? [])
             {
-                if (_capCheckboxes.TryGetValue(token, out CheckBox? chk))
-                    chk.Checked = wanted.Contains(token);
+                int idx = _dgvCapabilities.Rows.Add();
+                _dgvCapabilities.Rows[idx].Cells[0].Value = token;
+                _dgvCapabilities.Rows[idx].Cells[1].Value = true;
             }
         }
     }
@@ -886,34 +896,84 @@ internal sealed class ModelMappingDialog : Form
         _tlpThinkingReasoning.Controls.Add(_lblReasoningEffortFormats, 0, 4);
         _tlpThinkingReasoning.Controls.Add(_lstReasoningEffortFormats, 1, 4);
 
-        _tlpClientCapabilities.AutoSize = true;
-        _tlpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
-        _tlpClientCapabilities.ColumnCount = 2;
-        _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _tlpClientCapabilities.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _tlpClientCapabilities.Dock = DockStyle.Fill;
+        _tlpCapGroup.ColumnCount = 1;
+        _tlpCapGroup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpCapGroup.RowCount = 3;
+        _tlpCapGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCapGroup.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCapGroup.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _tlpCapGroup.Dock = DockStyle.Fill;
+        _tlpCapGroup.Padding = new Padding(8);
 
-        int row = 0;
-        foreach ((string token, string display) in ModelCapabilities.All)
+        _flpCapButtons.AutoSize = true;
+        _flpCapButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpCapButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpCapButtons.WrapContents = false;
+        _flpCapButtons.Margin = new Padding(0);
+        _flpCapButtons.Controls.Add(_btnCapAutoDetect);
+        _flpCapButtons.Controls.Add(_btnCapAdd);
+        _flpCapButtons.Controls.Add(_btnCapRemove);
+
+        _btnCapAutoDetect.AutoSize = true;
+        _btnCapAutoDetect.Margin = new Padding(0, 0, 4, 0);
+        _btnCapAutoDetect.Text = "Auto-Detect";
+        _btnCapAutoDetect.Click += BtnCapAutoDetect_Click;
+        _toolTip.SetToolTip(
+            _btnCapAutoDetect,
+            "Best-effort: queries the upstream's model metadata endpoints (data calls only,\n"
+            + "no model invocations) and fills the table with the detected capabilities.");
+
+        _btnCapAdd.AutoSize = true;
+        _btnCapAdd.Margin = new Padding(0);
+        _btnCapAdd.Text = "Add";
+        _btnCapAdd.Click += BtnCapAdd_Click;
+        _toolTip.SetToolTip(
+            _btnCapAdd,
+            "Add a row. Pick a known capability from the dropdown or type a custom one.");
+
+        _btnCapRemove.AutoSize = true;
+        _btnCapRemove.Margin = new Padding(4, 0, 0, 0);
+        _btnCapRemove.Text = "Remove";
+        _btnCapRemove.Click += BtnCapRemove_Click;
+        _toolTip.SetToolTip(_btnCapRemove, "Remove the selected row.");
+
+        _lblCapStatus.Text = "Auto-Detect from the model, Add a known capability from the dropdown, or type a custom one. Tick Enabled to advertise it.";
+
+        DataGridViewComboBoxColumn colCapability = new()
         {
-            _tlpClientCapabilities.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            HeaderText = "Capability",
+            Name = "_colCapCapability",
+            FillWeight = 70,
+            FlatStyle = FlatStyle.System,
+        };
+        foreach (string token in ModelCapabilities.Tokens)
+            colCapability.Items.Add(token);
 
-            CheckBox chk = new()
-            {
-                AutoSize = true,
-                Margin = new Padding(0, 2, 0, 2),
-                Text = display,
-            };
-            _capCheckboxes[token] = chk;
-            _tlpClientCapabilities.Controls.Add(chk, 0, row);
-            _tlpClientCapabilities.SetColumnSpan(chk, 2);
-            row++;
-        }
-        _tlpClientCapabilities.RowCount = row;
+        DataGridViewCheckBoxColumn colEnabled = new()
+        {
+            HeaderText = "Enabled",
+            Name = "_colCapEnabled",
+            FillWeight = 30,
+        };
 
-        _grpClientCapabilities.AutoSize = true;
-        _grpClientCapabilities.AutoSizeMode = AutoSizeMode.GrowOnly;
-        _grpClientCapabilities.Controls.Add(_tlpClientCapabilities);
+        _dgvCapabilities.AllowUserToAddRows = false;
+        _dgvCapabilities.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+        _dgvCapabilities.RowHeadersVisible = false;
+        _dgvCapabilities.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _dgvCapabilities.MultiSelect = false;
+        _dgvCapabilities.Dock = DockStyle.Fill;
+        _dgvCapabilities.MinimumSize = new Size(0, 100);
+        _dgvCapabilities.Columns.Add(colCapability);
+        _dgvCapabilities.Columns.Add(colEnabled);
+        _dgvCapabilities.EditingControlShowing += DgvCapabilities_EditingControlShowing;
+
+        _tlpCapGroup.Controls.Add(_flpCapButtons, 0, 0);
+        _tlpCapGroup.Controls.Add(_lblCapStatus, 0, 1);
+        _tlpCapGroup.Controls.Add(_dgvCapabilities, 0, 2);
+
+        _grpClientCapabilities.AutoSize = false;
+        _grpClientCapabilities.Size = new Size(560, 240);
+        _grpClientCapabilities.Controls.Add(_tlpCapGroup);
         _grpClientCapabilities.Dock = DockStyle.Fill;
         _grpClientCapabilities.Margin = new Padding(0, 4, 0, 8);
         _grpClientCapabilities.Text = "Model Capabilities";
@@ -1033,15 +1093,8 @@ internal sealed class ModelMappingDialog : Form
 
         try
         {
-            // Resolve the API key from the selected credential
-            string? apiKey = null;
-            string? credentialName = CredentialName;
-            if (!string.IsNullOrWhiteSpace(credentialName))
-            {
-                StoredCredential? credential = _credentials.FirstOrDefault(
-                    c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase));
-                apiKey = credential?.Secret;
-            }
+            // Resolve the API key from the selected credential.
+            string? apiKey = ResolveApiKey();
 
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             UpstreamModelFetchResult result = await FetchUpstreamModelsAsync(_upstreamUrl, apiKey);
@@ -1103,14 +1156,7 @@ internal sealed class ModelMappingDialog : Form
 
         try
         {
-            string? apiKey = null;
-            string? credentialName = CredentialName;
-            if (!string.IsNullOrWhiteSpace(credentialName))
-            {
-                StoredCredential? credential = _credentials.FirstOrDefault(
-                    c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase));
-                apiKey = credential?.Secret;
-            }
+            string? apiKey = ResolveApiKey();
 
             Uri modelUri = UpstreamUriHelper.BuildRequestUri(_upstreamUrl, "v1/models/" + Uri.EscapeDataString(modelId));
             using var request = new HttpRequestMessage(HttpMethod.Get, modelUri);
@@ -1192,6 +1238,90 @@ internal sealed class ModelMappingDialog : Form
         {
             _btnModelInfo.Enabled = true;
         }
+    }
+
+    private async void BtnCapAutoDetect_Click(object? sender, EventArgs e)
+    {
+        string modelId = _cmbModelName.Text.Trim();
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            SetCapStatus("Select a model first.", Color.Red);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_upstreamUrl) ||
+            !Uri.TryCreate(_upstreamUrl, UriKind.Absolute, out _))
+        {
+            SetCapStatus("Set the upstream URL first.", Color.Red);
+            return;
+        }
+
+        _btnCapAutoDetect.Enabled = false;
+        SetCapStatus("Detecting capabilities…", SystemColors.GrayText);
+
+        try
+        {
+            CapabilityDetectionResult result = await CapabilityDetector.DetectAsync(
+                _upstreamUrl, modelId, ResolveApiKey(), CancellationToken.None);
+
+            // Replace the table contents entirely with the detected capabilities.
+            Capabilities = result.Capabilities;
+            SetCapStatus(result.Summary, result.Capabilities.Count > 0 ? Color.Green : SystemColors.GrayText);
+        }
+        catch (Exception ex)
+        {
+            SetCapStatus($"Error: {ex.Message}", Color.Red);
+        }
+        finally
+        {
+            _btnCapAutoDetect.Enabled = true;
+        }
+    }
+
+    private void BtnCapAdd_Click(object? sender, EventArgs e)
+    {
+        int idx = _dgvCapabilities.Rows.Add();
+        _dgvCapabilities.Rows[idx].Cells[0].Value = string.Empty;
+        _dgvCapabilities.Rows[idx].Cells[1].Value = true;
+        _dgvCapabilities.CurrentCell = _dgvCapabilities.Rows[idx].Cells[0];
+    }
+
+    private void BtnCapRemove_Click(object? sender, EventArgs e)
+    {
+        int idx = _dgvCapabilities.SelectedRows.Count > 0
+            ? _dgvCapabilities.SelectedRows[0].Index
+            : _dgvCapabilities.CurrentRow?.Index ?? -1;
+        if (idx >= 0 && idx < _dgvCapabilities.Rows.Count)
+            _dgvCapabilities.Rows.RemoveAt(idx);
+    }
+
+    private void SetCapStatus(string text, Color color)
+    {
+        _lblCapStatus.Text = text;
+        _lblCapStatus.ForeColor = color;
+    }
+
+    /// <summary>
+    /// The built-in combo cell is select-only; make it editable so the user can pick a known
+    /// capability from the dropdown OR type a custom one.
+    /// </summary>
+    private void DgvCapabilities_EditingControlShowing(object? sender, DataGridViewEditingControlShowingEventArgs e)
+    {
+        DataGridViewCell? cell = _dgvCapabilities.CurrentCell;
+        if (cell is null || _dgvCapabilities.Columns[cell.ColumnIndex].Name != "_colCapCapability")
+            return;
+        if (e.Control is ComboBox combo)
+            combo.DropDownStyle = ComboBoxStyle.DropDown;
+    }
+
+    /// <summary>Resolves the API key for the currently selected credential, if any.</summary>
+    private string? ResolveApiKey()
+    {
+        string? credentialName = CredentialName;
+        if (string.IsNullOrWhiteSpace(credentialName))
+            return null;
+        return _credentials.FirstOrDefault(
+            c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase))?.Secret;
     }
 
     private static bool TryExtractContextWindow(string json, out int? contextWindow)

@@ -30,8 +30,9 @@ internal static class ModelCapabilities
         => All.FirstOrDefault(c => string.Equals(c.Token, token, StringComparison.OrdinalIgnoreCase)).Display;
 
     /// <summary>
-    /// Orders an arbitrary set of capability tokens into canonical order, dropping duplicates and
-    /// any tokens outside the known set (case-insensitive). Returns a fresh list safe to persist.
+    /// Orders an arbitrary set of capability tokens: known tokens first in canonical order, then
+    /// any custom (unknown) tokens in their original order, with duplicates dropped
+    /// (case-insensitive). Returns a fresh list safe to persist.
     /// </summary>
     public static List<string> Normalize(IEnumerable<string>? tokens)
     {
@@ -42,20 +43,29 @@ internal static class ModelCapabilities
         foreach (string t in Tokens)
             known.Add(t);
 
-        HashSet<string> selected = new(StringComparer.OrdinalIgnoreCase);
-        foreach (string t in tokens)
-        {
-            if (known.Contains(t))
-                selected.Add(t);
-        }
-
         List<string> ordered = [];
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+
+        // Known tokens first, in canonical order.
         foreach (string t in Tokens)
         {
-            if (selected.Contains(t))
+            if (ContainsToken(tokens, t))
+            {
+                ordered.Add(t);
+                seen.Add(t);
+            }
+        }
+
+        // Custom (unknown) tokens after, preserving their original order.
+        foreach (string t in tokens)
+        {
+            if (!known.Contains(t) && seen.Add(t))
                 ordered.Add(t);
         }
 
         return ordered;
     }
+
+    private static bool ContainsToken(IEnumerable<string> tokens, string token)
+        => tokens.Any(t => string.Equals(t, token, StringComparison.OrdinalIgnoreCase));
 }
