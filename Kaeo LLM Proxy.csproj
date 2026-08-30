@@ -24,6 +24,7 @@
   <!-- The host project lives at the repository root; keep sibling project sources out of its
        default glob so each library compiles only its own files. -->
   <ItemGroup>
+    <Compile Remove="copilot-sdk\**" />
     <Compile Remove="Kaeo LLM Proxy Core\**" />
     <Compile Remove="Kaeo LLM Proxy Infrastructure\**" />
     <Compile Remove="Kaeo LLM Proxy Services\**" />
@@ -31,6 +32,8 @@
     <Compile Remove="Kaeo LLM Proxy Module SSH\**" />
     <Compile Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
     <Compile Remove="Kaeo LLM Proxy.Tests\**" />
+    <Compile Remove="ollama-docs\**" />
+    <EmbeddedResource Remove="copilot-sdk\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Core\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Infrastructure\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Services\**" />
@@ -38,6 +41,8 @@
     <EmbeddedResource Remove="Kaeo LLM Proxy Module SSH\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy.Tests\**" />
+    <EmbeddedResource Remove="ollama-docs\**" />
+    <None Remove="copilot-sdk\**" />
     <None Remove="Kaeo LLM Proxy Core\**" />
     <None Remove="Kaeo LLM Proxy Infrastructure\**" />
     <None Remove="Kaeo LLM Proxy Services\**" />
@@ -45,6 +50,7 @@
     <None Remove="Kaeo LLM Proxy Module SSH\**" />
     <None Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
     <None Remove="Kaeo LLM Proxy.Tests\**" />
+    <None Remove="ollama-docs\**" />
   </ItemGroup>
 
   <ItemGroup>
