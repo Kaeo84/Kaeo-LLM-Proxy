@@ -37,28 +37,29 @@ internal static class Program
 
         AppSettings settings = AppSettings.Load();
 
-#if DEBUG
-        // Debug builds never run elevated (the UAC re-launch is compiled out), and http.sys
-        // denies non-loopback bindings to unprivileged processes. Force the loopback address so
-        // the proxy can start without administrator rights during development.
-        settings.ListenAddress = "localhost";
-#endif
-
         // Program owns the single shared AppDatabase for the whole process. It is passed into
         // TrayApplicationContext rather than created there so a second connection to the same
         // file can never exist.
         using AppDatabase database = new(settings.Logging);
         settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
 
-#if !DEBUG
         // Binding the proxy to anything other than "localhost" (e.g. 0.0.0.0 / a specific NIC IP)
         // requires the process to be elevated, because http.sys only grants non-elevated processes
         // free use of the loopback binding. When the user opts in via the "Run as administrator"
         // setting, re-launch ourselves elevated via a UAC prompt; if the prompt is declined we
-        // simply continue non-elevated (localhost still works). Debug builds never force elevation
-        // so development runs stay attachable.
+        // simply continue non-elevated (localhost still works). This runs in debug builds too so
+        // the option works when testing 0.0.0.0 from another machine during development.
         if (settings.RunAsAdministrator && !IsRunningAsAdministrator() && TryRelaunchElevated())
             return;
+
+#if DEBUG
+        // Debug builds that stay non-elevated cannot bind to a non-loopback address (http.sys
+        // denies them to unprivileged processes). Force the loopback address so the proxy can
+        // start without administrator rights. The configured address is honoured only when the
+        // user opted into "Run as administrator" AND the process is actually elevated (via the
+        // re-launch above), so 0.0.0.0 can be tested from another machine.
+        if (!settings.RunAsAdministrator || !IsRunningAsAdministrator())
+            settings.ListenAddress = "localhost";
 #endif
 
         if (!settings.AllowMultipleInstances)
