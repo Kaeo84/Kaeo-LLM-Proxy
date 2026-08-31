@@ -750,7 +750,7 @@ internal partial class MainForm : Form
         var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
         item.SubItems.Add(log.Method);
         item.SubItems.Add(log.OllamaPath);
-        item.SubItems.Add(log.Model);
+        item.SubItems.Add(string.IsNullOrEmpty(log.OriginalModel) ? log.Model : $"{log.OriginalModel} → {log.Model}");
         item.SubItems.Add(log.Status.ToString());
         item.SubItems.Add($"{log.DurationMs:F0}");
         item.SubItems.Add(log.PromptTokens > 0 ? log.PromptTokens.ToString() : string.Empty);
@@ -920,7 +920,10 @@ internal partial class MainForm : Form
         if (source == LogSource.Proxy)
         {
             sb.AppendLine($"Upstream  : {log.UpstreamPath}");
-            sb.AppendLine($"Model     : {log.Model}");
+            if (string.IsNullOrEmpty(log.OriginalModel))
+                sb.AppendLine($"Model     : {log.Model}");
+            else
+                sb.AppendLine($"Model     : {log.OriginalModel} → {log.Model} (compact redirect)");
         }
         sb.AppendLine($"Status    : {log.Status} ({log.StatusCode})");
         if (source == LogSource.Proxy)

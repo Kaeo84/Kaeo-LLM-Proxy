@@ -29,6 +29,13 @@ internal sealed class RequestLog
     public string OllamaPath { get; set; } = string.Empty;
     public string UpstreamPath { get; set; } = string.Empty;
     public string Model { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The model name as sent by the client before any proxy-side redirect (e.g. compact-model
+    /// substitution). When non-empty and different from <see cref="Model"/>, indicates the proxy
+    /// rewrote the model. Empty when no redirect occurred.
+    /// </summary>
+    public string OriginalModel { get; set; } = string.Empty;
     public bool Streaming { get; set; }
     public RequestStatus Status { get; set; } = RequestStatus.Success;
     public string? ErrorMessage { get; set; }

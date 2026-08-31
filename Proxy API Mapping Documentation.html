@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kaeo LLM Proxy - API Mapping Reference</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.6}
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:24px 32px}
+.header h1{font-size:24px;color:#f0f6fc;margin-bottom:4px}
+.header p{color:#8b949e;font-size:14px}
+.tabs{display:flex;gap:2px;background:#161b22;border-bottom:1px solid #30363d;padding:0 32px;overflow-x:auto}
+.tab{padding:12px 20px;cursor:pointer;color:#8b949e;font-size:14px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap}
+.tab:hover{color:#c9d1d9;background:#1c2333}
+.tab.active{color:#58a6ff;border-bottom-color:#58a6ff}
+.content{padding:24px 32px;max-width:1400px}
+.panel{display:none}.panel.active{display:block}
+h2{font-size:20px;color:#f0f6fc;margin:24px 0 12px}
+h3{font-size:16px;color:#f0f6fc;margin:20px 0 8px}
+table{width:100%;border-collapse:collapse;margin:12px 0 24px;font-size:14px}
+th{background:#161b22;color:#f0f6fc;text-align:left;padding:10px 14px;border:1px solid #30363d;font-weight:600;position:sticky;top:0}
+td{padding:8px 14px;border:1px solid #21262d;vertical-align:top}
+tr:hover td{background:#1c2333}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.b-m{background:#1a3a2a;color:#3fb950}
+.b-t{background:#3a2a1a;color:#d29922}
+.b-i{background:#2a1a3a;color:#a371f7}
+.b-o{background:#21262d;color:#8b949e}
+.b-p{background:#1f3a5f;color:#58a6ff}
+.b-g{background:#3a1a1a;color:#f85149}
+.b-r{background:#3a2a1a;color:#d29922}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin:16px 0}
+.card h3{margin-top:0}
+.flow{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin:16px 0;font-family:monospace;font-size:13px;line-height:1.8;color:#8b949e;overflow-x:auto;white-space:pre}
+.note{background:#1c2333;border-left:3px solid #d29922;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0;font-size:13px}
+.note strong{color:#d29922}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px;font-size:13px}
+.search{width:100%;padding:10px 16px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#c9d1d9;font-size:14px;margin-bottom:16px}
+.search:focus{outline:none;border-color:#58a6ff}
+code{background:#1c2333;padding:1px 6px;border-radius:4px;font-family:monospace;font-size:12px;color:#f0883e}
+</style>
+</head>
+<body>
+<div class="header"><h1>Kaeo LLM Proxy &mdash; API Property Mapping Reference</h1><p>Complete reference of every property transformation between client, proxy, and upstream.</p></div>
+<div class="tabs">
+<div class="tab active" onclick="showTab(0)">Overview</div>
+<div class="tab" onclick="showTab(1)">Chat Request</div>
+<div class="tab" onclick="showTab(2)">Chat Response</div>
+<div class="tab" onclick="showTab(3)">Generate</div>
+<div class="tab" onclick="showTab(4)">Embeddings</div>
+<div class="tab" onclick="showTab(5)">Model Listing</div>
+<div class="tab" onclick="showTab(6)">Messages &amp; Tools</div>
+<div class="tab" onclick="showTab(7)">Thinking &amp; Reasoning</div>
+<div class="tab" onclick="showTab(8)">Capabilities</div>
+<div class="tab" onclick="showTab(9)">Passthrough /v1/*</div>
+</div>
+<div class="content">
+<input class="search" type="text" placeholder="Filter properties..." oninput="filterAll(this.value)">
+<!-- PANELS_START -->
+<div class="panel active" id="p0">
+<h2>Architecture Overview</h2>
+<div class="card"><h3>Dual-Protocol Proxy</h3>
+<p>The proxy translates between Ollama API (client-facing) and OpenAI-compatible API (upstream). Model listing endpoints are answered locally from proxy configuration.</p>
+<div class="flow">Client (Ollama API)  --&gt;  Kaeo Proxy  --&gt;  Upstream (OpenAI API)
+
+POST /api/chat        --&gt;  HandleChatAsync      --&gt;  POST /v1/chat/completions
+POST /api/generate    --&gt;  HandleGenerateAsync    --&gt;  POST /v1/completions
+POST /api/embeddings  --&gt;  HandleEmbeddingsAsync  --&gt;  POST /v1/embeddings
+GET  /api/tags        --&gt;  HandleTagsAsync        --&gt;  (local only)
+POST /api/show        --&gt;  HandleShowAsync        --&gt;  (local only)
+GET  /api/ps          --&gt;  HandlePsAsync          --&gt;  (local only)
+GET  /v1/models       --&gt;  HandleV1ModelsAsync    --&gt;  (local only)
+GET  /v1/models/{id}  --&gt;  HandleV1ModelAsync     --&gt;  (local only)
+ANY  /v1/*            --&gt;  PassthroughAsync       --&gt;  ANY /v1/*</div></div>
+<div class="legend">
+<span class="badge b-m">Mapped</span> Name/format changes
+<span class="badge b-t">Transformed</span> Value modified
+<span class="badge b-i">Injected</span> Added from settings
+<span class="badge b-o">Omitted</span> Dropped
+<span class="badge b-p">Passthrough</span> Forwarded unchanged
+<span class="badge b-g">Generated</span> Synthesized by proxy
+<span class="badge b-r">Rewritten</span> Name/structure changed
+</div>
+<h3>Sampling Priority System</h3>
+<table><tr><th>Priority</th><th>Behavior</th><th>Example</th></tr>
+<tr><td><code>ClientApp</code></td><td>Client value passes through</td><td>Client sends 0.5, upstream gets 0.5</td></tr>
+<tr><td><code>Proxy</code></td><td>Proxy value overrides client</td><td>Client 0.5, proxy 0.7, upstream gets 0.7</td></tr>
+<tr><td><code>Provider</code></td><td>Field dropped entirely</td><td>Client 0.5, field omitted, upstream default</td></tr></table>
+</div>
+
+<div class="panel" id="p1">
+<h2>Chat Request: Client to Proxy to Upstream</h2>
+<p><code>POST /api/chat</code> becomes <code>POST /v1/chat/completions</code> via <code>HandleChatAsync</code></p>
+<h3>Top-Level Properties</h3>
+<table><tr><th>Client (Ollama)</th><th>Upstream (OpenAI)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>model</code></td><td><code>model</code></td><td><span class="badge b-r">Rewritten</span></td><td>Resolved via <code>settings.ResolveModelName()</code></td></tr>
+<tr><td><code>messages</code></td><td><code>messages</code></td><td><span class="badge b-t">Transformed</span></td><td>Each via <code>MapMessage()</code>; tool_call IDs correlated; trailing assistant prefill removed when thinking compat enabled; custom instructions prepended as system message</td></tr>
+<tr><td><code>stream</code></td><td><code>stream</code></td><td><span class="badge b-m">Mapped</span></td><td>Boolean passthrough</td></tr>
+<tr><td><code>tools</code></td><td><code>tools</code></td><td><span class="badge b-m">Mapped</span></td><td>Via <code>MapTools()</code>: type, function.name, description, parameters</td></tr>
+<tr><td><code>format</code></td><td><code>response_format</code></td><td><span class="badge b-t">Transformed</span></td><td>"json" becomes {type:"json_object"}; OpenAI objects pass through; bare schema wrapped as json_schema</td></tr>
+<tr><td><code>think</code></td><td><code>reasoning_effort</code> or nested objects</td><td><span class="badge b-t">Transformed</span></td><td>See Thinking tab. Via <code>ApplyReasoningEffort()</code></td></tr>
+<tr><td><code>options</code></td><td>(flattened to top-level)</td><td><span class="badge b-t">Transformed</span></td><td>All sampling params extracted from options sub-object</td></tr></table>
+<h3>Sampling Parameters (from options sub-object)</h3>
+<table><tr><th>Ollama (options.*)</th><th>OpenAI (top-level)</th><th>Status</th><th>Logic</th></tr>
+<tr><td><code>temperature</code></td><td><code>temperature</code></td><td><span class="badge b-t">Priority</span></td><td>ClientApp/Proxy/Provider</td></tr>
+<tr><td><code>top_p</code></td><td><code>top_p</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>top_k</code></td><td><code>top_k</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>min_p</code></td><td><code>min_p</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>num_predict</code></td><td><code>max_tokens</code></td><td><span class="badge b-r">Rewritten</span></td><td>Name change</td></tr>
+<tr><td><code>stop</code></td><td><code>stop</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>seed</code></td><td><code>seed</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>presence_penalty</code></td><td><code>presence_penalty</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>frequency_penalty</code></td><td><code>frequency_penalty</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>repeat_penalty</code></td><td><code>repeat_penalty</code></td><td><span class="badge b-t">Priority</span></td><td>ClientApp/Proxy/Provider</td></tr>
+<tr><td><code>mirostat</code></td><td><code>mirostat</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>mirostat_tau</code></td><td><code>mirostat_tau</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>mirostat_eta</code></td><td><code>mirostat_eta</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct</td></tr>
+<tr><td><code>num_ctx</code></td><td><code>n_ctx</code></td><td><span class="badge b-r">Rewritten</span></td><td>Name change</td></tr></table>
+</div>
+<div class="panel" id="p2">
+<h2>Chat Response: Upstream to Proxy to Client</h2>
+<p>OpenAI <code>/v1/chat/completions</code> response becomes Ollama <code>/api/chat</code> response</p>
+<div class="note"><strong>Streaming:</strong> <code>StreamChatToOllamaAsync</code> reads SSE chunks, emits NDJSON. <strong>Non-streaming:</strong> <code>CopyNonStreamingChatResponseAsync</code> + <code>TransformNonStreamingChatBody</code>.</div>
+<h3>Non-Streaming Response</h3>
+<table><tr><th>Upstream (OpenAI)</th><th>Client (Ollama)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>id</code></td><td><em>not present</em></td><td><span class="badge b-o">Omitted</span></td><td>Ollama has no response IDs</td></tr>
+<tr><td><code>object</code></td><td><em>not present</em></td><td><span class="badge b-o">Omitted</span></td><td></td></tr>
+<tr><td><code>created</code></td><td><code>created_at</code></td><td><span class="badge b-r">Rewritten</span></td><td>ISO 8601 generated by proxy</td></tr>
+<tr><td><code>model</code></td><td><code>model</code></td><td><span class="badge b-r">Rewritten</span></td><td>Original client model name (not resolved name)</td></tr>
+<tr><td><code>choices[0].message.content</code></td><td><code>message.content</code></td><td><span class="badge b-t">Transformed</span></td><td>Think tags extracted per ThinkingMode</td></tr>
+<tr><td><code>choices[0].message.reasoning_content</code></td><td><code>message.thinking</code></td><td><span class="badge b-t">Transformed</span></td><td>Native reasoning mapped to Ollama thinking field; removed in StripFromOutput mode</td></tr>
+<tr><td><code>choices[0].message.tool_calls</code></td><td><code>message.tool_calls</code></td><td><span class="badge b-m">Mapped</span></td><td>Via <code>BuildOllamaToolCalls</code>; XML tool-call extraction when enabled</td></tr>
+<tr><td><code>choices[0].finish_reason</code></td><td><code>done_reason</code></td><td><span class="badge b-r">Rewritten</span></td><td>"stop" when done; forced to "tool_calls" when XML tool calls extracted</td></tr>
+<tr><td><em>not present</em></td><td><code>done</code></td><td><span class="badge b-g">Generated</span></td><td>Always true for non-streaming</td></tr>
+<tr><td><em>not present</em></td><td><code>total_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Elapsed nanoseconds measured by proxy</td></tr>
+<tr><td><em>not present</em></td><td><code>load_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Always 0 (proxy cannot measure upstream load)</td></tr>
+<tr><td><code>usage.prompt_tokens</code></td><td><code>prompt_eval_count</code></td><td><span class="badge b-r">Rewritten</span></td><td>From OpenAI usage object</td></tr>
+<tr><td><code>usage.completion_tokens</code></td><td><code>eval_count</code></td><td><span class="badge b-r">Rewritten</span></td><td>From OpenAI usage object</td></tr>
+<tr><td><em>not present</em></td><td><code>prompt_eval_duration</code></td><td><span class="badge b-o">Omitted</span></td><td>Not available from OpenAI format</td></tr>
+<tr><td><em>not present</em></td><td><code>eval_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Same as total_duration</td></tr></table>
+<h3>Streaming Response (SSE to NDJSON)</h3>
+<table><tr><th>Upstream (OpenAI SSE chunk)</th><th>Client (Ollama NDJSON chunk)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>choices[0].delta.content</code></td><td><code>message.content</code></td><td><span class="badge b-t">Transformed</span></td><td>Think tags extracted incrementally via <code>ThinkTagExtractor</code>; XML tool calls captured</td></tr>
+<tr><td><code>choices[0].delta.reasoning_content</code></td><td><code>message.thinking</code></td><td><span class="badge b-t">Transformed</span></td><td>Native reasoning mapped to thinking; stripped in StripFromOutput mode</td></tr>
+<tr><td><code>choices[0].delta.tool_calls</code></td><td><code>message.tool_calls</code></td><td><span class="badge b-t">Transformed</span></td><td>Incremental tool call building; streamed as complete Ollama tool_call objects when finalized</td></tr>
+<tr><td><code>choices[0].finish_reason</code></td><td><code>done</code> + <code>done_reason</code></td><td><span class="badge b-r">Rewritten</span></td><td><code>done=true</code> when finish_reason present; done_reason from finish_reason or "stop"</td></tr>
+<tr><td><code>[DONE]</code> sentinel</td><td>Terminal done chunk</td><td><span class="badge b-g">Generated</span></td><td>Synthesized final chunk with done=true, token counts, elapsed timing</td></tr></table>
+<div class="note"><strong>Heartbeats:</strong> During streaming, the proxy sends SSE comment heartbeats (<code>: kaeo-heartbeat</code>) at configurable intervals to keep the connection alive during long thinking periods. These are transparent to Ollama clients.</div>
+</div>
+
+<div class="panel" id="p3">
+<h2>Generate: /api/generate to /v1/completions</h2>
+<div class="note"><strong>Handler:</strong> <code>HandleGenerateAsync</code>. Translates Ollama generate requests to OpenAI completions format.</div>
+<h3>Request Mapping</h3>
+<table><tr><th>Client (Ollama)</th><th>Upstream (OpenAI)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>model</code></td><td><code>model</code></td><td><span class="badge b-r">Rewritten</span></td><td>Resolved via <code>settings.ResolveModelName()</code></td></tr>
+<tr><td><code>prompt</code> + <code>system</code></td><td><code>prompt</code></td><td><span class="badge b-t">Transformed</span></td><td>System prompt prepended to user prompt. Custom instructions prepended before system</td></tr>
+<tr><td><code>stream</code></td><td><code>stream</code></td><td><span class="badge b-m">Mapped</span></td><td>Boolean passed through</td></tr>
+<tr><td><code>format</code></td><td><code>response_format</code></td><td><span class="badge b-t">Transformed</span></td><td><code>"json"</code> becomes <code>{type:"json_object"}</code></td></tr>
+<tr><td><code>options.temperature</code></td><td><code>temperature</code></td><td><span class="badge b-t">Priority</span></td><td>Priority-based resolution</td></tr>
+<tr><td><code>options.top_p</code></td><td><code>top_p</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.top_k</code></td><td><code>top_k</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.min_p</code></td><td><code>min_p</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.num_predict</code></td><td><code>max_tokens</code></td><td><span class="badge b-r">Rewritten</span></td><td>Name change</td></tr>
+<tr><td><code>options.stop</code></td><td><code>stop</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.seed</code></td><td><code>seed</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.presence_penalty</code></td><td><code>presence_penalty</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.frequency_penalty</code></td><td><code>frequency_penalty</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>options.repeat_penalty</code></td><td><code>repeat_penalty</code></td><td><span class="badge b-t">Priority</span></td><td>Priority-based resolution</td></tr></table>
+<h3>Response Mapping</h3>
+<table><tr><th>Upstream (OpenAI completions)</th><th>Client (Ollama generate)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>choices[0].text</code></td><td><code>response</code></td><td><span class="badge b-r">Rewritten</span></td><td>Token text from completion choice</td></tr>
+<tr><td><code>choices[0].finish_reason</code></td><td><code>done_reason</code></td><td><span class="badge b-r">Rewritten</span></td><td>"stop" etc.</td></tr>
+<tr><td><code>usage.prompt_tokens</code></td><td><code>prompt_eval_count</code></td><td><span class="badge b-r">Rewritten</span></td><td>Only in terminal chunk</td></tr>
+<tr><td><code>usage.completion_tokens</code></td><td><code>eval_count</code></td><td><span class="badge b-r">Rewritten</span></td><td>Only in terminal chunk</td></tr>
+<tr><td><em>not present</em></td><td><code>done</code></td><td><span class="badge b-g">Generated</span></td><td>true/false</td></tr>
+<tr><td><em>not present</em></td><td><code>model</code></td><td><span class="badge b-g">Generated</span></td><td>Original client model name</td></tr>
+<tr><td><em>not present</em></td><td><code>created_at</code></td><td><span class="badge b-g">Generated</span></td><td>ISO 8601</td></tr>
+<tr><td><em>not present</em></td><td><code>total_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Elapsed nanoseconds</td></tr>
+<tr><td><em>not present</em></td><td><code>load_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Always 0</td></tr>
+<tr><td><em>not present</em></td><td><code>eval_duration</code></td><td><span class="badge b-g">Generated</span></td><td>Same as total_duration</td></tr></table>
+</div>
+
+<div class="panel" id="p4">
+<h2>Embeddings: /api/embeddings to /v1/embeddings</h2>
+<div class="note"><strong>Handler:</strong> <code>HandleEmbeddingsAsync</code>. Translates Ollama embeddings to OpenAI embeddings format.</div>
+<h3>Request Mapping</h3>
+<table><tr><th>Client (Ollama)</th><th>Upstream (OpenAI)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>model</code></td><td><code>model</code></td><td><span class="badge b-r">Rewritten</span></td><td>Resolved via <code>settings.ResolveModelName()</code></td></tr>
+<tr><td><code>prompt</code></td><td><code>input</code></td><td><span class="badge b-r">Rewritten</span></td><td>Ollama uses <code>prompt</code>; OpenAI uses <code>input</code>. Resolved via <code>ResolveEmbeddingInput()</code> which also handles array prompts</td></tr></table>
+<h3>Response Mapping</h3>
+<table><tr><th>Upstream (OpenAI)</th><th>Client (Ollama)</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>data[0].embedding</code></td><td><code>embedding</code></td><td><span class="badge b-r">Rewritten</span></td><td>First embedding extracted from array</td></tr>
+<tr><td><code>data[*].embedding</code></td><td><code>embeddings</code></td><td><span class="badge b-m">Mapped</span></td><td>All embeddings returned as array when batch input</td></tr></table>
+</div>
+<div class="panel" id="p5">
+<h2>Model Listing Endpoints</h2>
+<p>All model listing endpoints are answered <strong>locally</strong> from proxy configuration &mdash; no upstream call is made.</p>
+<h3>GET /api/tags (OllamaTagsResponse)</h3>
+<table><tr><th>Property</th><th>Source</th><th>Notes</th></tr>
+<tr><td><code>models[].name</code></td><td>ModelMapping.ProxyName or ModelName</td><td>Proxy-facing name preferred</td></tr>
+<tr><td><code>models[].model</code></td><td>ModelMapping.ProxyName or ModelName</td><td>Same as name</td></tr>
+<tr><td><code>models[].modified_at</code></td><td><span class="badge b-g">Generated</span></td><td><code>DateTime.UtcNow.ToString("o")</code></td></tr>
+<tr><td><code>models[].size</code></td><td><span class="badge b-o">Omitted</span></td><td>Not set (serialized as 0 or null)</td></tr>
+<tr><td><code>models[].digest</code></td><td><span class="badge b-o">Omitted</span></td><td>Not set</td></tr>
+<tr><td><code>models[].details.format</code></td><td><span class="badge b-g">Generated</span></td><td>Always <code>"openai-compatible"</code></td></tr>
+<tr><td><code>models[].details.family</code></td><td><span class="badge b-g">Generated</span></td><td>Inferred from model name via <code>GetModelFamily()</code></td></tr>
+<tr><td><code>models[].details.families</code></td><td><span class="badge b-g">Generated</span></td><td><code>[family]</code></td></tr>
+<tr><td><code>models[].details.parameter_size</code></td><td><span class="badge b-g">Generated</span></td><td>Inferred from model name via <code>GetParameterSize()</code></td></tr>
+<tr><td><code>models[].details.quantization_level</code></td><td><span class="badge b-g">Generated</span></td><td>Inferred from model name via <code>GetQuantizationLevel()</code></td></tr>
+<tr><td><code>models[].details.context_length</code></td><td>ModelMapping.GetEffectiveContextWindow()</td><td>From mapping config or upstream /v1/models</td></tr>
+<tr><td><code>models[].capabilities</code></td><td><span class="badge b-t">Transformed</span></td><td>Via <code>BuildOllamaCapabilities()</code> &mdash; maps proxy tokens to Ollama-native tokens. <strong>Returns null (omitted) when empty</strong></td></tr></table>
+<h3>POST /api/show (OllamaShowResponse)</h3>
+<table><tr><th>Property</th><th>Source</th><th>Notes</th></tr>
+<tr><td><code>model</code></td><td>ProxyName or resolved ModelName</td><td></td></tr>
+<tr><td><code>details</code></td><td>Same as /api/tags details</td><td>via <code>CreateOllamaModelDetails()</code></td></tr>
+<tr><td><code>model_info</code></td><td><span class="badge b-g">Generated</span></td><td>via <code>CreateOllamaModelInfo()</code> &mdash; includes general.architecture, context_length, etc.</td></tr>
+<tr><td><code>capabilities</code></td><td>Same as /api/tags</td><td>via <code>BuildOllamaCapabilities()</code></td></tr></table>
+<h3>GET /v1/models (LlamaCppModelsResponse)</h3>
+<table><tr><th>Property</th><th>Source</th><th>Notes</th></tr>
+<tr><td><code>data[].id</code></td><td>ProxyName or ModelName</td><td></td></tr>
+<tr><td><code>data[].owned_by</code></td><td><span class="badge b-g">Generated</span></td><td>Always <code>"kaeo-proxy"</code></td></tr>
+<tr><td><code>data[].context_length</code></td><td>GetEffectiveContextWindow()</td><td></td></tr>
+<tr><td><code>data[].capabilities</code></td><td><span class="badge b-m">Mapped</span></td><td>Via <code>BuildCapabilities()</code> &mdash; raw proxy tokens (not Ollama-mapped). Null when empty</td></tr></table>
+<h3>GET /api/ps (Running Models)</h3>
+<table><tr><th>Property</th><th>Source</th><th>Notes</th></tr>
+<tr><td><code>models[].name</code> / <code>model</code></td><td>ProxyName or ModelName</td><td></td></tr>
+<tr><td><code>models[].size</code></td><td><span class="badge b-g">Generated</span></td><td>Always 0</td></tr>
+<tr><td><code>models[].digest</code></td><td><span class="badge b-g">Generated</span></td><td>Always empty string</td></tr>
+<tr><td><code>models[].details</code></td><td>Same as /api/tags</td><td></td></tr>
+<tr><td><code>models[].expires_at</code></td><td><span class="badge b-g">Generated</span></td><td><code>DateTime.UtcNow.AddHours(1)</code></td></tr>
+<tr><td><code>models[].size_vram</code></td><td><span class="badge b-g">Generated</span></td><td>Always 0</td></tr>
+<tr><td><code>models[].context_length</code></td><td>GetEffectiveContextWindow()</td><td></td></tr>
+<tr><td><code>models[].capabilities</code></td><td>Ollama-mapped tokens</td><td>via <code>BuildOllamaCapabilities()</code></td></tr></table>
+</div>
+<div class="panel" id="p6">
+<h2>Messages &amp; Tools Mapping</h2>
+<h3>Message Mapping (MapMessage)</h3>
+<p>Each Ollama message is mapped to an OpenAI/llama.cpp message. Tool call IDs are synthesized or correlated.</p>
+<table><tr><th>Ollama Message</th><th>OpenAI Message</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>role</code></td><td><code>role</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>content</code></td><td><code>content</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>tool_call_id</code></td><td><code>tool_call_id</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>tool_calls</code></td><td><code>tool_calls</code></td><td><span class="badge b-t">Transformed</span></td><td>Each tool_call: ID generated if empty (Guid.NewGuid()); function.arguments serialized to JSON string if object</td></tr>
+<tr><td><code>thinking</code></td><td><em>not sent</em></td><td><span class="badge b-o">Omitted</span></td><td>Ollama thinking field not sent to upstream</td></tr>
+<tr><td><code>images</code></td><td><em>not sent</em></td><td><span class="badge b-o">Omitted</span></td><td>Ollama images field not sent to upstream</td></tr></table>
+<h3>Tool Call ID Correlation (MapMessagesWithToolCorrelation)</h3>
+<div class="note"><strong>Purpose:</strong> OpenAI-compatible upstreams reject tool replies whose <code>tool_call_id</code> does not match a preceding assistant tool_call. Ollama clients may send tool replies without IDs. The proxy correlates them by order or function name.</div>
+<p>The algorithm: 1) Each assistant message with tool_calls enqueues (id, function.name) pairs. 2) Each subsequent <code>role:"tool"</code> message without a <code>tool_call_id</code> dequeues the next pending pair and assigns its ID.</p>
+<h3>Tool Mapping (MapTools)</h3>
+<table><tr><th>Ollama Tool</th><th>OpenAI Tool</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>type</code></td><td><code>type</code></td><td><span class="badge b-m">Mapped</span></td><td>Usually "function"</td></tr>
+<tr><td><code>function.name</code></td><td><code>function.name</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>function.description</code></td><td><code>function.description</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough</td></tr>
+<tr><td><code>function.parameters</code></td><td><code>function.parameters</code></td><td><span class="badge b-m">Mapped</span></td><td>Direct passthrough (JSON schema object)</td></tr></table>
+<h3>Tool Call Response Mapping (BuildOllamaToolCalls)</h3>
+<table><tr><th>OpenAI tool_call</th><th>Ollama tool_call</th><th>Status</th><th>Notes</th></tr>
+<tr><td><code>id</code></td><td><code>id</code></td><td><span class="badge b-m">Mapped</span></td><td>Passed through; generated if missing</td></tr>
+<tr><td><code>type</code></td><td><em>not present</em></td><td><span class="badge b-o">Omitted</span></td><td>Ollama does not use type field on tool_calls</td></tr>
+<tr><td><code>function.name</code></td><td><code>function.name</code></td><td><span class="badge b-m">Mapped</span></td><td></td></tr>
+<tr><td><code>function.arguments</code> (string)</td><td><code>function.arguments</code> (object)</td><td><span class="badge b-t">Transformed</span></td><td>JSON string deserialized to object for Ollama format</td></tr></table>
+<h3>XML Tool Call Extraction</h3>
+<div class="note"><strong>When enabled:</strong> Models that emit tool calls as inline XML (<code>&lt;tool_call&gt;&lt;function=name&gt;...&lt;/function&gt;&lt;/tool_call&gt;</code>) are parsed and converted to structured tool_calls. This works in both streaming and non-streaming modes. The XML content is stripped from the visible <code>content</code> field and <code>finish_reason</code> is forced to <code>"tool_calls"</code>.</div>
+</div>
+<div class="panel" id="p7">
+<h2>Thinking &amp; Reasoning</h2>
+<h3>ThinkingMode Configuration</h3>
+<p>Per-model <code>ThinkingMode</code> controls how <code>&lt;think&gt;...&lt;/think&gt;</code> blocks and native <code>reasoning_content</code> are handled in responses.</p>
+<table><tr><th>Mode</th><th>Behavior</th><th>Use Case</th></tr>
+<tr><td><code>LeaveInline</code></td><td>Think tags left as-is in content</td><td>Clients that understand think tags natively</td></tr>
+<tr><td><code>MoveToReasoningContent</code></td><td>Extracted from content into <code>message.reasoning_content</code> (OpenAI) or <code>message.thinking</code> (Ollama)</td><td>Clients that expect structured reasoning field</td></tr>
+<tr><td><code>StripFromOutput</code></td><td>Extracted and discarded entirely; native <code>reasoning_content</code> also removed</td><td>Hide reasoning from end users</td></tr></table>
+<h3>Reasoning Effort Injection (ApplyReasoningEffort)</h3>
+<p>The client's <code>think</code> field (Ollama) or <code>reasoning_effort</code> field (OpenAI passthrough) is resolved based on priority and injected in the mapping's configured wire format.</p>
+<table><tr><th>ReasoningEffortFormat</th><th>Wire Shape Injected</th><th>Example Output</th></tr>
+<tr><td><code>Legacy</code></td><td>Top-level <code>reasoning_effort</code> string</td><td><code>"reasoning_effort": "high"</code></td></tr>
+<tr><td><code>Modern</code></td><td>Nested <code>reasoning</code> object</td><td><code>"reasoning": {"enable": true, "thinking_level": "high"}</code></td></tr>
+<tr><td><code>QwenCloud</code></td><td><code>extra_body</code> wrapper</td><td><code>"extra_body": {"enable_thinking": true, "reasoning_effort": "high"}</code></td></tr>
+<tr><td><code>ChatTemplateKwargs</code></td><td><code>chat_template_kwargs</code> wrapper</td><td><code>"chat_template_kwargs": {"enable_thinking": true, "reasoning_effort": "high"}</code></td></tr></table>
+<h3>Think to Reasoning Effort Mapping (MapThinkToReasoningEffort)</h3>
+<table><tr><th>Ollama <code>think</code> Value</th><th>OpenAI <code>reasoning_effort</code></th><th>Notes</th></tr>
+<tr><td><code>true</code></td><td><code>"high"</code></td><td>Boolean true maps to high effort</td></tr>
+<tr><td><code>false</code></td><td><code>"none"</code></td><td>Boolean false disables thinking</td></tr>
+<tr><td><code>"low"</code></td><td><code>"low"</code></td><td>Direct string passthrough (lowercased)</td></tr>
+<tr><td><code>"medium"</code></td><td><code>"medium"</code></td><td>Direct string passthrough</td></tr>
+<tr><td><code>"high"</code></td><td><code>"high"</code></td><td>Direct string passthrough</td></tr>
+<tr><td><code>"max"</code></td><td><code>"high"</code></td><td>"max" mapped to "high" (OpenAI does not support "max")</td></tr></table>
+<h3>Thinking Compatibility</h3>
+<div class="note"><strong>Trailing assistant prefill removal:</strong> When <code>ShouldApplyThinkingCompatibility()</code> returns true for a model, a trailing assistant message (without tool_calls or tool_call_id) is removed before sending upstream. This prevents issues with thinking models that interpret trailing assistant messages as response prefill.</div>
+<div class="note"><strong>Consecutive system messages:</strong> Multiple leading system messages are merged into a single system message, as some upstream providers reject consecutive system messages.</div>
+</div>
+<div class="panel" id="p8">
+<h2>Capability Token Mapping</h2>
+<h3>BuildOllamaCapabilities (for /api/tags, /api/show, /api/ps)</h3>
+<p>Maps operator-configured capability tokens to Ollama-native tokens. <strong>Returns null (field omitted from JSON) when no capabilities are configured.</strong></p>
+<table><tr><th>Proxy Token (ModelCapabilities)</th><th>Ollama Token</th><th>Notes</th></tr>
+<tr><td><code>text</code></td><td><code>completion</code></td><td></td></tr>
+<tr><td><code>chat</code></td><td><code>completion</code></td><td>Merges with text/code</td></tr>
+<tr><td><code>code</code></td><td><code>completion</code></td><td>Merges with text/chat</td></tr>
+<tr><td><code>function_calling</code></td><td><code>tools</code></td><td></td></tr>
+<tr><td><code>vision</code></td><td><code>vision</code></td><td>Same name</td></tr>
+<tr><td><code>embeddings</code></td><td><code>embedding</code></td><td>Singular in Ollama</td></tr>
+<tr><td><code>reasoning</code></td><td><code>thinking</code></td><td></td></tr>
+<tr><td><code>image_generation</code></td><td><code>image</code></td><td></td></tr>
+<tr><td><code>audio</code></td><td><code>audio</code></td><td>Same name</td></tr></table>
+<p>Output is ordered to match Ollama's Go source canonical order: <code>completion, tools, insert, vision, embedding, thinking, image, audio</code></p>
+<h3>BuildCapabilities (for /v1/models)</h3>
+<p>Returns the raw proxy tokens (not Ollama-mapped) in canonical order. Used for OpenAI-style model listing where clients expect OpenAI-style token names.</p>
+<h3>Critical Behavior</h3>
+<div class="note"><strong>Null vs Empty Array:</strong> When no capabilities are configured, both functions return <code>null</code>, which causes <code>System.Text.Json</code> with <code>WhenWritingNull</code> to <strong>omit the field entirely</strong> from JSON. This is critical: an empty array <code>"capabilities": []</code> would tell clients (like Visual Studio) that the model has <em>zero capabilities</em>, making it appear unavailable for chat. Omitting the field tells clients to assume default capabilities.</div>
+</div>
+<div class="panel" id="p9">
+<h2>Passthrough: /v1/* to Upstream /v1/*</h2>
+<div class="note"><strong>Handler:</strong> <code>PassthroughAsync</code>. Used for all OpenAI-native endpoints that are not handled by specific handlers.</div>
+<h3>Request Handling</h3>
+<table><tr><th>Aspect</th><th>Behavior</th><th>Notes</th></tr>
+<tr><td>Headers</td><td><span class="badge b-p">Passthrough</span></td><td>All request headers copied except hop-by-hop and proxy/forwarding headers (see <code>ShouldSkipRequestHeader</code>)</td></tr>
+<tr><td>Authorization</td><td><span class="badge b-t">Transformed</span></td><td>Client bearer token copied; overridden by mapping's API key if configured via <code>ApplyApiKey()</code></td></tr>
+<tr><td>JSON POST body</td><td><span class="badge b-t">Transformed</span></td><td>Normalized via <code>NormalizeRequestBody()</code> (model resolution, sampling priority, reasoning effort, instruction injection, thinking compatibility)</td></tr>
+<tr><td>Non-JSON body</td><td><span class="badge b-p">Passthrough</span></td><td>Streamed directly</td></tr>
+<tr><td>Path</td><td><span class="badge b-p">Passthrough</span></td><td>Same path sent to upstream</td></tr></table>
+<h3>Response Handling</h3>
+<table><tr><th>Aspect</th><th>Behavior</th><th>Notes</th></tr>
+<tr><td>Status code</td><td><span class="badge b-p">Passthrough</span></td><td>Copied directly from upstream</td></tr>
+<tr><td>Response headers</td><td><span class="badge b-p">Passthrough</span></td><td>Copied except Transfer-Encoding and Connection</td></tr>
+<tr><td>Non-streaming JSON body</td><td><span class="badge b-p">Passthrough</span></td><td>Copied directly (no transformation)</td></tr>
+<tr><td>SSE stream</td><td><span class="badge b-p">Passthrough</span></td><td>Streamed with heartbeat injection for chat completions; <code>CopyOpenAiChatCompletionSseStreamAsync</code> handles thinking extraction for /v1/chat/completions</td></tr></table>
+<h3>NormalizeRequestBody Transformations (applied to passthrough JSON POST bodies)</h3>
+<table><tr><th>Property</th><th>Transformation</th><th>Notes</th></tr>
+<tr><td><code>model</code></td><td><span class="badge b-r">Rewritten</span></td><td>Resolved via <code>settings.ResolveModelName()</code></td></tr>
+<tr><td><code>temperature</code></td><td><span class="badge b-t">Priority</span></td><td>ClientApp/Proxy/Provider priority logic</td></tr>
+<tr><td><code>repeat_penalty</code></td><td><span class="badge b-t">Priority</span></td><td>ClientApp/Proxy/Provider priority logic</td></tr>
+<tr><td><code>reasoning_effort</code></td><td><span class="badge b-t">Rewritten</span></td><td>Dropped (Provider), overridden (Proxy+Legacy), or injected in configured format</td></tr>
+<tr><td><code>messages</code></td><td><span class="badge b-t">Transformed</span></td><td>Consecutive system messages merged; trailing assistant prefill removed; custom instructions injected</td></tr>
+<tr><td>All other properties</td><td><span class="badge b-p">Passthrough</span></td><td>Copied unchanged</td></tr></table>
+<h3>Header Filtering (ShouldSkipRequestHeader)</h3>
+<p>These headers are <strong>not</strong> forwarded to upstream:</p>
+<ul style="margin:8px 0 16px 24px;color:#8b949e"><li><code>Host</code>, <code>Content-Length</code>, <code>Transfer-Encoding</code></li>
+<li><code>Connection</code>, <code>Upgrade</code>, <code>Keep-Alive</code></li>
+<li><code>Proxy-*</code> headers</li>
+<li><code>X-Forwarded-*</code> headers</li></ul>
+</div>
+<!-- PANELS_END -->
+</div>
+<script>
+function showTab(i){document.querySelectorAll('.tab').forEach(function(t,j){t.classList.toggle('active',j===i)});document.querySelectorAll('.panel').forEach(function(p,j){p.classList.toggle('active',j===i)});}
+function filterAll(q){q=q.toLowerCase().trim();document.querySelectorAll('table tr').forEach(function(r){if(r.querySelector('th'))return;r.style.display=(!q||r.textContent.toLowerCase().indexOf(q)!==-1)?'':'none'});}
+</script>
+</body>
+</html>

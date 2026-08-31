@@ -312,6 +312,31 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Explains why the context-summarize (/compact) redirect did not apply for a request, for
+    /// diagnostic logging. Reports which gate in <see cref="ResolveEffectiveModel"/> stopped the
+    /// redirect: signature not detected, no mapping found, no compact model configured, or the
+    /// compact model not being a valid enabled proxy. Returns a generic fallback if every gate
+    /// passed (which would mean a redirect was expected but did not occur).
+    /// </summary>
+    private static string DescribeCompactSkipReason(AppSettings settings, string originalModel, string? firstMessageContent)
+    {
+        if (!IsContextSummarizeRequest(firstMessageContent))
+            return "first message did not match a /compact signature";
+
+        ModelMapping? mapping = settings.FindModelMapping(originalModel);
+        if (mapping is null)
+            return $"no mapping found for model '{originalModel}'";
+        if (string.IsNullOrWhiteSpace(mapping.ContextSummarizeModelName))
+            return "no ContextSummarizeModelName configured on the mapping";
+
+        string compactProxy = mapping.ContextSummarizeModelName.Trim();
+        if (settings.FindModelMapping(compactProxy) is null)
+            return $"compact model '{compactProxy}' is not a valid enabled proxy model";
+
+        return "unknown (redirect should have fired)";
+    }
+
+    /// <summary>
     /// Maps the Ollama <c>think</c> request field (a boolean or a "low"/"medium"/"high"/"max"
     /// level) to an OpenAI <c>reasoning_effort</c> value. <c>true</c> enables thinking at high
     /// effort; <c>false</c> or a missing field produces null (the field is omitted); the named
@@ -1931,15 +1956,25 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // compact model configured and the request is a Copilot /compact summary request,
             // route the whole request to the compact model — its upstream, sampling, and
             // instruction-set settings all apply.
-            string effectiveModel = ResolveEffectiveModel(settings, original, GetFirstMessageContent(root));
+            string? firstContent = GetFirstMessageContent(root);
+            string effectiveModel = ResolveEffectiveModel(settings, original, firstContent);
             bool compactRedirected = !string.Equals(effectiveModel, original, StringComparison.OrdinalIgnoreCase);
 
             string resolved = settings.ResolveModelName(effectiveModel);
             log.Model = effectiveModel;
             if (compactRedirected)
+            {
+                log.OriginalModel = original;
                 Log.Debug(
                     "Context-summarize (/compact) request for {OriginalModel} redirected to compact model {CompactModel}",
                     original, effectiveModel);
+            }
+            else
+            {
+                Log.Debug(
+                    "Compact redirect not applied for {OriginalModel}: {Reason}",
+                    original, DescribeCompactSkipReason(settings, original, firstContent));
+            }
             bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(effectiveModel) ?? true;
             string? injectedInstructions = GetInstructionTextForModel(settings, effectiveModel);
             ModelMapping? normalizeMapping = settings.FindModelMapping(effectiveModel);
@@ -3029,9 +3064,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string? firstContent = !string.IsNullOrEmpty(ollamaReq.System) ? ollamaReq.System : ollamaReq.Prompt;
         string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, firstContent);
         if (!string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+        {
+            log.OriginalModel = ollamaReq.Model;
             Log.Debug(
                 "Context-summarize (/compact) generate request for {OriginalModel} redirected to compact model {CompactModel}",
                 ollamaReq.Model, effectiveModel);
+        }
 
         string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
@@ -3176,6 +3214,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string effectiveModel = ResolveEffectiveModel(
             _settings, ollamaReq.Model,
             ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null);
+
+        if (!string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+            log.OriginalModel = ollamaReq.Model;
 
         string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
