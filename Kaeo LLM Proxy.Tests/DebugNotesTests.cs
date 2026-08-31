@@ -125,6 +125,68 @@ public class DebugNotesTests
         Assert.Contains("client value passed through", line);
     }
 
+    // ── UpstreamRouting ────────────────────────────────────────────────────
+
+    [Fact]
+    public void UpstreamRoutingShowsMappingAndCredential()
+    {
+        string line = DebugNotes.UpstreamRouting("compact", "http://gpu-server:8081", hasCredential: true, timeoutSeconds: 120);
+        Assert.Contains("compact", line);
+        Assert.Contains("http://gpu-server:8081", line);
+        Assert.Contains("credential attached", line);
+        Assert.Contains("120s timeout", line);
+    }
+
+    [Fact]
+    public void UpstreamRoutingShowsNoCredentialWhenAbsent()
+    {
+        string line = DebugNotes.UpstreamRouting("main", "http://localhost:8080", hasCredential: false, timeoutSeconds: 300);
+        Assert.Contains("no credential", line);
+        Assert.Contains("client token passes through", line);
+    }
+
+    [Fact]
+    public void ContextSummarizeRedirectPassthroughShowsBothModels()
+    {
+        string line = DebugNotes.ContextSummarizeRedirectPassthrough("main", "compact");
+        Assert.Contains("main", line);
+        Assert.Contains("compact", line);
+        Assert.Contains("context-summarize", line);
+    }
+
+    // ── NormalizeRequestBody debug summary with compact redirect ───────────
+
+    [Fact]
+    public void NormalizeRequestBodyDebugSummaryIncludesCompactRedirect()
+    {
+        AppSettings settings = new();
+        settings.DebugMode = true;
+        settings.ModelMappings.Add(new ModelMapping
+        {
+            ProxyName = "main",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelName = "compact",
+        });
+        settings.ModelMappings.Add(new ModelMapping
+        {
+            ProxyName = "compact",
+            ModelName = "compact-upstream",
+            UpstreamUrl = "http://localhost:8081",
+        });
+
+        RequestLog log = new();
+        string compactPrompt = "Your task is to **produce an authoritative, self-contained summary** of the current session. <ConversationSummary>";
+        string json = $$"""{"model":"main","messages":[{"role":"system","content":"{{compactPrompt}}"},{"role":"user","content":"# context"}]}""";
+        OllamaProxyHandler.NormalizeRequestBody(json, settings, log);
+
+        Assert.NotNull(log.DebugSummary);
+        Assert.Contains("compact redirect", log.DebugSummary);
+        Assert.Contains("\"main\"", log.DebugSummary);
+        Assert.Contains("\"compact\"", log.DebugSummary);
+        Assert.Contains("compact-upstream", log.DebugSummary);
+    }
+
     [Fact]
     public void NormalizeRequestBodyDebugModePopulatesDebugSummary()
     {

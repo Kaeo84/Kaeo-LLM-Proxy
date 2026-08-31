@@ -94,6 +94,30 @@ internal static class DebugNotes
         return "reasoning_effort: not set (client sent none)";
     }
 
+    /// <summary>
+    /// Describes the upstream routing decision: which mapping was resolved, the upstream URL
+    /// the request will be sent to, whether a credential is attached, and the timeout. This
+    /// makes it visible in the debug summary whether a compact redirect actually changed the
+    /// upstream target or whether the request is still hitting the main model's server.
+    /// </summary>
+    public static string UpstreamRouting(
+        string mappingName,
+        string upstreamUrl,
+        bool hasCredential,
+        int timeoutSeconds)
+    {
+        string credDesc = hasCredential ? "credential attached" : "no credential (client token passes through)";
+        return $"upstream: mapping \"{mappingName}\" → {upstreamUrl} ({credDesc}, {timeoutSeconds}s timeout)";
+    }
+
+    /// <summary>
+    /// Describes a context-summarize (/compact) redirect for the passthrough debug summary:
+    /// the original model the client requested, the compact model it was redirected to, and
+    /// the reason (always "context-summarize signature detected").
+    /// </summary>
+    public static string ContextSummarizeRedirectPassthrough(string originalModel, string compactModel) =>
+        $"compact redirect: \"{originalModel}\" → \"{compactModel}\" (context-summarize signature detected)";
+
     private static string DescribeFormats(ReasoningEffortFormat format)
     {
         List<string> parts = [];

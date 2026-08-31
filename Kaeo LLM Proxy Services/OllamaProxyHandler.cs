@@ -918,6 +918,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
         ApplyApiKey(upstreamReq, apiKey);
 
+        // Append upstream routing info to the debug summary so it's visible which server
+        // the request is actually being sent to, including after compact redirects.
+        if (_settings.DebugMode && log.DebugSummary is not null)
+        {
+            ModelMapping? resolvedMapping = _settings.FindModelMapping(originalModel);
+            string mappingName = resolvedMapping?.ProxyName ?? originalModel;
+            log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
+                mappingName, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
+        }
+
         // For streaming requests, pre-commit SSE headers to the client immediately and pump
         // heartbeat comments while waiting for the upstream to send its first response header.
         // llama.cpp does not send any HTTP headers until the first token is ready, so clients
@@ -2235,7 +2245,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.DebugSummary = BuildNormalizeDebugNotes(
                     root,
                     original,
+                    effectiveModel,
                     resolved,
+                    compactRedirected,
                     tempPriority,
                     repeatPriority,
                     proxyTemperature,
@@ -2266,7 +2278,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static string BuildNormalizeDebugNotes(
         JsonElement root,
         string original,
+        string effectiveModel,
         string resolved,
+        bool compactRedirected,
         SamplingPriority tempPriority,
         SamplingPriority repeatPriority,
         double proxyTemperature,
@@ -2288,7 +2302,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : null;
 
         StringBuilder sb = new();
-        sb.AppendLine(DebugNotes.ModelResolution(original, resolved, !string.Equals(original, resolved, StringComparison.OrdinalIgnoreCase)));
+
+        // Compact redirect: show when the request was rerouted to a different model.
+        if (compactRedirected)
+            sb.AppendLine(DebugNotes.ContextSummarizeRedirectPassthrough(original, effectiveModel));
+
+        sb.AppendLine(DebugNotes.ModelResolution(effectiveModel, resolved, !string.Equals(effectiveModel, resolved, StringComparison.OrdinalIgnoreCase)));
         sb.AppendLine(DebugNotes.SamplingDecision("temperature", tempPriority, clientTemperature, (float)proxyTemperature));
         sb.AppendLine(DebugNotes.SamplingDecision("repeat_penalty", repeatPriority, clientRepeatPenalty, (float)proxyRepeatPenalty));
         sb.AppendLine(DebugNotes.ReasoningEffortDecision(reasoningPriority, clientReasoningEffort, proxyReasoningEffort, reasoningFormat));
@@ -3073,6 +3092,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
+        bool genDebug = _settings.DebugMode;
+        StringBuilder? genDebugNotes = genDebug ? new StringBuilder() : null;
+        if (genDebugNotes is not null && !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+            genDebugNotes.AppendLine(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
+        bool genMapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
+        if (genDebugNotes is not null)
+            genDebugNotes.AppendLine(DebugNotes.ModelResolution(effectiveModel, resolvedModel, genMapped));
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
@@ -3129,6 +3155,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // compared against the client body in the request log.
         if (_settings.CollectRequestDetails)
             log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, effectiveModel);
+
+        if (genDebugNotes is not null)
+        {
+            genDebugNotes.AppendLine(DebugNotes.UpstreamRouting(
+                mapping?.ProxyName ?? effectiveModel, genBase, !string.IsNullOrWhiteSpace(genApiKey), genTimeout));
+            log.DebugSummary = genDebugNotes.ToString().TrimEnd();
+        }
 
         using StringContent genContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var genReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/completions") { Content = genContent };
@@ -3317,6 +3350,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 debugNotes.AppendLine($"tools: mapped {ollamaReq.Tools.Count} tool definition(s)");
             if (ollamaReq.Format is not null)
                 debugNotes.AppendLine($"response_format: resolved from client \"format\" ({FormatDescriptor(ollamaReq.Format)})");
+            debugNotes.AppendLine(DebugNotes.UpstreamRouting(
+                mapping?.ProxyName ?? effectiveModel, chatBase, !string.IsNullOrWhiteSpace(chatApiKey), chatTimeout));
             log.DebugSummary = debugNotes.ToString().TrimEnd();
         }
 
