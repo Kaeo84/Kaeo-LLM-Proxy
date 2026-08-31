@@ -178,7 +178,6 @@ internal sealed class AppDatabase : IDisposable
                     credential_name,
                     thinking_mode,
                     context_window_tokens,
-                    synthesize_openai_metadata,
                     temperature_priority,
                     repeat_penalty_priority,
                     reasoning_effort_priority,
@@ -242,7 +241,6 @@ internal sealed class AppDatabase : IDisposable
                         credential_name,
                         thinking_mode,
                         context_window_tokens,
-                        synthesize_openai_metadata,
                         temperature_priority,
                         repeat_penalty_priority,
                         reasoning_effort_priority,
@@ -271,7 +269,6 @@ internal sealed class AppDatabase : IDisposable
                         $credentialName,
                         $thinkingMode,
                         $contextWindowTokens,
-                        $synthesizeOpenAiMetadata,
                         $temperaturePriority,
                         $repeatPenaltyPriority,
                         $reasoningEffortPriority,
@@ -1131,7 +1128,6 @@ internal sealed class AppDatabase : IDisposable
                     credential_name TEXT NULL,
                     thinking_mode INTEGER NOT NULL DEFAULT 0,
                     context_window_tokens INTEGER NOT NULL DEFAULT 0,
-                    synthesize_openai_metadata INTEGER NOT NULL DEFAULT 0,
                     temperature_priority INTEGER NOT NULL DEFAULT 0,
                     repeat_penalty_priority INTEGER NOT NULL DEFAULT 0,
                     reasoning_effort_priority INTEGER NOT NULL DEFAULT 0,
@@ -1382,7 +1378,7 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Adds columns to pre-existing <c>model_mappings</c> tables that were created before they
     /// were introduced: <c>capabilities</c>, <c>credential_name</c>, <c>thinking_mode</c>,
-    /// <c>context_window_tokens</c>, <c>synthesize_openai_metadata</c>,
+    /// <c>context_window_tokens</c>,
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
     /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
     /// <c>reasoning_effort_values</c>, and <c>reasoning_effort_format</c>.
@@ -1444,15 +1440,6 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added context_window_tokens column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "synthesize_openai_metadata"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN synthesize_openai_metadata INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added synthesize_openai_metadata column.");
         }
 
         if (!ColumnExists(connection, "model_mappings", "temperature_priority"))
@@ -1707,7 +1694,6 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$credentialName", DbValue(mapping.CredentialName));
         command.Parameters.AddWithValue("$thinkingMode", (int)mapping.ThinkingMode);
         command.Parameters.AddWithValue("$contextWindowTokens", mapping.ContextWindowTokens);
-        command.Parameters.AddWithValue("$synthesizeOpenAiMetadata", ToSqliteBoolean(mapping.SynthesizeOpenAiMetadata));
         command.Parameters.AddWithValue("$temperaturePriority", (int)mapping.TemperaturePriority);
         command.Parameters.AddWithValue("$repeatPenaltyPriority", (int)mapping.RepeatPenaltyPriority);
         command.Parameters.AddWithValue("$reasoningEffortPriority", (int)mapping.ReasoningEffortPriority);
@@ -1746,23 +1732,22 @@ internal sealed class AppDatabase : IDisposable
             ? (ThinkingMode)reader.GetInt32(16)
             : ThinkingMode.Off,
         ContextWindowTokens = reader.GetInt32(17),
-        SynthesizeOpenAiMetadata = ReadBoolean(reader, 18),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(18))
+            ? (SamplingPriority)reader.GetInt32(18)
+            : SamplingPriority.ClientApp,
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
             ? (SamplingPriority)reader.GetInt32(19)
             : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
             ? (SamplingPriority)reader.GetInt32(20)
             : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
-            ? (SamplingPriority)reader.GetInt32(21)
-            : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(22) ? null : reader.GetString(22),
-        ReasoningEffortValues = reader.IsDBNull(23)
+        ReasoningEffort = reader.IsDBNull(21) ? null : reader.GetString(21),
+        ReasoningEffortValues = reader.IsDBNull(22)
             ? []
-            : [.. reader.GetString(23).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(24)),
-        ProactiveOverflowPercent = reader.GetInt32(25),
-        ProactiveOverflowTokens = reader.GetInt32(26),
+            : [.. reader.GetString(22).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(23)),
+        ProactiveOverflowPercent = reader.GetInt32(24),
+        ProactiveOverflowTokens = reader.GetInt32(25),
     };
 
     /// <summary>

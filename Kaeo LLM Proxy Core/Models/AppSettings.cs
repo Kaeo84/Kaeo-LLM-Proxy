@@ -403,15 +403,6 @@ internal sealed class ModelMapping
     public int GetEffectiveContextWindow() => ContextWindowTokens > 0 ? ContextWindowTokens : DefaultContextWindowTokens;
 
     /// <summary>
-    /// When true, this model appears in the synthesized <c>/v1/models</c> response with proper
-    /// context window and capability metadata instead of passing through to the upstream provider.
-    /// Enable for models used by clients like Visual Studio Copilot that rely on the OpenAI-style
-    /// discovery endpoint to read context windows and reasoning capabilities. Default: false
-    /// (preserves existing passthrough behavior).
-    /// </summary>
-    public bool SynthesizeOpenAiMetadata { get; set; }
-
-    /// <summary>
     /// Proactive context-overflow threshold as a percentage of the effective context window (1–100).
     /// When the proxy estimates the incoming request exceeds this percentage of the context window,
     /// it returns 413 immediately without calling upstream. 0 disables (default).
@@ -467,7 +458,6 @@ internal sealed class ModelMapping
         RedactResponseBodies = RedactResponseBodies,
         RedactSensitiveJsonFields = RedactSensitiveJsonFields,
         ContextWindowTokens = ContextWindowTokens,
-        SynthesizeOpenAiMetadata = SynthesizeOpenAiMetadata,
         ProactiveOverflowPercent = ProactiveOverflowPercent,
         ProactiveOverflowTokens = ProactiveOverflowTokens,
     };
