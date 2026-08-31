@@ -25,6 +25,12 @@ internal static class ModelCapabilities
     /// <summary>Just the wire tokens, in canonical output order.</summary>
     public static readonly IReadOnlyList<string> Tokens = All.Select(c => c.Token).ToList();
 
+    /// <summary>
+    /// The default capability set applied by the "Set Defaults" action: a text chat model with
+    /// function calling, which is what clients such as GitHub Copilot require to drive a model.
+    /// </summary>
+    public static readonly IReadOnlyList<string> Defaults = ["text", "chat", "function_calling"];
+
     /// <summary>Display label for a wire token, or null when the token is not in the known set.</summary>
     public static string? DisplayFor(string token)
         => All.FirstOrDefault(c => string.Equals(c.Token, token, StringComparison.OrdinalIgnoreCase)).Display;

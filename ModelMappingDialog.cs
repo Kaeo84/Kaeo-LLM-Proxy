@@ -72,6 +72,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly TableLayoutPanel _tlpCapGroup = new();
     private readonly FlowLayoutPanel _flpCapButtons = new();
     private readonly Button _btnCapAutoDetect = new();
+    private readonly Button _btnCapDefaults = new();
     private readonly Button _btnCapAdd = new();
     private readonly Button _btnCapRemove = new();
     private readonly Label _lblCapStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 4) };
@@ -230,8 +231,11 @@ internal sealed class ModelMappingDialog : Form
         set
         {
             _dgvCapabilities.Rows.Clear();
+            var capColumn = (DataGridViewComboBoxColumn)_dgvCapabilities.Columns["_colCapCapability"];
             foreach (string token in value ?? [])
             {
+                if (!capColumn.Items.Contains(token))
+                    capColumn.Items.Add(token);
                 int idx = _dgvCapabilities.Rows.Add();
                 _dgvCapabilities.Rows[idx].Cells[0].Value = token;
                 _dgvCapabilities.Rows[idx].Cells[1].Value = true;
@@ -911,6 +915,7 @@ internal sealed class ModelMappingDialog : Form
         _flpCapButtons.WrapContents = false;
         _flpCapButtons.Margin = new Padding(0);
         _flpCapButtons.Controls.Add(_btnCapAutoDetect);
+        _flpCapButtons.Controls.Add(_btnCapDefaults);
         _flpCapButtons.Controls.Add(_btnCapAdd);
         _flpCapButtons.Controls.Add(_btnCapRemove);
 
@@ -921,10 +926,20 @@ internal sealed class ModelMappingDialog : Form
         _toolTip.SetToolTip(
             _btnCapAutoDetect,
             "Best-effort: queries the upstream's model metadata endpoints (data calls only,\n"
-            + "no model invocations) and fills the table with the detected capabilities.");
+            + "no model invocations) and fills the table with the detected capabilities.\n"
+            + "Leaves the table blank when nothing can be detected.");
+
+        _btnCapDefaults.AutoSize = true;
+        _btnCapDefaults.Margin = new Padding(0, 0, 4, 0);
+        _btnCapDefaults.Text = "Set Defaults";
+        _btnCapDefaults.Click += BtnCapDefaults_Click;
+        _toolTip.SetToolTip(
+            _btnCapDefaults,
+            "Replace the table with the default capability set (text, chat, function calling),\n"
+            + "which is what clients such as GitHub Copilot require.");
 
         _btnCapAdd.AutoSize = true;
-        _btnCapAdd.Margin = new Padding(0);
+        _btnCapAdd.Margin = new Padding(0, 0, 4, 0);
         _btnCapAdd.Text = "Add";
         _btnCapAdd.Click += BtnCapAdd_Click;
         _toolTip.SetToolTip(
@@ -966,6 +981,8 @@ internal sealed class ModelMappingDialog : Form
         _dgvCapabilities.Columns.Add(colCapability);
         _dgvCapabilities.Columns.Add(colEnabled);
         _dgvCapabilities.EditingControlShowing += DgvCapabilities_EditingControlShowing;
+        _dgvCapabilities.CellValidating += DgvCapabilities_CellValidating;
+        _dgvCapabilities.CellEndEdit += DgvCapabilities_CellEndEdit;
 
         _tlpCapGroup.Controls.Add(_flpCapButtons, 0, 0);
         _tlpCapGroup.Controls.Add(_lblCapStatus, 0, 1);
@@ -1048,6 +1065,10 @@ internal sealed class ModelMappingDialog : Form
 
     private void BtnOk_Click(object? sender, EventArgs e)
     {
+        // Commit any pending capability cell edit so a typed custom value is captured before
+        // the dialog closes and the capabilities are read.
+        _dgvCapabilities.EndEdit();
+
         // Validate the upstream URL before accepting. A non-empty URL must be a valid absolute
         // URI using http/https; otherwise reject with a clear message and keep the dialog open
         // (DialogResult stays None). Setting DialogResult.OK closes the modal and returns OK.
@@ -1278,6 +1299,13 @@ internal sealed class ModelMappingDialog : Form
         }
     }
 
+    private void BtnCapDefaults_Click(object? sender, EventArgs e)
+    {
+        // Replace the table with the default capability set (text, chat, function calling).
+        Capabilities = [.. ModelCapabilities.Defaults];
+        SetCapStatus($"Set defaults: {string.Join(", ", ModelCapabilities.Defaults)}.", Color.Green);
+    }
+
     private void BtnCapAdd_Click(object? sender, EventArgs e)
     {
         int idx = _dgvCapabilities.Rows.Add();
@@ -1312,6 +1340,49 @@ internal sealed class ModelMappingDialog : Form
             return;
         if (e.Control is ComboBox combo)
             combo.DropDownStyle = ComboBoxStyle.DropDown;
+    }
+
+    // Holds the typed capability text captured in CellValidating (where the combo is still
+    // active) so CellEndEdit can apply it. The grid commits SelectedItem (null for a custom
+    // value) rather than the combo's Text, so the captured value is applied after the commit.
+    private string? _pendingCapValue;
+
+    /// <summary>
+    /// Capture the typed text from the combo while it is still active, and register it in the
+    /// column's Items so validation passes. The grid commits SelectedItem (null for a custom
+    /// value) rather than the combo's Text, so the captured value is applied in CellEndEdit.
+    /// </summary>
+    private void DgvCapabilities_CellValidating(object? sender, DataGridViewCellValidatingEventArgs e)
+    {
+        if (_dgvCapabilities.Columns[e.ColumnIndex].Name != "_colCapCapability")
+            return;
+
+        string? value = _dgvCapabilities.EditingControl is ComboBox combo
+            ? combo.Text?.Trim()
+            : e.FormattedValue?.ToString()?.Trim();
+
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        var col = (DataGridViewComboBoxColumn)_dgvCapabilities.Columns[e.ColumnIndex];
+        if (!col.Items.Contains(value))
+            col.Items.Add(value);
+
+        _pendingCapValue = value;
+    }
+
+    /// <summary>
+    /// Apply the captured typed text to the cell. The grid has already committed SelectedItem
+    /// (null for a custom value) by the time this fires, so set the cell value explicitly.
+    /// </summary>
+    private void DgvCapabilities_CellEndEdit(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (_dgvCapabilities.Columns[e.ColumnIndex].Name != "_colCapCapability")
+            return;
+        if (_pendingCapValue is null)
+            return;
+        _dgvCapabilities.Rows[e.RowIndex].Cells[e.ColumnIndex].Value = _pendingCapValue;
+        _pendingCapValue = null;
     }
 
     /// <summary>Resolves the API key for the currently selected credential, if any.</summary>

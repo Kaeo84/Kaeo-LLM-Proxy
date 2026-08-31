@@ -63,27 +63,28 @@ internal static class CapabilityDetector
         ApplyNameHeuristics(modelId, detected);
         bool fromHeuristics = detected.Count > beforeHeuristics;
 
-        // 4. Fallback default for chat models when nothing else was detected.
-        bool defaulted = false;
-        if (detected.Count == 0)
-        {
-            detected.Add("text");
-            detected.Add("chat");
-            defaulted = true;
-        }
-
         List<string> normalized = ModelCapabilities.Normalize(detected);
 
-        List<string> sources = [];
-        if (fromMetadata) sources.Add("upstream metadata");
-        if (fromHeuristics) sources.Add("name heuristics");
-        if (defaulted) sources.Add("default");
-
-        string sourceText = sources.Count > 0 ? string.Join(" + ", sources) : "none";
-        string detectedText = string.Join(", ", normalized);
-        string summary = fetchNote is not null
-            ? $"{fetchNote} Detected: {detectedText} ({sourceText}). Review and adjust."
-            : $"Detected: {detectedText} ({sourceText}). Best-effort — review and adjust.";
+        // No fallback defaults: when nothing is detected the table is left blank so the user can
+        // use "Set Defaults" or add capabilities manually.
+        string summary;
+        if (normalized.Count == 0)
+        {
+            summary = fetchNote is not null
+                ? $"{fetchNote} No capabilities detected — the table is left blank. Use Set Defaults or add them manually."
+                : "No capabilities detected — the table is left blank. Use Set Defaults or add them manually.";
+        }
+        else
+        {
+            List<string> sources = [];
+            if (fromMetadata) sources.Add("upstream metadata");
+            if (fromHeuristics) sources.Add("name heuristics");
+            string sourceText = string.Join(" + ", sources);
+            string detectedText = string.Join(", ", normalized);
+            summary = fetchNote is not null
+                ? $"{fetchNote} Detected: {detectedText} ({sourceText}). Review and adjust."
+                : $"Detected: {detectedText} ({sourceText}). Best-effort — review and adjust.";
+        }
 
         return new CapabilityDetectionResult(normalized, summary);
     }
