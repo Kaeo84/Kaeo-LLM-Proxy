@@ -25,6 +25,14 @@ internal static class DebugNotes
     }
 
     /// <summary>
+    /// Describes a context-summarize (/compact) redirect: the request was detected as a Copilot
+    /// session-summary request and routed to the smaller/faster compact model configured on the
+    /// mapping, instead of the model the client originally requested.
+    /// </summary>
+    public static string ContextSummarizeRedirect(string originalModel, string compactModel) =>
+        $"model: /compact request redirected \"{originalModel}\" → \"{compactModel}\" (context-summarize compact model)";
+
+    /// <summary>
     /// Describes a sampling field (e.g. <c>temperature</c> or <c>repeat_penalty</c>) decision
     /// for the given per-model priority, the client's value, and the proxy's configured value.
     /// </summary>

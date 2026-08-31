@@ -225,6 +225,73 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Detects whether a request is a GitHub Copilot context-summarize (/compact) request by
+    /// inspecting only the head of the first message. The Copilot /compact system prompt begins
+    /// with a distinctive instruction to produce a session summary; matching a short prefix keeps
+    /// the check extremely cheap without scanning the (potentially large) full conversation body.
+    /// </summary>
+    internal static bool IsContextSummarizeRequest(string? firstMessageContent)
+    {
+        if (string.IsNullOrEmpty(firstMessageContent))
+            return false;
+
+        const int HeadLength = 512;
+        int len = Math.Min(firstMessageContent.Length, HeadLength);
+        string head = firstMessageContent.AsSpan(0, len).ToString();
+
+        return head.Contains("authoritative, self-contained summary", StringComparison.OrdinalIgnoreCase)
+            || head.Contains("<ConversationSummary>", StringComparison.Ordinal)
+            || head.Contains("ReasoningScratchpad", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Returns the effective proxy model name for a request, applying the context-summarize
+    /// (/compact) redirect when the mapping has a smaller/faster compact model configured
+    /// (<see cref="ModelMapping.ContextSummarizeModelName"/>) and the request is detected as a
+    /// Copilot /compact summary request. Returns the original model name unchanged when no
+    /// redirect applies (not a summarize request, no compact model configured, or the compact
+    /// model is not a valid enabled proxy model).
+    /// </summary>
+    internal static string ResolveEffectiveModel(AppSettings settings, string originalModel, string? firstMessageContent)
+    {
+        if (!IsContextSummarizeRequest(firstMessageContent))
+            return originalModel;
+
+        ModelMapping? mapping = settings.FindModelMapping(originalModel);
+        if (mapping is null || string.IsNullOrWhiteSpace(mapping.ContextSummarizeModelName))
+            return originalModel;
+
+        string compactProxy = mapping.ContextSummarizeModelName.Trim();
+        // Only redirect when the compact model is itself a valid enabled proxy model.
+        if (settings.FindModelMapping(compactProxy) is null)
+            return originalModel;
+
+        return compactProxy;
+    }
+
+    /// <summary>
+    /// Extracts the first message's string content from an OpenAI-style request body root
+    /// (a <c>messages</c> array). Returns null when the body has no messages or the first
+    /// message's content is not a plain string.
+    /// </summary>
+    private static string? GetFirstMessageContent(JsonElement root)
+    {
+        if (!root.TryGetProperty("messages", out JsonElement messagesEl) || messagesEl.ValueKind != JsonValueKind.Array)
+            return null;
+
+        foreach (JsonElement msg in messagesEl.EnumerateArray())
+        {
+            if (msg.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!msg.TryGetProperty("content", out JsonElement contentEl) || contentEl.ValueKind != JsonValueKind.String)
+                return null;
+            return contentEl.GetString();
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Maps the Ollama <c>think</c> request field (a boolean or a "low"/"medium"/"high"/"max"
     /// level) to an OpenAI <c>reasoning_effort</c> value. <c>true</c> enables thinking at high
     /// effort; <c>false</c> or a missing field produces null (the field is omitted); the named
@@ -1840,11 +1907,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 ? modelEl.GetString() ?? string.Empty
                 : string.Empty;
 
-            string resolved = settings.ResolveModelName(original);
-            log.Model = original;
-            bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(original) ?? true;
-            string? injectedInstructions = GetInstructionTextForModel(settings, original);
-            ModelMapping? normalizeMapping = settings.FindModelMapping(original);
+            // Context-summarize (/compact) redirect: when this mapping has a smaller/faster
+            // compact model configured and the request is a Copilot /compact summary request,
+            // route the whole request to the compact model — its upstream, sampling, and
+            // instruction-set settings all apply.
+            string effectiveModel = ResolveEffectiveModel(settings, original, GetFirstMessageContent(root));
+            bool compactRedirected = !string.Equals(effectiveModel, original, StringComparison.OrdinalIgnoreCase);
+
+            string resolved = settings.ResolveModelName(effectiveModel);
+            log.Model = effectiveModel;
+            if (compactRedirected)
+                Log.Debug(
+                    "Context-summarize (/compact) request for {OriginalModel} redirected to compact model {CompactModel}",
+                    original, effectiveModel);
+            bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(effectiveModel) ?? true;
+            string? injectedInstructions = GetInstructionTextForModel(settings, effectiveModel);
+            ModelMapping? normalizeMapping = settings.FindModelMapping(effectiveModel);
             SamplingPriority tempPriority = normalizeMapping?.TemperaturePriority ?? SamplingPriority.ClientApp;
             SamplingPriority repeatPriority = normalizeMapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp;
             double proxyTemperature = normalizeMapping?.Temperature ?? 0.7;
@@ -2926,19 +3004,28 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (ollamaReq is null)
             return;
 
-        string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
+        // Context-summarize (/compact) redirect: route the request to the mapping's configured
+        // compact model when the system/prompt is a Copilot session-summary prompt.
+        string? firstContent = !string.IsNullOrEmpty(ollamaReq.System) ? ollamaReq.System : ollamaReq.Prompt;
+        string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, firstContent);
+        if (!string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+            Log.Debug(
+                "Context-summarize (/compact) generate request for {OriginalModel} redirected to compact model {CompactModel}",
+                ollamaReq.Model, effectiveModel);
+
+        string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
-        var (genBase, genTimeout, genApiKey) = ResolveUpstream(ollamaReq.Model);
+        var (genBase, genTimeout, genApiKey) = ResolveUpstream(effectiveModel);
 
         // Build the prompt, optionally injecting custom instructions
         string prompt = ollamaReq.Prompt;
         string? systemPrefix = ollamaReq.System;
 
         // Inject custom instructions if configured for this model mapping
-        ModelMapping? mapping = _settings.FindModelMapping(ollamaReq.Model);
+        ModelMapping? mapping = _settings.FindModelMapping(effectiveModel);
         if (mapping?.InstructionSetName is not null)
         {
             InstructionSet? instructionSet = _settings.FindInstructionSet(mapping.InstructionSetName);
@@ -2983,7 +3070,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Capture the upstream-bound (translated) body so proxy-injected values can be
         // compared against the client body in the request log.
         if (_settings.CollectRequestDetails)
-            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
+            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, effectiveModel);
 
         using StringContent genContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var genReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/completions") { Content = genContent };
@@ -3064,26 +3151,34 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (ollamaReq is null)
             return;
 
-        string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
+        // Context-summarize (/compact) redirect: route the request to the mapping's configured
+        // compact model when the first message is a Copilot session-summary prompt.
+        string effectiveModel = ResolveEffectiveModel(
+            _settings, ollamaReq.Model,
+            ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null);
+
+        string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
         bool debug = _settings.DebugMode;
         StringBuilder? debugNotes = debug ? new StringBuilder() : null;
-        bool mapped = !string.Equals(ollamaReq.Model, resolvedModel, StringComparison.OrdinalIgnoreCase);
+        if (debugNotes is not null && !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+            debugNotes.Append(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
+        bool mapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
         if (debugNotes is not null)
-            debugNotes.Append(DebugNotes.ModelResolution(ollamaReq.Model, resolvedModel, mapped));
+            debugNotes.Append(DebugNotes.ModelResolution(effectiveModel, resolvedModel, mapped));
         // Capture the client (before) body when either the Collect flag or DebugMode is on.
         if (_settings.CollectRequestDetails || debug)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
-        var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(ollamaReq.Model);
+        var (chatBase, chatTimeout, chatApiKey) = ResolveUpstream(effectiveModel);
 
-        ModelMapping? mapping = _settings.FindModelMapping(ollamaReq.Model);
+        ModelMapping? mapping = _settings.FindModelMapping(effectiveModel);
 
         // Map messages, preserving / synthesising tool_call IDs so OpenAI-compatible
         // upstreams can correlate assistant tool_calls with the following role:"tool" replies.
         List<LlamaCppMessage> messages = MapMessagesWithToolCorrelation(ollamaReq.Messages);
         bool removedAssistantPrefill = messages.Count > 0
-            && ShouldApplyThinkingCompatibility(_settings, ollamaReq.Model)
+            && ShouldApplyThinkingCompatibility(_settings, effectiveModel)
             && IsAssistantResponsePrefill(messages[^1]);
         if (removedAssistantPrefill)
         {
@@ -3168,12 +3263,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Capture the upstream-bound (translated) body so proxy-injected values such as
         // reasoning_effort can be compared against the client body in the request log.
         if (_settings.CollectRequestDetails || debug)
-            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, ollamaReq.Model);
+            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, effectiveModel);
 
         // Proactive context-overflow check: if the estimated token count exceeds the mapping's
         // configured threshold, return 413 immediately so clients (e.g. Copilot) compact before
         // we pay for an upstream round-trip that is guaranteed to overflow.
-        if (await TryProactiveOverflowAsync(mapping, upstreamBody, ollamaReq.Model, resp, log, ct))
+        if (await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, ct))
             return;
 
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");

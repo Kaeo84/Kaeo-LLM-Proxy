@@ -365,6 +365,16 @@ internal sealed class ModelMapping
     public string? InstructionSetName { get; set; }
 
     /// <summary>
+    /// Optional name of another proxy model (by its <see cref="ProxyName"/>) to route
+    /// context-summarize /compact requests to. When a request is detected as a Copilot
+    /// /compact summary request (identified by its distinctive session-summary system prompt)
+    /// and this mapping has a smaller/faster compact model configured, the request is
+    /// transparently redirected to that model — its upstream, sampling, and instruction-set
+    /// settings all apply. Leave null/empty to handle compact requests with this model itself.
+    /// </summary>
+    public string? ContextSummarizeModelName { get; set; }
+
+    /// <summary>
     /// When true, captured request bodies for this model are replaced with a redaction marker.
     /// Global CollectRequestDetails must also be enabled for any request body to be stored.
     /// </summary>
@@ -454,6 +464,7 @@ internal sealed class ModelMapping
         ReasoningEffortValues = [.. ReasoningEffortValues],
         ReasoningEffortFormat = ReasoningEffortFormat,
         InstructionSetName = InstructionSetName,
+        ContextSummarizeModelName = ContextSummarizeModelName,
         RedactRequestBodies = RedactRequestBodies,
         RedactResponseBodies = RedactResponseBodies,
         RedactSensitiveJsonFields = RedactSensitiveJsonFields,

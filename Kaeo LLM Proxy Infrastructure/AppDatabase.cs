@@ -185,7 +185,8 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_values,
                     reasoning_effort_format,
                     proactive_overflow_percent,
-                    proactive_overflow_tokens
+                    proactive_overflow_tokens,
+                    context_summarize_model_name
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -248,7 +249,8 @@ internal sealed class AppDatabase : IDisposable
                         reasoning_effort_values,
                         reasoning_effort_format,
                         proactive_overflow_percent,
-                        proactive_overflow_tokens
+                        proactive_overflow_tokens,
+                        context_summarize_model_name
                     )
                     VALUES (
                         $proxyName,
@@ -276,7 +278,8 @@ internal sealed class AppDatabase : IDisposable
                         $reasoningEffortValues,
                         $reasoningEffortFormat,
                         $proactiveOverflowPercent,
-                        $proactiveOverflowTokens
+                        $proactiveOverflowTokens,
+                        $contextSummarizeModelName
                     );
                     """;
 
@@ -1135,7 +1138,8 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_values TEXT NULL,
                     reasoning_effort_format INTEGER NOT NULL DEFAULT 1,
                     proactive_overflow_percent INTEGER NOT NULL DEFAULT 0,
-                    proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0
+                    proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0,
+                    context_summarize_model_name TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1381,7 +1385,8 @@ internal sealed class AppDatabase : IDisposable
     /// <c>context_window_tokens</c>,
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
     /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
-    /// <c>reasoning_effort_values</c>, and <c>reasoning_effort_format</c>.
+    /// <c>reasoning_effort_values</c>, <c>reasoning_effort_format</c>, and
+    /// <c>context_summarize_model_name</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1494,6 +1499,15 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added reasoning_effort_format column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "context_summarize_model_name"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_summarize_model_name TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added context_summarize_model_name column.");
         }
     }
 
@@ -1704,6 +1718,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$reasoningEffortFormat", (int)mapping.ReasoningEffortFormat);
         command.Parameters.AddWithValue("$proactiveOverflowPercent", mapping.ProactiveOverflowPercent);
         command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
+        command.Parameters.AddWithValue("$contextSummarizeModelName", DbValue(mapping.ContextSummarizeModelName));
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1748,6 +1763,7 @@ internal sealed class AppDatabase : IDisposable
         ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(23)),
         ProactiveOverflowPercent = reader.GetInt32(24),
         ProactiveOverflowTokens = reader.GetInt32(25),
+        ContextSummarizeModelName = reader.IsDBNull(26) ? null : reader.GetString(26),
     };
 
     /// <summary>

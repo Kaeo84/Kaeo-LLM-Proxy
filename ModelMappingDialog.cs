@@ -38,6 +38,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblModelInfoStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
     private readonly Label _lblInstructionSet = new();
     private readonly ComboBox _cmbInstructionSet = new();
+    private readonly Label _lblContextSummarizeModel = new();
+    private readonly ComboBox _cmbContextSummarizeModel = new();
     private readonly Label _lblUpstreamTimeout = new();
     private readonly TextBox _txtUpstreamTimeout = new();
     private readonly Label _lblContextWindow = new();
@@ -121,6 +123,24 @@ internal sealed class ModelMappingDialog : Form
             string target = string.IsNullOrWhiteSpace(value) ? NoneLabel : value!;
             int idx = _cmbInstructionSet.FindStringExact(target);
             _cmbInstructionSet.SelectedIndex = idx >= 0 ? idx : 0;
+        }
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private string? ContextSummarizeModelName
+    {
+        get
+        {
+            string? value = _cmbContextSummarizeModel.SelectedItem?.ToString();
+            return string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
+        }
+        set
+        {
+            string target = string.IsNullOrWhiteSpace(value) ? NoneLabel : value!;
+            int idx = _cmbContextSummarizeModel.FindStringExact(target);
+            _cmbContextSummarizeModel.SelectedIndex = idx >= 0 ? idx : 0;
         }
     }
 
@@ -437,6 +457,26 @@ internal sealed class ModelMappingDialog : Form
         _cmbInstructionSet.SelectedIndex = 0;
     }
 
+    /// <summary>
+    /// Populates the context-summarize (/compact) model dropdown with the proxy names of all
+    /// configured model mappings. The compact model is the smaller/faster model that a mapping's
+    /// /compact requests are transparently redirected to.
+    /// </summary>
+    private void PopulateContextSummarizeModels()
+    {
+        _cmbContextSummarizeModel.Items.Clear();
+        _cmbContextSummarizeModel.Items.Add(NoneLabel);
+        if (_settings is not null)
+        {
+            foreach (ModelMapping m in _settings.ModelMappings)
+            {
+                if (!string.IsNullOrWhiteSpace(m.ProxyName))
+                    _cmbContextSummarizeModel.Items.Add(m.ProxyName);
+            }
+        }
+        _cmbContextSummarizeModel.SelectedIndex = 0;
+    }
+
     private void PopulateCredentials(IEnumerable<StoredCredential> credentials)
     {
         _credentials = [.. credentials];
@@ -530,53 +570,57 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_cmbInstructionSet, 2);
         _tlpMain.Controls.Add(_cmbInstructionSet, 1, 5);
 
-        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 6);
+        _tlpMain.Controls.Add(_lblContextSummarizeModel, 0, 6);
+        _tlpMain.SetColumnSpan(_cmbContextSummarizeModel, 2);
+        _tlpMain.Controls.Add(_cmbContextSummarizeModel, 1, 6);
+
+        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 7);
         _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
-        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 6);
+        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 7);
 
-        _tlpMain.Controls.Add(_lblContextWindow, 0, 7);
+        _tlpMain.Controls.Add(_lblContextWindow, 0, 8);
         _tlpMain.SetColumnSpan(_txtContextWindow, 2);
-        _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
+        _tlpMain.Controls.Add(_txtContextWindow, 1, 8);
 
-        _tlpMain.Controls.Add(_lblProactiveOverflowPercent, 0, 8);
+        _tlpMain.Controls.Add(_lblProactiveOverflowPercent, 0, 9);
         _tlpMain.SetColumnSpan(_nudProactiveOverflowPercent, 2);
-        _tlpMain.Controls.Add(_nudProactiveOverflowPercent, 1, 8);
+        _tlpMain.Controls.Add(_nudProactiveOverflowPercent, 1, 9);
 
-        _tlpMain.Controls.Add(_lblProactiveOverflowTokens, 0, 9);
+        _tlpMain.Controls.Add(_lblProactiveOverflowTokens, 0, 10);
         _tlpMain.SetColumnSpan(_nudProactiveOverflowTokens, 2);
-        _tlpMain.Controls.Add(_nudProactiveOverflowTokens, 1, 9);
+        _tlpMain.Controls.Add(_nudProactiveOverflowTokens, 1, 10);
 
-        _tlpMain.Controls.Add(_lblTempPriority, 0, 10);
+        _tlpMain.Controls.Add(_lblTempPriority, 0, 11);
         _tlpMain.SetColumnSpan(_cmbTempPriority, 2);
-        _tlpMain.Controls.Add(_cmbTempPriority, 1, 10);
+        _tlpMain.Controls.Add(_cmbTempPriority, 1, 11);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 11);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 12);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 11);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 12);
 
-        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 12);
+        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 13);
         _tlpMain.SetColumnSpan(_cmbRepeatPenaltyPriority, 2);
-        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 12);
+        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 13);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 13);
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 14);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 13);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 14);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 14);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 15);
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 15);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 16);
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 16);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 17);
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 17);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 18);
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 18);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 19);
         _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 19);
+        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 20);
         _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 20);
+        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 21);
         _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 21);
+        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 22);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -653,6 +697,20 @@ internal sealed class ModelMappingDialog : Form
         _cmbInstructionSet.Dock = DockStyle.Fill;
         _cmbInstructionSet.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbInstructionSet.Margin = new Padding(0, 4, 0, 4);
+
+        _lblContextSummarizeModel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblContextSummarizeModel.AutoSize = true;
+        _lblContextSummarizeModel.Margin = new Padding(0, 8, 8, 4);
+        _lblContextSummarizeModel.Text = "Compact Model:";
+
+        _cmbContextSummarizeModel.Dock = DockStyle.Fill;
+        _cmbContextSummarizeModel.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbContextSummarizeModel.Margin = new Padding(0, 4, 0, 4);
+        _toolTip.SetToolTip(
+            _cmbContextSummarizeModel,
+            "Optional smaller/faster model to handle context-summarize (/compact) requests for this model.\n"
+            + "When a request is detected as a Copilot /compact session-summary request, it is\n"
+            + "transparently routed to the selected model instead. Leave (None) to use this model itself.");
 
         _lblUpstreamTimeout.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblUpstreamTimeout.AutoSize = true;
@@ -1565,6 +1623,7 @@ internal sealed class ModelMappingDialog : Form
         dlg._settings = settings;
         dlg._stats = stats;
         dlg.PopulateInstructionSets(instructionSets);
+        dlg.PopulateContextSummarizeModels();
         dlg.PopulateCredentials(credentials);
         dlg.PopulateUpstreamTypes(mapping.UpstreamType);
         dlg.PopulateUpstreamUrls(existingUpstreamUrls, mapping.UpstreamUrl);
@@ -1573,6 +1632,7 @@ internal sealed class ModelMappingDialog : Form
         dlg._upstreamUrl = mapping.UpstreamUrl ?? string.Empty;
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
         dlg.InstructionSetName = mapping.InstructionSetName;
+        dlg.ContextSummarizeModelName = mapping.ContextSummarizeModelName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
@@ -1614,6 +1674,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
+        mapping.ContextSummarizeModelName = dlg.ContextSummarizeModelName;
         mapping.TemperaturePriority = dlg.TemperaturePriority;
         mapping.RepeatPenaltyPriority = dlg.RepeatPenaltyPriority;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
