@@ -142,4 +142,35 @@ public class ContextSummarizeRedirectTests
         Assert.Equal("main-upstream", root.GetProperty("model").GetString());
         Assert.Equal("main", log.Model);
     }
+
+    [Fact]
+    public void RewritesModelWhenContentIsArrayParts()
+    {
+        // Copilot and other OpenAI-compatible clients commonly send content as an array of
+        // typed parts (even for plain text). The compact signature must be detected from the
+        // concatenated text parts so the redirect still fires.
+        AppSettings settings = CreateSettings();
+        RequestLog log = new();
+
+        string json = $$"""{"model":"main","messages":[{"role":"system","content":[{"type":"text","text":"{{CompactPrompt}}"}]},{"role":"user","content":"# context"}]}""";
+        string result = OllamaProxyHandler.NormalizeRequestBody(json, settings, log);
+
+        JsonElement root = JsonDocument.Parse(result).RootElement;
+        Assert.Equal("compact-upstream", root.GetProperty("model").GetString());
+        Assert.Equal("compact", log.Model);
+    }
+
+    [Fact]
+    public void DoesNotRedirectWhenArrayContentHasNoText()
+    {
+        AppSettings settings = CreateSettings();
+        RequestLog log = new();
+
+        string json = """{"model":"main","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"http://x"}}]}]}""";
+        string result = OllamaProxyHandler.NormalizeRequestBody(json, settings, log);
+
+        JsonElement root = JsonDocument.Parse(result).RootElement;
+        Assert.Equal("main-upstream", root.GetProperty("model").GetString());
+        Assert.Equal("main", log.Model);
+    }
 }

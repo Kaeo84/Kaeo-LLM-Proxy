@@ -270,9 +270,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Extracts the first message's string content from an OpenAI-style request body root
-    /// (a <c>messages</c> array). Returns null when the body has no messages or the first
-    /// message's content is not a plain string.
+    /// Extracts the first message's text content from an OpenAI-style request body root
+    /// (a <c>messages</c> array). Content may be a plain string or an array of typed parts
+    /// (e.g. <c>[{"type":"text","text":"..."}]</c>), which OpenAI-compatible clients such as
+    /// Copilot commonly emit even for plain text; both shapes are handled so the compact-prompt
+    /// signature is detected regardless of wire format. Returns null when the body has no
+    /// messages or the first message carries no text content.
     /// </summary>
     private static string? GetFirstMessageContent(JsonElement root)
     {
@@ -283,9 +286,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             if (msg.ValueKind != JsonValueKind.Object)
                 return null;
-            if (!msg.TryGetProperty("content", out JsonElement contentEl) || contentEl.ValueKind != JsonValueKind.String)
+            if (!msg.TryGetProperty("content", out JsonElement contentEl))
                 return null;
-            return contentEl.GetString();
+
+            switch (contentEl.ValueKind)
+            {
+                case JsonValueKind.String:
+                    return contentEl.GetString();
+                case JsonValueKind.Array:
+                    StringBuilder text = new();
+                    foreach (JsonElement part in contentEl.EnumerateArray())
+                    {
+                        if (part.ValueKind != JsonValueKind.Object)
+                            continue;
+                        if (part.TryGetProperty("text", out JsonElement textEl) && textEl.ValueKind == JsonValueKind.String)
+                            text.Append(textEl.GetString());
+                    }
+                    return text.Length > 0 ? text.ToString() : null;
+                default:
+                    return null;
+            }
         }
 
         return null;
