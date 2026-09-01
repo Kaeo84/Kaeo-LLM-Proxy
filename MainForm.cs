@@ -1981,6 +1981,7 @@ internal partial class MainForm : Form
         }
 
         ModelMapping duplicatedMapping = originalMapping.Clone();
+        duplicatedMapping.AssignNewId();
         duplicatedMapping.ProxyName = GenerateUniqueProxyName(originalMapping.ProxyName);
 
         int idx = AddMappingRow(duplicatedMapping);

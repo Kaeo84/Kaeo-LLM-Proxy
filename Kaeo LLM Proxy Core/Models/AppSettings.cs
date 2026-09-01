@@ -478,13 +478,17 @@ internal sealed class ModelMapping
     }
 
     /// <summary>
-    /// Creates a deep copy of this ModelMapping instance with all properties cloned.
-    /// The duplicate receives a new unique ID (not the original's ID).
+    /// Creates a deep copy of this ModelMapping instance with all properties cloned,
+    /// preserving the stable <see cref="Id"/> so cross-mapping references (e.g.
+    /// <see cref="ContextSummarizeModelId"/>) remain valid across clones. Call
+    /// <see cref="AssignNewId"/> on the result when a truly independent mapping is needed
+    /// (e.g. duplicating a row).
     /// </summary>
     public ModelMapping Clone()
     {
         ModelMapping clone = new()
         {
+            Id = Id,
             IsEnabled = IsEnabled,
             ProxyName = ProxyName,
             ModelName = ModelName,
@@ -515,6 +519,16 @@ internal sealed class ModelMapping
         };
         clone.EnsureId();
         return clone;
+    }
+
+    /// <summary>
+    /// Replaces this mapping's stable <see cref="Id"/> with a freshly generated unique one.
+    /// Used when duplicating a mapping so the copy becomes an independent mapping.
+    /// </summary>
+    internal void AssignNewId()
+    {
+        Id = 0;
+        EnsureId();
     }
 }
 
