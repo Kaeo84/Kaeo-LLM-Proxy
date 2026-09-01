@@ -32,6 +32,18 @@ request to the right llama.cpp instance, doing all format translation transparen
 | `POST /api/chat`         | `POST /v1/chat/completions`   |
 | `POST /api/embeddings`   | `POST /v1/embeddings`         |
 
+## OpenAI-Compatible Endpoints
+
+The proxy also exposes an OpenAI-compatible `/v1/` API so clients such as Visual Studio Copilot, OpenAI SDKs, and other `/v1/` clients can use it directly.
+
+| OpenAI endpoint          | Method | Purpose                                                                      |
+|--------------------------|--------|------------------------------------------------------------------------------|
+| `/v1/models`             | GET    | Lists enabled model mappings in OpenAI format, including `context_length`.   |
+| `/v1/models/{model}`     | GET    | Returns a single enabled model mapping in OpenAI format.                     |
+| `/v1/chat/completions`   | POST   | Forwards chat completion requests to the selected upstream llama.cpp server. |
+| `/v1/completions`        | POST   | Forwards completion requests to the selected upstream llama.cpp server.      |
+| `/v1/embeddings`         | POST   | Forwards embedding requests to the selected upstream llama.cpp server.       |
+
 ## Portable Folder Structure
 
 All configuration and data files live in a `Data` folder next to the executable for easy
