@@ -227,6 +227,44 @@ internal sealed class RuntimeSettings
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
 internal sealed class ModelMapping
 {
+    /// <summary>
+    /// Thread-safe counter for generating unique mapping IDs. Initialized from the maximum ID
+    /// seen when loading from the database, so new mappings always get IDs higher than any existing one.
+    /// </summary>
+    private static int _nextId;
+
+    /// <summary>
+    /// Stable unique identifier for this mapping. Assigned automatically when the mapping is created
+    /// or loaded from the database. Never changes for the lifetime of a mapping, so cross-mapping
+    /// references (e.g. <see cref="ContextSummarizeModelId"/>) survive proxy name renames.
+    /// </summary>
+    public int Id { get; set; }
+
+    /// <summary>
+    /// Assigns the next available ID to this mapping if it doesn't already have one.
+    /// Called by deserialization or database loading when Id is 0.
+    /// </summary>
+    internal void EnsureId()
+    {
+        if (Id == 0)
+            Id = Interlocked.Increment(ref _nextId);
+    }
+
+    /// <summary>
+    /// Updates the global ID counter to be at least as large as the given value.
+    /// Called during database loading to ensure new mappings get IDs higher than any persisted one.
+    /// </summary>
+    internal static void TrackMaxId(int id)
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref _nextId);
+            if (id <= current)
+                return;
+        } while (Interlocked.CompareExchange(ref _nextId, id, current) != current);
+    }
+
     /// <summary>When false, this mapping is hidden from discovery and ignored for request routing.</summary>
     public bool IsEnabled { get; set; } = true;
 
@@ -365,14 +403,14 @@ internal sealed class ModelMapping
     public string? InstructionSetName { get; set; }
 
     /// <summary>
-    /// Optional name of another proxy model (by its <see cref="ProxyName"/>) to route
-    /// context-summarize /compact requests to. When a request is detected as a Copilot
-    /// /compact summary request (identified by its distinctive session-summary system prompt)
-    /// and this mapping has a smaller/faster compact model configured, the request is
-    /// transparently redirected to that model — its upstream, sampling, and instruction-set
-    /// settings all apply. Leave null/empty to handle compact requests with this model itself.
+    /// Optional ID of another proxy model to route context-summarize /compact requests to.
+    /// When a request is detected as a Copilot /compact summary request (identified by its
+    /// distinctive session-summary system prompt) and this mapping has a smaller/faster compact
+    /// model configured, the request is transparently redirected to that model — its upstream,
+    /// sampling, and instruction-set settings all apply. Leave null to handle compact requests
+    /// with this model itself. References by ID survive proxy name renames.
     /// </summary>
-    public string? ContextSummarizeModelName { get; set; }
+    public int? ContextSummarizeModelId { get; set; }
 
     /// <summary>
     /// When true, captured request bodies for this model are replaced with a redaction marker.
@@ -441,37 +479,43 @@ internal sealed class ModelMapping
 
     /// <summary>
     /// Creates a deep copy of this ModelMapping instance with all properties cloned.
+    /// The duplicate receives a new unique ID (not the original's ID).
     /// </summary>
-    public ModelMapping Clone() => new()
+    public ModelMapping Clone()
     {
-        IsEnabled = IsEnabled,
-        ProxyName = ProxyName,
-        ModelName = ModelName,
-        EnableThinkingCompatibility = EnableThinkingCompatibility,
-        Capabilities = [.. Capabilities],
-        EnableHeartbeats = EnableHeartbeats,
-        CredentialName = CredentialName,
-        UpstreamType = UpstreamType,
-        ThinkingMode = ThinkingMode,
-        UpstreamUrl = UpstreamUrl,
-        UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
-        RepeatPenalty = RepeatPenalty,
-        TemperaturePriority = TemperaturePriority,
-        RepeatPenaltyPriority = RepeatPenaltyPriority,
-        Temperature = Temperature,
-        ReasoningEffortPriority = ReasoningEffortPriority,
-        ReasoningEffort = ReasoningEffort,
-        ReasoningEffortValues = [.. ReasoningEffortValues],
-        ReasoningEffortFormat = ReasoningEffortFormat,
-        InstructionSetName = InstructionSetName,
-        ContextSummarizeModelName = ContextSummarizeModelName,
-        RedactRequestBodies = RedactRequestBodies,
-        RedactResponseBodies = RedactResponseBodies,
-        RedactSensitiveJsonFields = RedactSensitiveJsonFields,
-        ContextWindowTokens = ContextWindowTokens,
-        ProactiveOverflowPercent = ProactiveOverflowPercent,
-        ProactiveOverflowTokens = ProactiveOverflowTokens,
-    };
+        ModelMapping clone = new()
+        {
+            IsEnabled = IsEnabled,
+            ProxyName = ProxyName,
+            ModelName = ModelName,
+            EnableThinkingCompatibility = EnableThinkingCompatibility,
+            Capabilities = [.. Capabilities],
+            EnableHeartbeats = EnableHeartbeats,
+            CredentialName = CredentialName,
+            UpstreamType = UpstreamType,
+            ThinkingMode = ThinkingMode,
+            UpstreamUrl = UpstreamUrl,
+            UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,
+            RepeatPenalty = RepeatPenalty,
+            TemperaturePriority = TemperaturePriority,
+            RepeatPenaltyPriority = RepeatPenaltyPriority,
+            Temperature = Temperature,
+            ReasoningEffortPriority = ReasoningEffortPriority,
+            ReasoningEffort = ReasoningEffort,
+            ReasoningEffortValues = [.. ReasoningEffortValues],
+            ReasoningEffortFormat = ReasoningEffortFormat,
+            InstructionSetName = InstructionSetName,
+            ContextSummarizeModelId = ContextSummarizeModelId,
+            RedactRequestBodies = RedactRequestBodies,
+            RedactResponseBodies = RedactResponseBodies,
+            RedactSensitiveJsonFields = RedactSensitiveJsonFields,
+            ContextWindowTokens = ContextWindowTokens,
+            ProactiveOverflowPercent = ProactiveOverflowPercent,
+            ProactiveOverflowTokens = ProactiveOverflowTokens,
+        };
+        clone.EnsureId();
+        return clone;
+    }
 }
 
 /// <summary>Logging configuration persisted inside settings.jsonc.</summary>
@@ -848,6 +892,26 @@ internal sealed class AppSettings
             {
                 return mapping;
             }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds a model mapping by its stable <see cref="ModelMapping.Id"/>, regardless of whether
+    /// it is enabled. Returns null when no mapping with the given ID exists. Used by cross-mapping
+    /// references (e.g. <see cref="ModelMapping.ContextSummarizeModelId"/>) so that renames of the
+    /// target mapping's <see cref="ModelMapping.ProxyName"/> do not break the reference.
+    /// </summary>
+    public ModelMapping? FindModelMappingById(int id)
+    {
+        if (id == 0)
+            return null;
+
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (mapping.Id == id)
+                return mapping;
         }
 
         return null;

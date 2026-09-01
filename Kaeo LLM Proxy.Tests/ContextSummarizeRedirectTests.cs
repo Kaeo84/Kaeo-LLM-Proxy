@@ -18,22 +18,35 @@ public class ContextSummarizeRedirectTests
         "session as a project checkpoint. <ConversationSummary> <ReasoningScratchpad>";
 
     /// <summary>Settings with a "main" model that redirects /compact to a "compact" model.</summary>
-    private static AppSettings CreateSettings(string? compactModelName = "compact")
+    /// <remarks>
+    /// Pass <c>compactModelId: null</c> for "no compact model configured", or an invalid ID
+    /// (e.g. 999) for "compact model ID doesn't match any mapping". The default (-1) links
+    /// to the actual compact mapping's auto-assigned ID.
+    /// </remarks>
+    private static AppSettings CreateSettings(int? compactModelId = -1)
     {
         AppSettings settings = new();
-        settings.ModelMappings.Add(new ModelMapping
-        {
-            ProxyName = "main",
-            ModelName = "main-upstream",
-            UpstreamUrl = "http://localhost:8080",
-            ContextSummarizeModelName = compactModelName,
-        });
-        settings.ModelMappings.Add(new ModelMapping
+
+        ModelMapping compactMapping = new()
         {
             ProxyName = "compact",
             ModelName = "compact-upstream",
             UpstreamUrl = "http://localhost:8081",
-        });
+        };
+        compactMapping.EnsureId();
+
+        ModelMapping mainMapping = new()
+        {
+            ProxyName = "main",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelId = compactModelId == -1 ? compactMapping.Id : compactModelId,
+        };
+        mainMapping.EnsureId();
+
+        settings.ModelMappings.Add(mainMapping);
+        settings.ModelMappings.Add(compactMapping);
+
         return settings;
     }
 
@@ -94,14 +107,14 @@ public class ContextSummarizeRedirectTests
     [Fact]
     public void DoesNotRedirectWhenNoCompactModelConfigured()
     {
-        AppSettings settings = CreateSettings(compactModelName: null);
+        AppSettings settings = CreateSettings(compactModelId: null);
         Assert.Equal("main", OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactPrompt));
     }
 
     [Fact]
     public void DoesNotRedirectWhenCompactModelIsNotAValidProxy()
     {
-        AppSettings settings = CreateSettings(compactModelName: "does-not-exist");
+        AppSettings settings = CreateSettings(compactModelId: 999);
         Assert.Equal("main", OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactPrompt));
     }
 

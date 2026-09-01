@@ -176,6 +176,7 @@ partial class MainForm
         _btnRemoveMapping = new Button();
         _btnDuplicateMapping = new Button();
         _btnConfigureMapping = new Button();
+        _btnToggleEnabled = new Button();
         _chkAutoStart = new CheckBox();
         _chkStartWithDashboard = new CheckBox();
         _chkRunAsAdmin = new CheckBox();
@@ -1174,6 +1175,7 @@ partial class MainForm
         _flpMappingButtons.Controls.Add(_btnRemoveMapping);
         _flpMappingButtons.Controls.Add(_btnDuplicateMapping);
         _flpMappingButtons.Controls.Add(_btnConfigureMapping);
+        _flpMappingButtons.Controls.Add(_btnToggleEnabled);
         _flpMappingButtons.Dock = DockStyle.Fill;
         _flpMappingButtons.FlowDirection = FlowDirection.LeftToRight;
         _flpMappingButtons.Margin = new Padding(0, 4, 0, 4);
@@ -1203,6 +1205,12 @@ partial class MainForm
         _btnConfigureMapping.Name = "_btnConfigureMapping";
         _btnConfigureMapping.Text = "Configure Selected…";
         _btnConfigureMapping.Click += BtnConfigureMapping_Click;
+
+        _btnToggleEnabled.AutoSize = true;
+        _btnToggleEnabled.Margin = new Padding(4, 4, 4, 4);
+        _btnToggleEnabled.Name = "_btnToggleEnabled";
+        _btnToggleEnabled.Text = "Toggle Enabled";
+        _btnToggleEnabled.Click += BtnToggleEnabled_Click;
 
         _btnSaveListener.Anchor = AnchorStyles.Right;
         _btnSaveListener.AutoSize = true;
@@ -2249,6 +2257,7 @@ partial class MainForm
     private Button _btnRemoveMapping;
     private Button _btnDuplicateMapping;
     private Button _btnConfigureMapping;
+    private Button _btnToggleEnabled;
     private GroupBox _grpListener;
     private TableLayoutPanel _tlpListener;
     private Button _btnSaveListener;

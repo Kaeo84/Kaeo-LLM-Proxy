@@ -247,7 +247,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>
     /// Returns the effective proxy model name for a request, applying the context-summarize
     /// (/compact) redirect when the mapping has a smaller/faster compact model configured
-    /// (<see cref="ModelMapping.ContextSummarizeModelName"/>) and the request is detected as a
+    /// (<see cref="ModelMapping.ContextSummarizeModelId"/>) and the request is detected as a
     /// Copilot /compact summary request. Returns the original model name unchanged when no
     /// redirect applies (not a summarize request, no compact model configured, or the compact
     /// model is not a valid enabled proxy model).
@@ -258,15 +258,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return originalModel;
 
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
-        if (mapping is null || string.IsNullOrWhiteSpace(mapping.ContextSummarizeModelName))
+        if (mapping is null || !mapping.ContextSummarizeModelId.HasValue)
             return originalModel;
 
-        string compactProxy = mapping.ContextSummarizeModelName.Trim();
+        ModelMapping? compactMapping = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
         // Only redirect when the compact model is itself a valid enabled proxy model.
-        if (settings.FindModelMapping(compactProxy) is null)
+        if (compactMapping is null || !compactMapping.IsEnabled)
             return originalModel;
 
-        return compactProxy;
+        return compactMapping.ProxyName;
     }
 
     /// <summary>
@@ -326,12 +326,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
         if (mapping is null)
             return $"no mapping found for model '{originalModel}'";
-        if (string.IsNullOrWhiteSpace(mapping.ContextSummarizeModelName))
-            return "no ContextSummarizeModelName configured on the mapping";
+        if (!mapping.ContextSummarizeModelId.HasValue)
+            return "no ContextSummarizeModelId configured on the mapping";
 
-        string compactProxy = mapping.ContextSummarizeModelName.Trim();
-        if (settings.FindModelMapping(compactProxy) is null)
-            return $"compact model '{compactProxy}' is not a valid enabled proxy model";
+        ModelMapping? compactMapping = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+        if (compactMapping is null)
+            return $"compact model with ID {mapping.ContextSummarizeModelId.Value} not found";
+        if (!compactMapping.IsEnabled)
+            return $"compact model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) is not enabled";
 
         return "unknown (redirect should have fired)";
     }

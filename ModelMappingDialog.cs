@@ -92,6 +92,8 @@ internal sealed class ModelMappingDialog : Form
     private List<StoredCredential> _credentials = [];
     private AppSettings? _settings;
     private StatisticsService? _stats;
+    private Dictionary<int, string> _compactModelIdToName = [];
+    private Dictionary<string, int> _compactModelNameToId = [];
 
     // Set while ShowConfigureDialog populates controls so model-name change events do not
     // prefill reasoning effort values over the values being loaded.
@@ -127,19 +129,23 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private string? ContextSummarizeModelName
+    private int? ContextSummarizeModelId
     {
         get
         {
             string? value = _cmbContextSummarizeModel.SelectedItem?.ToString();
-            return string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase)
-                ? null
-                : value;
+            if (string.IsNullOrWhiteSpace(value) || string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase))
+                return null;
+            return _compactModelNameToId.TryGetValue(value!, out int id) ? id : null;
         }
         set
         {
-            string target = string.IsNullOrWhiteSpace(value) ? NoneLabel : value!;
-            int idx = _cmbContextSummarizeModel.FindStringExact(target);
+            if (!value.HasValue || !_compactModelIdToName.TryGetValue(value.Value, out string? name))
+            {
+                _cmbContextSummarizeModel.SelectedIndex = 0;
+                return;
+            }
+            int idx = _cmbContextSummarizeModel.FindStringExact(name);
             _cmbContextSummarizeModel.SelectedIndex = idx >= 0 ? idx : 0;
         }
     }
@@ -466,12 +472,18 @@ internal sealed class ModelMappingDialog : Form
     {
         _cmbContextSummarizeModel.Items.Clear();
         _cmbContextSummarizeModel.Items.Add(NoneLabel);
+        _compactModelIdToName.Clear();
+        _compactModelNameToId.Clear();
         if (_settings is not null)
         {
             foreach (ModelMapping m in _settings.ModelMappings)
             {
-                if (!string.IsNullOrWhiteSpace(m.ProxyName))
+                if (!string.IsNullOrWhiteSpace(m.ProxyName) && m.Id != 0)
+                {
                     _cmbContextSummarizeModel.Items.Add(m.ProxyName);
+                    _compactModelIdToName[m.Id] = m.ProxyName;
+                    _compactModelNameToId[m.ProxyName] = m.Id;
+                }
             }
         }
         _cmbContextSummarizeModel.SelectedIndex = 0;
@@ -1632,7 +1644,7 @@ internal sealed class ModelMappingDialog : Form
         dlg._upstreamUrl = mapping.UpstreamUrl ?? string.Empty;
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
         dlg.InstructionSetName = mapping.InstructionSetName;
-        dlg.ContextSummarizeModelName = mapping.ContextSummarizeModelName;
+        dlg.ContextSummarizeModelId = mapping.ContextSummarizeModelId;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
@@ -1674,7 +1686,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
-        mapping.ContextSummarizeModelName = dlg.ContextSummarizeModelName;
+        mapping.ContextSummarizeModelId = dlg.ContextSummarizeModelId;
         mapping.TemperaturePriority = dlg.TemperaturePriority;
         mapping.RepeatPenaltyPriority = dlg.RepeatPenaltyPriority;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;

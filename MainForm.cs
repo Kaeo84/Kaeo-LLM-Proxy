@@ -1830,6 +1830,7 @@ internal partial class MainForm : Form
         // All editing happens in the modal. Create a fresh mapping, let the user
         // configure it, and only add a grid row on OK.
         ModelMapping mapping = new();
+        mapping.EnsureId();
 
         if (!ModelMappingDialog.ShowConfigureDialog(this, mapping, _settings.InstructionSets, _settings.Credentials, [], CollectUpstreamUrls(), _settings, _stats, out _))
             return;
@@ -1869,6 +1870,7 @@ internal partial class MainForm : Form
         if (row.Tag is not ModelMapping mapping)
         {
             mapping = new ModelMapping();
+            mapping.EnsureId();
             row.Tag = mapping;
         }
 
@@ -1936,6 +1938,25 @@ internal partial class MainForm : Form
             if (!row.IsNewRow)
                 _dgvMappings.Rows.Remove(row);
         }
+
+        CommitMappingsFromGrid();
+    }
+
+    private void BtnToggleEnabled_Click(object? sender, EventArgs e)
+    {
+        DataGridViewRow? row = GetSelectedMappingRow();
+        if (row is null)
+        {
+            MessageBox.Show("Select a model mapping row to toggle.", "Toggle Enabled",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (row.Tag is not ModelMapping mapping)
+            return;
+
+        mapping.IsEnabled = !mapping.IsEnabled;
+        row.Cells[_colMappingEnabled.Name].Value = mapping.IsEnabled ? "Yes" : "No";
 
         CommitMappingsFromGrid();
     }

@@ -161,19 +161,26 @@ public class DebugNotesTests
     {
         AppSettings settings = new();
         settings.DebugMode = true;
-        settings.ModelMappings.Add(new ModelMapping
+
+        ModelMapping mainMapping = new()
         {
             ProxyName = "main",
             ModelName = "main-upstream",
             UpstreamUrl = "http://localhost:8080",
-            ContextSummarizeModelName = "compact",
-        });
-        settings.ModelMappings.Add(new ModelMapping
+        };
+        mainMapping.EnsureId();
+        settings.ModelMappings.Add(mainMapping);
+
+        ModelMapping compactMapping = new()
         {
             ProxyName = "compact",
             ModelName = "compact-upstream",
             UpstreamUrl = "http://localhost:8081",
-        });
+        };
+        compactMapping.EnsureId();
+        settings.ModelMappings.Add(compactMapping);
+
+        mainMapping.ContextSummarizeModelId = compactMapping.Id;
 
         RequestLog log = new();
         string compactPrompt = "Your task is to **produce an authoritative, self-contained summary** of the current session. <ConversationSummary>";

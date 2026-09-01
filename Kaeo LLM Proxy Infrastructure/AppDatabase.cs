@@ -160,6 +160,7 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 SELECT
+                    id,
                     is_enabled,
                     proxy_name,
                     model_name,
@@ -186,7 +187,7 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_format,
                     proactive_overflow_percent,
                     proactive_overflow_tokens,
-                    context_summarize_model_name
+                    context_summarize_model_id
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -195,7 +196,15 @@ internal sealed class AppDatabase : IDisposable
             List<ModelMapping> mappings = [];
 
             while (reader.Read())
-                mappings.Add(ReadModelMapping(reader));
+            {
+                ModelMapping mapping = ReadModelMapping(reader);
+                ModelMapping.TrackMaxId(mapping.Id);
+                mappings.Add(mapping);
+            }
+
+            // Ensure any mappings loaded with id=0 get a fresh ID.
+            foreach (ModelMapping m in mappings)
+                m.EnsureId();
 
             return mappings;
         }
@@ -224,6 +233,7 @@ internal sealed class AppDatabase : IDisposable
                 insertCommand.CommandText =
                     """
                     INSERT INTO model_mappings (
+                        id,
                         proxy_name,
                         is_enabled,
                         model_name,
@@ -250,9 +260,10 @@ internal sealed class AppDatabase : IDisposable
                         reasoning_effort_format,
                         proactive_overflow_percent,
                         proactive_overflow_tokens,
-                        context_summarize_model_name
+                        context_summarize_model_id
                     )
                     VALUES (
+                        $id,
                         $proxyName,
                         $isEnabled,
                         $modelName,
@@ -279,7 +290,7 @@ internal sealed class AppDatabase : IDisposable
                         $reasoningEffortFormat,
                         $proactiveOverflowPercent,
                         $proactiveOverflowTokens,
-                        $contextSummarizeModelName
+                        $contextSummarizeModelId
                     );
                     """;
 
@@ -1509,6 +1520,102 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated model_mappings table: added context_summarize_model_name column.");
         }
+
+        if (!ColumnExists(connection, "model_mappings", "id"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN id INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added id column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "context_summarize_model_id"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_summarize_model_id INTEGER NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added context_summarize_model_id column.");
+        }
+
+        // Post-migration: assign IDs to any mappings that don't have one yet, and convert
+        // legacy string-based context_summarize_model_name references to integer IDs.
+        MigrateMappingIds(connection);
+    }
+
+    /// <summary>
+    /// Assigns unique IDs to any model mapping that doesn't have one, and converts legacy
+    /// <c>context_summarize_model_name</c> string references to <c>context_summarize_model_id</c>
+    /// integer references by matching proxy names. Runs once after the schema migration so
+    /// existing data is upgraded transparently.
+    /// </summary>
+    private static void MigrateMappingIds(SqliteConnection connection)
+    {
+        // Read all mappings with their current id, proxy_name, and context_summarize_model_name.
+        using SqliteCommand readCmd = connection.CreateCommand();
+        readCmd.CommandText = "SELECT proxy_name, id, context_summarize_model_name, context_summarize_model_id FROM model_mappings;";
+        using SqliteDataReader reader = readCmd.ExecuteReader();
+
+        List<(string ProxyName, int Id, string? LegacyName, int? CurrentId)> rows = [];
+        while (reader.Read())
+        {
+            rows.Add((
+                reader.GetString(0),
+                reader.GetInt32(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetInt32(3)
+            ));
+        }
+        reader.Close();
+
+        if (rows.Count == 0)
+            return;
+
+        // Build a proxy-name → id lookup from existing non-zero IDs.
+        Dictionary<string, int> nameToId = new(StringComparer.OrdinalIgnoreCase);
+        int nextId = 1;
+        foreach (var row in rows)
+        {
+            if (row.Id > 0)
+            {
+                nameToId[row.ProxyName] = row.Id;
+                if (row.Id >= nextId)
+                    nextId = row.Id + 1;
+            }
+        }
+
+        // Assign IDs to rows that don't have one yet.
+        foreach (var row in rows)
+        {
+            if (row.Id == 0 && !nameToId.ContainsKey(row.ProxyName))
+            {
+                int id = nextId++;
+                nameToId[row.ProxyName] = id;
+
+                using SqliteCommand updateCmd = connection.CreateCommand();
+                updateCmd.CommandText = "UPDATE model_mappings SET id = $id WHERE proxy_name = $proxyName;";
+                updateCmd.Parameters.AddWithValue("$id", id);
+                updateCmd.Parameters.AddWithValue("$proxyName", row.ProxyName);
+                updateCmd.ExecuteNonQuery();
+            }
+        }
+
+        // Convert legacy string references to integer IDs.
+        foreach (var row in rows)
+        {
+            if (!string.IsNullOrWhiteSpace(row.LegacyName) && row.CurrentId is null)
+            {
+                if (nameToId.TryGetValue(row.LegacyName.Trim(), out int targetId))
+                {
+                    using SqliteCommand updateCmd = connection.CreateCommand();
+                    updateCmd.CommandText = "UPDATE model_mappings SET context_summarize_model_id = $id WHERE proxy_name = $proxyName;";
+                    updateCmd.Parameters.AddWithValue("$id", targetId);
+                    updateCmd.Parameters.AddWithValue("$proxyName", row.ProxyName);
+                    updateCmd.ExecuteNonQuery();
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -1688,6 +1795,7 @@ internal sealed class AppDatabase : IDisposable
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
     {
+        command.Parameters.AddWithValue("$id", mapping.Id);
         command.Parameters.AddWithValue("$proxyName", mapping.ProxyName);
         command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(mapping.IsEnabled));
         command.Parameters.AddWithValue("$modelName", mapping.ModelName);
@@ -1718,52 +1826,53 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$reasoningEffortFormat", (int)mapping.ReasoningEffortFormat);
         command.Parameters.AddWithValue("$proactiveOverflowPercent", mapping.ProactiveOverflowPercent);
         command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
-        command.Parameters.AddWithValue("$contextSummarizeModelName", DbValue(mapping.ContextSummarizeModelName));
+        command.Parameters.AddWithValue("$contextSummarizeModelId", mapping.ContextSummarizeModelId.HasValue ? (object)mapping.ContextSummarizeModelId.Value : DBNull.Value);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
     {
-        IsEnabled = ReadBoolean(reader, 0),
-        ProxyName = reader.GetString(1),
-        ModelName = reader.GetString(2),
-        EnableThinkingCompatibility = ReadBoolean(reader, 3),
-        Capabilities = reader.IsDBNull(4)
+        Id = reader.GetInt32(0),
+        IsEnabled = ReadBoolean(reader, 1),
+        ProxyName = reader.GetString(2),
+        ModelName = reader.GetString(3),
+        EnableThinkingCompatibility = ReadBoolean(reader, 4),
+        Capabilities = reader.IsDBNull(5)
             ? []
-            : [.. reader.GetString(4).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        EnableHeartbeats = ReadBoolean(reader, 5),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(6))
-            ? (UpstreamType)reader.GetInt32(6)
+            : [.. reader.GetString(5).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        EnableHeartbeats = ReadBoolean(reader, 6),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(7))
+            ? (UpstreamType)reader.GetInt32(7)
             : UpstreamType.OpenAI,
-        UpstreamUrl = reader.GetString(7),
-        UpstreamTimeoutSeconds = reader.GetInt32(8),
-        RepeatPenalty = reader.GetDouble(9),
-        Temperature = reader.GetDouble(10),
-        InstructionSetName = reader.IsDBNull(11) ? null : reader.GetString(11),
-        RedactRequestBodies = ReadBoolean(reader, 12),
-        RedactResponseBodies = ReadBoolean(reader, 13),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 14),
-        CredentialName = reader.IsDBNull(15) ? null : reader.GetString(15),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(16))
-            ? (ThinkingMode)reader.GetInt32(16)
+        UpstreamUrl = reader.GetString(8),
+        UpstreamTimeoutSeconds = reader.GetInt32(9),
+        RepeatPenalty = reader.GetDouble(10),
+        Temperature = reader.GetDouble(11),
+        InstructionSetName = reader.IsDBNull(12) ? null : reader.GetString(12),
+        RedactRequestBodies = ReadBoolean(reader, 13),
+        RedactResponseBodies = ReadBoolean(reader, 14),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 15),
+        CredentialName = reader.IsDBNull(16) ? null : reader.GetString(16),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(17))
+            ? (ThinkingMode)reader.GetInt32(17)
             : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(17),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(18))
-            ? (SamplingPriority)reader.GetInt32(18)
-            : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
+        ContextWindowTokens = reader.GetInt32(18),
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
             ? (SamplingPriority)reader.GetInt32(19)
             : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
             ? (SamplingPriority)reader.GetInt32(20)
             : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(21) ? null : reader.GetString(21),
-        ReasoningEffortValues = reader.IsDBNull(22)
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
+            ? (SamplingPriority)reader.GetInt32(21)
+            : SamplingPriority.ClientApp,
+        ReasoningEffort = reader.IsDBNull(22) ? null : reader.GetString(22),
+        ReasoningEffortValues = reader.IsDBNull(23)
             ? []
-            : [.. reader.GetString(22).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(23)),
-        ProactiveOverflowPercent = reader.GetInt32(24),
-        ProactiveOverflowTokens = reader.GetInt32(25),
-        ContextSummarizeModelName = reader.IsDBNull(26) ? null : reader.GetString(26),
+            : [.. reader.GetString(23).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(24)),
+        ProactiveOverflowPercent = reader.GetInt32(25),
+        ProactiveOverflowTokens = reader.GetInt32(26),
+        ContextSummarizeModelId = reader.IsDBNull(27) ? null : reader.GetInt32(27),
     };
 
     /// <summary>
