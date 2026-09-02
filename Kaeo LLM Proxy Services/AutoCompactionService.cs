@@ -19,6 +19,12 @@ internal sealed class AutoCompactionService
     private const int MaxCompactionAttempts = 3;
 
     /// <summary>
+    /// Maximum messages per chunk when doing chunked summarization.
+    /// Keeps each chunk small enough for the compact model to handle without overflow.
+    /// </summary>
+    private const int MessagesPerChunk = 15;
+
+    /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
     /// Used by the circuit breaker to prevent infinite compaction loops.
     /// </summary>
@@ -119,47 +125,51 @@ internal sealed class AutoCompactionService
 
         try
         {
-            // Build the compact request — same shape as /v1/responses/compact.
-            var compactRequest = new
+            // Extract messages and split into chunks for map-reduce summarization.
+            // This prevents the compact model itself from overflowing on very large conversations.
+            var messages = ExtractMessagesAsArray(requestBody);
+            if (messages.Count <= MessagesPerChunk)
             {
-                model,
-                input = ExtractMessages(requestBody),
-            };
+                // Small enough to compact in a single pass.
+                return await CompactSinglePassAsync(model, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
+            }
 
-            string compactBody = JsonSerializer.Serialize(compactRequest);
-            using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+            // Large conversation: use chunked map-reduce approach.
+            Log.Information(
+                "Auto-compaction using chunked summarization: {MessageCount} messages in {ChunkCount} chunks",
+                messages.Count, (messages.Count + MessagesPerChunk - 1) / MessagesPerChunk);
+
+            var chunkSummaries = new List<string>();
+
+            // Map phase: summarize each chunk independently.
+            for (int i = 0; i < messages.Count; i += MessagesPerChunk)
             {
-                Content = new ByteArrayContent(Encoding.UTF8.GetBytes(compactBody)),
-            };
-            httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                int chunkEnd = Math.Min(i + MessagesPerChunk, messages.Count);
+                var chunk = messages.GetRange(i, chunkEnd - i);
+                int chunkNumber = (i / MessagesPerChunk) + 1;
 
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+                Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages)",
+                    chunkNumber, chunk.Count);
 
-            string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/responses/compact";
-            httpReq.RequestUri = new Uri(absoluteUri);
+                string? chunkSummary = await SummarizeChunkAsync(model, chunk, baseUrl, apiKey, timeoutSeconds, ct);
+                if (chunkSummary is not null)
+                {
+                    chunkSummaries.Add(chunkSummary);
+                }
+            }
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
-
-            using HttpResponseMessage response = await _httpClient.SendAsync(
-                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
-
-            if (!response.IsSuccessStatusCode)
+            if (chunkSummaries.Count == 0)
             {
-                string errorBody = await response.Content.ReadAsStringAsync(ct);
-                Log.Warning(
-                    "Auto-compaction failed for session {SessionKey}: HTTP {StatusCode} {Body}",
-                    sessionKey, (int)response.StatusCode, errorBody);
+                Log.Warning("Auto-compaction: all chunk summaries failed for session {SessionKey}", sessionKey);
                 return null;
             }
 
-            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            // Reduce phase: combine all chunk summaries into a final coherent summary.
+            Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
+            string finalSummary = await CombineSummariesAsync(model, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
 
-            // Extract the compacted messages from the response.
-            // The compact endpoint returns a response with an "output" array containing
-            // the compacted conversation. We wrap it back into a chat-compatible format.
-            return BuildCompactedRequestBody(requestBody, responseBody);
+            // Build the compacted request body with the final summary as a single system message.
+            return BuildCompactedBodyWithSummary(requestBody, finalSummary);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
@@ -234,6 +244,298 @@ internal sealed class AutoCompactionService
         }
 
         return Array.Empty<object>();
+    }
+
+    private static List<JsonElement> ExtractMessagesAsArray(string requestBody)
+    {
+        var result = new List<JsonElement>();
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(requestBody);
+            if (doc.RootElement.TryGetProperty("messages", out JsonElement messages)
+                && messages.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement msg in messages.EnumerateArray())
+                {
+                    result.Add(msg.Clone());
+                }
+            }
+        }
+        catch
+        {
+            // Fall through.
+        }
+
+        return result;
+    }
+
+    private async Task<string?> CompactSinglePassAsync(
+        string model,
+        string requestBody,
+        List<JsonElement> messages,
+        string baseUrl,
+        string? apiKey,
+        int timeoutSeconds,
+        string sessionKey,
+        CancellationToken ct)
+    {
+        var compactRequest = new
+        {
+            model,
+            input = messages,
+        };
+
+        string compactBody = JsonSerializer.Serialize(compactRequest);
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(compactBody)),
+        };
+        httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+        string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/responses/compact";
+        httpReq.RequestUri = new Uri(absoluteUri);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        using HttpResponseMessage response = await _httpClient.SendAsync(
+            httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            string errorBody = await response.Content.ReadAsStringAsync(ct);
+            Log.Warning(
+                "Auto-compaction failed for session {SessionKey}: HTTP {StatusCode} {Body}",
+                sessionKey, (int)response.StatusCode, errorBody);
+            return null;
+        }
+
+        string responseBody = await response.Content.ReadAsStringAsync(ct);
+        return BuildCompactedRequestBody(requestBody, responseBody);
+    }
+
+    private async Task<string?> SummarizeChunkAsync(
+        string model,
+        List<JsonElement> chunkMessages,
+        string baseUrl,
+        string? apiKey,
+        int timeoutSeconds,
+        CancellationToken ct)
+    {
+        // Build a chat completion request to summarize this chunk.
+        var messages = new List<object>
+        {
+            new
+            {
+                role = "system",
+                content = "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. Focus on facts and outcomes rather than pleasantries."
+            },
+            new
+            {
+                role = "user",
+                content = "Please summarize this conversation chunk:"
+            }
+        };
+
+        // Add the chunk messages.
+        foreach (var msg in chunkMessages)
+        {
+            messages.Add(msg);
+        }
+
+        var request = new
+        {
+            model,
+            messages,
+            max_tokens = 1000,
+            temperature = 0.3
+        };
+
+        string requestBody = JsonSerializer.Serialize(request);
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(requestBody)),
+        };
+        httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+        string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
+        httpReq.RequestUri = new Uri(absoluteUri);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        try
+        {
+            using HttpResponseMessage response = await _httpClient.SendAsync(
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                Log.Warning("Chunk summarization failed: HTTP {StatusCode} {Body}",
+                    (int)response.StatusCode, errorBody);
+                return null;
+            }
+
+            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            using JsonDocument doc = JsonDocument.Parse(responseBody);
+            if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.TryGetProperty("message", out JsonElement message)
+                    && message.TryGetProperty("content", out JsonElement content))
+                {
+                    return content.GetString();
+                }
+            }
+
+            Log.Warning("Chunk summarization response missing content");
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            Log.Warning(ex, "Chunk summarization request failed");
+            return null;
+        }
+    }
+
+    private async Task<string> CombineSummariesAsync(
+        string model,
+        List<string> chunkSummaries,
+        string baseUrl,
+        string? apiKey,
+        int timeoutSeconds,
+        CancellationToken ct)
+    {
+        var combinedInput = string.Join("\n\n---\n\n", chunkSummaries.Select((s, i) => $"Chunk {i + 1} Summary:\n{s}"));
+
+        var messages = new object[]
+        {
+            new
+            {
+                role = "system",
+                content = "You are a conversation summarizer. Combine multiple conversation chunk summaries into a single coherent summary. Preserve all important information, decisions, and context. Remove duplicates and organize chronologically. Create a concise but comprehensive summary."
+            },
+            new
+            {
+                role = "user",
+                content = $"Please combine these conversation summaries into one coherent summary:\n\n{combinedInput}"
+            }
+        };
+
+        var request = new
+        {
+            model,
+            messages,
+            max_tokens = 1500,
+            temperature = 0.3
+        };
+
+        string requestBody = JsonSerializer.Serialize(request);
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(requestBody)),
+        };
+        httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+        string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
+        httpReq.RequestUri = new Uri(absoluteUri);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        try
+        {
+            using HttpResponseMessage response = await _httpClient.SendAsync(
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                Log.Warning("Summary combination failed: HTTP {StatusCode} {Body}",
+                    (int)response.StatusCode, errorBody);
+                // Fallback: just concatenate the summaries.
+                return combinedInput;
+            }
+
+            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            using JsonDocument doc = JsonDocument.Parse(responseBody);
+            if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.TryGetProperty("message", out JsonElement message)
+                    && message.TryGetProperty("content", out JsonElement content))
+                {
+                    return content.GetString() ?? combinedInput;
+                }
+            }
+
+            Log.Warning("Summary combination response missing content, using fallback");
+            return combinedInput;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            Log.Warning(ex, "Summary combination request failed, using fallback");
+            return combinedInput;
+        }
+    }
+
+    private static string BuildCompactedBodyWithSummary(string originalRequestBody, string summary)
+    {
+        try
+        {
+            using JsonDocument originalDoc = JsonDocument.Parse(originalRequestBody);
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+
+                // Copy all original properties except "messages".
+                foreach (JsonProperty prop in originalDoc.RootElement.EnumerateObject())
+                {
+                    if (prop.NameEquals("messages"u8))
+                        continue;
+                    prop.Value.WriteTo(writer);
+                }
+
+                // Write the summary as a single system message followed by a user message.
+                writer.WritePropertyName("messages");
+                writer.WriteStartArray();
+
+                writer.WriteStartObject();
+                writer.WriteString("role", "system");
+                writer.WriteString("content", $"Previous conversation summary:\n\n{summary}");
+                writer.WriteEndObject();
+
+                writer.WriteStartObject();
+                writer.WriteString("role", "user");
+                writer.WriteString("content", "Continuing our conversation based on the summary above.");
+                writer.WriteEndObject();
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to build compacted body with summary");
+            return originalRequestBody;
+        }
     }
 
     private static string BuildCompactedRequestBody(string originalRequestBody, string compactResponseBody)
