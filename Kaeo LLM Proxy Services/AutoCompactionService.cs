@@ -132,22 +132,29 @@ internal sealed class AutoCompactionService
 
         try
         {
+            Log.Information("Auto-compaction starting for session {SessionKey}, model {Model}, maxTokensPerChunk {MaxTokens}",
+                sessionKey, model, maxTokensPerChunk);
+
             // Extract messages and split into chunks for map-reduce summarization.
             // This prevents the compact model itself from overflowing on very large conversations.
             var messages = ExtractMessagesAsArray(requestBody);
 
             // Check if total estimated tokens fit in a single pass (with safety margin).
             int totalEstimatedTokens = messages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
+            Log.Information("Auto-compaction: extracted {MessageCount} messages, estimated {TotalTokens} tokens",
+                messages.Count, totalEstimatedTokens);
+
             if (totalEstimatedTokens <= maxTokensPerChunk)
             {
+                Log.Information("Auto-compaction: using single-pass compaction (fits in one chunk)");
                 // Small enough to compact in a single pass.
                 return await CompactSinglePassAsync(model, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
             }
 
             // Large conversation: use chunked map-reduce approach.
             Log.Information(
-                "Auto-compaction using chunked summarization: {MessageCount} messages",
-                messages.Count);
+                "Auto-compaction using chunked summarization: {MessageCount} messages, {TotalTokens} estimated tokens",
+                messages.Count, totalEstimatedTokens);
 
             var chunkSummaries = new List<string>();
 
@@ -189,6 +196,12 @@ internal sealed class AutoCompactionService
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
+                    Log.Debug("Auto-compaction: chunk {ChunkNumber} summarized successfully ({SummaryLength} chars)",
+                        chunkNumber, chunkSummary.Length);
+                }
+                else
+                {
+                    Log.Warning("Auto-compaction: chunk {ChunkNumber} summarization failed", chunkNumber);
                 }
 
                 chunkStart = chunkEnd;
@@ -205,11 +218,20 @@ internal sealed class AutoCompactionService
             string finalSummary = await CombineSummariesAsync(model, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
 
             // Build the compacted request body with the final summary as a single system message.
-            return BuildCompactedBodyWithSummary(requestBody, finalSummary);
+            var compactedBody = BuildCompactedBodyWithSummary(requestBody, finalSummary);
+            int compactedTokens = compactedBody.Length / 4; // Rough estimate: ~4 chars per token
+            Log.Information("Auto-compaction completed: original {OriginalTokens} tokens → compacted {CompactedTokens} tokens",
+                totalEstimatedTokens, compactedTokens);
+            return compactedBody;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
             Log.Warning(ex, "Auto-compaction request failed for session {SessionKey}", sessionKey);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Auto-compaction unexpected error for session {SessionKey}", sessionKey);
             return null;
         }
     }
