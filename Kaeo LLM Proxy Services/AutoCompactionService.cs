@@ -22,7 +22,13 @@ internal sealed class AutoCompactionService
     /// Maximum messages per chunk when doing chunked summarization.
     /// Keeps each chunk small enough for the compact model to handle without overflow.
     /// </summary>
-    private const int MessagesPerChunk = 15;
+    private const int MessagesPerChunk = 8;
+
+    /// <summary>
+    /// Maximum estimated tokens per chunk to send to the compact model.
+    /// Conservative limit to avoid overflow on models with smaller context windows.
+    /// </summary>
+    private const int MaxTokensPerChunk = 20000;
 
     /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
@@ -136,26 +142,50 @@ internal sealed class AutoCompactionService
 
             // Large conversation: use chunked map-reduce approach.
             Log.Information(
-                "Auto-compaction using chunked summarization: {MessageCount} messages in {ChunkCount} chunks",
-                messages.Count, (messages.Count + MessagesPerChunk - 1) / MessagesPerChunk);
+                "Auto-compaction using chunked summarization: {MessageCount} messages",
+                messages.Count);
 
             var chunkSummaries = new List<string>();
 
             // Map phase: summarize each chunk independently.
-            for (int i = 0; i < messages.Count; i += MessagesPerChunk)
-            {
-                int chunkEnd = Math.Min(i + MessagesPerChunk, messages.Count);
-                var chunk = messages.GetRange(i, chunkEnd - i);
-                int chunkNumber = (i / MessagesPerChunk) + 1;
+            // Split by both message count AND token count to avoid overflow.
+            int chunkStart = 0;
+            int chunkNumber = 0;
 
-                Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages)",
-                    chunkNumber, chunk.Count);
+            while (chunkStart < messages.Count)
+            {
+                chunkNumber++;
+                int chunkEnd = chunkStart;
+                int estimatedChunkTokens = 0;
+                int messageCount = 0;
+
+                // Build chunk respecting both message count and token limits.
+                while (chunkEnd < messages.Count 
+                    && messageCount < MessagesPerChunk 
+                    && estimatedChunkTokens < MaxTokensPerChunk)
+                {
+                    int msgTokens = EstimateMessageTokens(messages[chunkEnd]);
+
+                    // If adding this message would exceed token limit and we have at least one message, stop here.
+                    if (estimatedChunkTokens + msgTokens > MaxTokensPerChunk && messageCount > 0)
+                        break;
+
+                    estimatedChunkTokens += msgTokens;
+                    messageCount++;
+                    chunkEnd++;
+                }
+
+                var chunk = messages.GetRange(chunkStart, chunkEnd - chunkStart);
+                Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} tokens)",
+                    chunkNumber, chunk.Count, estimatedChunkTokens);
 
                 string? chunkSummary = await SummarizeChunkAsync(model, chunk, baseUrl, apiKey, timeoutSeconds, ct);
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
                 }
+
+                chunkStart = chunkEnd;
             }
 
             if (chunkSummaries.Count == 0)
@@ -545,6 +575,29 @@ internal sealed class AutoCompactionService
                 }
             }
         }
+        // Rough estimate: 1 token ≈ 4 characters
+        return totalChars / 4;
+    }
+
+    private static int EstimateMessageTokens(JsonElement message)
+    {
+        int totalChars = 0;
+
+        // Count content
+        if (message.TryGetProperty("content", out JsonElement content))
+        {
+            string? text = content.ValueKind == JsonValueKind.String
+                ? content.GetString()
+                : content.GetRawText();
+            if (!string.IsNullOrEmpty(text))
+            {
+                totalChars += text.Length;
+            }
+        }
+
+        // Add overhead for role and other metadata (~20 chars)
+        totalChars += 20;
+
         // Rough estimate: 1 token ≈ 4 characters
         return totalChars / 4;
     }
