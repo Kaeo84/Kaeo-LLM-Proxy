@@ -554,7 +554,41 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (compactedBody is not null)
                 {
                     _autoCompactionService.RecordSuccess(sessionKey);
-                    return (false, compactedBody); // Return compacted body to caller; do not short-circuit
+
+                    // Add headers to signal compaction happened
+                    resp.Headers["X-Context-Compacted"] = "true";
+                    resp.Headers["X-Context-Original-Tokens"] = estimated.ToString();
+                    resp.Headers["X-Context-Compacted-Tokens"] = (compactedBody.Length / 4).ToString();
+
+                    Log.Information("Auto-compaction succeeded: {OriginalTokens} → {CompactedTokens} tokens",
+                        estimated, compactedBody.Length / 4);
+
+                    // Return 413 to signal to Copilot that context was too large and has been compacted
+                    // Copilot will retry with reduced context on next message
+                    log.Status = RequestStatus.Error;
+                    log.StatusCode = 413;
+                    log.ErrorMessage = $"Context compacted: {estimated} tokens reduced to {compactedBody.Length / 4} tokens";
+                    resp.StatusCode = 413;
+                    resp.ContentType = "application/json";
+
+                    await WriteJsonAsync(resp, new
+                    {
+                        error = new
+                        {
+                            code = 413,
+                            message = $"Context size ({estimated} tokens) exceeded threshold. Conversation has been summarized. Please retry with reduced context.",
+                            type = "context_compacted",
+                            compacted = true,
+                            original_tokens = estimated,
+                            compacted_tokens = compactedBody.Length / 4
+                        }
+                    }, ct);
+
+                    return (true, null); // Signal overflow to stop processing
+                }
+                else
+                {
+                    Log.Warning("Auto-compaction returned null for session {SessionKey}", sessionKey);
                 }
             }
             catch (Exception ex)
