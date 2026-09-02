@@ -826,7 +826,34 @@ internal sealed class AutoCompactionService
         {
             Log.Error(ex, "Failed to build compacted body with summary. Original body length: {Length}, Summary length: {SummaryLength}",
                 originalRequestBody.Length, summary.Length);
-            return originalRequestBody;
+
+            // Fallback: build a minimal request body from scratch
+            try
+            {
+                var fallbackRequest = new
+                {
+                    model = "unknown",
+                    messages = new[]
+                    {
+                        new
+                        {
+                            role = "system",
+                            content = $"Previous conversation summary:\n\n{summary}"
+                        },
+                        new
+                        {
+                            role = "user",
+                            content = "Continuing our conversation based on the summary above."
+                        }
+                    }
+                };
+                return JsonSerializer.Serialize(fallbackRequest);
+            }
+            catch (Exception fallbackEx)
+            {
+                Log.Error(fallbackEx, "Fallback compacted body build also failed");
+                return originalRequestBody;
+            }
         }
     }
 
