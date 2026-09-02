@@ -808,6 +808,7 @@ internal sealed class AutoCompactionService
 
                 writer.WriteEndArray();
                 writer.WriteEndObject();
+                writer.Flush(); // Ensure all data is written to the stream
             }
 
             return Encoding.UTF8.GetString(stream.ToArray());
