@@ -19,16 +19,16 @@ internal sealed class AutoCompactionService
     private const int MaxCompactionAttempts = 3;
 
     /// <summary>
-    /// Maximum messages per chunk when doing chunked summarization.
-    /// Keeps each chunk small enough for the compact model to handle without overflow.
-    /// </summary>
-    private const int MessagesPerChunk = 8;
-
-    /// <summary>
     /// Fraction of the compact model's context window to use as the max tokens per chunk.
     /// Leaves headroom for system prompt, response generation, and token estimation error.
     /// </summary>
-    private const double ContextWindowFraction = 0.8;
+    private const double ContextWindowFraction = 0.75;
+
+    /// <summary>
+    /// Safety multiplier applied to estimated token counts to account for estimation error.
+    /// Conservative estimate helps prevent overflow on the compact model.
+    /// </summary>
+    private const double TokenEstimationSafetyFactor = 1.3;
 
     /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
@@ -135,7 +135,10 @@ internal sealed class AutoCompactionService
             // Extract messages and split into chunks for map-reduce summarization.
             // This prevents the compact model itself from overflowing on very large conversations.
             var messages = ExtractMessagesAsArray(requestBody);
-            if (messages.Count <= MessagesPerChunk)
+
+            // Check if total estimated tokens fit in a single pass (with safety margin).
+            int totalEstimatedTokens = messages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
+            if (totalEstimatedTokens <= maxTokensPerChunk)
             {
                 // Small enough to compact in a single pass.
                 return await CompactSinglePassAsync(model, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
@@ -149,7 +152,9 @@ internal sealed class AutoCompactionService
             var chunkSummaries = new List<string>();
 
             // Map phase: summarize each chunk independently.
-            // Split by both message count AND token count to avoid overflow.
+            // Split purely by token count to avoid overflow on the compact model.
+            // Strategy: Fill each chunk greedily - if a message fits, include it entirely.
+            // If it doesn't fit, start a new chunk with that message.
             int chunkStart = 0;
             int chunkNumber = 0;
 
@@ -158,26 +163,26 @@ internal sealed class AutoCompactionService
                 chunkNumber++;
                 int chunkEnd = chunkStart;
                 int estimatedChunkTokens = 0;
-                int messageCount = 0;
 
-                // Build chunk respecting both message count and token limits.
-                while (chunkEnd < messages.Count 
-                    && messageCount < MessagesPerChunk 
-                    && estimatedChunkTokens < maxTokensPerChunk)
+                // Build chunk by greedily adding messages that fit.
+                while (chunkEnd < messages.Count)
                 {
-                    int msgTokens = EstimateMessageTokens(messages[chunkEnd]);
+                    int msgTokens = (int)(EstimateMessageTokens(messages[chunkEnd]) * TokenEstimationSafetyFactor);
 
-                    // If adding this message would exceed token limit and we have at least one message, stop here.
-                    if (estimatedChunkTokens + msgTokens > maxTokensPerChunk && messageCount > 0)
+                    // If this message would exceed the limit and we already have messages in this chunk,
+                    // stop here and start a new chunk with this message.
+                    if (estimatedChunkTokens + msgTokens > maxTokensPerChunk && chunkEnd > chunkStart)
+                    {
                         break;
+                    }
 
+                    // Include this message (even if it alone exceeds the limit - we must include it).
                     estimatedChunkTokens += msgTokens;
-                    messageCount++;
                     chunkEnd++;
                 }
 
                 var chunk = messages.GetRange(chunkStart, chunkEnd - chunkStart);
-                Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} tokens)",
+                Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} estimated tokens)",
                     chunkNumber, chunk.Count, estimatedChunkTokens);
 
                 string? chunkSummary = await SummarizeChunkAsync(model, chunk, baseUrl, apiKey, timeoutSeconds, ct);
@@ -363,23 +368,41 @@ internal sealed class AutoCompactionService
 
         int estimatedTokens = EstimateChunkTokens(chunkMessages);
 
-        // If chunk is too large, split it into smaller sub-chunks.
+        // If chunk is too large, split it into smaller sub-chunks using greedy token-based approach.
         if (estimatedTokens > maxTokensPerRequest)
         {
             Log.Debug("Chunk too large ({Tokens} tokens), splitting into sub-chunks", estimatedTokens);
             var subChunkSummaries = new List<string>();
 
-            int messagesPerSubChunk = Math.Max(1, (int)(MessagesPerChunk * (maxTokensPerRequest / (double)estimatedTokens)));
-
-            for (int i = 0; i < chunkMessages.Count; i += messagesPerSubChunk)
+            int subChunkStart = 0;
+            while (subChunkStart < chunkMessages.Count)
             {
-                int end = Math.Min(i + messagesPerSubChunk, chunkMessages.Count);
-                var subChunk = chunkMessages.GetRange(i, end - i);
+                int subChunkEnd = subChunkStart;
+                int subChunkTokens = 0;
+
+                // Greedily add messages that fit within the limit.
+                while (subChunkEnd < chunkMessages.Count)
+                {
+                    int msgTokens = EstimateMessageTokens(chunkMessages[subChunkEnd]);
+
+                    // If this message would exceed the limit and we already have messages, start new sub-chunk.
+                    if (subChunkTokens + msgTokens > maxTokensPerRequest && subChunkEnd > subChunkStart)
+                    {
+                        break;
+                    }
+
+                    subChunkTokens += msgTokens;
+                    subChunkEnd++;
+                }
+
+                var subChunk = chunkMessages.GetRange(subChunkStart, subChunkEnd - subChunkStart);
                 string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, ct);
                 if (subSummary is not null)
                 {
                     subChunkSummaries.Add(subSummary);
                 }
+
+                subChunkStart = subChunkEnd;
             }
 
             if (subChunkSummaries.Count == 0)
