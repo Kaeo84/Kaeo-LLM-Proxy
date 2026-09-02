@@ -525,8 +525,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (estimated <= threshold)
             return (false, null);
 
-        // Check if auto-compaction is enabled for this path and attempt compaction.
-        if (mapping is not null && (mapping.AutoCompactPaths & requestPath) != 0)
+        // Check if auto-compaction should be attempted for this request.
+        if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
             try
             {
@@ -534,7 +534,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 string? compactedBody = await _autoCompactionService.CompactAsync(
                     mapping,
                     body,
-                    model,
+                    sessionKey,
                     baseUrl,
                     apiKey,
                     timeout,
@@ -542,6 +542,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                 if (compactedBody is not null)
                 {
+                    _autoCompactionService.RecordSuccess(sessionKey);
                     return (false, compactedBody); // Return compacted body to caller; do not short-circuit
                 }
             }
