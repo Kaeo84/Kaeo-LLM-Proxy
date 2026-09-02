@@ -187,7 +187,8 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_format,
                     proactive_overflow_percent,
                     proactive_overflow_tokens,
-                    context_summarize_model_id
+                    context_summarize_model_id,
+                    auto_compact_paths
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
