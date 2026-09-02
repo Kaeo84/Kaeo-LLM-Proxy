@@ -787,43 +787,36 @@ internal sealed class AutoCompactionService
     {
         try
         {
-            using JsonDocument originalDoc = JsonDocument.Parse(originalRequestBody);
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream))
+            // Extract model name from original request
+            string modelName = "unknown";
+            using (JsonDocument originalDoc = JsonDocument.Parse(originalRequestBody))
             {
-                writer.WriteStartObject();
-
-                // Only copy essential fields from the original request, excluding messages and large payloads.
-                var allowedFields = new HashSet<string> { "model", "temperature", "top_p", "max_tokens", "stream" };
-
-                foreach (JsonProperty prop in originalDoc.RootElement.EnumerateObject())
+                if (originalDoc.RootElement.TryGetProperty("model", out JsonElement modelProp))
                 {
-                    if (allowedFields.Contains(prop.Name))
-                    {
-                        prop.Value.WriteTo(writer);
-                    }
+                    modelName = modelProp.GetString() ?? "unknown";
                 }
-
-                // Write the summary as a single system message followed by a user message.
-                writer.WritePropertyName("messages");
-                writer.WriteStartArray();
-
-                writer.WriteStartObject();
-                writer.WriteString("role", "system");
-                writer.WriteString("content", $"Previous conversation summary:\n\n{summary}");
-                writer.WriteEndObject();
-
-                writer.WriteStartObject();
-                writer.WriteString("role", "user");
-                writer.WriteString("content", "Continuing our conversation based on the summary above.");
-                writer.WriteEndObject();
-
-                writer.WriteEndArray();
-                writer.WriteEndObject();
-                writer.Flush();
             }
 
-            string result = Encoding.UTF8.GetString(stream.ToArray());
+            // Build a completely new minimal request body
+            var compactedRequest = new
+            {
+                model = modelName,
+                messages = new[]
+                {
+                    new
+                    {
+                        role = "system",
+                        content = $"Previous conversation summary:\n\n{summary}"
+                    },
+                    new
+                    {
+                        role = "user",
+                        content = "Continuing our conversation based on the summary above."
+                    }
+                }
+            };
+
+            string result = JsonSerializer.Serialize(compactedRequest);
             Log.Debug("Built compacted body: {Length} chars", result.Length);
             return result;
         }
@@ -832,33 +825,8 @@ internal sealed class AutoCompactionService
             Log.Error(ex, "Failed to build compacted body with summary. Original body length: {Length}, Summary length: {SummaryLength}",
                 originalRequestBody.Length, summary.Length);
 
-            // Fallback: build a minimal request body from scratch
-            try
-            {
-                var fallbackRequest = new
-                {
-                    model = "unknown",
-                    messages = new[]
-                    {
-                        new
-                        {
-                            role = "system",
-                            content = $"Previous conversation summary:\n\n{summary}"
-                        },
-                        new
-                        {
-                            role = "user",
-                            content = "Continuing our conversation based on the summary above."
-                        }
-                    }
-                };
-                return JsonSerializer.Serialize(fallbackRequest);
-            }
-            catch (Exception fallbackEx)
-            {
-                Log.Error(fallbackEx, "Fallback compacted body build also failed");
-                return originalRequestBody;
-            }
+            // Last resort fallback
+            return $"{{\"model\":\"unknown\",\"messages\":[{{\"role\":\"system\",\"content\":\"Previous conversation summary:\\n\\n{summary}\"}},{{\"role\":\"user\",\"content\":\"Continuing our conversation based on the summary above.\"}}]}}";
         }
     }
 
