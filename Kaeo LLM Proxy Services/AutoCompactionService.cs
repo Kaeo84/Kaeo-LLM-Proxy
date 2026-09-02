@@ -824,7 +824,8 @@ internal sealed class AutoCompactionService
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to build compacted body with summary");
+            Log.Error(ex, "Failed to build compacted body with summary. Original body length: {Length}, Summary length: {SummaryLength}",
+                originalRequestBody.Length, summary.Length);
             return originalRequestBody;
         }
     }
