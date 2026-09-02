@@ -325,6 +325,39 @@ internal sealed class AutoCompactionService
         int timeoutSeconds,
         CancellationToken ct)
     {
+        // Estimate token count and split further if needed.
+        // Target: keep each request under 50K tokens to leave room for system prompt and response.
+        const int maxTokensPerRequest = 50000;
+        const int maxTokensPerMessage = 10000; // Truncate individual messages if too long.
+
+        int estimatedTokens = EstimateChunkTokens(chunkMessages);
+
+        // If chunk is too large, split it into smaller sub-chunks.
+        if (estimatedTokens > maxTokensPerRequest)
+        {
+            Log.Debug("Chunk too large ({Tokens} tokens), splitting into sub-chunks", estimatedTokens);
+            var subChunkSummaries = new List<string>();
+
+            int messagesPerSubChunk = Math.Max(1, (int)(MessagesPerChunk * (maxTokensPerRequest / (double)estimatedTokens)));
+
+            for (int i = 0; i < chunkMessages.Count; i += messagesPerSubChunk)
+            {
+                int end = Math.Min(i + messagesPerSubChunk, chunkMessages.Count);
+                var subChunk = chunkMessages.GetRange(i, end - i);
+                string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, ct);
+                if (subSummary is not null)
+                {
+                    subChunkSummaries.Add(subSummary);
+                }
+            }
+
+            if (subChunkSummaries.Count == 0)
+                return null;
+
+            // Combine sub-chunk summaries.
+            return string.Join("\n\n", subChunkSummaries);
+        }
+
         // Build a chat completion request to summarize this chunk.
         var messages = new List<object>
         {
@@ -340,10 +373,10 @@ internal sealed class AutoCompactionService
             }
         };
 
-        // Add the chunk messages.
+        // Add the chunk messages, truncating if necessary.
         foreach (var msg in chunkMessages)
         {
-            messages.Add(msg);
+            messages.Add(TruncateMessageIfNeeded(msg, maxTokensPerMessage));
         }
 
         var request = new
@@ -405,6 +438,155 @@ internal sealed class AutoCompactionService
             Log.Warning(ex, "Chunk summarization request failed");
             return null;
         }
+    }
+
+    private async Task<string?> SummarizeSubChunkAsync(
+        string model,
+        List<JsonElement> subChunkMessages,
+        string baseUrl,
+        string? apiKey,
+        int timeoutSeconds,
+        int maxTokensPerMessage,
+        CancellationToken ct)
+    {
+        var messages = new List<object>
+        {
+            new
+            {
+                role = "system",
+                content = "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. Focus on facts and outcomes rather than pleasantries."
+            },
+            new
+            {
+                role = "user",
+                content = "Please summarize this conversation chunk:"
+            }
+        };
+
+        foreach (var msg in subChunkMessages)
+        {
+            messages.Add(TruncateMessageIfNeeded(msg, maxTokensPerMessage));
+        }
+
+        var request = new
+        {
+            model,
+            messages,
+            max_tokens = 1000,
+            temperature = 0.3
+        };
+
+        string requestBody = JsonSerializer.Serialize(request);
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(requestBody)),
+        };
+        httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+        string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
+        httpReq.RequestUri = new Uri(absoluteUri);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        try
+        {
+            using HttpResponseMessage response = await _httpClient.SendAsync(
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                Log.Warning("Sub-chunk summarization failed: HTTP {StatusCode} {Body}",
+                    (int)response.StatusCode, errorBody);
+                return null;
+            }
+
+            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            using JsonDocument doc = JsonDocument.Parse(responseBody);
+            if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0)
+            {
+                var firstChoice = choices[0];
+                if (firstChoice.TryGetProperty("message", out JsonElement message)
+                    && message.TryGetProperty("content", out JsonElement content))
+                {
+                    return content.GetString();
+                }
+            }
+
+            Log.Warning("Sub-chunk summarization response missing content");
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
+        {
+            Log.Warning(ex, "Sub-chunk summarization request failed");
+            return null;
+        }
+    }
+
+    private static int EstimateChunkTokens(List<JsonElement> messages)
+    {
+        int totalChars = 0;
+        foreach (var msg in messages)
+        {
+            if (msg.TryGetProperty("content", out JsonElement content))
+            {
+                string? text = content.ValueKind == JsonValueKind.String
+                    ? content.GetString()
+                    : content.GetRawText();
+                if (!string.IsNullOrEmpty(text))
+                {
+                    totalChars += text.Length;
+                }
+            }
+        }
+        // Rough estimate: 1 token ≈ 4 characters
+        return totalChars / 4;
+    }
+
+    private static object TruncateMessageIfNeeded(JsonElement message, int maxTokens)
+    {
+        int maxChars = maxTokens * 4;
+
+        if (message.TryGetProperty("content", out JsonElement content))
+        {
+            string? text = content.ValueKind == JsonValueKind.String
+                ? content.GetString()
+                : content.GetRawText();
+
+            if (!string.IsNullOrEmpty(text) && text.Length > maxChars)
+            {
+                // Truncate and add ellipsis
+                text = text[..maxChars] + "\n... [truncated]";
+
+                // Rebuild the message with truncated content
+                var result = new Dictionary<string, object?>();
+                foreach (var prop in message.EnumerateObject())
+                {
+                    if (prop.Name == "content")
+                    {
+                        result[prop.Name] = text;
+                    }
+                    else if (prop.Value.ValueKind == JsonValueKind.String)
+                    {
+                        result[prop.Name] = prop.Value.GetString();
+                    }
+                    else
+                    {
+                        result[prop.Name] = prop.Value.GetRawText();
+                    }
+                }
+                return result;
+            }
+        }
+
+        // Return message as-is if no truncation needed
+        return message;
     }
 
     private async Task<string> CombineSummariesAsync(
