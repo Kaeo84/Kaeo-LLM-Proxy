@@ -25,10 +25,10 @@ internal sealed class AutoCompactionService
     private const int MessagesPerChunk = 8;
 
     /// <summary>
-    /// Maximum estimated tokens per chunk to send to the compact model.
-    /// Conservative limit to avoid overflow on models with smaller context windows.
+    /// Fraction of the compact model's context window to use as the max tokens per chunk.
+    /// Leaves headroom for system prompt, response generation, and token estimation error.
     /// </summary>
-    private const int MaxTokensPerChunk = 20000;
+    private const double ContextWindowFraction = 0.8;
 
     /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
@@ -105,6 +105,7 @@ internal sealed class AutoCompactionService
         string baseUrl,
         string? apiKey,
         int timeoutSeconds,
+        int maxTokensPerChunk,
         CancellationToken ct)
     {
         // Resolve the effective model for compaction (may redirect to compact model).
@@ -162,12 +163,12 @@ internal sealed class AutoCompactionService
                 // Build chunk respecting both message count and token limits.
                 while (chunkEnd < messages.Count 
                     && messageCount < MessagesPerChunk 
-                    && estimatedChunkTokens < MaxTokensPerChunk)
+                    && estimatedChunkTokens < maxTokensPerChunk)
                 {
                     int msgTokens = EstimateMessageTokens(messages[chunkEnd]);
 
                     // If adding this message would exceed token limit and we have at least one message, stop here.
-                    if (estimatedChunkTokens + msgTokens > MaxTokensPerChunk && messageCount > 0)
+                    if (estimatedChunkTokens + msgTokens > maxTokensPerChunk && messageCount > 0)
                         break;
 
                     estimatedChunkTokens += msgTokens;

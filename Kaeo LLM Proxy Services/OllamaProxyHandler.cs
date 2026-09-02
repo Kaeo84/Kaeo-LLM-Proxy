@@ -531,6 +531,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             try
             {
                 var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
+
+                // Resolve the compact model's context window to calculate max tokens per chunk.
+                ModelMapping? compactMapping = null;
+                if (mapping.ContextSummarizeModelId.HasValue)
+                {
+                    compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+                }
+                int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+                int maxTokensPerChunk = (int)(compactModelContext * 0.8);
+
                 string? compactedBody = await _autoCompactionService.CompactAsync(
                     mapping,
                     body,
@@ -538,6 +548,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     baseUrl,
                     apiKey,
                     timeout,
+                    maxTokensPerChunk,
                     ct);
 
                 if (compactedBody is not null)
