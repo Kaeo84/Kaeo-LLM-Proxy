@@ -528,6 +528,23 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
+            // Send immediate SSE feedback for streaming requests so the client sees
+            // that compaction is happening before any upstream round-trip.
+            bool isStreaming = IsStreamingJsonBody(body);
+            if (isStreaming)
+            {
+                try
+                {
+                    byte[] sseComment = Encoding.UTF8.GetBytes(": kaeo-summarization-in-progress\n\n");
+                    await resp.OutputStream.WriteAsync(sseComment, ct);
+                    await resp.OutputStream.FlushAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Failed to write SSE compaction comment");
+                }
+            }
+
             try
             {
                 var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
@@ -563,8 +580,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     Log.Information("Auto-compaction succeeded: {OriginalTokens} → {CompactedTokens} tokens",
                         estimated, compactedBody.Length / 4);
 
-                    // Return 413 to signal to Copilot that context was too large and has been compacted
-                    // Copilot will retry with reduced context on next message
+                    // For streaming requests, forward the compacted body so the response streams back
+                    if (isStreaming)
+                    {
+                        return (false, compactedBody);
+                    }
+
+                    // For non-streaming requests, return 413 to signal to Copilot that context
+                    // was too large and has been compacted. Copilot will retry with reduced context.
                     log.Status = RequestStatus.Error;
                     log.StatusCode = 413;
                     log.ErrorMessage = $"Context compacted: {estimated} tokens reduced to {compactedBody.Length / 4} tokens";
