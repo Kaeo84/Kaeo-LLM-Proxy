@@ -222,6 +222,15 @@ internal sealed class AutoCompactionService
             int compactedTokens = compactedBody.Length / 4; // Rough estimate: ~4 chars per token
             Log.Information("Auto-compaction completed: original {OriginalTokens} tokens → compacted {CompactedTokens} tokens",
                 totalEstimatedTokens, compactedTokens);
+
+            // Validate that compaction actually reduced the size
+            if (compactedTokens >= totalEstimatedTokens)
+            {
+                Log.Warning("Auto-compaction failed to reduce size: {OriginalTokens} → {CompactedTokens} tokens. Returning null.",
+                    totalEstimatedTokens, compactedTokens);
+                return null;
+            }
+
             return compactedBody;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
