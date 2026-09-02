@@ -793,12 +793,15 @@ internal sealed class AutoCompactionService
             {
                 writer.WriteStartObject();
 
-                // Copy all original properties except "messages".
+                // Only copy essential fields from the original request, excluding messages and large payloads.
+                var allowedFields = new HashSet<string> { "model", "temperature", "top_p", "max_tokens", "stream" };
+
                 foreach (JsonProperty prop in originalDoc.RootElement.EnumerateObject())
                 {
-                    if (prop.NameEquals("messages"u8))
-                        continue;
-                    prop.Value.WriteTo(writer);
+                    if (allowedFields.Contains(prop.Name))
+                    {
+                        prop.Value.WriteTo(writer);
+                    }
                 }
 
                 // Write the summary as a single system message followed by a user message.
@@ -817,10 +820,12 @@ internal sealed class AutoCompactionService
 
                 writer.WriteEndArray();
                 writer.WriteEndObject();
-                writer.Flush(); // Ensure all data is written to the stream
+                writer.Flush();
             }
 
-            return Encoding.UTF8.GetString(stream.ToArray());
+            string result = Encoding.UTF8.GetString(stream.ToArray());
+            Log.Debug("Built compacted body: {Length} chars", result.Length);
+            return result;
         }
         catch (Exception ex)
         {
