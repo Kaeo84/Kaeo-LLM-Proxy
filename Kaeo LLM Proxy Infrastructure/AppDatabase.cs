@@ -260,7 +260,8 @@ internal sealed class AppDatabase : IDisposable
                         reasoning_effort_format,
                         proactive_overflow_percent,
                         proactive_overflow_tokens,
-                        context_summarize_model_id
+                        context_summarize_model_id,
+                        auto_compact_paths
                     )
                     VALUES (
                         $id,
@@ -290,7 +291,8 @@ internal sealed class AppDatabase : IDisposable
                         $reasoningEffortFormat,
                         $proactiveOverflowPercent,
                         $proactiveOverflowTokens,
-                        $contextSummarizeModelId
+                        $contextSummarizeModelId,
+                        $autoCompactPaths
                     );
                     """;
 
@@ -529,7 +531,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    run_as_administrator
+                    run_as_administrator,
+                    collect_all_traffic
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -553,6 +556,7 @@ internal sealed class AppDatabase : IDisposable
                 EnablePerformanceSampling = ReadBoolean(reader, 9),
                 EnableApiExplorer = ReadBoolean(reader, 10),
                 RunAsAdministrator = ReadBoolean(reader, 11),
+                CollectAllTraffic = ReadBoolean(reader, 12),
             };
         }
     }
@@ -580,7 +584,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
-                    run_as_administrator
+                    run_as_administrator,
+                    collect_all_traffic
                 )
                 VALUES (
                     $id,
@@ -595,7 +600,8 @@ internal sealed class AppDatabase : IDisposable
                     $streamingHeartbeatIntervalSeconds,
                     $enablePerformanceSampling,
                     $enableApiExplorer,
-                    $runAsAdministrator
+                    $runAsAdministrator,
+                    $collectAllTraffic
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -609,7 +615,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
-                    run_as_administrator = excluded.run_as_administrator;
+                    run_as_administrator = excluded.run_as_administrator,
+                    collect_all_traffic = excluded.collect_all_traffic;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -625,6 +632,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
+            command.Parameters.AddWithValue("$collectAllTraffic", ToSqliteBoolean(settings.CollectAllTraffic));
             command.ExecuteNonQuery();
         }
     }
@@ -1150,7 +1158,8 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_effort_format INTEGER NOT NULL DEFAULT 1,
                     proactive_overflow_percent INTEGER NOT NULL DEFAULT 0,
                     proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0,
-                    context_summarize_model_name TEXT NULL
+                    context_summarize_model_name TEXT NULL,
+                    auto_compact_paths INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1189,7 +1198,8 @@ internal sealed class AppDatabase : IDisposable
                     streaming_heartbeat_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
-                    run_as_administrator INTEGER NOT NULL DEFAULT 0
+                    run_as_administrator INTEGER NOT NULL DEFAULT 0,
+                    collect_all_traffic INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1388,6 +1398,16 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated runtime_settings table: added debug_mode column.");
         }
+
+        if (!ColumnExists(connection, "runtime_settings", "collect_all_traffic"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN collect_all_traffic INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added collect_all_traffic column.");
+        }
     }
 
     /// <summary>
@@ -1537,6 +1557,15 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added context_summarize_model_id column.");
+        }
+
+        if (!ColumnExists(connection, "model_mappings", "auto_compact_paths"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN auto_compact_paths INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added auto_compact_paths column.");
         }
 
         // Post-migration: assign IDs to any mappings that don't have one yet, and convert
@@ -1827,6 +1856,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$proactiveOverflowPercent", mapping.ProactiveOverflowPercent);
         command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
         command.Parameters.AddWithValue("$contextSummarizeModelId", mapping.ContextSummarizeModelId.HasValue ? (object)mapping.ContextSummarizeModelId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$autoCompactPaths", (int)mapping.AutoCompactPaths);
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1873,6 +1903,9 @@ internal sealed class AppDatabase : IDisposable
         ProactiveOverflowPercent = reader.GetInt32(25),
         ProactiveOverflowTokens = reader.GetInt32(26),
         ContextSummarizeModelId = reader.IsDBNull(27) ? null : reader.GetInt32(27),
+        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(28))
+            ? (AutoCompactPaths)reader.GetInt32(28)
+            : AutoCompactPaths.None,
     };
 
     /// <summary>
@@ -2352,3 +2385,4 @@ internal sealed class AppDatabase : IDisposable
         // Connections are opened per operation and disposed immediately.
     }
 }
+

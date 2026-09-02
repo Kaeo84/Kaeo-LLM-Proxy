@@ -117,6 +117,7 @@ internal partial class MainForm : Form
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectAllTraffic.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
         _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
@@ -1471,6 +1472,7 @@ internal partial class MainForm : Form
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkDebugMode.Checked = _settings.DebugMode;
+        _chkCollectAllTraffic.Checked = _settings.CollectAllTraffic;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
@@ -1570,6 +1572,7 @@ internal partial class MainForm : Form
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.DebugMode = _chkDebugMode.Checked;
+        _settings.CollectAllTraffic = _chkCollectAllTraffic.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
 

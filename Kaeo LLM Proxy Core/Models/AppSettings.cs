@@ -98,6 +98,27 @@ internal enum ThinkingMode
     QwenThinkingCompatible = 3,
 }
 
+/// <summary>
+/// Specifies which API paths participate in automatic context compaction.
+/// When the proxy detects that context usage exceeds the configured threshold,
+/// it can automatically compact the conversation before forwarding to upstream.
+/// </summary>
+[Flags]
+internal enum AutoCompactPaths
+{
+    /// <summary>No automatic compaction.</summary>
+    None = 0,
+
+    /// <summary>Enable automatic compaction for Ollama /api/chat requests.</summary>
+    Ollama = 1,
+
+    /// <summary>Enable automatic compaction for OpenAI /v1/chat/completions requests.</summary>
+    OpenAI = 2,
+
+    /// <summary>Enable automatic compaction for both Ollama and OpenAI paths.</summary>
+    Both = Ollama | OpenAI,
+}
+
 internal static class UpstreamTypeExtensions
 {
     public static string ToDisplayName(this UpstreamType upstreamType) => upstreamType switch
@@ -210,6 +231,14 @@ internal sealed class RuntimeSettings
     /// effort, model rewrite). Independent of the Collect* detail flags. Default: false.
     /// </summary>
     public bool DebugMode { get; set; } = false;
+
+    /// <summary>
+    /// When true, the proxy logs ALL HTTP traffic passing through it, including non-transformed
+    /// requests such as /api/tags, /v1/models, /v1/models/{model}, and /v1/*. This provides
+    /// complete visibility into proxy routing and client behavior but significantly increases
+    /// CPU usage and log storage. Use with caution in production environments. Default: false.
+    /// </summary>
+    public bool CollectAllTraffic { get; set; } = false;
 
     public bool EnableStreamingHeartbeats { get; set; } = true;
 
@@ -465,6 +494,15 @@ internal sealed class ModelMapping
     public int ProactiveOverflowTokens { get; set; }
 
     /// <summary>
+    /// Which API paths (Ollama /api/chat, OpenAI /v1/chat/completions, or both) participate
+    /// in automatic context compaction. When the proxy estimates that the incoming request
+    /// exceeds the proactive overflow threshold, it automatically calls the compact endpoint
+    /// to reduce context size before forwarding. <see cref="AutoCompactPaths.None"/> disables
+    /// automatic compaction (default).
+    /// </summary>
+    public AutoCompactPaths AutoCompactPaths { get; set; } = AutoCompactPaths.None;
+
+    /// <summary>
     /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
     /// Absolute token count takes precedence over percentage.
     /// </summary>
@@ -516,6 +554,7 @@ internal sealed class ModelMapping
             ContextWindowTokens = ContextWindowTokens,
             ProactiveOverflowPercent = ProactiveOverflowPercent,
             ProactiveOverflowTokens = ProactiveOverflowTokens,
+            AutoCompactPaths = AutoCompactPaths,
         };
         clone.EnsureId();
         return clone;
@@ -714,6 +753,15 @@ internal sealed class AppSettings
     public bool DebugMode { get; set; } = false;
 
     /// <summary>
+    /// When true, the proxy logs ALL HTTP traffic passing through it, including non-transformed
+    /// requests such as /api/tags, /v1/models, /v1/models/{model}, and /v1/*. This provides
+    /// complete visibility into proxy routing and client behavior but significantly increases
+    /// CPU usage and log storage. Use with caution in production environments. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool CollectAllTraffic { get; set; } = false;
+
+    /// <summary>
     /// When true, streaming responses emit harmless heartbeat frames while waiting for long-thinking models.
     /// Helps clients keep connections open when no model tokens are available yet. Default: true.
     /// </summary>
@@ -845,6 +893,7 @@ internal sealed class AppSettings
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
         DebugMode = DebugMode,
+        CollectAllTraffic = CollectAllTraffic,
         EnableStreamingHeartbeats = EnableStreamingHeartbeats,
         StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
@@ -863,6 +912,7 @@ internal sealed class AppSettings
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         DebugMode = runtimeSettings.DebugMode;
+        CollectAllTraffic = runtimeSettings.CollectAllTraffic;
         EnableStreamingHeartbeats = runtimeSettings.EnableStreamingHeartbeats;
         StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;

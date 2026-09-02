@@ -42,6 +42,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private readonly ModuleHost _moduleHost = moduleHost;
     private readonly McpServerService _mcpServer = mcpServer;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
+    private readonly AutoCompactionService _autoCompactionService = new(BuildHttpClient());
 
     /// <summary>Called from the Settings UI after the user saves new settings.</summary>
     public void UpdateSettings(AppSettings settings)
@@ -505,21 +506,49 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// When the mapping's proactive overflow threshold is exceeded, writes a 413 response and
     /// returns true so the caller skips the upstream call. Returns false when the request may proceed.
     /// </summary>
-    private static async Task<bool> TryProactiveOverflowAsync(
+    private async Task<(bool overflow, string? compactedBody)> TryProactiveOverflowAsync(
         ModelMapping? mapping,
         string body,
         string model,
         HttpListenerResponse resp,
         RequestLog log,
+        AutoCompactPaths requestPath,
         CancellationToken ct)
     {
         int threshold = mapping?.GetProactiveOverflowThreshold() ?? 0;
         if (threshold <= 0)
-            return false;
+            return (false, null);
 
         int estimated = EstimateTokenCount(body);
         if (estimated <= threshold)
-            return false;
+            return (false, null);
+
+        // Check if auto-compaction is enabled for this path
+        if (mapping is not null && (mapping.AutoCompactPaths & requestPath) != 0)
+        {
+            try
+            {
+                var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
+                string? compactedBody = await _autoCompactionService.CompactAsync(
+                    mapping,
+                    body,
+                    model,
+                    baseUrl,
+                    apiKey,
+                    timeout,
+                    ct);
+
+                if (compactedBody is not null)
+                {
+                    return (false, compactedBody); // Don't send 413, continue with compacted body
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Auto-compaction failed for model {Model}", model);
+                // Fall through to 413 response
+            }
+        }
 
         log.Status = RequestStatus.Error;
         log.StatusCode = 413;
@@ -529,7 +558,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             error = $"Estimated context size ({estimated} tokens) exceeds proactive overflow threshold ({threshold} tokens) for model '{model}'. Compaction needed.",
         }, ct);
-        return true;
+        return (true, null);
     }
 
     /// <summary>
@@ -643,6 +672,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 resp.StatusCode = 204;
                 resp.Close();
+
+                if (_settings.CollectAllTraffic)
+                {
+                    log.Status = RequestStatus.Success;
+                    log.StatusCode = 204;
+                    sw.Stop();
+                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
+                    _stats.AddLog(log);
+                }
                 return;
             }
         }
@@ -669,6 +707,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 resp.Close();
             }
 
+            if (_settings.CollectAllTraffic)
+            {
+                log.Status = RequestStatus.Success;
+                log.StatusCode = 200;
+                sw.Stop();
+                log.DurationMs = sw.Elapsed.TotalMilliseconds;
+                _stats.AddLog(log);
+            }
             return;
         }
 
@@ -677,6 +723,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (method == "GET" && path == "/api/version")
         {
             await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
+
+            if (_settings.CollectAllTraffic)
+            {
+                log.Status = RequestStatus.Success;
+                log.StatusCode = 200;
+                sw.Stop();
+                log.DurationMs = sw.Elapsed.TotalMilliseconds;
+                _stats.AddLog(log);
+            }
             return;
         }
 
@@ -686,12 +741,30 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (path is "/scalar" or "/scalar/")
             {
                 await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
+
+                if (_settings.CollectAllTraffic)
+                {
+                    log.Status = RequestStatus.Success;
+                    log.StatusCode = 200;
+                    sw.Stop();
+                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
+                    _stats.AddLog(log);
+                }
                 return;
             }
 
             if (path == "/openapi/v1/openapi.json")
             {
                 await WriteJsonRawAsync(resp, OpenApiSpec, ct);
+
+                if (_settings.CollectAllTraffic)
+                {
+                    log.Status = RequestStatus.Success;
+                    log.StatusCode = 200;
+                    sw.Stop();
+                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
+                    _stats.AddLog(log);
+                }
                 return;
             }
         }
@@ -744,6 +817,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleV1ModelAsync(path, resp, log, ct);
+            }
+            else if (method == "POST" && path.Equals("/v1/responses/compact", StringComparison.OrdinalIgnoreCase))
+            {
+                log.UpstreamPath = "/v1/responses/compact";
+                await HandleCompactAsync(req, resp, log, ct);
             }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
@@ -902,8 +980,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.Streaming = isStreamingRequest;
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
-                if (await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, ct))
+                (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, ct);
+                if (overflow)
                     return;
+                if (compacted is not null)
+                    rewritten = compacted;
 
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
@@ -2801,6 +2882,138 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, modelJson, ct);
     }
 
+    // ── POST /v1/responses/compact → OpenAI-compatible conversation compaction ──
+
+    /// <summary>
+    /// Handles <c>POST /v1/responses/compact</c> — forwards the compaction request to the
+    /// upstream OpenAI-compatible endpoint, applying the compact model redirect when the
+    /// mapping has a smaller/faster model configured for context summarization.
+    /// </summary>
+    private async Task HandleCompactAsync(
+        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    {
+        string bodyText = await ReadBodyAsync(req, ct);
+        log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
+
+        if (_settings.CollectRequestDetails || _settings.DebugMode)
+            log.RequestBody = bodyText;
+
+        // Extract the model name from the request body and apply the compact model redirect.
+        string originalModel = string.Empty;
+        string effectiveModel = string.Empty;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(bodyText);
+            if (doc.RootElement.TryGetProperty("model", out JsonElement modelEl)
+                && modelEl.ValueKind == JsonValueKind.String)
+            {
+                originalModel = modelEl.GetString() ?? string.Empty;
+            }
+        }
+        catch (JsonException)
+        {
+            resp.StatusCode = 400;
+            await WriteJsonAsync(resp, new { error = "Invalid JSON in request body." }, ct);
+            return;
+        }
+
+        log.Model = originalModel;
+
+        // Apply compact model redirect: if the mapping has a ContextSummarizeModelId configured,
+        // redirect to the smaller/faster model. The first message content is not relevant for
+        // compact requests (they are always compaction requests), so pass null to skip signature check.
+        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+        if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+        {
+            ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (compactMapping is not null && compactMapping.IsEnabled)
+            {
+                effectiveModel = compactMapping.ProxyName;
+                if (_settings.DebugMode && log.DebugSummary is not null)
+                    log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
+                        originalModel, effectiveModel);
+            }
+        }
+
+        if (string.IsNullOrEmpty(effectiveModel))
+            effectiveModel = originalModel;
+
+        // Rewrite the model name in the request body if redirecting.
+        string upstreamBody = bodyText;
+        if (!string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+        {
+            using JsonDocument doc = JsonDocument.Parse(bodyText);
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                doc.RootElement.WriteTo(writer);
+            }
+            // Simple string replacement for the model field — safe because model names are
+            // always quoted strings and we control the replacement value.
+            upstreamBody = bodyText.Replace(
+                $"\"model\":\"{originalModel}\"",
+                $"\"model\":\"{effectiveModel}\"");
+        }
+
+        var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
+
+        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(upstreamBody)),
+        };
+        upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+        ApplyApiKey(upstreamReq, apiKey);
+
+        if (_settings.DebugMode && log.DebugSummary is not null)
+        {
+            log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
+                effectiveModel, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
+        }
+
+        try
+        {
+            using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
+                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseContentRead, ct);
+
+            string responseBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+            log.ResponseBytes = Encoding.UTF8.GetByteCount(responseBody);
+
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = responseBody;
+
+            resp.StatusCode = (int)upstreamResp.StatusCode;
+            resp.ContentType = "application/json";
+
+            // Copy response headers from upstream.
+            foreach (var header in upstreamResp.Headers)
+            {
+                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
+                resp.Headers[header.Key] = string.Join(",", header.Value);
+            }
+
+            byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
+            resp.ContentLength64 = bytes.Length;
+            await resp.OutputStream.WriteAsync(bytes, ct);
+            resp.Close();
+
+            log.StatusCode = (int)upstreamResp.StatusCode;
+            log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
+        }
+        catch (HttpRequestException ex)
+        {
+            Log.Warning(ex, "Compact request to upstream {BaseUrl} failed", baseUrl);
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = ex.Message;
+            resp.StatusCode = 502;
+            await WriteJsonAsync(resp, new
+            {
+                error = "Upstream server error during compaction. Please retry.",
+            }, ct);
+        }
+    }
+
     // ── /api/ps → running model stub ────────────────────────────────────────
 
     private async Task HandlePsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -3366,8 +3579,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Proactive context-overflow check: if the estimated token count exceeds the mapping's
         // configured threshold, return 413 immediately so clients (e.g. Copilot) compact before
         // we pay for an upstream round-trip that is guaranteed to overflow.
-        if (await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, ct))
+        var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, ct);
+        if (overflow)
             return;
+        if (compactedBody is not null)
+            upstreamBody = compactedBody;
 
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
@@ -4510,12 +4726,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
           "servers": [
             { "url": "/", "description": "This proxy" }
           ],
+          "tags": [
+            { "name": "Ollama Discovery", "description": "Ollama-compatible endpoints for model and version discovery. Answered locally from the mapping table — no upstream call." },
+            { "name": "Ollama Generation", "description": "Ollama-compatible generation endpoints. The proxy translates these to OpenAI-compatible upstream calls." },
+            { "name": "OpenAI Passthrough", "description": "Transparent passthrough to the upstream OpenAI-compatible /v1/* surface. No translation is performed." },
+            { "name": "OpenAI Discovery", "description": "OpenAI-compatible endpoints for model discovery. Answered locally from the mapping table — no upstream call." }
+          ],
           "paths": {
             "/api/version": {
               "get": {
                 "summary": "Proxy version probe",
                 "operationId": "getVersion",
-                "tags": ["Discovery"],
+                "tags": ["Ollama Discovery"],
                 "responses": {
                   "200": {
                     "description": "Version information",
@@ -4536,7 +4758,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "List available models",
                 "description": "Returns all enabled model mappings with their capabilities (text, chat, reasoning, vision, audio, function_calling, embeddings, code, image_generation).",
                 "operationId": "listModels",
-                "tags": ["Discovery"],
+                "tags": ["Ollama Discovery"],
                 "responses": {
                   "200": {
                     "description": "Model list",
@@ -4561,7 +4783,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
               "get": {
                 "summary": "List running models",
                 "operationId": "listRunningModels",
-                "tags": ["Discovery"],
+                "tags": ["Ollama Discovery"],
                 "responses": {
                   "200": {
                     "description": "Running model list",
@@ -4584,7 +4806,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "Show model information",
                 "description": "Returns detailed information about a model including its capabilities and configuration.",
                 "operationId": "showModel",
-                "tags": ["Discovery"],
+                "tags": ["Ollama Discovery"],
                 "requestBody": {
                   "required": true,
                   "content": {
@@ -4617,7 +4839,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "Chat completion",
                 "description": "Sends a chat conversation to the upstream model. Supports streaming (NDJSON) and non-streaming responses, tool calls, and vision (image) inputs.",
                 "operationId": "chat",
-                "tags": ["Generation"],
+                "tags": ["Ollama Generation"],
                 "requestBody": {
                   "required": true,
                   "content": {
@@ -4636,7 +4858,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "Text generation",
                 "description": "Sends a prompt to the upstream model for text completion. Supports streaming and non-streaming.",
                 "operationId": "generate",
-                "tags": ["Generation"],
+                "tags": ["Ollama Generation"],
                 "requestBody": {
                   "required": true,
                   "content": {
@@ -4654,7 +4876,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
               "post": {
                 "summary": "Generate embeddings",
                 "operationId": "embeddings",
-                "tags": ["Generation"],
+                "tags": ["Ollama Generation"],
                 "requestBody": {
                   "required": true,
                   "content": {
@@ -4679,7 +4901,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
               "post": {
                 "summary": "Generate embeddings (alias)",
                 "operationId": "embed",
-                "tags": ["Generation"],
+                "tags": ["Ollama Generation"],
                 "requestBody": {
                   "required": true,
                   "content": {
@@ -4729,7 +4951,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "OpenAI-compatible model list",
                 "description": "Returns all enabled model mappings in OpenAI format, including the effective context_length (tokens) for each model.",
                 "operationId": "openAiModels",
-                "tags": ["Discovery"],
+                "tags": ["OpenAI Discovery"],
                 "responses": {
                   "200": {
                     "description": "OpenAI model list with context_length per model",
@@ -4765,7 +4987,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "summary": "OpenAI-compatible single model lookup",
                 "description": "Returns a single configured model mapping in OpenAI format. Answered locally from the mapping table (no upstream call), mirroring /api/show.",
                 "operationId": "openAiModel",
-                "tags": ["Discovery"],
+                "tags": ["OpenAI Discovery"],
                 "parameters": [
                   {
                     "name": "model",
@@ -4804,6 +5026,43 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 "tags": ["OpenAI Passthrough"],
                 "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object" } } } },
                 "responses": { "200": { "description": "OpenAI embedding response" } }
+              }
+            },
+            "/v1/responses/compact": {
+              "post": {
+                "summary": "Compact conversation context",
+                "description": "Compacts the conversation history to reduce context size. Supports model redirect to a smaller/faster compact model when configured in the mapping.",
+                "operationId": "compactConversation",
+                "tags": ["OpenAI Passthrough"],
+                "requestBody": {
+                  "required": true,
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "type": "object",
+                        "required": ["model", "input"],
+                        "properties": {
+                          "model": { "type": "string", "description": "Model name to use for compaction" },
+                          "input": {
+                            "type": "array",
+                            "description": "Conversation messages to compact",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "role": { "type": "string" },
+                                "content": { "type": "string" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "responses": {
+                  "200": { "description": "Compacted conversation response" },
+                  "502": { "description": "Upstream server error during compaction" }
+                }
               }
             }
           },
