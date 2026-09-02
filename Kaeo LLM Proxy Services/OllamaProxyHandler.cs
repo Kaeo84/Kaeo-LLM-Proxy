@@ -497,14 +497,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Estimates the token count of a serialized request body using a ~4 chars/token heuristic.
-    /// Intentionally conservative (overestimates) so the proactive 413 fires slightly early rather
-    /// than missing an overflow.
+    /// Intentionally conservative (overestimates) so compaction thresholds favor compacting
+    /// early rather than missing an overflow.
     /// </summary>
     private static int EstimateTokenCount(string body) => body.Length / 4;
 
     /// <summary>
-    /// When the mapping's proactive overflow threshold is exceeded, writes a 413 response and
-    /// returns true so the caller skips the upstream call. Returns false when the request may proceed.
+    /// When the mapping's compaction threshold is exceeded, attempt to produce a compacted
+    /// request body and return it. This method no longer short-circuits with a 413; if
+    /// compaction is not possible we allow the request to proceed to upstream so the
+    /// upstream provider can return an authoritative error (413/400/etc.).
     /// </summary>
     private async Task<(bool overflow, string? compactedBody)> TryProactiveOverflowAsync(
         ModelMapping? mapping,
@@ -523,7 +525,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (estimated <= threshold)
             return (false, null);
 
-        // Check if auto-compaction is enabled for this path
+        // Check if auto-compaction is enabled for this path and attempt compaction.
         if (mapping is not null && (mapping.AutoCompactPaths & requestPath) != 0)
         {
             try
@@ -540,25 +542,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                 if (compactedBody is not null)
                 {
-                    return (false, compactedBody); // Don't send 413, continue with compacted body
+                    return (false, compactedBody); // Return compacted body to caller; do not short-circuit
                 }
             }
             catch (Exception ex)
             {
                 Log.Warning(ex, "Auto-compaction failed for model {Model}", model);
-                // Fall through to 413 response
+                // Fall through — but do not send a proactive 413; allow upstream to decide.
             }
         }
 
-        log.Status = RequestStatus.Error;
-        log.StatusCode = 413;
-        log.ErrorMessage = $"Proactive context overflow: estimated {estimated} tokens exceeds threshold {threshold}";
-        resp.StatusCode = 413;
-        await WriteJsonAsync(resp, new
-        {
-            error = $"Estimated context size ({estimated} tokens) exceeds proactive overflow threshold ({threshold} tokens) for model '{model}'. Compaction needed.",
-        }, ct);
-        return (true, null);
+        // No compaction produced. Do not short-circuit with 413 here — let upstream
+        // return the authoritative error if it overflows. Return (false, null) so
+        // the caller proceeds with the original body.
+        return (false, null);
     }
 
     /// <summary>

@@ -48,6 +48,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly NumericUpDown _nudProactiveOverflowPercent = new();
     private readonly Label _lblProactiveOverflowTokens = new();
     private readonly NumericUpDown _nudProactiveOverflowTokens = new();
+    private readonly GroupBox _grpCompaction = new();
+    private readonly TableLayoutPanel _tlpCompaction = new();
     private readonly Label _lblAutoCompactPaths = new();
     private readonly ComboBox _cmbAutoCompactPaths = new();
     private readonly Label _lblTemperature = new();
@@ -769,10 +771,24 @@ internal sealed class ModelMappingDialog : Form
             $"Model context window size in tokens. Leave empty to use the default ({ModelMapping.DefaultContextWindowTokens:N0}).\n"
             + "Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).");
 
+        // Compaction/grouping: replace legacy "Proactive 413" wording with
+        // compaction/context-threshold terminology and group the three related
+        // controls inside a titled GroupBox for clarity.
+        _grpCompaction.Dock = DockStyle.Fill;
+        _grpCompaction.Margin = new Padding(0, 6, 0, 6);
+        _grpCompaction.Padding = new Padding(8);
+        _grpCompaction.Text = "Compaction / Context thresholds";
+
+        _tlpCompaction.Dock = DockStyle.Fill;
+        _tlpCompaction.ColumnCount = 2;
+        _tlpCompaction.RowCount = 3;
+        _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+
         _lblProactiveOverflowPercent.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProactiveOverflowPercent.AutoSize = true;
         _lblProactiveOverflowPercent.Margin = new Padding(0, 8, 8, 4);
-        _lblProactiveOverflowPercent.Text = "Proactive 413 at (% of context):";
+        _lblProactiveOverflowPercent.Text = "Compaction threshold (% of context):";
 
         _nudProactiveOverflowPercent.Dock = DockStyle.Left;
         _nudProactiveOverflowPercent.Margin = new Padding(0, 4, 0, 4);
@@ -782,12 +798,12 @@ internal sealed class ModelMappingDialog : Form
         _nudProactiveOverflowPercent.Value = 0;
         _toolTip.SetToolTip(_nudProactiveOverflowPercent,
             "When the estimated request size exceeds this percentage of the context window,\n"
-            + "return 413 immediately without calling upstream. 0 disables.");
+            + "attempt automatic compaction when applicable. 0 disables.");
 
         _lblProactiveOverflowTokens.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProactiveOverflowTokens.AutoSize = true;
         _lblProactiveOverflowTokens.Margin = new Padding(0, 4, 8, 4);
-        _lblProactiveOverflowTokens.Text = "Proactive 413 at (tokens):";
+        _lblProactiveOverflowTokens.Text = "Compaction threshold (tokens):";
 
         _nudProactiveOverflowTokens.Dock = DockStyle.Left;
         _nudProactiveOverflowTokens.Margin = new Padding(0, 4, 0, 4);
