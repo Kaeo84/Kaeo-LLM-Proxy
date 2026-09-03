@@ -790,6 +790,30 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
+    /// <summary>
+    /// When true, the proxy detects GitHub Copilot requests (via User-Agent or /compact signature)
+    /// and skips proactive auto-compaction, allowing Copilot's native /compact flow to manage
+    /// context. This prevents the proxy from interfering with Copilot's internal state management.
+    /// Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableCopilotNativeCompaction { get; set; } = true;
+
+    /// <summary>
+    /// When true, the proxy performs proactive auto-compaction for non-Copilot clients when
+    /// context overflow is detected. This uses the configured compact model to summarize
+    /// conversation history. Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableAutoCompaction { get; set; } = true;
+
+    /// <summary>
+    /// When true, the proxy exposes a manual compaction endpoint at /v1/chat/completions/compact
+    /// that allows clients to explicitly request context compaction. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableManualCompactionEndpoint { get; set; } = false;
+
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 

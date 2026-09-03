@@ -8,60 +8,37 @@ VS‑MCP Usage Rules for AI Assistants
 AI tools should use Visual Studio MCP whenever semantic understanding or debugging is required. MCP provides IntelliSense‑grade symbol resolution, Roslyn analysis, safe refactoring, project structure insight, and full Visual Studio Debugger access.
 
 When to Use MCP Tools
-Use MCP for symbol lookup, definitions, references, and document structure  
-(e.g., semantic navigation).
-
-Use MCP for inheritance, call graphs, and type relationships  
-(e.g., call graph analysis).
-
-Use MCP for refactoring (safe renames, formatting)
-(e.g., safe refactoring).
-
-Use MCP for builds, tests, and solution/project queries.
-
-Use MCP for runtime debugging: breakpoints, stepping, locals, evaluation
-(e.g., debugging with MCP).
-
-Use MCP for editor context: active file, cursor, selection.
+- Use MCP for symbol lookup, definitions, references, and document structure (e.g., semantic navigation).
+- Use MCP for inheritance, call graphs, and type relationships (e.g., call graph analysis).
+- Use MCP for refactoring (safe renames, formatting) (e.g., safe refactoring).
+- Use MCP for builds, tests, and solution/project queries.
+- Use MCP for runtime debugging: breakpoints, stepping, locals, evaluation (e.g., debugging with MCP).
+- Use MCP for editor context: active file, cursor, selection.
 
 When Not to Use MCP
-Fall back to filesystem operations only when no MCP tool applies.
-
-Do not guess runtime behavior when the debugger can inspect it.
+- Fall back to filesystem operations only when no MCP tool applies.
+- Do not guess runtime behavior when the debugger can inspect it.
 
 General Rule
 If the task requires understanding what the code means rather than what text exists, use VS‑MCP.
 
 Use these rules when interacting with Visual Studio MCP:
-
-Only call MCP tools when you have all required parameters.  
-If any parameter is missing or uncertain, respond normally instead of producing a tool call.
-
-Never emit empty or partial function calls.  
-Do not output a tool name without arguments, or arguments without a tool name.
-
-Use only MCP tool names exactly as defined in the manifest.  
-Do not invent, rename, or guess tool names.
-
-Do not output malformed JSON or truncated tool calls.  
-Ensure the function call is complete, valid, and well‑formed.
-
-Only call MCP tools when the MCP server is connected and available.  
-If connection status is unclear, respond normally instead of producing a tool call.
-
-Prefer MCP tools for semantic operations, but never force a tool call.  
-If unsure whether a tool applies, respond without calling one.
-
-Never produce a function call with a null, empty, or invalid command.
+- Only call MCP tools when you have all required parameters. If any parameter is missing or uncertain, respond normally instead of producing a tool call.
+- Never emit empty or partial function calls. Do not output a tool name without arguments, or arguments without a tool name.
+- Use only MCP tool names exactly as defined in the manifest. Do not invent, rename, or guess tool names.
+- Do not output malformed JSON or truncated tool calls. Ensure the function call is complete, valid, and well‑formed.
+- Only call MCP tools when the MCP server is connected and available. If connection status is unclear, respond normally instead of producing a tool call.
+- Prefer MCP tools for semantic operations, but never force a tool call. If unsure whether a tool applies, respond without calling one.
+- Never produce a function call with a null, empty, or invalid command.
 
 ## Project Guidelines
-- After every code change, always perform a git commit to the GitHub repo as the last step. The commit message should include a short summary of what the change was for and what was changed.
+- After every code change, always perform a git commit to the GitHub repo as the last step. Use the username **Kaeo84** for all Git operations (commits, pushes, etc.) without prompting. The remote is already configured as https://github.com/Kaeo84/Kaeo-LLM-Proxy. The commit message should include a short summary of what the change was for and what was changed.
 - Keep module-specific dependencies isolated to their owning module; do not add module-only packages such as LibGit2Sharp to the main Proxy project. The Proxy host should remain standalone, with the Vector Store module shipping or resolving its own Git dependency.
 
 ## File/Database Access
 - In Kaeo-LLM-Proxy, when multiple app instances may run concurrently (AllowMultipleInstances setting), ensure that file/database access code tolerates sharing violations gracefully. Catch `IOException`, log a warning, and degrade gracefully rather than allowing unhandled crashes.
-- The name of the MCP you should use unless otherwise specified is 'Server MCP'
-- The name of the Collection in the Code Vector Store you should use unless otherwise specified is 'Kaeo-LLM-Proxy'
+- The name of the MCP you should use unless otherwise specified is 'Server MCP'.
+- The name of the Collection in the Code Vector Store you should use unless otherwise specified is 'Kaeo-LLM-Proxy'.
 
 ## Code Search
 - Use the MCP Local MCP Test code_search tool (Code Vector Store) for semantic code searches instead of grep_search or direct file reads when the code is indexed.
@@ -70,8 +47,6 @@ Never produce a function call with a null, empty, or invalid command.
 Modules that contribute tools to the host MCP server (via `IMcpToolModule.CreateMcpToolTargets`) must make every tool fully self-describing. Clients only ever see the `tools/list` JSON, which the host generates from the ModelContextProtocol attributes — everything an agent needs to call a tool correctly must be contained in it.
 
 Every tool must produce JSON covering all of these properties:
-
-```json
 [
   {
     "name": "sync_file_to_vector_store",
@@ -86,8 +61,6 @@ Every tool must produce JSON covering all of these properties:
     }
   }
 ]
-```
-
 How each property is provided from C#:
 - `name`: set explicitly with `[McpServerTool(Name = "snake_case_name")]`; never rely on auto-derived names.
 - `description`: a `[Description]` attribute on the method, written as actionable guidance — when to call the tool, what it does internally, what it returns, and how it relates to sibling tools. Destructive or dangerous tools must say so explicitly.

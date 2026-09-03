@@ -93,6 +93,47 @@ To allow connections from other machines on your network:
 5. Point your Ollama-compatible client at `http://localhost:11434` (or your configured port)
 6. The proxy routes each request to the correct llama.cpp instance and translates the response
 
+## Context Compaction
+
+The proxy supports context compaction to manage large conversation histories and prevent context overflow errors.
+
+### Automatic Compaction
+
+When enabled, the proxy automatically compacts conversation history before it exceeds the model's context window:
+
+- **For non-Copilot clients**: Proactive auto-compaction summarizes conversation history when it approaches the context limit
+- **For GitHub Copilot**: The proxy detects Copilot requests and skips auto-compaction, allowing Copilot's native `/compact` flow to manage context
+
+This prevents the proxy from interfering with Copilot's internal state management while still providing compaction for other clients.
+
+### Manual Compaction Endpoint
+
+A manual compaction endpoint is available for explicit context management:
+
+```
+POST /v1/chat/completions/compact
+```
+
+This endpoint accepts a chat completion request and returns a compacted version. It must be enabled in settings (`EnableManualCompactionEndpoint`).
+
+### Configuration
+
+Three settings control context compaction behavior:
+
+- **`EnableCopilotNativeCompaction`** (default: `true`): Detects GitHub Copilot requests and skips proactive auto-compaction
+- **`EnableAutoCompaction`** (default: `true`): Enables proactive auto-compaction for non-Copilot clients
+- **`EnableManualCompactionEndpoint`** (default: `false`): Exposes the manual `/v1/chat/completions/compact` endpoint
+
+### Compact Model Configuration
+
+To use compaction, configure a compact model in your model mapping:
+
+1. Add a model mapping for a smaller/faster model (e.g., `gpt-3.5-turbo` or a local small model)
+2. In your main model mapping, set `ContextSummarizeModelId` to reference the compact model
+3. The proxy will automatically redirect compaction requests to the compact model
+
+This allows you to use a large model for regular requests while using a smaller, faster model for compaction tasks.
+
 ## System Requirements
 
 - Windows 10 version 22000 (21H2) or later

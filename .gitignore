@@ -8,6 +8,7 @@ obj/
 Data/
 copilot-sdk/
 ollama-docs/
+openai-docs/
 
 # Visual Studio
 .vs/

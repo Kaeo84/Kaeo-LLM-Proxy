@@ -246,6 +246,56 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Detect whether this incoming HTTP request is originating from GitHub Copilot.
+    /// Uses a lightweight heuristic: the User-Agent often contains "copilot" or "github".
+    /// Falls back to inspecting the first message content for the /compact signature when
+    /// the body is available.
+    /// </summary>
+    internal static bool IsCopilotRequest(string? userAgent, string? firstMessageContent = null)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(userAgent))
+            {
+                if (userAgent.IndexOf("copilot", StringComparison.OrdinalIgnoreCase) >= 0
+                    || userAgent.IndexOf("github", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+
+            // As a secondary check, if a body-first message is available, check for the compact signature.
+            if (!string.IsNullOrEmpty(firstMessageContent) && IsContextSummarizeRequest(firstMessageContent))
+                return true;
+        }
+        catch
+        {
+            // Best-effort only; do not throw on detection errors.
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Overload that extracts the User-Agent from an HttpListenerRequest.
+    /// </summary>
+    private static bool IsCopilotRequest(HttpListenerRequest? req, string? firstMessageContent = null)
+    {
+        string? userAgent = null;
+        try
+        {
+            if (req is not null)
+            {
+                userAgent = req.Headers["User-Agent"];
+            }
+        }
+        catch
+        {
+            // Best-effort only; do not throw on detection errors.
+        }
+
+        return IsCopilotRequest(userAgent, firstMessageContent);
+    }
+
+    /// <summary>
     /// Returns the effective proxy model name for a request, applying the context-summarize
     /// (/compact) redirect when the mapping has a smaller/faster compact model configured
     /// (<see cref="ModelMapping.ContextSummarizeModelId"/>) and the request is detected as a
@@ -873,6 +923,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.UpstreamPath = "/v1/responses/compact";
                 await HandleCompactAsync(req, resp, log, ct);
             }
+            else if (method == "POST" && path.Equals("/v1/chat/completions/compact", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!_settings.EnableManualCompactionEndpoint)
+                {
+                    resp.StatusCode = 404;
+                    await WriteJsonAsync(resp, new { error = "Manual compaction endpoint is disabled. Enable EnableManualCompactionEndpoint in settings." }, ct);
+                    return;
+                }
+                log.UpstreamPath = "/v1/chat/completions/compact";
+                await HandleManualCompactAsync(req, resp, log, ct);
+            }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
             {
@@ -1030,11 +1091,35 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log.Streaming = isStreamingRequest;
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
-                (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, ct);
-                if (overflow)
-                    return;
-                if (compacted is not null)
-                    rewritten = compacted;
+                // Skip proactive auto-compaction for recognized Copilot requests when
+                // EnableCopilotNativeCompaction is enabled, so Copilot's native /compact
+                // flow manages session state.
+                bool shouldSkipAutoCompaction = false;
+                if (_settings.EnableCopilotNativeCompaction)
+                {
+                    string? firstMsgForDetection = null;
+                    try
+                    {
+                        using JsonDocument _tmpDoc = JsonDocument.Parse(rewritten);
+                        firstMsgForDetection = GetFirstMessageContent(_tmpDoc.RootElement);
+                    }
+                    catch { }
+
+                    if (IsCopilotRequest(req, firstMsgForDetection))
+                    {
+                        shouldSkipAutoCompaction = true;
+                        Log.Debug("Skipping proactive auto-compaction for Copilot request (OpenAI passthrough)");
+                    }
+                }
+
+                if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
+                {
+                    (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, ct);
+                    if (overflow)
+                        return;
+                    if (compacted is not null)
+                        rewritten = compacted;
+                }
 
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
@@ -2969,6 +3054,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
 
         log.Model = originalModel;
+        Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes", 
+            originalModel, log.RequestBytes);
 
         // Apply compact model redirect: if the mapping has a ContextSummarizeModelId configured,
         // redirect to the smaller/faster model. The first message content is not relevant for
@@ -3064,7 +3151,140 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
-    // ── /api/ps → running model stub ────────────────────────────────────────
+    // ── POST /v1/chat/completions/compact ─────────────────────────────────────
+
+    /// <summary>
+    /// Handles <c>POST /v1/chat/completions/compact</c> — manual context compaction endpoint.
+    /// Accepts a chat completion request body, compacts the conversation history using the
+    /// configured compact model, and returns the compacted messages. This endpoint is disabled
+    /// by default and must be enabled via <c>EnableManualCompactionEndpoint</c> in settings.
+    /// </summary>
+    private async Task HandleManualCompactAsync(
+        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    {
+        string bodyText = await ReadBodyAsync(req, ct);
+        log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
+
+        string originalModel = string.Empty;
+        string effectiveModel = string.Empty;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(bodyText);
+            if (doc.RootElement.TryGetProperty("model", out JsonElement modelEl)
+                && modelEl.ValueKind == JsonValueKind.String)
+            {
+                originalModel = modelEl.GetString() ?? string.Empty;
+            }
+        }
+        catch (JsonException)
+        {
+            resp.StatusCode = 400;
+            await WriteJsonAsync(resp, new { error = "Invalid JSON in request body." }, ct);
+            return;
+        }
+
+        log.Model = originalModel;
+
+        // Apply compact model redirect: if the mapping has a ContextSummarizeModelId configured,
+        // redirect to the smaller/faster model.
+        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+        if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+        {
+            ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (compactMapping is not null && compactMapping.IsEnabled)
+            {
+                effectiveModel = compactMapping.ProxyName;
+                if (_settings.DebugMode && log.DebugSummary is not null)
+                    log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
+                        originalModel, effectiveModel);
+            }
+        }
+
+        if (string.IsNullOrEmpty(effectiveModel))
+            effectiveModel = originalModel;
+
+        // Rewrite the model name in the request body if redirecting.
+        string upstreamBody = bodyText;
+        if (!string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+        {
+            upstreamBody = bodyText.Replace(
+                $"\"model\":\"{originalModel}\"",
+                $"\"model\":\"{effectiveModel}\"");
+        }
+
+        var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
+
+        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(upstreamBody)),
+        };
+        upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+        ApplyApiKey(upstreamReq, apiKey);
+
+        if (_settings.DebugMode && log.DebugSummary is not null)
+        {
+            log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
+                effectiveModel, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
+        }
+
+        Log.Information("Manual compaction requested for model {Model}, redirecting to {CompactModel}",
+            originalModel, effectiveModel);
+
+        try
+        {
+            using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
+                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseContentRead, ct);
+
+            string responseBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+            log.ResponseBytes = Encoding.UTF8.GetByteCount(responseBody);
+
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = responseBody;
+
+            resp.StatusCode = (int)upstreamResp.StatusCode;
+            resp.ContentType = "application/json";
+
+            // Copy response headers from upstream.
+            foreach (var header in upstreamResp.Headers)
+            {
+                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
+                resp.Headers[header.Key] = string.Join(",", header.Value);
+            }
+
+            byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
+            resp.ContentLength64 = bytes.Length;
+            await resp.OutputStream.WriteAsync(bytes, ct);
+            resp.Close();
+
+            log.StatusCode = (int)upstreamResp.StatusCode;
+            log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
+
+            if (upstreamResp.IsSuccessStatusCode)
+            {
+                Log.Information("Manual compaction completed successfully for model {Model}", originalModel);
+            }
+            else
+            {
+                Log.Warning("Manual compaction failed for model {Model}: HTTP {StatusCode}",
+                    originalModel, (int)upstreamResp.StatusCode);
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            Log.Warning(ex, "Manual compact request to upstream {BaseUrl} failed", baseUrl);
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = ex.Message;
+            resp.StatusCode = 502;
+            await WriteJsonAsync(resp, new
+            {
+                error = "Upstream server error during manual compaction. Please retry.",
+            }, ct);
+        }
+    }
+
+    // ── /api/ps → running model stub ──────────────────────────────────────
 
     private async Task HandlePsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3627,13 +3847,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, effectiveModel);
 
         // Proactive context-overflow check: if the estimated token count exceeds the mapping's
-        // configured threshold, return 413 immediately so clients (e.g. Copilot) compact before
-        // we pay for an upstream round-trip that is guaranteed to overflow.
-        var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, ct);
-        if (overflow)
-            return;
-        if (compactedBody is not null)
-            upstreamBody = compactedBody;
+        // configured threshold, return 413 immediately so clients compact before we pay for an
+        // upstream round-trip that is guaranteed to overflow. Skip proactive auto-compaction for
+        // Copilot requests when EnableCopilotNativeCompaction is enabled, so Copilot's native
+        // /compact flow manages session state.
+        string? firstMsgContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
+        bool shouldSkipAutoCompaction = false;
+        if (_settings.EnableCopilotNativeCompaction && IsCopilotRequest(req, firstMsgContent))
+        {
+            shouldSkipAutoCompaction = true;
+            Log.Debug("Skipping proactive auto-compaction for Copilot request (Ollama path)");
+        }
+
+        if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
+        {
+            var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, ct);
+            if (overflow)
+                return;
+            if (compactedBody is not null)
+                upstreamBody = compactedBody;
+        }
 
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
