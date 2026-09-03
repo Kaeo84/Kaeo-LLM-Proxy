@@ -3057,19 +3057,38 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes", 
             originalModel, log.RequestBytes);
 
-        // Apply compact model redirect: if the mapping has a ContextSummarizeModelId configured,
-        // redirect to the smaller/faster model. The first message content is not relevant for
-        // compact requests (they are always compaction requests), so pass null to skip signature check.
-        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-        if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+        // Apply compact model redirect: first check global CompactModelProxyName, then per-mapping ContextSummarizeModelId
+        if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
         {
-            ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-            if (compactMapping is not null && compactMapping.IsEnabled)
+            // Use global compact model if configured
+            ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
+            if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
             {
-                effectiveModel = compactMapping.ProxyName;
+                effectiveModel = globalCompactMapping.ProxyName;
+                Log.Debug("Using global compact model {CompactModel} for request model {OriginalModel}",
+                    effectiveModel, originalModel);
                 if (_settings.DebugMode && log.DebugSummary is not null)
                     log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
                         originalModel, effectiveModel);
+            }
+        }
+
+        // Fall back to per-mapping ContextSummarizeModelId if global not set or not found
+        if (string.IsNullOrEmpty(effectiveModel))
+        {
+            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+            if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+            {
+                ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+                if (compactMapping is not null && compactMapping.IsEnabled)
+                {
+                    effectiveModel = compactMapping.ProxyName;
+                    Log.Debug("Using per-mapping compact model {CompactModel} for request model {OriginalModel}",
+                        effectiveModel, originalModel);
+                    if (_settings.DebugMode && log.DebugSummary is not null)
+                        log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
+                            originalModel, effectiveModel);
+                }
             }
         }
 
@@ -3186,18 +3205,38 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         log.Model = originalModel;
 
-        // Apply compact model redirect: if the mapping has a ContextSummarizeModelId configured,
-        // redirect to the smaller/faster model.
-        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-        if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+        // Apply compact model redirect: first check global CompactModelProxyName, then per-mapping ContextSummarizeModelId
+        if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
         {
-            ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-            if (compactMapping is not null && compactMapping.IsEnabled)
+            // Use global compact model if configured
+            ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
+            if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
             {
-                effectiveModel = compactMapping.ProxyName;
+                effectiveModel = globalCompactMapping.ProxyName;
+                Log.Debug("Using global compact model {CompactModel} for manual compact request model {OriginalModel}",
+                    effectiveModel, originalModel);
                 if (_settings.DebugMode && log.DebugSummary is not null)
                     log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
                         originalModel, effectiveModel);
+            }
+        }
+
+        // Fall back to per-mapping ContextSummarizeModelId if global not set or not found
+        if (string.IsNullOrEmpty(effectiveModel))
+        {
+            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+            if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
+            {
+                ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+                if (compactMapping is not null && compactMapping.IsEnabled)
+                {
+                    effectiveModel = compactMapping.ProxyName;
+                    Log.Debug("Using per-mapping compact model {CompactModel} for manual compact request model {OriginalModel}",
+                        effectiveModel, originalModel);
+                    if (_settings.DebugMode && log.DebugSummary is not null)
+                        log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
+                            originalModel, effectiveModel);
+                }
             }
         }
 

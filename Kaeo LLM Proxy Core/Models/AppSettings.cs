@@ -814,6 +814,13 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableManualCompactionEndpoint { get; set; } = false;
 
+    /// <summary>
+    /// Optional proxy name of the model to use for context compaction. When set, this overrides
+    /// the per-mapping <see cref="ModelMapping.ContextSummarizeModelId"/> and provides a global
+    /// default compact model. When null or empty, the per-mapping setting is used. Default: null.
+    /// </summary>
+    public string? CompactModelProxyName { get; set; } = null;
+
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
