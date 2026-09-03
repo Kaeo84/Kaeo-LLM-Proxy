@@ -528,23 +528,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
-            // Send immediate SSE feedback for streaming requests so the client sees
-            // that compaction is happening before any upstream round-trip.
-            bool isStreaming = IsStreamingJsonBody(body);
-            if (isStreaming)
-            {
-                try
-                {
-                    byte[] sseComment = Encoding.UTF8.GetBytes(": kaeo-summarization-in-progress\n\n");
-                    await resp.OutputStream.WriteAsync(sseComment, ct);
-                    await resp.OutputStream.FlushAsync(ct);
-                }
-                catch (Exception ex)
-                {
-                    Log.Debug(ex, "Failed to write SSE compaction comment");
-                }
-            }
-
             try
             {
                 var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
@@ -581,6 +564,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         estimated, compactedBody.Length / 4);
 
                     // For streaming requests, forward the compacted body so the response streams back
+                    bool isStreaming = IsStreamingJsonBody(body);
                     if (isStreaming)
                     {
                         return (false, compactedBody);
