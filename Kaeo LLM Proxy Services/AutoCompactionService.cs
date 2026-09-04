@@ -144,6 +144,23 @@ internal sealed class AutoCompactionService
             // This prevents the compact model itself from overflowing on very large conversations.
             var messages = ExtractMessagesAsArray(requestBody);
 
+            // Pre-process: truncate any messages that exceed the compact model's capacity.
+            // This ensures we can always make progress even with oversized individual messages.
+            int maxTokensPerMessage = (int)(maxTokensPerChunk * 0.5); // Leave room for system prompt + response
+            for (int i = 0; i < messages.Count; i++)
+            {
+                int msgTokens = (int)(EstimateMessageTokens(messages[i]) * TokenEstimationSafetyFactor);
+                if (msgTokens > maxTokensPerChunk)
+                {
+                    Log.Warning("Auto-compaction: message {Index} has ~{Tokens} tokens, exceeds compact model capacity ({MaxTokens}). Truncating.",
+                        i, msgTokens, maxTokensPerChunk);
+                    object truncated = TruncateMessageIfNeeded(messages[i], maxTokensPerMessage);
+                    // Convert back to JsonElement
+                    string truncatedJson = JsonSerializer.Serialize(truncated);
+                    messages[i] = JsonDocument.Parse(truncatedJson).RootElement.Clone();
+                }
+            }
+
             // Check if total estimated tokens fit in a single pass (with safety margin).
             int totalEstimatedTokens = messages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
             Log.Information("Auto-compaction: extracted {MessageCount} messages, estimated {TotalTokens} tokens",
