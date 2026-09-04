@@ -8,6 +8,23 @@ using Serilog;
 namespace Kaeo.LlmProxy.Services;
 
 /// <summary>
+/// Defines the output format for context compaction.
+/// </summary>
+internal enum CompactionFormat
+{
+    /// <summary>
+    /// Proxy's internal format: simple summary message prepended to conversation.
+    /// </summary>
+    Proxy,
+
+    /// <summary>
+    /// Ollama-compatible format: tool-based summary with CompactionToolName and prefix markers.
+    /// Matches the format Ollama uses for native compaction.
+    /// </summary>
+    Ollama
+}
+
+/// <summary>
 /// Handles automatic context compaction when incoming requests exceed the configured
 /// proactive overflow threshold. The service intercepts the request, calls the compact
 /// endpoint to reduce context size, and returns the compacted message list for forwarding.
@@ -107,7 +124,9 @@ internal sealed class AutoCompactionService
     /// <param name="maxTokensPerChunk">Maximum tokens per chunk for map-reduce summarization.</param>
     /// <param name="compactModelName">The model name to use for compaction (may differ from mapping.ProxyName if ContextSummarizeModelId is set).</param>
     /// <param name="targetModelContextWindow">The target model's context window in tokens (for post-compaction validation).</param>
+    /// <param name="compactModelContextWindow">The compact model's context window in tokens (for chunk sizing).</param>
     /// <param name="ct">Cancellation token.</param>
+    /// <param name="format">The output format for the compacted body (Proxy or Ollama).</param>
     public async Task<string?> CompactAsync(
         ModelMapping mapping,
         string requestBody,
@@ -119,7 +138,8 @@ internal sealed class AutoCompactionService
         string compactModelName,
         int targetModelContextWindow,
         int compactModelContextWindow,
-        CancellationToken ct)
+        CancellationToken ct,
+        CompactionFormat format = CompactionFormat.Proxy)
     {
         // Record the attempt.
         CompactionState state = _sessionStates.GetOrAdd(sessionKey, _ => new());
@@ -239,8 +259,10 @@ internal sealed class AutoCompactionService
             Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
             string finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
 
-            // Build the compacted request body with the final summary as a single system message.
-            var compactedBody = BuildCompactedBodyWithSummary(requestBody, finalSummary);
+            // Build the compacted request body with the final summary
+            var compactedBody = format == CompactionFormat.Ollama
+                ? BuildOllamaCompactedBodyWithSummary(requestBody, finalSummary)
+                : BuildCompactedBodyWithSummary(requestBody, finalSummary);
 
             // Extract messages from compacted body for accurate token comparison
             var compactedMessages = ExtractMessagesAsArray(compactedBody);
@@ -821,21 +843,16 @@ internal sealed class AutoCompactionService
         }
     }
 
+    /// <summary>
+    /// Builds a compacted request body using the proxy's internal format:
+    /// system message with summary + user continuation message.
+    /// </summary>
     private static string BuildCompactedBodyWithSummary(string originalRequestBody, string summary)
     {
         try
         {
-            // Extract model name from original request
-            string modelName = "unknown";
-            using (JsonDocument originalDoc = JsonDocument.Parse(originalRequestBody))
-            {
-                if (originalDoc.RootElement.TryGetProperty("model", out JsonElement modelProp))
-                {
-                    modelName = modelProp.GetString() ?? "unknown";
-                }
-            }
+            string modelName = ExtractModelName(originalRequestBody);
 
-            // Build a completely new minimal request body
             var compactedRequest = new
             {
                 model = modelName,
@@ -855,7 +872,7 @@ internal sealed class AutoCompactionService
             };
 
             string result = JsonSerializer.Serialize(compactedRequest);
-            Log.Debug("Built compacted body: {Length} chars", result.Length);
+            Log.Debug("Built compacted body (Proxy format): {Length} chars", result.Length);
             return result;
         }
         catch (Exception ex)
@@ -863,9 +880,99 @@ internal sealed class AutoCompactionService
             Log.Error(ex, "Failed to build compacted body with summary. Original body length: {Length}, Summary length: {SummaryLength}",
                 originalRequestBody.Length, summary.Length);
 
-            // Last resort fallback
             return $"{{\"model\":\"unknown\",\"messages\":[{{\"role\":\"system\",\"content\":\"Previous conversation summary:\\n\\n{summary}\"}},{{\"role\":\"user\",\"content\":\"Continuing our conversation based on the summary above.\"}}]}}";
         }
+    }
+
+    /// <summary>
+    /// Builds a compacted request body using Ollama's native compaction format:
+    /// tool-based summary with CompactionToolName and prefix markers.
+    /// Matches the format Ollama's SimpleCompactor produces.
+    /// </summary>
+    /// <remarks>
+    /// Ollama's compaction format uses a tool call/response pair:
+    /// 1. An assistant message with a tool_call to the compaction tool
+    /// 2. A tool response message with the summary prefixed by the compaction marker
+    /// This allows Ollama-compatible clients (like Copilot in Ollama mode) to recognize
+    /// and properly handle the compacted context.
+    /// </remarks>
+    private static string BuildOllamaCompactedBodyWithSummary(string originalRequestBody, string summary)
+    {
+        try
+        {
+            string modelName = ExtractModelName(originalRequestBody);
+
+            // Ollama compaction format constants (from Ollama's agent/compactor.go)
+            const string compactionToolName = "session_summary";
+            const string compactionSummaryPrefix = "<conversation_summary>";
+            const string compactionContinueInstruction = "\n\nContinue the task from where it left off.";
+
+            string summaryContent = $"{compactionSummaryPrefix}{summary}{compactionContinueInstruction}";
+
+            // Build the Ollama-format compacted body with tool call/response pair
+            var compactedRequest = new
+            {
+                model = modelName,
+                messages = new object[]
+                {
+                    // Assistant message with tool call to compaction tool
+                    new
+                    {
+                        role = "assistant",
+                        tool_calls = new[]
+                        {
+                            new
+                            {
+                                id = "compaction_summary",
+                                type = "function",
+                                function = new
+                                {
+                                    name = compactionToolName,
+                                    arguments = "{}"
+                                }
+                            }
+                        }
+                    },
+                    // Tool response with summary
+                    new
+                    {
+                        role = "tool",
+                        tool_name = compactionToolName,
+                        tool_call_id = "compaction_summary",
+                        content = summaryContent
+                    }
+                }
+            };
+
+            string result = JsonSerializer.Serialize(compactedRequest);
+            Log.Debug("Built compacted body (Ollama format): {Length} chars", result.Length);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to build Ollama compacted body. Original body length: {Length}, Summary length: {SummaryLength}",
+                originalRequestBody.Length, summary.Length);
+
+            // Fallback to proxy format
+            return BuildCompactedBodyWithSummary(originalRequestBody, summary);
+        }
+    }
+
+    private static string ExtractModelName(string requestBody)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(requestBody);
+            if (doc.RootElement.TryGetProperty("model", out JsonElement modelProp))
+            {
+                return modelProp.GetString() ?? "unknown";
+            }
+        }
+        catch
+        {
+            // Fall through to default
+        }
+        return "unknown";
     }
 
     private static string BuildCompactedRequestBody(string originalRequestBody, string compactResponseBody)

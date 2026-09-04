@@ -1089,7 +1089,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private async Task PassthroughAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
-        bool contextCompacted = false;
         bool headersPreCommitted = false;
         using var upstreamReq = new HttpRequestMessage
         {
@@ -1189,7 +1188,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     if (compacted is not null)
                     {
                         rewritten = compacted;
-                        contextCompacted = true;
                     }
                 }
 
@@ -3185,58 +3183,91 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
 
-        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
-        {
-            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(upstreamBody)),
-        };
-        upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-        ApplyApiKey(upstreamReq, apiKey);
-
         if (_settings.DebugMode && log.DebugSummary is not null)
         {
             log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
                 effectiveModel, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
         }
 
+        // Use the proxy's own AutoCompactionService to perform compaction locally
+        // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
         try
         {
-            using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
-                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseContentRead, ct);
-
-            string responseBody = await upstreamResp.Content.ReadAsStringAsync(ct);
-            log.ResponseBytes = Encoding.UTF8.GetByteCount(responseBody);
-
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = responseBody;
-
-            resp.StatusCode = (int)upstreamResp.StatusCode;
-            resp.ContentType = "application/json";
-
-            // Copy response headers from upstream.
-            foreach (var header in upstreamResp.Headers)
+            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+            if (mapping is null)
             {
-                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
-                resp.Headers[header.Key] = string.Join(",", header.Value);
+                resp.StatusCode = 404;
+                await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
+                return;
             }
 
-            byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
+            // Build a session key for circuit breaker tracking
+            string sessionKey = $"compact:{originalModel}:{bodyText.GetHashCode():X8}";
+
+            // Get the compact model's context window for chunk sizing
+            ModelMapping? compactMapping = null;
+            if (!string.IsNullOrEmpty(effectiveModel) && !string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+            {
+                compactMapping = _settings.FindModelMapping(effectiveModel);
+            }
+            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
+            int targetModelContextWindow = mapping.GetEffectiveContextWindow();
+
+            // Detect if this is a Copilot request to determine the appropriate format
+            CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
+
+            string? compactedBody = await _autoCompactionService.CompactAsync(
+                mapping,
+                bodyText,
+                sessionKey,
+                baseUrl,
+                apiKey,
+                timeout,
+                maxTokensPerChunk,
+                effectiveModel,
+                targetModelContextWindow,
+                compactModelContext,
+                ct,
+                format);
+
+            if (compactedBody is null)
+            {
+                Log.Warning("Compact request failed for model {Model}", originalModel);
+                resp.StatusCode = 500;
+                await WriteJsonAsync(resp, new
+                {
+                    error = "Compaction failed. The conversation may be too large or the compact model may be unavailable.",
+                }, ct);
+                return;
+            }
+
+            _autoCompactionService.RecordSuccess(sessionKey);
+            log.ResponseBytes = Encoding.UTF8.GetByteCount(compactedBody);
+
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = compactedBody;
+
+            resp.StatusCode = 200;
+            resp.ContentType = "application/json";
+            byte[] bytes = Encoding.UTF8.GetBytes(compactedBody);
             resp.ContentLength64 = bytes.Length;
             await resp.OutputStream.WriteAsync(bytes, ct);
             resp.Close();
 
-            log.StatusCode = (int)upstreamResp.StatusCode;
-            log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
+            log.StatusCode = 200;
+            log.Status = RequestStatus.Success;
+            Log.Information("Compact request completed successfully for model {Model}", originalModel);
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
-            Log.Warning(ex, "Compact request to upstream {BaseUrl} failed", baseUrl);
+            Log.Warning(ex, "Compact request failed for model {Model}", originalModel);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
-            resp.StatusCode = 502;
+            resp.StatusCode = 500;
             await WriteJsonAsync(resp, new
             {
-                error = "Upstream server error during compaction. Please retry.",
+                error = "Internal error during compaction. Please retry.",
             }, ct);
         }
     }
@@ -3325,13 +3356,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
 
-        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
-        {
-            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(upstreamBody)),
-        };
-        upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-        ApplyApiKey(upstreamReq, apiKey);
-
         if (_settings.DebugMode && log.DebugSummary is not null)
         {
             log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
@@ -3341,55 +3365,85 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Log.Information("Manual compaction requested for model {Model}, redirecting to {CompactModel}",
             originalModel, effectiveModel);
 
+        // Use the proxy's own AutoCompactionService to perform compaction locally
+        // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
         try
         {
-            using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
-                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseContentRead, ct);
-
-            string responseBody = await upstreamResp.Content.ReadAsStringAsync(ct);
-            log.ResponseBytes = Encoding.UTF8.GetByteCount(responseBody);
-
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = responseBody;
-
-            resp.StatusCode = (int)upstreamResp.StatusCode;
-            resp.ContentType = "application/json";
-
-            // Copy response headers from upstream.
-            foreach (var header in upstreamResp.Headers)
+            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+            if (mapping is null)
             {
-                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
-                resp.Headers[header.Key] = string.Join(",", header.Value);
+                resp.StatusCode = 404;
+                await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
+                return;
             }
 
-            byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
+            // Build a session key for circuit breaker tracking
+            string sessionKey = $"manual-compact:{originalModel}:{bodyText.GetHashCode():X8}";
+
+            // Get the compact model's context window for chunk sizing
+            ModelMapping? compactMapping = null;
+            if (!string.IsNullOrEmpty(effectiveModel) && !string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+            {
+                compactMapping = _settings.FindModelMapping(effectiveModel);
+            }
+            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
+            int targetModelContextWindow = mapping.GetEffectiveContextWindow();
+
+            // Detect if this is a Copilot request to determine the appropriate format
+            CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
+
+            string? compactedBody = await _autoCompactionService.CompactAsync(
+                mapping,
+                bodyText,
+                sessionKey,
+                baseUrl,
+                apiKey,
+                timeout,
+                maxTokensPerChunk,
+                effectiveModel,
+                targetModelContextWindow,
+                compactModelContext,
+                ct,
+                format);
+
+            if (compactedBody is null)
+            {
+                Log.Warning("Manual compact request failed for model {Model}", originalModel);
+                resp.StatusCode = 500;
+                await WriteJsonAsync(resp, new
+                {
+                    error = "Manual compaction failed. The conversation may be too large or the compact model may be unavailable.",
+                }, ct);
+                return;
+            }
+
+            _autoCompactionService.RecordSuccess(sessionKey);
+            log.ResponseBytes = Encoding.UTF8.GetByteCount(compactedBody);
+
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = compactedBody;
+
+            resp.StatusCode = 200;
+            resp.ContentType = "application/json";
+            byte[] bytes = Encoding.UTF8.GetBytes(compactedBody);
             resp.ContentLength64 = bytes.Length;
             await resp.OutputStream.WriteAsync(bytes, ct);
             resp.Close();
 
-            log.StatusCode = (int)upstreamResp.StatusCode;
-            log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
-
-            if (upstreamResp.IsSuccessStatusCode)
-            {
-                Log.Information("Manual compaction completed successfully for model {Model}", originalModel);
-            }
-            else
-            {
-                Log.Warning("Manual compaction failed for model {Model}: HTTP {StatusCode}",
-                    originalModel, (int)upstreamResp.StatusCode);
-            }
+            log.StatusCode = 200;
+            log.Status = RequestStatus.Success;
+            Log.Information("Manual compaction completed successfully for model {Model}", originalModel);
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
-            Log.Warning(ex, "Manual compact request to upstream {BaseUrl} failed", baseUrl);
+            Log.Warning(ex, "Manual compact request failed for model {Model}", originalModel);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
-            resp.StatusCode = 502;
+            resp.StatusCode = 500;
             await WriteJsonAsync(resp, new
             {
-                error = "Upstream server error during manual compaction. Please retry.",
+                error = "Internal error during manual compaction. Please retry.",
             }, ct);
         }
     }
