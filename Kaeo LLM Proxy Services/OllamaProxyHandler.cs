@@ -565,6 +565,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         HttpListenerResponse resp,
         RequestLog log,
         AutoCompactPaths requestPath,
+        Stream? outputStream,
         CancellationToken ct)
     {
         int threshold = mapping?.GetProactiveOverflowThreshold() ?? 0;
@@ -587,6 +588,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
+            // Stream notification: compaction needed
+            if (outputStream is not null)
+            {
+                string notification = $": kaeo-compaction-needed: Context size (~{estimated} tokens) exceeds threshold ({threshold} tokens). Starting compaction...\n\n";
+                byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+                await outputStream.WriteAsync(notificationBytes, ct);
+                await outputStream.FlushAsync(ct);
+            }
+
             try
             {
                 var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
@@ -614,6 +624,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
+                // Stream notification: compaction starting
+                if (outputStream is not null)
+                {
+                    string notification = $": kaeo-compaction-starting: Compacting context using model '{compactModelName}' (context window: {compactModelContext} tokens)...\n\n";
+                    byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+                    await outputStream.WriteAsync(notificationBytes, ct);
+                    await outputStream.FlushAsync(ct);
+                }
+
                 string? compactedBody = await _autoCompactionService.CompactAsync(
                     mapping,
                     body,
@@ -638,6 +657,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                     Log.Information("Auto-compaction succeeded: {OriginalTokens} → {CompactedTokens} tokens",
                         estimated, compactedBody.Length / 4);
+
+                    // Stream notification: compaction finished
+                    if (outputStream is not null)
+                    {
+                        int compactedTokens = compactedBody.Length / 4;
+                        string notification = $": kaeo-compaction-complete: Context compacted successfully. {estimated} tokens → {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)\n\n";
+                        byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+                        await outputStream.WriteAsync(notificationBytes, ct);
+                        await outputStream.FlushAsync(ct);
+                    }
 
                     // For streaming requests, forward the compacted body so the response streams back
                     bool isStreaming = IsStreamingJsonBody(body);
@@ -1061,6 +1090,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
         bool contextCompacted = false;
+        bool headersPreCommitted = false;
         using var upstreamReq = new HttpRequestMessage
         {
             Method = new HttpMethod(req.HttpMethod),
@@ -1141,7 +1171,19 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                 if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
                 {
-                    (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, ct);
+                    // For streaming requests, pre-commit SSE headers before compaction so we can write progress comments
+                    Stream? compactionOutputStream = null;
+                    if (isStreamingRequest)
+                    {
+                        resp.StatusCode = 200;
+                        resp.ContentType = "text/event-stream";
+                        resp.SendChunked = true;
+                        resp.KeepAlive = true;
+                        headersPreCommitted = true;
+                        compactionOutputStream = resp.OutputStream;
+                    }
+
+                    (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, compactionOutputStream, ct);
                     if (overflow)
                         return;
                     if (compacted is not null)
@@ -1181,11 +1223,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // llama.cpp does not send any HTTP headers until the first token is ready, so clients
         // with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s) would
         // otherwise time out silently during long prompt-processing / thinking phases.
-        bool headersPreCommitted = false;
         using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task preResponseHeartbeatTask = Task.CompletedTask;
 
-        if (isStreamingRequest && ShouldEmitHeartbeats(originalModel))
+        if (isStreamingRequest && !headersPreCommitted && ShouldEmitHeartbeats(originalModel))
         {
             resp.StatusCode = 200;
             resp.ContentType = "text/event-stream";
@@ -1198,33 +1239,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             await resp.OutputStream.WriteAsync(initial, ct);
             await resp.OutputStream.FlushAsync(ct);
 
-            // If context was compacted, inject a notification so the client knows
-            if (contextCompacted)
-            {
-                string notification = ": kaeo-context-compacted: Context was compacted to fit within model limits\n\n";
-                byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
-                await resp.OutputStream.WriteAsync(notificationBytes, ct);
-                await resp.OutputStream.FlushAsync(ct);
-            }
-
             preResponseHeartbeatTask = PumpPreResponseHeartbeatsAsync(
                 resp.OutputStream,
                 _settings.StreamingHeartbeatIntervalSeconds,
                 preResponseCts.Token);
-        }
-        else if (isStreamingRequest && contextCompacted)
-        {
-            // No heartbeats, but context was compacted - pre-commit headers and inject notification
-            resp.StatusCode = 200;
-            resp.ContentType = "text/event-stream";
-            resp.SendChunked = true;
-            resp.KeepAlive = true;
-            headersPreCommitted = true;
-
-            string notification = ": kaeo-context-compacted: Context was compacted to fit within model limits\n\n";
-            byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
-            await resp.OutputStream.WriteAsync(notificationBytes, ct);
-            await resp.OutputStream.FlushAsync(ct);
         }
 
         HttpResponseMessage upstreamResp;
@@ -3953,7 +3971,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
         {
-            var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, ct);
+            // For Ollama path, pass null for output stream (streaming notifications not yet implemented for this path)
+            var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, null, ct);
             if (overflow)
                 return;
             if (compactedBody is not null)
