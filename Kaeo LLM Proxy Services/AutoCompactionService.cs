@@ -22,7 +22,7 @@ internal sealed class AutoCompactionService
     /// Fraction of the compact model's context window to use as the max tokens per chunk.
     /// Leaves headroom for system prompt, response generation, and token estimation error.
     /// </summary>
-    private const double ContextWindowFraction = 0.75;
+    internal const double ContextWindowFraction = 0.75;
 
     /// <summary>
     /// Safety multiplier applied to estimated token counts to account for estimation error.
@@ -98,6 +98,16 @@ internal sealed class AutoCompactionService
     /// Returns the compacted request body on success, or null on failure.
     /// On failure, records the attempt and opens the circuit breaker if the max is reached.
     /// </summary>
+    /// <param name="mapping">The original model mapping (for context window and threshold info).</param>
+    /// <param name="requestBody">The original request body to compact.</param>
+    /// <param name="sessionKey">Session identifier for circuit breaker tracking.</param>
+    /// <param name="baseUrl">Upstream base URL for compaction requests.</param>
+    /// <param name="apiKey">Optional API key for upstream authentication.</param>
+    /// <param name="timeoutSeconds">Timeout for compaction requests.</param>
+    /// <param name="maxTokensPerChunk">Maximum tokens per chunk for map-reduce summarization.</param>
+    /// <param name="compactModelName">The model name to use for compaction (may differ from mapping.ProxyName if ContextSummarizeModelId is set).</param>
+    /// <param name="targetModelContextWindow">The target model's context window in tokens (for post-compaction validation).</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<string?> CompactAsync(
         ModelMapping mapping,
         string requestBody,
@@ -106,16 +116,10 @@ internal sealed class AutoCompactionService
         string? apiKey,
         int timeoutSeconds,
         int maxTokensPerChunk,
+        string compactModelName,
+        int targetModelContextWindow,
         CancellationToken ct)
     {
-        // Resolve the effective model for compaction (may redirect to compact model).
-        string model = mapping.ProxyName;
-        if (mapping.ContextSummarizeModelId.HasValue)
-        {
-            // Look up the compact model name from settings — caller should have resolved this.
-            // We use the original model as fallback.
-        }
-
         // Record the attempt.
         CompactionState state = _sessionStates.GetOrAdd(sessionKey, _ => new());
         state.Attempts++;
@@ -132,8 +136,8 @@ internal sealed class AutoCompactionService
 
         try
         {
-            Log.Information("Auto-compaction starting for session {SessionKey}, model {Model}, maxTokensPerChunk {MaxTokens}",
-                sessionKey, model, maxTokensPerChunk);
+            Log.Information("Auto-compaction starting for session {SessionKey}, attempt {Attempt}/{MaxAttempts}, compact model {CompactModel}, target model context window {TargetContextWindow}, maxTokensPerChunk {MaxTokens}",
+                sessionKey, state.Attempts, MaxCompactionAttempts, compactModelName, targetModelContextWindow, maxTokensPerChunk);
 
             // Extract messages and split into chunks for map-reduce summarization.
             // This prevents the compact model itself from overflowing on very large conversations.

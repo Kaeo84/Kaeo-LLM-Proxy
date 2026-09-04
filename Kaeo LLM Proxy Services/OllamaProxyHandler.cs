@@ -584,12 +584,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                 // Resolve the compact model's context window to calculate max tokens per chunk.
                 ModelMapping? compactMapping = null;
+                string compactModelName = model; // Default to original model
                 if (mapping.ContextSummarizeModelId.HasValue)
                 {
                     compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+                    if (compactMapping is not null)
+                    {
+                        // Use the compact model's upstream model name
+                        compactModelName = compactMapping.UpstreamModelName ?? model;
+                        Log.Debug("Auto-compaction: using compact model {CompactModel} from mapping {CompactMappingId}",
+                            compactModelName, mapping.ContextSummarizeModelId.Value);
+                    }
+                    else
+                    {
+                        Log.Warning("Auto-compaction: compact model mapping {CompactModelId} not found or disabled, falling back to original model {Model}",
+                            mapping.ContextSummarizeModelId.Value, model);
+                    }
                 }
                 int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
-                int maxTokensPerChunk = (int)(compactModelContext * 0.8);
+                int maxTokensPerChunk = (int)(compactModelContext * ContextWindowFraction);
+                int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
                 string? compactedBody = await _autoCompactionService.CompactAsync(
                     mapping,
@@ -599,6 +613,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     apiKey,
                     timeout,
                     maxTokensPerChunk,
+                    compactModelName,
+                    targetModelContextWindow,
                     ct);
 
                 if (compactedBody is not null)
