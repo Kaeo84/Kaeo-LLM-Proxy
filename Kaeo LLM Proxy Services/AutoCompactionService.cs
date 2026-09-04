@@ -152,7 +152,7 @@ internal sealed class AutoCompactionService
             {
                 Log.Information("Auto-compaction: using single-pass compaction (fits in one chunk)");
                 // Small enough to compact in a single pass.
-                return await CompactSinglePassAsync(model, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
+                return await CompactSinglePassAsync(compactModelName, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
             }
 
             // Large conversation: use chunked map-reduce approach.
@@ -196,7 +196,7 @@ internal sealed class AutoCompactionService
                 Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} estimated tokens)",
                     chunkNumber, chunk.Count, estimatedChunkTokens);
 
-                string? chunkSummary = await SummarizeChunkAsync(model, chunk, baseUrl, apiKey, timeoutSeconds, ct);
+                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, ct);
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
@@ -219,21 +219,36 @@ internal sealed class AutoCompactionService
 
             // Reduce phase: combine all chunk summaries into a final coherent summary.
             Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
-            string finalSummary = await CombineSummariesAsync(model, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
+            string finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
 
             // Build the compacted request body with the final summary as a single system message.
             var compactedBody = BuildCompactedBodyWithSummary(requestBody, finalSummary);
-            int compactedTokens = compactedBody.Length / 4; // Rough estimate: ~4 chars per token
-            Log.Information("Auto-compaction completed: original {OriginalTokens} tokens → compacted {CompactedTokens} tokens",
-                totalEstimatedTokens, compactedTokens);
 
-            // Validate that compaction actually reduced the size
-            if (compactedTokens >= totalEstimatedTokens)
+            // Extract messages from compacted body for accurate token comparison
+            var compactedMessages = ExtractMessagesAsArray(compactedBody);
+            int compactedMessageTokens = compactedMessages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
+
+            Log.Information("Auto-compaction completed: original {OriginalTokens} tokens (messages only) → compacted {CompactedTokens} tokens (messages only)",
+                totalEstimatedTokens, compactedMessageTokens);
+
+            // Validate that compaction actually reduced the size (comparing message tokens to message tokens)
+            if (compactedMessageTokens >= totalEstimatedTokens)
             {
-                Log.Warning("Auto-compaction failed to reduce size: {OriginalTokens} → {CompactedTokens} tokens. Returning null.",
-                    totalEstimatedTokens, compactedTokens);
+                Log.Warning("Auto-compaction failed to reduce size: {OriginalTokens} → {CompactedTokens} message tokens. Returning null.",
+                    totalEstimatedTokens, compactedMessageTokens);
                 return null;
             }
+
+            // Post-compaction validation: check if compacted body fits in target model's context window
+            if (compactedMessageTokens > targetModelContextWindow)
+            {
+                Log.Warning("Auto-compaction result still exceeds target model context window: {CompactedTokens} tokens > {TargetContextWindow} context window. Returning null.",
+                    compactedMessageTokens, targetModelContextWindow);
+                return null;
+            }
+
+            Log.Information("Auto-compaction successful: compacted body fits in target model context window ({CompactedTokens}/{TargetContextWindow} tokens)",
+                compactedMessageTokens, targetModelContextWindow);
 
             return compactedBody;
         }

@@ -591,7 +591,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     if (compactMapping is not null)
                     {
                         // Use the compact model's upstream model name
-                        compactModelName = compactMapping.UpstreamModelName ?? model;
+                        compactModelName = compactMapping.ModelName ?? model;
                         Log.Debug("Auto-compaction: using compact model {CompactModel} from mapping {CompactMappingId}",
                             compactModelName, mapping.ContextSummarizeModelId.Value);
                     }
@@ -602,7 +602,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     }
                 }
                 int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
-                int maxTokensPerChunk = (int)(compactModelContext * ContextWindowFraction);
+                int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
                 string? compactedBody = await _autoCompactionService.CompactAsync(
@@ -2772,18 +2772,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 int commaIdx = SkipValueStart(body, afterOpen);
                 if (commaIdx < body.Length && body[commaIdx] == ',')
                 {
-                            // Copy whitespace up to and including the comma verbatim.
-                                output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
-                                afterOpen = commaIdx + 1;
-                                continue;
-                            }
+                    // Copy whitespace up to and including the comma verbatim.
+                    output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
+                    afterOpen = commaIdx + 1;
+                    continue;
+                }
 
-                                    // No comma after this value: loop back so the header copies the closing
-                                    // brace (and any preceding whitespace) verbatim.
-                                    continue;
-                                }
-                            }
-                            else if (c == '[')
+                // No comma after this value: loop back so the header copies the closing
+                // brace (and any preceding whitespace) verbatim.
+                continue;
+            }
+        }
+        else if (c == '[')
         {
             output.Append('[');
             int afterOpen = i + 1;
@@ -2806,22 +2806,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 int commaIdx = SkipValueStart(body, afterOpen);
                 if (commaIdx < body.Length && body[commaIdx] == ',')
                 {
-                            // Copy whitespace up to and including the comma verbatim.
-                                output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
-                                afterOpen = commaIdx + 1;
-                                continue;
-                            }
+                    // Copy whitespace up to and including the comma verbatim.
+                    output.Append(body.AsSpan(afterOpen, commaIdx + 1 - afterOpen));
+                    afterOpen = commaIdx + 1;
+                    continue;
+                }
 
-                                    // No comma after this value: loop back so the header copies the closing
-                                    // bracket (and any preceding whitespace) verbatim.
-                                    continue;
-                                }
-                            }
-                            else
-                            {
-                                int valueEnd = FindValueEnd(body, i);
-                                output.Append(body.AsSpan(i, valueEnd - i));
-                            }
+                // No comma after this value: loop back so the header copies the closing
+                // bracket (and any preceding whitespace) verbatim.
+                continue;
+            }
+        }
+        else
+        {
+            int valueEnd = FindValueEnd(body, i);
+            output.Append(body.AsSpan(i, valueEnd - i));
+        }
     }
 
     /// <summary>Advances past leading whitespace before a JSON value.</summary>
@@ -3070,7 +3070,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
 
         log.Model = originalModel;
-        Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes", 
+        Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes",
             originalModel, log.RequestBytes);
 
         // Apply compact model redirect: first check global CompactModelProxyName, then per-mapping ContextSummarizeModelId
@@ -3667,28 +3667,28 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             prompt = $"{systemPrefix}\n\n{prompt}";
 
         var llamaReq = new LlamaCppCompletionRequest
-            {
-                Model = resolvedModel,
-                Prompt = prompt,
-                Stream = ollamaReq.Stream,
-                ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
-                Temperature = ResolveSamplingValue(
+        {
+            Model = resolvedModel,
+            Prompt = prompt,
+            Stream = ollamaReq.Stream,
+            ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
+            Temperature = ResolveSamplingValue(
                     mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
                     ollamaReq.Options?.Temperature,
                     (float)(mapping?.Temperature ?? 0.7)),
-                TopP = ollamaReq.Options?.TopP,
-                TopK = ollamaReq.Options?.TopK,
-                MinP = ollamaReq.Options?.MinP,
-                MaxTokens = ollamaReq.Options?.NumPredict,
-                Stop = ollamaReq.Options?.Stop,
-                Seed = ollamaReq.Options?.Seed,
-                PresencePenalty = ollamaReq.Options?.PresencePenalty,
-                FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
-                RepeatPenalty = ResolveSamplingValue(
+            TopP = ollamaReq.Options?.TopP,
+            TopK = ollamaReq.Options?.TopK,
+            MinP = ollamaReq.Options?.MinP,
+            MaxTokens = ollamaReq.Options?.NumPredict,
+            Stop = ollamaReq.Options?.Stop,
+            Seed = ollamaReq.Options?.Seed,
+            PresencePenalty = ollamaReq.Options?.PresencePenalty,
+            FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
+            RepeatPenalty = ResolveSamplingValue(
                     mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
                     ollamaReq.Options?.RepeatPenalty,
                     (float)(mapping?.RepeatPenalty ?? 1.0)),
-            };
+        };
 
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body so proxy-injected values can be
