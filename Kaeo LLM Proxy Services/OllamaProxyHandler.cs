@@ -568,10 +568,19 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         CancellationToken ct)
     {
         int threshold = mapping?.GetProactiveOverflowThreshold() ?? 0;
-        if (threshold <= 0)
-            return (false, null);
-
         int estimated = EstimateTokenCount(body);
+
+        if (threshold <= 0)
+        {
+            // Warn once per mapping when threshold is disabled but context is large
+            if (estimated > 50000 && mapping is not null)
+            {
+                Log.Warning("Auto-compaction disabled for model {Model} (threshold=0), but request has ~{EstimatedTokens} tokens. Consider setting ProactiveOverflowPercent or ProactiveOverflowTokens.",
+                    model, estimated);
+            }
+            return (false, null);
+        }
+
         if (estimated <= threshold)
             return (false, null);
 
@@ -615,6 +624,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     maxTokensPerChunk,
                     compactModelName,
                     targetModelContextWindow,
+                    compactModelContext,
                     ct);
 
                 if (compactedBody is not null)
@@ -1050,6 +1060,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private async Task PassthroughAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        bool contextCompacted = false;
         using var upstreamReq = new HttpRequestMessage
         {
             Method = new HttpMethod(req.HttpMethod),
@@ -1134,7 +1145,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     if (overflow)
                         return;
                     if (compacted is not null)
+                    {
                         rewritten = compacted;
+                        contextCompacted = true;
+                    }
                 }
 
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
@@ -1184,10 +1198,33 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             await resp.OutputStream.WriteAsync(initial, ct);
             await resp.OutputStream.FlushAsync(ct);
 
+            // If context was compacted, inject a notification so the client knows
+            if (contextCompacted)
+            {
+                string notification = ": kaeo-context-compacted: Context was compacted to fit within model limits\n\n";
+                byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+                await resp.OutputStream.WriteAsync(notificationBytes, ct);
+                await resp.OutputStream.FlushAsync(ct);
+            }
+
             preResponseHeartbeatTask = PumpPreResponseHeartbeatsAsync(
                 resp.OutputStream,
                 _settings.StreamingHeartbeatIntervalSeconds,
                 preResponseCts.Token);
+        }
+        else if (isStreamingRequest && contextCompacted)
+        {
+            // No heartbeats, but context was compacted - pre-commit headers and inject notification
+            resp.StatusCode = 200;
+            resp.ContentType = "text/event-stream";
+            resp.SendChunked = true;
+            resp.KeepAlive = true;
+            headersPreCommitted = true;
+
+            string notification = ": kaeo-context-compacted: Context was compacted to fit within model limits\n\n";
+            byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+            await resp.OutputStream.WriteAsync(notificationBytes, ct);
+            await resp.OutputStream.FlushAsync(ct);
         }
 
         HttpResponseMessage upstreamResp;

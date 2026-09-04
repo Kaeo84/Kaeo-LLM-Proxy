@@ -118,6 +118,7 @@ internal sealed class AutoCompactionService
         int maxTokensPerChunk,
         string compactModelName,
         int targetModelContextWindow,
+        int compactModelContextWindow,
         CancellationToken ct)
     {
         // Record the attempt.
@@ -196,7 +197,7 @@ internal sealed class AutoCompactionService
                 Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} estimated tokens)",
                     chunkNumber, chunk.Count, estimatedChunkTokens);
 
-                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, ct);
+                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
@@ -409,11 +410,12 @@ internal sealed class AutoCompactionService
         string baseUrl,
         string? apiKey,
         int timeoutSeconds,
+        int compactModelContextWindow,
         CancellationToken ct)
     {
-        // Estimate token count and split further if needed.
-        // Target: keep each request under 50K tokens to leave room for system prompt and response.
-        const int maxTokensPerRequest = 50000;
+        // Use percentage of compact model's context window instead of hardcoded value
+        // Leave headroom for system prompt, response generation, and token estimation error
+        int maxTokensPerRequest = (int)(compactModelContextWindow * ContextWindowFraction);
         const int maxTokensPerMessage = 10000; // Truncate individual messages if too long.
 
         int estimatedTokens = EstimateChunkTokens(chunkMessages);
