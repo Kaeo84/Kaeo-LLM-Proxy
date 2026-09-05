@@ -52,6 +52,7 @@ public partial class SettingsWindow : Window
 
         foreach (var conn in s.Connections ?? Array.Empty<Connection>())
         {
+            if (string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
             var connNode = new TreeViewItem { Header = $"{conn.Name}  ({conn.BaseUrl})" };
             var client = new OllamaApiClient(conn.BaseUrl, conn.ApiKey);
             try
@@ -78,48 +79,62 @@ public partial class SettingsWindow : Window
     /// <summary>Adds a new named connection (URL + optional key) and persists it.</summary>
     private async void AddConnButton_Click(object sender, RoutedEventArgs e)
     {
-        var name = ConnNameBox.Text.Trim();
-        var url = ConnUrlBox.Text.Trim();
-        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
+        try
         {
-            ModelsStatusText.Text = "Both a name and a base URL are required.";
-            return;
-        }
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
-        {
-            ModelsStatusText.Text = "Base URL must be a valid http(s) URL.";
-            return;
-        }
+            var name = ConnNameBox.Text.Trim();
+            var url = ConnUrlBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
+            {
+                ModelsStatusText.Text = "Both a name and a base URL are required.";
+                return;
+            }
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
+            {
+                ModelsStatusText.Text = "Base URL must be a valid http(s) URL.";
+                return;
+            }
 
-        var s = await _settings.LoadAsync();
-        s.Connections ??= Array.Empty<Connection>();
-        if (s.Connections.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)))
-        {
-            ModelsStatusText.Text = $"Connection '{name}' already exists.";
-            return;
+            var s = await _settings.LoadAsync();
+            s.Connections ??= Array.Empty<Connection>();
+            if (s.Connections.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                ModelsStatusText.Text = $"Connection '{name}' already exists.";
+                return;
+            }
+
+            s.Connections = s.Connections.Append(new Connection
+            {
+                Name = name,
+                BaseUrl = url,
+                ApiKey = string.IsNullOrWhiteSpace(ConnKeyBox.Text) ? null : ConnKeyBox.Text.Trim(),
+                Enabled = true
+            }).ToArray();
+            await _settings.SaveAsync(s);
+
+            ConnNameBox.Clear();
+            ConnUrlBox.Clear();
+            ConnKeyBox.Clear();
+            await LoadModelsTabAsync();
+            ModelsChanged?.Invoke();
         }
-
-        s.Connections = s.Connections.Append(new Connection
+        catch (Exception ex)
         {
-            Name = name,
-            BaseUrl = url,
-            ApiKey = string.IsNullOrWhiteSpace(ConnKeyBox.Text) ? null : ConnKeyBox.Text.Trim(),
-            Enabled = true
-        }).ToArray();
-        await _settings.SaveAsync(s);
-
-        ConnNameBox.Clear();
-        ConnUrlBox.Clear();
-        ConnKeyBox.Clear();
-        await LoadModelsTabAsync();
-        ModelsChanged?.Invoke();
+            ModelsStatusText.Text = $"Error adding connection: {ex.Message}";
+        }
     }
 
     /// <summary>Re-pulls /api/tags for every enabled connection and updates the tree.</summary>
     private async void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
     {
-        await LoadModelsTabAsync();
-        ModelsChanged?.Invoke();
+        try
+        {
+            await LoadModelsTabAsync();
+            ModelsChanged?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            ModelsStatusText.Text = $"Error refreshing models: {ex.Message}";
+        }
     }
 
     private void OnClose(object sender, RoutedEventArgs e) => this.Close();

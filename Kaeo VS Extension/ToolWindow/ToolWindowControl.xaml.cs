@@ -52,12 +52,20 @@ public partial class ToolWindowControl : UserControl
 
     private async void SendButton_Click(object? sender, RoutedEventArgs e)
     {
-        var prompt = PromptBox.Text;
-        PromptBox.Clear();
-        if (string.IsNullOrWhiteSpace(prompt)) return;
-        SendButton.IsEnabled = false;
-        await _vm?.SendAsync(prompt);
-        SendButton.IsEnabled = true;
+        try
+        {
+            var prompt = PromptBox.Text;
+            PromptBox.Clear();
+            if (string.IsNullOrWhiteSpace(prompt) || _vm is null) return;
+            SendButton.IsEnabled = false;
+            await _vm.SendAsync(prompt);
+            SendButton.IsEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            SendButton.IsEnabled = true;
+            MessageBox.Show($"Error sending message: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void GearButton_Click(object? sender, RoutedEventArgs e)
@@ -65,7 +73,11 @@ public partial class ToolWindowControl : UserControl
         var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
         // After a connection is added/removed or models refreshed, re-pull the live list.
         // LoadAsync fires ModelsLoaded, which syncs the combo selection.
-        wnd.ModelsChanged += async () => await _vm?.LoadAsync();
+        if (_vm is not null)
+        {
+            var vm = _vm;
+            wnd.ModelsChanged += () => _ = vm.LoadAsync();
+        }
         wnd.OpenTab("Models");
         wnd.Owner = Application.Current?.MainWindow;
         wnd.ShowDialog();

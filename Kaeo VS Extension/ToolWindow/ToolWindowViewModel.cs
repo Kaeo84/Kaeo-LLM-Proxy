@@ -163,8 +163,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             {
                 // Label disambiguates same-named models across connections.
                 var label = $"{conn.Name} / {m.Name}";
-                _modelSelections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
-                Models.Add(label);
+                if (conn.Name is not null && conn.BaseUrl is not null)
+                {
+                    _modelSelections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
+                    Models.Add(label);
+                }
             }
         }
 
