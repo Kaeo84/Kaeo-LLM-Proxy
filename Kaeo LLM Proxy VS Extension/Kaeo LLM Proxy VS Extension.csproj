@@ -7,11 +7,26 @@
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWPF>true</UseWPF>
+		<!-- VSIX packaging: opt into the VSSDK targets that provide CreateVsixContainer. -->
+		<VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
+		<GenerateVsix>true</GenerateVsix>
+		<CreateVsixContainer>true</CreateVsixContainer>
+		<!-- Generate the .pkgdef so VS registers the package on install. -->
+		<GeneratePkgDefFile>true</GeneratePkgDefFile>
+		<IncludePkgdefInVSIXContainer>true</IncludePkgdefInVSIXContainer>
+		<VsixSourceManifestPath>$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
+		<LoadVsixManifest>true</LoadVsixManifest>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
 		<PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
+		<PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034" PrivateAssets="all" />
+	</ItemGroup>
+
+	<!-- VSCT command table -->
+	<ItemGroup>
+		<Vsct Include="Commands.vsct" />
 	</ItemGroup>
 
 </Project>
