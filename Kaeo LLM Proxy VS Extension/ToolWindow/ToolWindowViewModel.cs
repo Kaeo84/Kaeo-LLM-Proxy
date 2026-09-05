@@ -47,9 +47,15 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
 
         // Built-in agents.
-        Agents.Add(new AgentConfig { Name = "Agent", DisplayName = "Agent", SystemPrompt = "You are a capable coding agent.", IsBuiltin = true });
-        Agents.Add(new AgentConfig { Name = "Ask", DisplayName = "Ask", SystemPrompt = "You answer questions concisely. Do not use tools.", IsBuiltin = true, Tools = Array.Empty<string>() });
-        Agents.Add(new AgentConfig { Name = "Plan", DisplayName = "Plan", SystemPrompt = "You produce implementation plans only; do not edit files.", IsBuiltin = true });
+        Agents.Add(new AgentConfig { Name = "Agent", DisplayName = "Agent", SystemPrompt = "You are a capable coding agent. Use available tools to read, write, and execute code. Be concise in explanations but thorough in code changes.", IsBuiltin = true });
+        Agents.Add(new AgentConfig { Name = "Ask", DisplayName = "Ask", SystemPrompt = "You answer questions concisely. Do not use tools. Provide direct, focused answers.", IsBuiltin = true, Tools = Array.Empty<string>() });
+        Agents.Add(new AgentConfig
+        {
+            Name = "Plan",
+            DisplayName = "Plan",
+            SystemPrompt = "You are a senior software engineer producing structured implementation plans. Do NOT edit files or run commands; plan only. Respond in markdown with exactly these sections: ## Understanding (1-3 sentences restating the task), ## Assumptions (bullet list of decisions and scope boundaries), ## Approach (1-3 paragraphs with specific file/symbol references), ## Key Files (bullet list with one-line reasons), ## Risks and Open Questions (bullet list), ## Steps (numbered checklist, one verb + one target per step, with indented sub-bullets for breakdown). Be concrete: name real files, types, and endpoints. If the request is ambiguous, state assumptions explicitly.",
+            IsBuiltin = true
+        });
 
         Modes.Add("Interactive");
         Modes.Add("Bypass");
