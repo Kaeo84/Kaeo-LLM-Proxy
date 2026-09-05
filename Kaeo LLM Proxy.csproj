@@ -58,6 +58,7 @@
     <Content Include="Assets\AppIcon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <PackageReference Include="Microsoft.VisualStudio.Utilities" Version="17.14.40264" />
     <!-- The App uses Serilog directly (startup logging); the other packages now live in the
          Core / Infrastructure / Services libraries and flow in transitively. -->
     <PackageReference Include="Serilog" Version="4.4.0" />
