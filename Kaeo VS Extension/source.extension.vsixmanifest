@@ -8,11 +8,8 @@
   <Tags>AI Copilot Kaeo</Tags>
   </Metadata>
   <Prerequisites>
-  <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[18.0,19.0)" DisplayName="Visual Studio Core Editor" />
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[18.0,19.0)" DisplayName="Visual Studio Core Editor" />
   </Prerequisites>
-  <Dependencies>
-  <Dependency Id="Microsoft.Frameworks.NuGet" DisplayName="NuGet Framework" />
-  </Dependencies>
   <Installation>
   <InstallationTarget Version="18.0" Id="Microsoft.VisualStudio.Community">
     <ProductArchitecture>amd64</ProductArchitecture>
