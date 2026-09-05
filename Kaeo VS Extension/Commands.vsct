@@ -1,24 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable">
-  <Commands>
-	<Groups>
-	  <Group guid="{00000000-0000-0000-0000-000000000000}" id="MyMenuGroup" priority="0x0600">
-	  </Group>
-	</Groups>
-	<Buttons>
-	  <!-- Placeholder commands for Agent/Ask/Plan -->
-	  <Button guid="{00000000-0000-0000-0000-000000000000}" id="cmdAgent" priority="0x0100" type="Button">
-		<Parent guid="{00000000-0000-0000-0000-000000000000}" id="MyMenuGroup" />
-		<Icon guid="{00000000-0000-0000-0000-000000000000}" id="bmpPic1" />
-		<Strings>
-		  <ButtonText>Agent</ButtonText>
-		</Strings>
-	  </Button>
-	</Buttons>
-  </Commands>
-  <Symbols>
-	<GuidSymbol name="guidPackageCmdSet" value="{00000000-0000-0000-0000-000000000000}">
-	  <IDSymbol name="cmdAgent" value="0x0100" />
-	</GuidSymbol>
-  </Symbols>
+	<Extern href="stdidcmd.h"/>
+	<Extern href="vsshlids.h"/>
+
+	<Commands package="guidVsPackage">
+		<Groups>
+			<Group guid="guidKaeoCmdSet" id="KaeoMenuGroup" priority="0x0600">
+				<Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_VIEW"/>
+			</Group>
+		</Groups>
+
+		<Buttons>
+			<Button guid="guidKaeoCmdSet" id="cmdidOpenKaeoAssistant" priority="0x0100" type="Button">
+				<Parent guid="guidKaeoCmdSet" id="KaeoMenuGroup" />
+				<Strings>
+					<ButtonText>Kaeo Assistant</ButtonText>
+				</Strings>
+			</Button>
+		</Buttons>
+	</Commands>
+
+	<Symbols>
+		<GuidSymbol name="guidVsPackage" value="{d1f6a6c2-0000-4a6d-9c2f-000000000000}" />
+		<GuidSymbol name="guidKaeoCmdSet" value="{a1b2c3d4-0000-4a6d-9c2f-000000000002}">
+			<IDSymbol name="KaeoMenuGroup" value="0x1020" />
+			<IDSymbol name="cmdidOpenKaeoAssistant" value="0x0100" />
+		</GuidSymbol>
+	</Symbols>
 </CommandTable>
