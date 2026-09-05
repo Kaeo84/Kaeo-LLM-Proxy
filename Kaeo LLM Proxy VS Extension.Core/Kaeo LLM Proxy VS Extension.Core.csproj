@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.VSExtension.Core</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy VS Extension.Core</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+		<PackageReference Include="Serilog" Version="4.4.0" />
+		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy VS Extension" />
+	</ItemGroup>
+
+</Project>

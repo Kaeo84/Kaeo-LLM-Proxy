@@ -591,7 +591,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // Stream notification: compaction needed
             if (outputStream is not null)
             {
-                string notification = $": kaeo-compaction-needed: Context size (~{estimated} tokens) exceeds threshold ({threshold} tokens). Starting compaction...\n\n";
+                string notification = $": <ignorethis>kaeo-compaction-needed: Context size (~{estimated} tokens) exceeds threshold ({threshold} tokens). Starting compaction...</ignorethis>\n\n";
                 byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
                 await outputStream.WriteAsync(notificationBytes, ct);
                 await outputStream.FlushAsync(ct);
@@ -599,27 +599,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             try
             {
-                var (baseUrl, timeout, apiKey) = ResolveUpstream(model);
-
-                // Resolve the compact model's context window to calculate max tokens per chunk.
+                // Resolve the compact model: global CompactModelProxyName first, then the
+                // per-mapping ContextSummarizeModelId. Summarization requests go directly to
+                // this model's upstream, so BOTH the base URL and the upstream model name
+                // (not the proxy display name) must come from the resolved mapping.
                 ModelMapping? compactMapping = null;
-                string compactModelName = model; // Default to original model
-                if (mapping.ContextSummarizeModelId.HasValue)
-                {
+                if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
+                    compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
+                if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
                     compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-                    if (compactMapping is not null)
-                    {
-                        // Use the compact model's upstream model name
-                        compactModelName = compactMapping.ModelName ?? model;
-                        Log.Debug("Auto-compaction: using compact model {CompactModel} from mapping {CompactMappingId}",
-                            compactModelName, mapping.ContextSummarizeModelId.Value);
-                    }
-                    else
-                    {
-                        Log.Warning("Auto-compaction: compact model mapping {CompactModelId} not found or disabled, falling back to original model {Model}",
-                            mapping.ContextSummarizeModelId.Value, model);
-                    }
+                if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
+                    compactMapping = null;
+
+                if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+                {
+                    Log.Warning("Auto-compaction: compact model mapping {CompactModelId} not found or disabled, falling back to original model {Model}",
+                        mapping.ContextSummarizeModelId.Value, model);
                 }
+
+                var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping?.ProxyName ?? model);
+                string compactModelName = (compactMapping ?? mapping).ModelName ?? model;
                 int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
                 int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
@@ -627,7 +626,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 // Stream notification: compaction starting
                 if (outputStream is not null)
                 {
-                    string notification = $": kaeo-compaction-starting: Compacting context using model '{compactModelName}' (context window: {compactModelContext} tokens)...\n\n";
+                    string notification = $": <ignorethis>kaeo-compaction-starting: Compacting context using model '{compactModelName}' (context window: {compactModelContext} tokens)...</ignorethis>\n\n";
                     byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
                     await outputStream.WriteAsync(notificationBytes, ct);
                     await outputStream.FlushAsync(ct);
@@ -662,7 +661,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     if (outputStream is not null)
                     {
                         int compactedTokens = compactedBody.Length / 4;
-                        string notification = $": kaeo-compaction-complete: Context compacted successfully. {estimated} tokens → {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)\n\n";
+                        string notification = $": <ignorethis>kaeo-compaction-complete: Context compacted successfully. {estimated} tokens → {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)</ignorethis>\n\n";
                         byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
                         await outputStream.WriteAsync(notificationBytes, ct);
                         await outputStream.FlushAsync(ct);
@@ -714,6 +713,85 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // return the authoritative error if it overflows. Return (false, null) so
         // the caller proceeds with the original body.
         return (false, null);
+    }
+
+    /// <summary>
+    /// Attempts local context compaction after the upstream rejected the prompt with a
+    /// context-size overflow error. The caller retries the original request once with the
+    /// returned compacted body. Unlike the proactive path this only requires
+    /// <see cref="AppSettings.EnableAutoCompaction"/>, so oversized prompts self-heal even
+    /// when no threshold was configured for the mapping.
+    /// </summary>
+    private async Task<string?> TryReactiveCompactionAsync(
+        string body,
+        string model,
+        HttpListenerResponse resp,
+        bool streamAlreadyOpen,
+        CancellationToken ct)
+    {
+        ModelMapping? mapping = _settings.FindModelMapping(model);
+        if (mapping is null)
+            return null;
+
+        try
+        {
+            if (streamAlreadyOpen)
+            {
+                byte[] note = Encoding.UTF8.GetBytes(
+                    ": <ignorethis>kaeo-compaction-needed: Upstream reported context overflow. Compacting conversation...</ignorethis>\n\n");
+                await resp.OutputStream.WriteAsync(note, ct);
+                await resp.OutputStream.FlushAsync(ct);
+            }
+
+            // Resolve the compact model exactly like the proactive path: global setting first,
+            // then the per-mapping id; summarize requests must carry the upstream model name.
+            ModelMapping? compactMapping = null;
+            if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
+                compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
+            if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+                compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
+                compactMapping = null;
+
+            var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping?.ProxyName ?? model);
+            string compactModelName = (compactMapping ?? mapping).ModelName ?? model;
+            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
+
+            Log.Information("Reactive auto-compaction triggered for model {Model} after upstream context overflow", model);
+
+            string? compacted = await _autoCompactionService.CompactAsync(
+                mapping,
+                body,
+                $"reactive:{model}:{body.GetHashCode():X8}",
+                baseUrl,
+                apiKey,
+                timeout,
+                maxTokensPerChunk,
+                compactModelName,
+                mapping.GetEffectiveContextWindow(),
+                compactModelContext,
+                ct);
+
+            if (compacted is not null && streamAlreadyOpen)
+            {
+                byte[] done = Encoding.UTF8.GetBytes(
+                    $": <ignorethis>kaeo-compaction-complete: Conversation compacted ({body.Length / 4} → {compacted.Length / 4} est. tokens). Retrying upstream...</ignorethis>\n\n");
+                await resp.OutputStream.WriteAsync(done, ct);
+                await resp.OutputStream.FlushAsync(ct);
+            }
+            else if (compacted is null)
+            {
+                Log.Warning("Reactive auto-compaction failed for model {Model}; surfacing upstream overflow error", model);
+            }
+
+            return compacted;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Reactive auto-compaction threw for model {Model}", model);
+            return null;
+        }
     }
 
     /// <summary>
@@ -1089,6 +1167,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private async Task PassthroughAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        bool contextCompacted = false;
         bool headersPreCommitted = false;
         using var upstreamReq = new HttpRequestMessage
         {
@@ -1120,6 +1199,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
             || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
         bool isStreamingRequest = false;
+        // Captured upstream-bound JSON body so an overflow rejection can be compacted and retried.
+        string? passthroughBody = null;
+        string? consumedErrorBody = null;
 
         if (req.HasEntityBody)
         {
@@ -1188,10 +1270,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     if (compacted is not null)
                     {
                         rewritten = compacted;
+                        contextCompacted = true;
                     }
                 }
 
                 byte[] bodyBytes = System.Text.Encoding.UTF8.GetBytes(rewritten);
+                passthroughBody = rewritten;
                 upstreamReq.Content = new ByteArrayContent(bodyBytes);
                 upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
             }
@@ -1256,6 +1340,48 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             await preResponseHeartbeatTask;
         }
 
+        // Reactive compaction: llama.cpp rejects prompts that exceed the loaded model's
+        // context with a 400 "exceed_context_size_error". When that happens and the request
+        // was not already compacted, run the chunked map-reduce summarizer locally and retry
+        // the upstream call once. This covers mappings where the proactive threshold is not
+        // configured as well as cases where the proxy's token estimate undershot.
+        if (!upstreamResp.IsSuccessStatusCode
+            && passthroughBody is not null
+            && !contextCompacted
+            && _settings.EnableAutoCompaction)
+        {
+            string probe = await upstreamResp.Content.ReadAsStringAsync(ct);
+            if (IsContextOverflowBody(probe))
+            {
+                string? reactive = await TryReactiveCompactionAsync(
+                    passthroughBody, originalModel, resp, headersPreCommitted, ct);
+                if (reactive is not null)
+                {
+                    contextCompacted = true;
+                    passthroughBody = reactive;
+                    upstreamResp.Dispose();
+
+                    using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
+                    {
+                        Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
+                    };
+                    retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                    ApplyApiKey(retryReq, apiKey);
+
+                    upstreamResp = await SendUpstreamAsync(
+                        retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+                }
+                else
+                {
+                    consumedErrorBody = probe;
+                }
+            }
+            else
+            {
+                consumedErrorBody = probe;
+            }
+        }
+
         // Ensure the response (and its pooled connection) is released on every exit path,
         // including the early error return and any exception thrown mid-stream.
         using HttpResponseMessage ownedUpstreamResponse = upstreamResp;
@@ -1286,8 +1412,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         if (!upstreamResp.IsSuccessStatusCode)
         {
-            // Read error body so it can be logged before forwarding.
-            string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+            // Read error body so it can be logged before forwarding. If the reactive
+            // compaction probe already consumed it, reuse the captured text.
+            string errorBody = consumedErrorBody ?? await upstreamResp.Content.ReadAsStringAsync(ct);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
             if (_settings.CollectResponseDetails && log.ResponseBody is null)
@@ -3214,6 +3341,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
+            // Summarization requests are sent straight to the upstream, which knows the model
+            // by its ModelName (e.g. the .gguf path) — not the proxy display name.
+            string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
+
             // Detect if this is a Copilot request to determine the appropriate format
             CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
 
@@ -3225,7 +3356,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 apiKey,
                 timeout,
                 maxTokensPerChunk,
-                effectiveModel,
+                compactUpstreamModel,
                 targetModelContextWindow,
                 compactModelContext,
                 ct,
@@ -3390,6 +3521,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
+            // Summarization requests are sent straight to the upstream, which knows the model
+            // by its ModelName (e.g. the .gguf path) — not the proxy display name.
+            string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
+
             // Detect if this is a Copilot request to determine the appropriate format
             CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
 
@@ -3401,7 +3536,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 apiKey,
                 timeout,
                 maxTokensPerChunk,
-                effectiveModel,
+                compactUpstreamModel,
                 targetModelContextWindow,
                 compactModelContext,
                 ct,

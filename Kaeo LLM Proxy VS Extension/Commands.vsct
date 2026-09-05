@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable">
+  <Commands>
+	<Groups>
+	  <Group guid="{00000000-0000-0000-0000-000000000000}" id="MyMenuGroup" priority="0x0600">
+	  </Group>
+	</Groups>
+	<Buttons>
+	  <!-- Placeholder commands for Agent/Ask/Plan -->
+	  <Button guid="{00000000-0000-0000-0000-000000000000}" id="cmdAgent" priority="0x0100" type="Button">
+		<Parent guid="{00000000-0000-0000-0000-000000000000}" id="MyMenuGroup" />
+		<Icon guid="{00000000-0000-0000-0000-000000000000}" id="bmpPic1" />
+		<Strings>
+		  <ButtonText>Agent</ButtonText>
+		</Strings>
+	  </Button>
+	</Buttons>
+  </Commands>
+  <Symbols>
+	<GuidSymbol name="guidPackageCmdSet" value="{00000000-0000-0000-0000-000000000000}">
+	  <IDSymbol name="cmdAgent" value="0x0100" />
+	</GuidSymbol>
+  </Symbols>
+</CommandTable>

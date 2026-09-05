@@ -33,6 +33,8 @@
     <Compile Remove="Kaeo LLM Proxy Module Code Vector Store\**" />
     <Compile Remove="Kaeo LLM Proxy.Tests\**" />
     <Compile Remove="ollama-docs\**" />
+    <Compile Remove="Kaeo LLM Proxy VS Extension.Core\**" />
+    <Compile Remove="Kaeo LLM Proxy VS Extension\**" />
     <EmbeddedResource Remove="copilot-sdk\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Core\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Infrastructure\**" />
@@ -52,7 +54,6 @@
     <None Remove="Kaeo LLM Proxy.Tests\**" />
     <None Remove="ollama-docs\**" />
   </ItemGroup>
-
   <ItemGroup>
     <Content Include="Assets\AppIcon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -70,6 +71,14 @@
     <ModuleProject Include="Kaeo LLM Proxy Module Code Vector Store" />
     <ModuleProject Include="Kaeo LLM Proxy Module SSH" />
     <ModuleProject Include="Kaeo LLM Proxy Module Web Search" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
+    <None Include="Kaeo LLM Proxy VS Extension\Kaeo LLM Proxy VS Extension.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Remove="Kaeo LLM Proxy VS Extension.Core\**" />
+    <None Remove="Kaeo LLM Proxy VS Extension\**" />
   </ItemGroup>
 
   <Import Project="ModuleBuild.targets" />

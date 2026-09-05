@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+	<Identity Language="en-US" Id="Kaeo.LlmProxy.VSExtension" Version="0.1.0"/>
+	<DisplayName>Kaeo LLM Proxy VS Extension</DisplayName>
+	<Description xml:space="preserve">Copilot-style UI integrated with Kaeo LLM Proxy</Description>
+	<MoreInfoUrl>https://github.com/Kaeo84/Kaeo-LLM-Proxy</MoreInfoUrl>
+	<License>MIT</License>
+	<Tags>AI;Copilot;Kaeo</Tags>
+  </Metadata>
+  <Installation>
+	<InstallationTarget Version="18.0" Id="Microsoft.VisualStudio.Product.Pro" />
+  </Installation>
+</PackageManifest>

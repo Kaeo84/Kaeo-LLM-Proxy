@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.VSExtension</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy VS Extension</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWPF>true</UseWPF>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
+		<PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
+	</ItemGroup>
+
+</Project>

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Kaeo.LlmProxy.Core.Models;
 using Serilog;
 
@@ -46,6 +47,23 @@ internal sealed class AutoCompactionService
     /// Conservative estimate helps prevent overflow on the compact model.
     /// </summary>
     private const double TokenEstimationSafetyFactor = 1.3;
+
+    /// <summary>Maximum number of recursive combine passes when reducing chunk summaries.</summary>
+    private const int MaxCombinePasses = 6;
+
+    /// <summary>Token budget for the last user message kept verbatim in a compacted request.</summary>
+    private const int MaxKeptSuffixTokens = 8000;
+
+    /// <summary>
+    /// Shared system prompt for chunk/sub-chunk summarization. Directs the model to keep tool
+    /// activity explicit so compacted requests still record which tools succeeded.
+    /// </summary>
+    private const string SummarizerInstructions =
+        "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. " +
+        "Focus on facts and outcomes rather than pleasantries. " +
+        "If the transcript includes a <toolcalls> section, those are tool invocations and their results. You MUST end your summary with a " +
+        "'## Tool activity' section listing each tool called, whether it succeeded or failed, and any important outputs " +
+        "(file paths, command results, errors, and decisions made from them). Never omit tool activity.";
 
     /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
@@ -186,16 +204,17 @@ internal sealed class AutoCompactionService
             Log.Information("Auto-compaction: extracted {MessageCount} messages, estimated {TotalTokens} tokens",
                 messages.Count, totalEstimatedTokens);
 
-            if (totalEstimatedTokens <= maxTokensPerChunk)
+            if (messages.Count == 0)
             {
-                Log.Information("Auto-compaction: using single-pass compaction (fits in one chunk)");
-                // Small enough to compact in a single pass.
-                return await CompactSinglePassAsync(compactModelName, requestBody, messages, baseUrl, apiKey, timeoutSeconds, sessionKey, ct);
+                Log.Warning("Auto-compaction: no chat messages found in request body for session {SessionKey}; cannot compact", sessionKey);
+                return null;
             }
 
-            // Large conversation: use chunked map-reduce approach.
+            // Every request goes through the chunked map-reduce path. (The former single-pass
+            // shortcut posted to /v1/responses/compact, which llama.cpp does not implement —
+            // a conversation that fits in one budget simply produces one summarization request.)
             Log.Information(
-                "Auto-compaction using chunked summarization: {MessageCount} messages, {TotalTokens} estimated tokens",
+                "Auto-compaction: chunked summarization for {MessageCount} messages, {TotalTokens} estimated tokens",
                 messages.Count, totalEstimatedTokens);
 
             var chunkSummaries = new List<string>();
@@ -255,9 +274,18 @@ internal sealed class AutoCompactionService
                 return null;
             }
 
-            // Reduce phase: combine all chunk summaries into a final coherent summary.
-            Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
-            string finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, ct);
+            // Reduce phase: combine chunk summaries into a single coherent summary.
+            // A lone chunk summary is already coherent; skip the extra LLM call.
+            string finalSummary;
+            if (chunkSummaries.Count == 1)
+            {
+                finalSummary = chunkSummaries[0];
+            }
+            else
+            {
+                Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
+                finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
+            }
 
             // Build the compacted request body with the final summary
             var compactedBody = format == CompactionFormat.Ollama
@@ -352,26 +380,6 @@ internal sealed class AutoCompactionService
         return $"{modelName}:unknown";
     }
 
-    private static object ExtractMessages(string requestBody)
-    {
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(requestBody);
-            if (doc.RootElement.TryGetProperty("messages", out JsonElement messages)
-                && messages.ValueKind == JsonValueKind.Array)
-            {
-                // Return the messages array as-is for the compact endpoint.
-                return JsonSerializer.Deserialize<JsonElement>(messages.GetRawText());
-            }
-        }
-        catch
-        {
-            // Fall through.
-        }
-
-        return Array.Empty<object>();
-    }
-
     private static List<JsonElement> ExtractMessagesAsArray(string requestBody)
     {
         var result = new List<JsonElement>();
@@ -395,52 +403,112 @@ internal sealed class AutoCompactionService
         return result;
     }
 
-    private async Task<string?> CompactSinglePassAsync(
-        string model,
-        string requestBody,
-        List<JsonElement> messages,
-        string baseUrl,
-        string? apiKey,
-        int timeoutSeconds,
-        string sessionKey,
-        CancellationToken ct)
+    /// <summary>
+    /// Prepares chunk messages for the summarization request. Tool interactions
+    /// (assistant tool_calls and role:"tool" results) are flattened into text lines inside a
+    /// single &lt;toolcalls&gt; section appended after the transcript. This keeps the request
+    /// valid for strict chat templates (no orphaned tool_call_id correlations when chunks
+    /// split a call from its result) while giving the summarizer an explicit block to turn
+    /// into a '## Tool activity' section.
+    /// </summary>
+    private static List<object> BuildTranscriptMessages(List<JsonElement> chunkMessages, int maxTokensPerMessage)
     {
-        var compactRequest = new
+        var transcript = new List<object>();
+        var toolLines = new List<string>();
+
+        foreach (JsonElement msg in chunkMessages)
         {
-            model,
-            input = messages,
-        };
+            string role = msg.TryGetProperty("role", out JsonElement roleEl)
+                ? roleEl.GetString() ?? "user"
+                : "user";
 
-        string compactBody = JsonSerializer.Serialize(compactRequest);
-        using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
-        {
-            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(compactBody)),
-        };
-        httpReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            if (role.Equals("tool", StringComparison.OrdinalIgnoreCase))
+            {
+                string toolName = msg.TryGetProperty("tool_name", out JsonElement tn)
+                    ? tn.GetString() ?? "tool"
+                    : "tool";
+                toolLines.Add($"- Result of tool '{toolName}': {ShrinkForSummary(GetContentText(msg), maxTokensPerMessage)}");
+                continue;
+            }
 
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            httpReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+            bool hasToolCalls = msg.TryGetProperty("tool_calls", out JsonElement toolCalls)
+                && toolCalls.ValueKind == JsonValueKind.Array
+                && toolCalls.GetArrayLength() > 0;
 
-        string absoluteUri = $"{baseUrl.TrimEnd('/')}/v1/responses/compact";
-        httpReq.RequestUri = new Uri(absoluteUri);
+            if (hasToolCalls)
+            {
+                foreach (JsonElement call in msg.GetProperty("tool_calls").EnumerateArray())
+                {
+                    string name = "?";
+                    string args = "";
+                    if (call.TryGetProperty("function", out JsonElement fn))
+                    {
+                        if (fn.TryGetProperty("name", out JsonElement ne))
+                            name = ne.GetString() ?? "?";
+                        if (fn.TryGetProperty("arguments", out JsonElement ae))
+                            args = ae.ValueKind == JsonValueKind.String ? ae.GetString() ?? "" : ae.GetRawText();
+                    }
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+                    toolLines.Add($"- Assistant called tool '{name}' with arguments: {ShrinkForSummary(args, maxTokensPerMessage)}");
+                }
+            }
 
-        using HttpResponseMessage response = await _httpClient.SendAsync(
-            httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+            string content = GetContentText(msg);
+            if (string.IsNullOrEmpty(content))
+                continue;
 
-        if (!response.IsSuccessStatusCode)
-        {
-            string errorBody = await response.Content.ReadAsStringAsync(ct);
-            Log.Warning(
-                "Auto-compaction failed for session {SessionKey}: HTTP {StatusCode} {Body}",
-                sessionKey, (int)response.StatusCode, errorBody);
-            return null;
+            if (hasToolCalls)
+            {
+                // Keep the assistant text but strip the raw tool_calls array: their matching
+                // role:"tool" replies were flattened away, and an unpaired tool_calls field can
+                // be rejected by strict upstream chat templates.
+                JsonObject stripped = [];
+                foreach (JsonProperty prop in msg.EnumerateObject())
+                {
+                    if (prop.NameEquals("tool_calls"u8))
+                        continue;
+                    stripped[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
+                }
+
+                if (stripped["content"] is JsonValue contentValue && contentValue.TryGetValue(out string? contentText))
+                {
+                    int maxChars = maxTokensPerMessage * 4;
+                    if (contentText?.Length > maxChars)
+                        stripped["content"] = contentText[..maxChars] + "\n... [truncated]";
+                }
+
+                transcript.Add(stripped);
+            }
+            else
+            {
+                transcript.Add(TruncateMessageIfNeeded(msg, maxTokensPerMessage));
+            }
         }
 
-        string responseBody = await response.Content.ReadAsStringAsync(ct);
-        return BuildCompactedRequestBody(requestBody, responseBody);
+        if (toolLines.Count > 0)
+        {
+            transcript.Add(new
+            {
+                role = "user",
+                content = "<toolcalls>\n" + string.Join("\n", toolLines) + "\n</toolcalls>",
+            });
+        }
+
+        return transcript;
+    }
+
+    private static string GetContentText(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out JsonElement content))
+            return "";
+
+        return content.ValueKind == JsonValueKind.String ? content.GetString() ?? "" : content.GetRawText();
+    }
+
+    private static string ShrinkForSummary(string text, int maxTokens)
+    {
+        int maxChars = Math.Max(200, maxTokens * 4);
+        return text.Length <= maxChars ? text : text[..maxChars] + "... [truncated]";
     }
 
     private async Task<string?> SummarizeChunkAsync(
@@ -509,7 +577,7 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                content = "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. Focus on facts and outcomes rather than pleasantries."
+                content = SummarizerInstructions
             },
             new
             {
@@ -518,11 +586,8 @@ internal sealed class AutoCompactionService
             }
         };
 
-        // Add the chunk messages, truncating if necessary.
-        foreach (var msg in chunkMessages)
-        {
-            messages.Add(TruncateMessageIfNeeded(msg, maxTokensPerMessage));
-        }
+        // Add the chunk messages (tool calls flattened into a <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
 
         var request = new
         {
@@ -599,7 +664,7 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                content = "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. Focus on facts and outcomes rather than pleasantries."
+                content = SummarizerInstructions
             },
             new
             {
@@ -608,10 +673,8 @@ internal sealed class AutoCompactionService
             }
         };
 
-        foreach (var msg in subChunkMessages)
-        {
-            messages.Add(TruncateMessageIfNeeded(msg, maxTokensPerMessage));
-        }
+        // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
 
         var request = new
         {
@@ -710,6 +773,13 @@ internal sealed class AutoCompactionService
             }
         }
 
+        // Include tool_calls payloads so chunk budgets account for them.
+        if (message.TryGetProperty("tool_calls", out JsonElement toolCalls)
+            && toolCalls.ValueKind == JsonValueKind.Array)
+        {
+            totalChars += toolCalls.GetRawText().Length;
+        }
+
         // Add overhead for role and other metadata (~20 chars)
         totalChars += 20;
 
@@ -732,21 +802,18 @@ internal sealed class AutoCompactionService
                 // Truncate and add ellipsis
                 text = text[..maxChars] + "\n... [truncated]";
 
-                // Rebuild the message with truncated content
-                var result = new Dictionary<string, object?>();
+                // Rebuild the message with truncated content, preserving the JSON type of every
+                // other property (tool_calls arrays must stay arrays, not become strings).
+                JsonObject result = [];
                 foreach (var prop in message.EnumerateObject())
                 {
                     if (prop.Name == "content")
                     {
                         result[prop.Name] = text;
                     }
-                    else if (prop.Value.ValueKind == JsonValueKind.String)
-                    {
-                        result[prop.Name] = prop.Value.GetString();
-                    }
                     else
                     {
-                        result[prop.Name] = prop.Value.GetRawText();
+                        result[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
                     }
                 }
                 return result;
@@ -757,22 +824,97 @@ internal sealed class AutoCompactionService
         return message;
     }
 
+    /// <summary>
+    /// Reduce phase: combines chunk summaries into one coherent summary. When the combined
+    /// summaries exceed the compact model's own context budget, they are summarized in
+    /// batches first and the process repeats until everything fits in a single request
+    /// (summarize the summaries, then summarize those, and so on).
+    /// </summary>
     private async Task<string> CombineSummariesAsync(
         string model,
         List<string> chunkSummaries,
         string baseUrl,
         string? apiKey,
         int timeoutSeconds,
+        int compactModelContextWindow,
         CancellationToken ct)
     {
-        var combinedInput = string.Join("\n\n---\n\n", chunkSummaries.Select((s, i) => $"Chunk {i + 1} Summary:\n{s}"));
+        int maxTokensPerRequest = (int)(compactModelContextWindow * ContextWindowFraction);
+        List<string> current = chunkSummaries;
+        int pass = 0;
 
+        while (true)
+        {
+            pass++;
+            string combinedInput = string.Join("\n\n---\n\n",
+                current.Select((s, i) => $"Chunk {i + 1} Summary:\n{s}"));
+            int combinedTokens = (int)(Encoding.UTF8.GetByteCount(combinedInput) / 4 * TokenEstimationSafetyFactor);
+
+            if (combinedTokens <= maxTokensPerRequest)
+                return await CombineOnceAsync(model, combinedInput, baseUrl, apiKey, timeoutSeconds, ct);
+
+            if (pass >= MaxCombinePasses)
+            {
+                Log.Warning(
+                    "Auto-compaction: combine exceeded {Passes} passes ({CombinedTokens} tokens > {MaxTokens}); truncating before final combine",
+                    MaxCombinePasses, combinedTokens, maxTokensPerRequest);
+                int maxChars = maxTokensPerRequest * 4;
+                return await CombineOnceAsync(model,
+                    combinedInput[..Math.Min(combinedInput.Length, maxChars)] + "\n... [truncated]",
+                    baseUrl, apiKey, timeoutSeconds, ct);
+            }
+
+            // Split the summaries into batches that fit under the budget, summarize each
+            // batch, and loop with the (fewer) batch summaries.
+            Log.Information("Auto-compaction: combine pass {Pass} over budget ({CombinedTokens} tokens > {MaxTokens}); batching {SummaryCount} summaries",
+                pass, combinedTokens, maxTokensPerRequest, current.Count);
+
+            var batches = new List<List<string>>();
+            var batch = new List<string>();
+            int batchTokens = 0;
+            foreach (string s in current)
+            {
+                int sTokens = (int)(Encoding.UTF8.GetByteCount(s) / 4 * TokenEstimationSafetyFactor);
+                if (batch.Count > 0 && batchTokens + sTokens > maxTokensPerRequest)
+                {
+                    batches.Add(batch);
+                    batch = [];
+                    batchTokens = 0;
+                }
+                batch.Add(s);
+                batchTokens += sTokens;
+            }
+            if (batch.Count > 0)
+                batches.Add(batch);
+
+            var next = new List<string>(batches.Count);
+            foreach (List<string> b in batches)
+            {
+                string joined = string.Join("\n\n---\n\n", b.Select((s, i) => $"Part {i + 1}:\n{s}"));
+                next.Add(await CombineOnceAsync(model, joined, baseUrl, apiKey, timeoutSeconds, ct));
+            }
+            current = next;
+        }
+    }
+
+    /// <summary>
+    /// Single LLM call that merges the given pre-joined summary text into one coherent summary.
+    /// Falls back to the input text when the request fails.
+    /// </summary>
+    private async Task<string> CombineOnceAsync(
+        string model,
+        string combinedInput,
+        string baseUrl,
+        string? apiKey,
+        int timeoutSeconds,
+        CancellationToken ct)
+    {
         var messages = new object[]
         {
             new
             {
                 role = "system",
-                content = "You are a conversation summarizer. Combine multiple conversation chunk summaries into a single coherent summary. Preserve all important information, decisions, and context. Remove duplicates and organize chronologically. Create a concise but comprehensive summary."
+                content = "You are a conversation summarizer. Combine multiple conversation chunk summaries into a single coherent summary. Preserve all important information, decisions, and context. Remove duplicates and organize chronologically. If the summaries contain '## Tool activity' sections, merge them into a single final '## Tool activity' section that keeps every distinct tool invocation and its outcome."
             },
             new
             {
@@ -815,7 +957,7 @@ internal sealed class AutoCompactionService
                 string errorBody = await response.Content.ReadAsStringAsync(ct);
                 Log.Warning("Summary combination failed: HTTP {StatusCode} {Body}",
                     (int)response.StatusCode, errorBody);
-                // Fallback: just concatenate the summaries.
+                // Fallback: just return the concatenated summaries.
                 return combinedInput;
             }
 
@@ -844,34 +986,30 @@ internal sealed class AutoCompactionService
     }
 
     /// <summary>
-    /// Builds a compacted request body using the proxy's internal format:
-    /// system message with summary + user continuation message.
+    /// Builds a compacted request body using the proxy's internal format: the pinned system
+    /// instructions merged with a summary block, plus the latest user message so the live
+    /// question survives compaction.
     /// </summary>
     private static string BuildCompactedBodyWithSummary(string originalRequestBody, string summary)
     {
         try
         {
             string modelName = ExtractModelName(originalRequestBody);
+            var source = ExtractMessagesAsArray(originalRequestBody);
+            string summaryBlock = $"Previous conversation summary:\n\n{summary}";
 
-            var compactedRequest = new
+            var messages = new List<object>
             {
-                model = modelName,
-                messages = new[]
-                {
-                    new
-                    {
-                        role = "system",
-                        content = $"Previous conversation summary:\n\n{summary}"
-                    },
-                    new
-                    {
-                        role = "user",
-                        content = "Continuing our conversation based on the summary above."
-                    }
-                }
+                new { role = "system", content = MergeSummaryIntoSystemMessage(source, summaryBlock) },
             };
 
-            string result = JsonSerializer.Serialize(compactedRequest);
+            var trailing = ExtractTrailingMessages(source);
+            if (trailing.Count > 0)
+                messages.AddRange(trailing);
+            else
+                messages.Add(new { role = "user", content = "Continuing our conversation based on the summary above." });
+
+            string result = JsonSerializer.Serialize(new { model = modelName, messages });
             Log.Debug("Built compacted body (Proxy format): {Length} chars", result.Length);
             return result;
         }
@@ -880,7 +1018,11 @@ internal sealed class AutoCompactionService
             Log.Error(ex, "Failed to build compacted body with summary. Original body length: {Length}, Summary length: {SummaryLength}",
                 originalRequestBody.Length, summary.Length);
 
-            return $"{{\"model\":\"unknown\",\"messages\":[{{\"role\":\"system\",\"content\":\"Previous conversation summary:\\n\\n{summary}\"}},{{\"role\":\"user\",\"content\":\"Continuing our conversation based on the summary above.\"}}]}}";
+            return JsonSerializer.Serialize(new
+            {
+                model = "unknown",
+                messages = new[] { new { role = "system", content = $"Previous conversation summary:\n\n{summary}" } },
+            });
         }
     }
 
@@ -901,6 +1043,7 @@ internal sealed class AutoCompactionService
         try
         {
             string modelName = ExtractModelName(originalRequestBody);
+            var source = ExtractMessagesAsArray(originalRequestBody);
 
             // Ollama compaction format constants (from Ollama's agent/compactor.go)
             const string compactionToolName = "session_summary";
@@ -909,42 +1052,48 @@ internal sealed class AutoCompactionService
 
             string summaryContent = $"{compactionSummaryPrefix}{summary}{compactionContinueInstruction}";
 
-            // Build the Ollama-format compacted body with tool call/response pair
-            var compactedRequest = new
+            var messages = new List<object>();
+
+            // Ollama's compactor pins the leading system message; keep it before the summary pair.
+            string? pinnedSystem = ExtractPinnedSystemMessage(source);
+            if (pinnedSystem is not null)
+                messages.Add(new { role = "system", content = pinnedSystem });
+
+            // Assistant message with tool call to compaction tool
+            messages.Add(new
             {
-                model = modelName,
-                messages = new object[]
+                role = "assistant",
+                tool_calls = new[]
                 {
-                    // Assistant message with tool call to compaction tool
                     new
                     {
-                        role = "assistant",
-                        tool_calls = new[]
+                        id = "compaction_summary",
+                        type = "function",
+                        function = new
                         {
-                            new
-                            {
-                                id = "compaction_summary",
-                                type = "function",
-                                function = new
-                                {
-                                    name = compactionToolName,
-                                    arguments = "{}"
-                                }
-                            }
+                            name = compactionToolName,
+                            arguments = "{}"
                         }
-                    },
-                    // Tool response with summary
-                    new
-                    {
-                        role = "tool",
-                        tool_name = compactionToolName,
-                        tool_call_id = "compaction_summary",
-                        content = summaryContent
                     }
                 }
-            };
+            });
 
-            string result = JsonSerializer.Serialize(compactedRequest);
+            // Tool response with summary
+            messages.Add(new
+            {
+                role = "tool",
+                tool_name = compactionToolName,
+                tool_call_id = "compaction_summary",
+                content = summaryContent
+            });
+
+            // Keep the trailing turn (last user message + any pending tool results) so the model
+            // still has the live question and can continue after tool calls.
+            var trailing = ExtractTrailingMessages(source);
+            if (trailing.Count > 0)
+                messages.AddRange(trailing);
+
+            string result = JsonSerializer.Serialize(new { model = modelName, messages });
             Log.Debug("Built compacted body (Ollama format): {Length} chars", result.Length);
             return result;
         }
@@ -956,6 +1105,70 @@ internal sealed class AutoCompactionService
             // Fallback to proxy format
             return BuildCompactedBodyWithSummary(originalRequestBody, summary);
         }
+    }
+
+    /// <summary>
+    /// Returns the content of the leading system message (pinned instructions), if any.
+    /// </summary>
+    private static string? ExtractPinnedSystemMessage(List<JsonElement> messages)
+    {
+        if (messages.Count > 0
+            && messages[0].TryGetProperty("role", out JsonElement role)
+            && role.GetString()?.Equals("system", StringComparison.OrdinalIgnoreCase) == true
+            && messages[0].TryGetProperty("content", out JsonElement content))
+        {
+            string? text = content.ValueKind == JsonValueKind.String ? content.GetString() : content.GetRawText();
+            if (!string.IsNullOrWhiteSpace(text))
+                return text;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Merges the summary block into the pinned system message so the compacted request keeps
+    /// its original behavioral instructions.
+    /// </summary>
+    private static string MergeSummaryIntoSystemMessage(List<JsonElement> messages, string summaryBlock)
+    {
+        string? pinned = ExtractPinnedSystemMessage(messages);
+        return pinned is null ? summaryBlock : $"{pinned}\n\n{summaryBlock}";
+    }
+
+    /// <summary>
+    /// Returns the trailing turn of the conversation (last user message + any assistant tool_calls
+    /// + tool results after it), truncated to keep the compacted request small. This preserves
+    /// pending tool state so the model can continue after tool calls.
+    /// </summary>
+    private static List<object> ExtractTrailingMessages(List<JsonElement> messages)
+    {
+        var result = new List<object>();
+
+        // Find the last user message
+        int lastUserIndex = -1;
+        for (int i = messages.Count - 1; i >= 0; i--)
+        {
+            if (messages[i].TryGetProperty("role", out JsonElement role)
+                && role.GetString()?.Equals("user", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                lastUserIndex = i;
+                break;
+            }
+        }
+
+        if (lastUserIndex < 0)
+            return result;
+
+        // Include the last user message and everything after it (assistant tool_calls, tool results)
+        int count = messages.Count - lastUserIndex;
+        int perMessageTokens = Math.Max(250, MaxKeptSuffixTokens / count);
+
+        for (int i = lastUserIndex; i < messages.Count; i++)
+        {
+            result.Add(TruncateMessageIfNeeded(messages[i], perMessageTokens));
+        }
+
+        return result;
     }
 
     private static string ExtractModelName(string requestBody)
@@ -973,67 +1186,5 @@ internal sealed class AutoCompactionService
             // Fall through to default
         }
         return "unknown";
-    }
-
-    private static string BuildCompactedRequestBody(string originalRequestBody, string compactResponseBody)
-    {
-        try
-        {
-            using JsonDocument originalDoc = JsonDocument.Parse(originalRequestBody);
-            using JsonDocument compactDoc = JsonDocument.Parse(compactResponseBody);
-
-            // The compact response has an "output" array with compacted messages.
-            // We replace the original "messages" array with the compacted content.
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream))
-            {
-                writer.WriteStartObject();
-
-                // Copy all original properties except "messages".
-                foreach (JsonProperty prop in originalDoc.RootElement.EnumerateObject())
-                {
-                    if (prop.NameEquals("messages"u8))
-                        continue;
-                    prop.Value.WriteTo(writer);
-                }
-
-                // Write the compacted messages.
-                if (compactDoc.RootElement.TryGetProperty("output", out JsonElement output)
-                    && output.ValueKind == JsonValueKind.Array)
-                {
-                    writer.WritePropertyName("messages");
-                    // Convert compact output items to chat message format.
-                    writer.WriteStartArray();
-                    foreach (JsonElement item in output.EnumerateArray())
-                    {
-                        if (item.TryGetProperty("role", out JsonElement role)
-                            && item.TryGetProperty("content", out JsonElement content))
-                        {
-                            writer.WriteStartObject();
-                            writer.WriteString("role", role.GetString() ?? "user");
-                            writer.WriteString("content", content.ValueKind == JsonValueKind.String
-                                ? content.GetString()
-                                : content.GetRawText());
-                            writer.WriteEndObject();
-                        }
-                    }
-                    writer.WriteEndArray();
-                }
-                else
-                {
-                    // Fallback: keep original messages if compact response is unexpected.
-                    originalDoc.RootElement.GetProperty("messages").WriteTo(writer);
-                }
-
-                writer.WriteEndObject();
-            }
-
-            return Encoding.UTF8.GetString(stream.ToArray());
-        }
-        catch
-        {
-            // On any failure, return the original body unchanged.
-            return originalRequestBody;
-        }
     }
 }

@@ -7,4 +7,6 @@
   <Project Path="Kaeo LLM Proxy Module Web Search\Kaeo LLM Proxy Module Web Search.csproj" />
   <Project Path="Kaeo LLM Proxy Module SSH\Kaeo LLM Proxy Module SSH.csproj" />
   <Project Path="Kaeo LLM Proxy.Tests\Kaeo LLM Proxy.Tests.csproj" />
+  <Project Path="Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
+  <Project Path="Kaeo LLM Proxy VS Extension\Kaeo LLM Proxy VS Extension.csproj" />
 </Solution>
