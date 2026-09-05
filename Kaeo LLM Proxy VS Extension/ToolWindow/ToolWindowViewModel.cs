@@ -29,6 +29,14 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private readonly List<AgentMessage> _history = new();
     private CancellationTokenSource? _cts;
 
+    /// <summary>
+    /// A model selectable in the pill bar: the model name, the owning connection (baseUrl + key),
+    /// and whether the Ollama "tools" capability is present (tool-calling models are auto-enabled).
+    /// </summary>
+    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools);
+
+    private readonly List<ModelSelection> _modelSelections = new();
+
     private string _currentAgent = "Agent";
     private string _currentMode = "Interactive";
     private string _currentModel = string.Empty;
@@ -58,6 +66,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public ObservableCollection<string> Modes { get; } = new();
     public ObservableCollection<string> Models { get; } = new();
 
+    /// <summary>Raised after <see cref="LoadAsync"/> finishes pulling the live model list.</summary>
+    public event Action? ModelsLoaded;
+
     public string CurrentAgent
     {
         get => _currentAgent;
@@ -77,19 +88,37 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         {
             _currentModel = value;
             OnPropertyChanged();
-            // Remember the selection in defaults.
-            var s = _settings.LoadAsync().GetAwaiter().GetResult();
-            s.Defaults?.Model = value;
-            _settings.SaveAsync(s).GetAwaiter().GetResult();
         }
     }
 
-    /// <summary>Loads agents, connections, and models from the settings store.</summary>
+    /// <summary>Persists the current model selection into the defaults section of settings.</summary>
+    public async Task PersistCurrentModelAsync()
+    {
+        if (string.IsNullOrEmpty(CurrentModel)) return;
+        var s = await _settings.LoadAsync();
+        s.Defaults ??= new Defaults();
+        s.Defaults.Model = CurrentModel;
+        await _settings.SaveAsync(s);
+    }
+
+    /// <summary>
+    /// Loads agents from settings and pulls the live model list from every enabled connection's
+    /// Ollama /api/tags endpoint. Models are displayed grouped by connection; those advertising
+    /// the Ollama "tools" capability are auto-enabled for tool calling.
+    /// </summary>
     public async Task LoadAsync()
     {
         var s = await _settings.LoadAsync();
 
         // User-defined agents (map the settings-store Agent type to AgentConfig).
+        var hadUserAgents = Agents.Any(a => !a.IsBuiltin);
+        if (hadUserAgents)
+        {
+            // Remove existing user-defined agents before re-adding.
+            var builtins = Agents.Where(a => a.IsBuiltin).ToList();
+            Agents.Clear();
+            foreach (var b in builtins) Agents.Add(b);
+        }
         foreach (var a in s.Agents ?? Array.Empty<Agent>())
         {
             if (string.IsNullOrWhiteSpace(a.Name)) continue;
@@ -105,23 +134,55 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             });
         }
 
-        // Models aggregated across enabled connections; pinned first.
-        var pinned = new List<string>();
-        var rest = new List<string>();
+        // Pull live models from every enabled connection.
+        _modelSelections.Clear();
+        Models.Clear();
         foreach (var conn in s.Connections ?? Array.Empty<Connection>())
         {
-            if (!conn.Enabled) continue;
-            foreach (var m in conn.Models ?? Array.Empty<ModelEntry>())
+            if (!conn.Enabled || string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
+
+            var client = new OllamaApiClient(conn.BaseUrl, conn.ApiKey);
+            IReadOnlyList<ModelInfo> fetched;
+            try
             {
-                var label = m.Pinned ? $"★ {m.Name}" : m.Name;
-                (m.Pinned ? pinned : rest).Add(label);
+                fetched = await client.GetModelsAsync();
+            }
+            catch
+            {
+                // Connection unreachable — skip it (status surfaced elsewhere).
+                continue;
+            }
+
+            foreach (var m in fetched)
+            {
+                // Label disambiguates same-named models across connections.
+                var label = $"{conn.Name} / {m.Name}";
+                _modelSelections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
+                Models.Add(label);
             }
         }
-        Models.Clear();
-        foreach (var p in pinned) Models.Add(p);
-        foreach (var r in rest) Models.Add(r);
-        if (Models.Count > 0 && string.IsNullOrEmpty(CurrentModel))
-            CurrentModel = Models[0];
+
+        // Default to the first tool-capable model, else the first model.
+        if (string.IsNullOrEmpty(CurrentModel) || !Models.Contains(CurrentModel))
+        {
+            var firstTools = _modelSelections.FirstOrDefault(sel => sel.SupportsTools);
+            var pick = firstTools ?? _modelSelections.FirstOrDefault();
+            if (pick is not null)
+            {
+                CurrentModel = $"{pick.ConnectionName} / {pick.Name}";
+            }
+        }
+
+        ModelsLoaded?.Invoke();
+    }
+
+    /// <summary>Resolves the current model label back to its connection + client.</summary>
+    private (OllamaApiClient Client, string ModelName)? ResolveCurrentModel()
+    {
+        if (string.IsNullOrEmpty(CurrentModel)) return null;
+        var sel = _modelSelections.FirstOrDefault(m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
+        if (sel is null) return null;
+        return (new OllamaApiClient(sel.BaseUrl, sel.ApiKey), sel.Name);
     }
 
     /// <summary>Sends the prompt and streams the agent's response into the transcript.</summary>
@@ -141,6 +202,15 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             "AutoPilot" => AgentMode.AutoPilot,
             _ => AgentMode.Interactive
         };
+
+        // Resolve the Ollama connection + model name for the current selection.
+        var resolved = ResolveCurrentModel();
+        if (resolved is null)
+        {
+            Lines.Add(new ChatLine { Kind = "status", Text = "No connection/model selected. Add a connection in settings (⚙ → Models)." });
+            return;
+        }
+        var (client, modelName) = resolved.Value;
 
         var events = new AgentEvents
         {
@@ -162,9 +232,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
         try
         {
-            var result = await _engine.RunAsync(agent, CurrentModel, mode, _history, prompt, events, _cts.Token);
+            var result = await _engine.RunAsync(client, agent, modelName, mode, _history, prompt, events, _cts.Token);
             streaming.Text = result.FinalText;
             _history.Add(new AgentMessage("assistant", result.FinalText));
+            _ = PersistCurrentModelAsync();
         }
         catch (OperationCanceledException)
         {

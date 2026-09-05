@@ -13,9 +13,10 @@ public partial class ToolWindowControl : UserControl
     {
         InitializeComponent();
 
-        var ollama = new OllamaApiClient("http://localhost:8388");
+        // No hardcoded proxy URL: connections come from settings, and models are pulled
+        // live from each connection's Ollama /api/tags endpoint (see ToolWindowViewModel).
         var mcp = new McpServerManager(_settings);
-        var engine = new ChatEngine(ollama, new AgentRuntime(ollama, mcp, _settings), _settings);
+        var engine = new ChatEngine(new AgentRuntime(mcp));
         _vm = new ToolWindowViewModel(engine, _settings);
 
         // Bind the transcript and pills.
@@ -32,6 +33,9 @@ public partial class ToolWindowControl : UserControl
 
         ModelCombo.ItemsSource = _vm.Models;
         ModelCombo.SelectionChanged += (_, _) => _vm.CurrentModel = ModelCombo.SelectedItem as string ?? _vm.CurrentModel;
+
+        // After each live model pull, sync the combo selection to the chosen default model.
+        _vm.ModelsLoaded += SyncModelSelection;
 
         // Enter to send (Shift+Enter for newline).
         PromptBox.KeyDown += (_, e) =>
@@ -58,10 +62,21 @@ public partial class ToolWindowControl : UserControl
 
     private void GearButton_Click(object? sender, RoutedEventArgs e)
     {
-        var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow();
-        wnd.OpenTab("General");
+        var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
+        // After a connection is added/removed or models refreshed, re-pull the live list.
+        // LoadAsync fires ModelsLoaded, which syncs the combo selection.
+        wnd.ModelsChanged += async () => await _vm?.LoadAsync();
+        wnd.OpenTab("Models");
         wnd.Owner = Application.Current?.MainWindow;
         wnd.ShowDialog();
-        _ = _vm?.LoadAsync();
+    }
+
+    /// <summary>Selects the current model in the combo after a live model pull.</summary>
+    private void SyncModelSelection()
+    {
+        if (_vm is null) return;
+        var label = _vm.CurrentModel;
+        if (!string.IsNullOrEmpty(label) && _vm.Models.Contains(label))
+            ModelCombo.SelectedItem = label;
     }
 }

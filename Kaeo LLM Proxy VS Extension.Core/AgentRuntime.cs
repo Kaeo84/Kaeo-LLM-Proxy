@@ -84,9 +84,7 @@ internal sealed record AgentTurnResult(string FinalText, bool Completed, int Too
 /// </summary>
 internal sealed class AgentRuntime
 {
-    private readonly OllamaApiClient _ollama;
     private readonly McpServerManager _mcp;
-    private readonly ExtensionSettingsStore _settings;
 
     /// <summary>Maximum tool-call iterations per turn (prevents infinite tool loops).</summary>
     private const int MaxToolIterations = 10;
@@ -94,19 +92,18 @@ internal sealed class AgentRuntime
     /// <summary>Default AutoPilot continuation budget.</summary>
     private const int DefaultAutoPilotBudget = 5;
 
-    public AgentRuntime(OllamaApiClient ollama, McpServerManager mcp, ExtensionSettingsStore settings)
+    public AgentRuntime(McpServerManager mcp)
     {
-        _ollama = ollama ?? throw new ArgumentNullException(nameof(ollama));
         _mcp = mcp ?? throw new ArgumentNullException(nameof(mcp));
-        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
     }
 
     /// <summary>
-    /// Runs a single agent turn: streams the model response, executes any requested tool calls,
-    /// feeds results back, and repeats until the model produces a final answer or the iteration
-    /// budget is exhausted. Emits events via <paramref name="events"/> as work progresses.
+    /// Runs a single agent turn against the given Ollama connection: streams the model response,
+    /// executes any requested tool calls, feeds results back, and repeats until the model produces
+    /// a final answer or the iteration budget is exhausted. Emits events via <paramref name="events"/>.
     /// </summary>
     public async Task<AgentTurnResult> RunTurnAsync(
+        OllamaApiClient ollama,
         AgentConfig agent,
         string model,
         AgentMode mode,
@@ -135,7 +132,7 @@ internal sealed class AgentRuntime
             var pendingToolCalls = new List<ToolCallRequest>();
 
             // Stream the model response.
-            await foreach (var chunk in _ollama.StreamChatAsync(payload, ct))
+            await foreach (var chunk in ollama.StreamChatAsync(payload, ct))
             {
                 if (chunk.Text is not null)
                 {
@@ -204,7 +201,7 @@ internal sealed class AgentRuntime
             events.AutoPilotContinuing?.Invoke(autopilotBudget);
 
             // Recurse with a continuation prompt.
-            var continuation = await RunTurnAsync(agent, model, mode, history,
+            var continuation = await RunTurnAsync(ollama, agent, model, mode, history,
                 "Continue. You were not finished. Complete the remaining work.", events, ct);
             return new AgentTurnResult(continuation.FinalText, continuation.Completed,
                 toolCallsExecuted + continuation.ToolCallsExecuted, true);

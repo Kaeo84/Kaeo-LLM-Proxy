@@ -11,11 +11,15 @@ internal sealed class OllamaApiClient
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;
+    private readonly string? _apiKey;
 
-    public OllamaApiClient(string baseUrl, HttpClient? httpClient = null)
+    public OllamaApiClient(string baseUrl, string? apiKey = null, HttpClient? httpClient = null)
     {
         _baseUrl = baseUrl?.TrimEnd('/') ?? throw new ArgumentNullException(nameof(baseUrl));
+        _apiKey = apiKey;
         _http = httpClient ?? new HttpClient();
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
     }
 
     public Task<bool> HealthAsync(CancellationToken ct = default)
@@ -39,7 +43,8 @@ internal sealed class OllamaApiClient
 
     public async Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
     {
-        // GET /api/tags returns { "models": [ { "name": ..., "details": {...} } ] }
+        // Ollama-standard GET /api/tags:
+        // { "models": [ { "name", "model", "details": { "parameter_size", "context_length", ... }, "capabilities": ["completion","tools","vision"] } ] }
         var resp = await _http.GetAsync(new Uri(new Uri(_baseUrl), "/api/tags"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -50,10 +55,28 @@ internal sealed class OllamaApiClient
         {
             foreach (var m in modelsEl.EnumerateArray())
             {
-                var name = m.TryGetProperty("name", out var n) ? n.GetString() : null;
-                var paramSize = m.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Object && d.TryGetProperty("parameter_size", out var p) ? p.GetString() : null;
-                if (name is not null)
-                    list.Add(new ModelInfo(name, paramSize));
+                if (!m.TryGetProperty("name", out var n)) continue;
+                var name = n.GetString();
+                if (name is null) continue;
+
+                // details.context_length
+                long contextLength = 0;
+                if (m.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Object && d.TryGetProperty("context_length", out var cl))
+                    contextLength = cl.GetInt64();
+
+                // capabilities: Ollama-native tokens. Tool-calling is signalled by "tools".
+                var capabilities = new List<string>();
+                if (m.TryGetProperty("capabilities", out var caps) && caps.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var c in caps.EnumerateArray())
+                    {
+                        var cv = c.GetString();
+                        if (cv is not null) capabilities.Add(cv);
+                    }
+                }
+                var supportsTools = capabilities.Contains("tools", StringComparer.OrdinalIgnoreCase);
+
+                list.Add(new ModelInfo(name, contextLength, capabilities, supportsTools));
             }
         }
         return list;
@@ -86,8 +109,12 @@ internal sealed class OllamaApiClient
     }
 }
 
-/// <summary>A model entry from the proxy's /api/tags endpoint.</summary>
-internal sealed record ModelInfo(string Name, string? ParameterSize);
+/// <summary>
+/// A model entry from the proxy's Ollama-standard /api/tags endpoint.
+/// <see cref="SupportsTools"/> is true when the Ollama "tools" capability token is present,
+/// which is the standard signal that the model supports tool/function calling.
+/// </summary>
+internal sealed record ModelInfo(string Name, long ContextLength, IReadOnlyList<string> Capabilities, bool SupportsTools);
 
 /// <summary>A single streamed chat token chunk from the proxy's /api/chat NDJSON stream.</summary>
 internal sealed record ChatChunk(string? Text, bool Done);

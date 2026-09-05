@@ -22,10 +22,26 @@
                 </StackPanel>
             </TabItem>
             <TabItem Header="Models" x:Name="TabModels">
-                <StackPanel Margin="12">
-                    <TextBlock Text="Connections and Models" FontWeight="Bold"/>
+                <DockPanel Margin="12">
+                    <!-- Add-connection form -->
+                    <StackPanel DockPanel.Dock="Top">
+                        <TextBlock Text="Add a connection" FontWeight="Bold"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBox x:Name="ConnNameBox" Width="140" Margin="4" VerticalAlignment="Center"
+                                     ToolTip="Display name for this proxy connection"/>
+                            <TextBox x:Name="ConnUrlBox" Width="260" Margin="4" VerticalAlignment="Center"
+                                     ToolTip="Base URL of the Ollama-compatible proxy, e.g. http://localhost:8388"/>
+                            <TextBox x:Name="ConnKeyBox" Width="160" Margin="4" VerticalAlignment="Center"
+                                     ToolTip="Optional API key"/>
+                            <Button x:Name="AddConnButton" Content="Add" Width="60" Margin="4" Click="AddConnButton_Click"/>
+                            <Button x:Name="RefreshModelsButton" Content="Refresh models" Width="110" Margin="4" Click="RefreshModelsButton_Click"/>
+                        </StackPanel>
+                        <TextBlock x:Name="ModelsStatusText" Margin="4" Foreground="Gray"/>
+                    </StackPanel>
+
+                    <!-- Connections → models tree -->
                     <TreeView x:Name="ConnectionsTree" Margin="0,8,0,0" />
-                </StackPanel>
+                </DockPanel>
             </TabItem>
             <TabItem Header="Agents" x:Name="TabAgents">
                 <StackPanel Margin="12">
