@@ -219,7 +219,7 @@ internal static class Program
         {
             foreach (string? value in SecretMaterialValues(credential))
             {
-                if (SecretProtector.IsEncrypted(value)
+                if (value is not null && SecretProtector.IsEncrypted(value)
                     && !SecretProtector.TryDecrypt(value, passphrase, out _))
                 {
                     return false;
@@ -230,13 +230,13 @@ internal static class Program
         // Second pass: apply decryption.
         foreach (StoredCredential credential in settings.Credentials)
         {
-            if (SecretProtector.IsEncrypted(credential.Secret))
+            if (credential.Secret is not null && SecretProtector.IsEncrypted(credential.Secret))
                 credential.Secret = SecretProtector.Decrypt(credential.Secret, passphrase);
 
-            if (SecretProtector.IsEncrypted(credential.PrivateKey))
+            if (credential.PrivateKey is not null && SecretProtector.IsEncrypted(credential.PrivateKey))
                 credential.PrivateKey = SecretProtector.Decrypt(credential.PrivateKey, passphrase);
 
-            if (SecretProtector.IsEncrypted(credential.Certificate))
+            if (credential.Certificate is not null && SecretProtector.IsEncrypted(credential.Certificate))
                 credential.Certificate = SecretProtector.Decrypt(credential.Certificate, passphrase);
         }
 

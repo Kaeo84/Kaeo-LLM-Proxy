@@ -56,7 +56,9 @@ public class PassthroughToolCallExtractionTests
         Assert.StartsWith("call_", toolCall.GetProperty("id").GetString());
         Assert.Equal("get_weather", toolCall.GetProperty("function").GetProperty("name").GetString());
 
-        JsonElement arguments = JsonDocument.Parse(toolCall.GetProperty("function").GetProperty("arguments").GetString()).RootElement;
+        string? argumentsJson = toolCall.GetProperty("function").GetProperty("arguments").GetString();
+        Assert.NotNull(argumentsJson);
+        JsonElement arguments = JsonDocument.Parse(argumentsJson).RootElement;
         Assert.Equal("Seattle", arguments.GetProperty("city").GetString());
         Assert.Equal(3, arguments.GetProperty("days").GetInt32());
     }

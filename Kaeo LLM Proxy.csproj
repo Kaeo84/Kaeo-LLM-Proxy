@@ -9,6 +9,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <!-- WinForms event handlers require async void (VSTHRD100) and the
+         Async suffix convention is used throughout for consistency (VSTHRD200) -->
+    <NoWarn>$(NoWarn);VSTHRD100;VSTHRD200</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,6 +38,7 @@
     <Compile Remove="ollama-docs\**" />
     <Compile Remove="Kaeo LLM Proxy VS Extension.Core\**" />
     <Compile Remove="Kaeo LLM Proxy VS Extension\**" />
+    <Compile Remove="Kaeo VS Extension\**" />
     <EmbeddedResource Remove="copilot-sdk\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Core\**" />
     <EmbeddedResource Remove="Kaeo LLM Proxy Infrastructure\**" />
@@ -62,6 +66,8 @@
     <!-- The App uses Serilog directly (startup logging); the other packages now live in the
          Core / Infrastructure / Services libraries and flow in transitively. -->
     <PackageReference Include="Serilog" Version="4.4.0" />
+    <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
+    <PackageReference Include="MessagePack" Version="3.1.8" />
   </ItemGroup>
 
   <!-- Module system: copy all module outputs (DLL + large deps) to $(OutputPath)Modules/ -->

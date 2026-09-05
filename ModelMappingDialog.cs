@@ -260,14 +260,17 @@ internal sealed class ModelMappingDialog : Form
         set
         {
             _dgvCapabilities.Rows.Clear();
-            var capColumn = (DataGridViewComboBoxColumn)_dgvCapabilities.Columns["_colCapCapability"];
-            foreach (string token in value ?? [])
+            var capColumn = (DataGridViewComboBoxColumn?)_dgvCapabilities.Columns["_colCapCapability"];
+            if (capColumn is null) return;
+            foreach (string? token in value ?? [])
             {
+                if (token is null) continue;
                 if (!capColumn.Items.Contains(token))
                     capColumn.Items.Add(token);
                 int idx = _dgvCapabilities.Rows.Add();
-                _dgvCapabilities.Rows[idx].Cells[0].Value = token;
-                _dgvCapabilities.Rows[idx].Cells[1].Value = true;
+                DataGridViewRow row = _dgvCapabilities.Rows[idx];
+                row.Cells[0].Value = token;
+                row.Cells[1].Value = true;
             }
         }
     }

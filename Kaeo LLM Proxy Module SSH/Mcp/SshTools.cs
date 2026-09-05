@@ -64,7 +64,7 @@ internal sealed class SshTools(
 
         try
         {
-            string key = await _manager.ConnectAsync(request, _session, cancellationToken);
+            string key = await _manager.ConnectAsync(request!, _session, cancellationToken);
             return _manager.IsOpen(key)
                 ? $"SSH connection '{key}' is open ({request!.Username}@{request.Host}:{request.Port}). " +
                   $"Use ssh_exec with connection '{key}' to run commands. " +

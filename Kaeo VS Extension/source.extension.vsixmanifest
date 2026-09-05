@@ -4,7 +4,7 @@
   <Identity Language="en-US" Id="Kaeo.LlmProxy.VSExtension" Version="0.1.0" Publisher="Kaeo84" />
   <DisplayName>Kaeo VS Extension</DisplayName>
   <Description xml:space="preserve">Copilot-style agent UI integrated with the Kaeo LLM Proxy.</Description>
-  <MoreInfoUrl>https://github.com/Kaeo84/Kaeo-LLM-Proxy</MoreInfoUrl>
+  <MoreInfo>https://github.com/Kaeo84/Kaeo-LLM-Proxy</MoreInfo>
   <Tags>AI Copilot Kaeo</Tags>
   </Metadata>
   <Prerequisites>

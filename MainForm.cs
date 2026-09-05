@@ -1164,7 +1164,7 @@ internal partial class MainForm : Form
         try
         {
             string? levelFilter = _cboSysLogLevel.SelectedIndex > 0
-                ? _cboSysLogLevel.Items[_cboSysLogLevel.SelectedIndex].ToString()
+                ? _cboSysLogLevel.Items[_cboSysLogLevel.SelectedIndex]?.ToString()
                 : null;
 
             IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(levelFilter, 500);
