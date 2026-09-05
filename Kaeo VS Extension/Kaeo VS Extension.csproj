@@ -7,12 +7,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <!-- VSIX packaging: GeneratePkgDefFile is disabled because the CLI CreatePkgDef tool
-       (.NET Framework) cannot load net10.0 type references. The .pkgdef will be generated
-       by the VS IDE VSIX project system when building in Visual Studio. -->
     <VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
-    <GenerateVsix>false</GenerateVsix>
     <CreateVsixContainer>true</CreateVsixContainer>
+    <!-- Hand-authored: the CLI CreatePkgDef (.NET Framework) cannot load net10.0 assemblies -->
     <GeneratePkgDefFile>false</GeneratePkgDefFile>
     <VsixSourceManifestPath>$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
     <LoadVsixManifest>true</LoadVsixManifest>
@@ -35,9 +32,13 @@
     </PackageReference>
   </ItemGroup>
 
-  <!-- VSCT command table -->
+  <!-- Hand-authored .pkgdef (the CLI CreatePkgDef tool cannot load net10.0 assemblies).
+       IncludeInVSIX=true places it at the VSIX root so VS registers the package. -->
   <ItemGroup>
-    <Vsct Include="Commands.vsct" />
+    <Content Include="Kaeo VS Extension.pkgdef" Link="Kaeo VS Extension.pkgdef">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

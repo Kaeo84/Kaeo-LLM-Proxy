@@ -1,0 +1,25 @@
+[$RootKey$]
+
+[$RootKey$\Editors]
+
+[$RootKey$\Packages]
+
+[$RootKey$\Packages\{d1f6a6c2-0000-4a6d-9c2f-000000000000}]
+"Class"="Kaeo.LlmProxy.VSExtension.VsPackage"
+"CodeBase"="$RootFolder$\Kaeo VS Extension.dll"
+"InprocServer32"="$System$\mscoree.dll"
+"ProductName"="Kaeo VS Extension"
+"ProductVersion"="0.1.0"
+@="Kaeo VS Extension"
+
+[$RootKey$\Projects]
+
+[$RootKey$\ToolWindows]
+
+[$RootKey$\ToolWindows\{b3c2f6a1-0000-4a6d-9c2f-000000000001}]
+"Float"="200, 200, 900, 700"
+"Name"="Kaeo.LlmProxy.VSExtension.ToolWindow.ToolWindowPaneImpl"
+"Orientation"="Bottom"
+"Style"="Tabbed"
+"Window"="{3ae79031-e1bc-11d0-8f78-00a0c9110057}"
+@="{d1f6a6c2-0000-4a6d-9c2f-000000000000}"
