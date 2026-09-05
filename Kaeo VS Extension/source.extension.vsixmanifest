@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
   <Identity Language="en-US" Id="Kaeo.LlmProxy.VSExtension" Version="0.1.0" Publisher="Kaeo84" />
   <DisplayName>Kaeo VS Extension</DisplayName>
@@ -21,4 +21,7 @@
     <ProductArchitecture>amd64</ProductArchitecture>
   </InstallationTarget>
   </Installation>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+  </Assets>
 </PackageManifest>
