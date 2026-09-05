@@ -134,6 +134,23 @@ To use compaction, configure a compact model in your model mapping:
 
 This allows you to use a large model for regular requests while using a smaller, faster model for compaction tasks.
 
+## Visual Studio Extension
+
+A [Visual Studio 2026 extension](Kaeo%20LLM%20Proxy%20VS%20Extension/README.md) provides a
+GitHub Copilot-style chat panel that pairs with this proxy. It offers an agent/mode/model pill
+bar, a streaming chat transcript, a multi-tab settings modal, and MCP tool integration — all
+routed through the proxy's Ollama-compatible API.
+
+- **Projects**: `Kaeo LLM Proxy VS Extension.Core` (host-agnostic client library) and
+  `Kaeo LLM Proxy VS Extension` (VSIX).
+- **Agent modes**: Interactive, Bypass, AutoPilot.
+- **Built-in agents**: Agent, Ask, Plan (plus user-defined agents).
+- **Multi-connection**: add any number of proxy connections; models are pulled live from each
+  connection's `/api/tags` and tool-capable models (Ollama `tools` capability) are auto-enabled.
+
+See the [extension README](Kaeo%20LLM%20Proxy%20VS%20Extension/README.md) for build, install,
+and configuration details.
+
 ## System Requirements
 
 - Windows 10 version 22000 (21H2) or later
