@@ -17,6 +17,7 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy VS Extension" />
+		<InternalsVisibleTo Include="Kaeo VS Extension" />
 	</ItemGroup>
 
 </Project>

@@ -9,4 +9,7 @@
   <Project Path="Kaeo LLM Proxy Module Web Search/Kaeo LLM Proxy Module Web Search.csproj" />
   <Project Path="Kaeo LLM Proxy Module SSH/Kaeo LLM Proxy Module SSH.csproj" />
   <Project Path="Kaeo LLM Proxy.Tests/Kaeo LLM Proxy.Tests.csproj" />
+  <Project Path="Kaeo VS Extension/Kaeo VS Extension.csproj" Id="f102ae08-2c8a-4ab2-b513-b47b3c132edb">
+    <Deploy />
+  </Project>
 </Solution>
