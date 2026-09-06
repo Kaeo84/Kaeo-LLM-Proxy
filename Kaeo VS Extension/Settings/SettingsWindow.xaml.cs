@@ -138,5 +138,5 @@ public partial class SettingsWindow : DialogWindow
         }
     }
 
-    private void OnClose(object sender, RoutedEventArgs e) => this.Close();
+    private void OnClose(object sender, RoutedEventArgs e) => DialogResult = true;
 }
