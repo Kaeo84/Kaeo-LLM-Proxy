@@ -18,8 +18,12 @@
     <!-- Only the net48 target produces the VSIX container. -->
     <CreateVsixContainer Condition="'$(TargetFramework)' == 'net48'">true</CreateVsixContainer>
     <CreateVsixContainer Condition="'$(TargetFramework)' != 'net48'">false</CreateVsixContainer>
-    <!-- Hand-authored: the CLI CreatePkgDef (.NET Framework) cannot load net10.0 assemblies -->
-    <GeneratePkgDefFile>false</GeneratePkgDefFile>
+    <!-- CreatePkgDef is a .NET Framework tool. The net48 package assembly can now be
+         loaded by it, so we let VSSDK generate the full pkgdef (package registration,
+         tool windows, and the [ProvideMenuResource] command-table entry). The net10.0
+         leg keeps it off because CreatePkgDef cannot load a net10.0 assembly. -->
+    <GeneratePkgDefFile Condition="'$(TargetFramework)' == 'net48'">true</GeneratePkgDefFile>
+    <GeneratePkgDefFile Condition="'$(TargetFramework)' != 'net48'">false</GeneratePkgDefFile>
     <VsixSourceManifestPath Condition="'$(TargetFramework)' == 'net48'">$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
     <LoadVsixManifest Condition="'$(TargetFramework)' == 'net48'">true</LoadVsixManifest>
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
@@ -41,14 +45,14 @@
     </PackageReference>
   </ItemGroup>
 
-  <!-- Hand-authored .pkgdef (the CLI CreatePkgDef tool cannot load net10.0 assemblies).
-       IncludeInVSIX=true places it at the VSIX root so VS registers the package.
-       net48-only: it is only consumed by the VSIX (which is built for net48). -->
+  <!-- Compile Commands.vsct into the Menus.ctmenu command-table resource embedded in the
+       net48 package assembly. [ProvideMenuResource("Menus.ctmenu", 1)] on the package
+       class + the VSSDK-generated pkgdef register it with VS so the View-menu button
+       appears. net48-only: the VSIX (and thus the menu) is built for net48. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
-    <Content Include="Kaeo VS Extension.pkgdef" Link="Kaeo VS Extension.pkgdef">
-      <IncludeInVSIX>true</IncludeInVSIX>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+    <VSCTCompile Include="Commands.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
   </ItemGroup>
 
 </Project>
