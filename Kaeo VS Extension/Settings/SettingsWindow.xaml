@@ -1,11 +1,11 @@
-<Window x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
+<vsui:DialogWindow x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
         Title="Kaeo Assistant Settings" Height="600" Width="800"
-        Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
-        Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
+        
+        vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
     <Grid>
         <TabControl x:Name="MainTabControl">
             <TabItem Header="General" x:Name="TabGeneral">
@@ -62,4 +62,4 @@
         </TabControl>
         <Button Content="Close" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="12" Width="80" Click="OnClose"/>
     </Grid>
-</Window>
+</vsui:DialogWindow>

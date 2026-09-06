@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
+using Microsoft.VisualStudio.PlatformUI;
 using System.Windows.Controls;
 using Kaeo.LlmProxy.VSExtension.Core;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings;
 
-public partial class SettingsWindow : Window
+public partial class SettingsWindow : DialogWindow
 {
     private readonly ExtensionSettingsStore _settings;
 
