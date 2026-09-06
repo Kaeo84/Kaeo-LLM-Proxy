@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<!-- net48 is required so the VSIX package loads in the .NET Framework VS host process;
-				 net10.0-windows is retained for the standalone proxy / modern tooling. -->
-		<TargetFrameworks>net48;net10.0-windows10.0.22000.0</TargetFrameworks>
+		<!-- net48 only: this assembly is consumed solely by the VSIX (Kaeo VS Extension),
+				 which must load in the .NET Framework VS host process. The standalone proxy
+				 and tests use the separate "Kaeo LLM Proxy Core" project, not this one. -->
+		<TargetFramework>net48</TargetFramework>
 		<RootNamespace>Kaeo.LlmProxy.VSExtension.Core</RootNamespace>
 		<AssemblyName>Kaeo LLM Proxy VS Extension.Core</AssemblyName>
 		<Nullable>enable</Nullable>

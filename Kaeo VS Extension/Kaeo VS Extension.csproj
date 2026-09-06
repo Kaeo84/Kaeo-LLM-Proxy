@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net48 is REQUIRED for the VSIX: the Visual Studio host process (devenv.exe) runs on
-         .NET Framework and loads the package DLL via mscoree.dll, so a pure net10.0 package
-         cannot load. net10.0-windows is retained for consistency with the rest of the
-         solution but is NOT packaged into the VSIX. -->
-    <TargetFrameworks>net48;net10.0-windows10.0.22000.0</TargetFrameworks>
+    <!-- net48 only: the VSIX must load in the .NET Framework VS host process (devenv.exe
+         loads the package via mscoree.dll), so a pure net10.0 package cannot load.
+         VSIX VSPackages are Visual Studio-only (VSCode uses a different model), so no
+         net10 target is needed. -->
+    <TargetFramework>net48</TargetFramework>
     <RootNamespace>Kaeo.LlmProxy.VSExtension</RootNamespace>
     <AssemblyName>Kaeo VS Extension</AssemblyName>
     <Nullable>enable</Nullable>
@@ -15,22 +15,18 @@
     <LangVersion>latest</LangVersion>
     <UseWPF>true</UseWPF>
     <VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
-    <!-- Only the net48 target produces the VSIX container. -->
-    <CreateVsixContainer Condition="'$(TargetFramework)' == 'net48'">true</CreateVsixContainer>
-    <CreateVsixContainer Condition="'$(TargetFramework)' != 'net48'">false</CreateVsixContainer>
-    <!-- CreatePkgDef is a .NET Framework tool. The net48 package assembly can now be
-         loaded by it, so we let VSSDK generate the full pkgdef (package registration,
-         tool windows, and the [ProvideMenuResource] command-table entry). The net10.0
-         leg keeps it off because CreatePkgDef cannot load a net10.0 assembly. -->
-    <GeneratePkgDefFile Condition="'$(TargetFramework)' == 'net48'">true</GeneratePkgDefFile>
-    <GeneratePkgDefFile Condition="'$(TargetFramework)' != 'net48'">false</GeneratePkgDefFile>
-    <VsixSourceManifestPath Condition="'$(TargetFramework)' == 'net48'">$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
-    <LoadVsixManifest Condition="'$(TargetFramework)' == 'net48'">true</LoadVsixManifest>
+    <CreateVsixContainer>true</CreateVsixContainer>
+    <!-- CreatePkgDef is a .NET Framework tool; it can load this net48 package assembly,
+         so VSSDK generates the full pkgdef (package registration, tool windows, and the
+         [ProvideMenuResource] command-table entry). -->
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <VsixSourceManifestPath>$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
+    <LoadVsixManifest>true</LoadVsixManifest>
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
     <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101</NoWarn>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+  <ItemGroup>
     <ProjectCapability Include="CreateVsixContainer" />
   </ItemGroup>
 
@@ -46,10 +42,9 @@
   </ItemGroup>
 
   <!-- Compile Commands.vsct into the Menus.ctmenu command-table resource embedded in the
-       net48 package assembly. [ProvideMenuResource("Menus.ctmenu", 1)] on the package
-       class + the VSSDK-generated pkgdef register it with VS so the View-menu button
-       appears. net48-only: the VSIX (and thus the menu) is built for net48. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+       package assembly. [ProvideMenuResource("Menus.ctmenu", 1)] on the package class +
+       the VSSDK-generated pkgdef register it with VS so the View-menu button appears. -->
+  <ItemGroup>
     <VSCTCompile Include="Commands.vsct">
       <ResourceName>Menus.ctmenu</ResourceName>
     </VSCTCompile>
