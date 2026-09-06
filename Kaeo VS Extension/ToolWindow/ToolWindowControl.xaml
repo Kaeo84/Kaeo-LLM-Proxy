@@ -3,21 +3,26 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
              mc:Ignorable="d"
-             d:DesignHeight="400" d:DesignWidth="600">
+             d:DesignHeight="400" d:DesignWidth="600"
+             Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
+             Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
+        <vsui:ThemedDialogStyleLoader />
 
         <!-- Message list placeholder -->
         <ListView x:Name="MessageList" Grid.Row="0" BorderThickness="0">
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <StackPanel Margin="8,4">
-                        <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="Gray" Margin="0,0,0,2" />
+                        <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
                         <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
                                    FontFamily="Consolas" FontSize="13" />
                     </StackPanel>
