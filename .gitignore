@@ -27,3 +27,6 @@ _gsdata*/
 *.gsl
 # Edit-tool temp backups
 *.tmp
+
+# MSBuild preprocess diagnostics
+preprocessed.xml
