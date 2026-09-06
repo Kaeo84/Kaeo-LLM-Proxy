@@ -4,7 +4,8 @@
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
         Title="Kaeo Assistant Settings" Height="600" Width="800"
-        
+        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+        Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
         vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
     <Grid>
         <TabControl x:Name="MainTabControl">

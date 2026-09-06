@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
-using System.Windows.Media;
 using Microsoft.VisualStudio.PlatformUI;
 using System.Windows.Controls;
 using Kaeo.LlmProxy.VSExtension.Core;
@@ -20,7 +19,7 @@ public partial class SettingsWindow : DialogWindow
     internal SettingsWindow(ExtensionSettingsStore settings)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
-        InitializeComponent(); Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)); Foreground = new SolidColorBrush(Colors.White);
+        InitializeComponent();
         _ = LoadModelsTabAsync();
     }
 
@@ -139,5 +138,9 @@ public partial class SettingsWindow : DialogWindow
         }
     }
 
-    private void OnClose(object sender, RoutedEventArgs e) { DialogResult = true; }
+    private void OnClose(object sender, RoutedEventArgs e)
+    {
+        // Close() is enough for a single-click close regardless of Show/ShowDialog.
+        Close();
+    }
 }
