@@ -20,7 +20,9 @@ internal sealed class ExtensionSettingsStore
         if (!File.Exists(_path))
             return new ExtensionSettings();
 
-        var text = await File.ReadAllTextAsync(_path).ConfigureAwait(false);
+        // File.ReadAllTextAsync is net6+; run the synchronous version on a thread-pool
+        // thread so the net48 target stays compatible (settings file is small).
+        var text = await Task.Run(() => File.ReadAllText(_path)).ConfigureAwait(false);
         try
         {
             return JsonSerializer.Deserialize<ExtensionSettings>(text) ?? new ExtensionSettings();
@@ -38,7 +40,9 @@ internal sealed class ExtensionSettingsStore
             Directory.CreateDirectory(dir!);
 
         var text = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        await File.WriteAllTextAsync(_path, text).ConfigureAwait(false);
+        // File.WriteAllTextAsync is net6+; run the synchronous version on a thread-pool
+        // thread for net48 compatibility.
+        await Task.Run(() => File.WriteAllText(_path, text)).ConfigureAwait(false);
     }
 }
 

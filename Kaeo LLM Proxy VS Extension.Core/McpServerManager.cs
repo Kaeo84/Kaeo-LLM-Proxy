@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Linq;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -165,7 +166,8 @@ internal sealed class McpServerManager
 
         var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        var respText = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        // ReadAsStringAsync(ct) is net5+; use the parameterless overload for net48.
+        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         var doc = JsonNode.Parse(respText);
         var tools = new List<McpTool>();
         if (doc?["result"]?["tools"] is JsonArray arr)
@@ -204,7 +206,8 @@ internal sealed class McpServerManager
 
         var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        var respText = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        // ReadAsStringAsync(ct) is net5+; use the parameterless overload for net48.
+        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         var doc = JsonNode.Parse(respText);
         return doc?["result"]?.ToJsonString() ?? respText;
     }

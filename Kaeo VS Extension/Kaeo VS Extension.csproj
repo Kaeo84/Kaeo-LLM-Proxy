@@ -1,23 +1,32 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+    <!-- net48 is REQUIRED for the VSIX: the Visual Studio host process (devenv.exe) runs on
+         .NET Framework and loads the package DLL via mscoree.dll, so a pure net10.0 package
+         cannot load. net10.0-windows is retained for consistency with the rest of the
+         solution but is NOT packaged into the VSIX. -->
+    <TargetFrameworks>net48;net10.0-windows10.0.22000.0</TargetFrameworks>
     <RootNamespace>Kaeo.LlmProxy.VSExtension</RootNamespace>
     <AssemblyName>Kaeo VS Extension</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Pin the language version so the net48 target still compiles the modern C# used
+         throughout the extension (records, init, nullable). -->
+    <LangVersion>latest</LangVersion>
     <UseWPF>true</UseWPF>
     <VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
-    <CreateVsixContainer>true</CreateVsixContainer>
+    <!-- Only the net48 target produces the VSIX container. -->
+    <CreateVsixContainer Condition="'$(TargetFramework)' == 'net48'">true</CreateVsixContainer>
+    <CreateVsixContainer Condition="'$(TargetFramework)' != 'net48'">false</CreateVsixContainer>
     <!-- Hand-authored: the CLI CreatePkgDef (.NET Framework) cannot load net10.0 assemblies -->
     <GeneratePkgDefFile>false</GeneratePkgDefFile>
-    <VsixSourceManifestPath>$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
-    <LoadVsixManifest>true</LoadVsixManifest>
+    <VsixSourceManifestPath Condition="'$(TargetFramework)' == 'net48'">$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
+    <LoadVsixManifest Condition="'$(TargetFramework)' == 'net48'">true</LoadVsixManifest>
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
     <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101</NoWarn>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
     <ProjectCapability Include="CreateVsixContainer" />
   </ItemGroup>
 
@@ -33,8 +42,9 @@
   </ItemGroup>
 
   <!-- Hand-authored .pkgdef (the CLI CreatePkgDef tool cannot load net10.0 assemblies).
-       IncludeInVSIX=true places it at the VSIX root so VS registers the package. -->
-  <ItemGroup>
+       IncludeInVSIX=true places it at the VSIX root so VS registers the package.
+       net48-only: it is only consumed by the VSIX (which is built for net48). -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
     <Content Include="Kaeo VS Extension.pkgdef" Link="Kaeo VS Extension.pkgdef">
       <IncludeInVSIX>true</IncludeInVSIX>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

@@ -26,7 +26,7 @@ internal enum AgentMode
 /// </summary>
 internal sealed class AgentConfig
 {
-    public required string Name { get; init; }
+    public string Name { get; init; } = string.Empty;
     public string? DisplayName { get; init; }
     public string? Description { get; init; }
     public string SystemPrompt { get; init; } = string.Empty;
@@ -112,9 +112,9 @@ internal sealed class AgentRuntime
         AgentEvents events,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(agent);
-        ArgumentNullException.ThrowIfNull(history);
-        ArgumentNullException.ThrowIfNull(events);
+        if (agent is null) throw new ArgumentNullException(nameof(agent));
+        if (history is null) throw new ArgumentNullException(nameof(history));
+        if (events is null) throw new ArgumentNullException(nameof(events));
 
         history.Add(new AgentMessage("user", userPrompt));
         var toolCallsExecuted = 0;
@@ -161,7 +161,9 @@ internal sealed class AgentRuntime
             }
 
             // Record the assistant's tool-call message in history.
-            history.Add(new AgentMessage("assistant", fullText, ToolCall: JsonSerializer.SerializeToNode(pendingToolCalls)));
+            // JsonNode.Parse(JsonSerializer.Serialize(...)) is the net48-compatible
+            // equivalent of JsonSerializer.SerializeToNode (net7+).
+            history.Add(new AgentMessage("assistant", fullText, ToolCall: JsonNode.Parse(JsonSerializer.Serialize(pendingToolCalls))));
 
             // Execute each tool call.
             foreach (var tc in pendingToolCalls)

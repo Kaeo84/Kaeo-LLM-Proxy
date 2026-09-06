@@ -47,39 +47,45 @@ internal sealed class OllamaApiClient
         // { "models": [ { "name", "model", "details": { "parameter_size", "context_length", ... }, "capabilities": ["completion","tools","vision"] } ] }
         var resp = await _http.GetAsync(new Uri(new Uri(_baseUrl), "/api/tags"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        using var stream = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct).ConfigureAwait(false);
-
-        var list = new List<ModelInfo>();
-        if (doc.RootElement.TryGetProperty("models", out var modelsEl) && modelsEl.ValueKind == JsonValueKind.Array)
+        // net48 exposes only the parameterless ReadAsStreamAsync and lacks
+        // JsonDocument.ParseAsync (net7+). Read the (small) body to a string and parse
+        // synchronously so both targets compile identically.
+        var body = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        using (body)
         {
-            foreach (var m in modelsEl.EnumerateArray())
+            var doc = JsonDocument.Parse(new StreamReader(body).ReadToEnd());
+
+            var list = new List<ModelInfo>();
+            if (doc.RootElement.TryGetProperty("models", out var modelsEl) && modelsEl.ValueKind == JsonValueKind.Array)
             {
-                if (!m.TryGetProperty("name", out var n)) continue;
-                var name = n.GetString();
-                if (name is null) continue;
-
-                // details.context_length
-                long contextLength = 0;
-                if (m.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Object && d.TryGetProperty("context_length", out var cl))
-                    contextLength = cl.GetInt64();
-
-                // capabilities: Ollama-native tokens. Tool-calling is signalled by "tools".
-                var capabilities = new List<string>();
-                if (m.TryGetProperty("capabilities", out var caps) && caps.ValueKind == JsonValueKind.Array)
+                foreach (var m in modelsEl.EnumerateArray())
                 {
-                    foreach (var c in caps.EnumerateArray())
-                    {
-                        var cv = c.GetString();
-                        if (cv is not null) capabilities.Add(cv);
-                    }
-                }
-                var supportsTools = capabilities.Contains("tools", StringComparer.OrdinalIgnoreCase);
+                    if (!m.TryGetProperty("name", out var n)) continue;
+                    var name = n.GetString();
+                    if (name is null) continue;
 
-                list.Add(new ModelInfo(name, contextLength, capabilities, supportsTools));
+                    // details.context_length
+                    long contextLength = 0;
+                    if (m.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Object && d.TryGetProperty("context_length", out var cl))
+                        contextLength = cl.GetInt64();
+
+                    // capabilities: Ollama-native tokens. Tool-calling is signalled by "tools".
+                    var capabilities = new List<string>();
+                    if (m.TryGetProperty("capabilities", out var caps) && caps.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var c in caps.EnumerateArray())
+                        {
+                            var cv = c.GetString();
+                            if (cv is not null) capabilities.Add(cv);
+                        }
+                    }
+                    var supportsTools = capabilities.Contains("tools", StringComparer.OrdinalIgnoreCase);
+
+                    list.Add(new ModelInfo(name, contextLength, capabilities, supportsTools));
+                }
             }
+            return list;
         }
-        return list;
     }
 
     public IAsyncEnumerable<ChatChunk> StreamChatAsync(object payload, CancellationToken ct = default)
@@ -95,9 +101,12 @@ internal sealed class OllamaApiClient
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
 
-        using var reader = new StreamReader(await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
+        // net48 has only the parameterless ReadAsStreamAsync, and StreamReader.ReadLineAsync
+        // is net7+. This method is an async IAsyncEnumerable that already runs on a
+        // background thread, so a synchronous ReadLine() here does not block the UI thread.
+        using var reader = new StreamReader(await resp.Content.ReadAsStreamAsync().ConfigureAwait(false));
         string? line;
-        while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
+        while ((line = reader.ReadLine()) is not null)
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
             using var doc = JsonDocument.Parse(line);
