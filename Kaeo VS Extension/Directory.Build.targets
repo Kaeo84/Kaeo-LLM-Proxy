@@ -1,0 +1,19 @@
+<Project>
+  <!--
+	Deploy this VSIX to the Release (everyday) Visual Studio instance.
+
+	The VSSDK targets (Microsoft.VisualStudio.Sdk.Common.targets) default
+	VSSDKTargetPlatformRegRootSuffix to 'Exp' at evaluation time whenever the
+	value is empty, which routes VSIX deployment and F5 to the Experimental
+	instance. That file is imported after the .csproj body, so a property set
+	in the project body is reset back to 'Exp'.
+
+	Directory.Build.targets is imported AFTER the VSSDK targets, so overriding
+	the property here wins. An empty root suffix targets the primary (Release)
+	VS instance. This file is scoped to this project only (MSBuild imports the
+	nearest Directory.Build.targets), so other projects are unaffected.
+  -->
+  <PropertyGroup>
+	<VSSDKTargetPlatformRegRootSuffix></VSSDKTargetPlatformRegRootSuffix>
+  </PropertyGroup>
+</Project>
