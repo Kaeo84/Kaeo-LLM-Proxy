@@ -1,5 +1,4 @@
-<Solution>
-  <Project Path="Kaeo LLM Proxy VS Extension.Core/Kaeo LLM Proxy VS Extension.Core.csproj" />
+﻿<Solution>
   <Project Path="Kaeo LLM Proxy.csproj" />
   <Project Path="Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
   <Project Path="Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
@@ -12,3 +11,4 @@
     <Deploy />
   </Project>
 </Solution>
+

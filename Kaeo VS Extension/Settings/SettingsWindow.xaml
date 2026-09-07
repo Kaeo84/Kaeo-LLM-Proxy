@@ -3,64 +3,226 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
-        Title="Kaeo Assistant Settings" Height="600" Width="800"
-        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-        Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
-        vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
-    <Grid>
-        <TabControl x:Name="MainTabControl">
-            <TabItem Header="General" x:Name="TabGeneral">
+        xmlns:toolkit="clr-namespace:Community.VisualStudio.Toolkit;assembly=Community.VisualStudio.Toolkit"
+        Title="Kaeo Assistant Settings"
+        Height="600" Width="800"
+        toolkit:Themes.UseVsTheme="True"
+        vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True"
+        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}">
+
+    <vsui:DialogWindow.Resources>
+        <ResourceDictionary>
+
+            <!-- Button style -->
+            <Style TargetType="Button">
+                <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                <Setter Property="Padding" Value="6,2"/>
+                <Setter Property="Margin" Value="2"/>
+                <Setter Property="HorizontalAlignment" Value="Left"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                <Style.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientEndBrushKey}}"/>
+                    </Trigger>
+                    <Trigger Property="IsPressed" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientEndBrushKey}}"/>
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.SystemGrayTextBrushKey}}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- TextBox style -->
+            <Style TargetType="TextBox">
+                <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                <Setter Property="Padding" Value="4"/>
+                <Setter Property="Margin" Value="2"/>
+            </Style>
+
+            <!-- ComboBox style -->
+            <Style TargetType="ComboBox">
+                <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                <Setter Property="Padding" Value="2"/>
+                <Setter Property="Margin" Value="2"/>
+            </Style>
+
+            <!-- ListBoxItem style -->
+            <Style TargetType="ListBoxItem">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="Padding" Value="4"/>
+                <Setter Property="Margin" Value="0"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"/>
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- TreeViewItem style -->
+            <Style TargetType="TreeViewItem">
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="Padding" Value="2"/>
+                <Setter Property="Margin" Value="0"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"/>
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- TabControl and TabItem styling -->
+            <Style TargetType="TabControl">
+                <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="Padding" Value="0"/>
+            </Style>
+
+            <Style TargetType="TabItem">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                <Setter Property="Padding" Value="8,4"/>
+                <Setter Property="Margin" Value="0,0,2,0"/>
+                <Style.Triggers>
+                    <Trigger Property="IsSelected" Value="True">
+                        <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                        <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                    </Trigger>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"/>
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+
+            <!-- Window-level defaults -->
+            <Style TargetType="Window">
+                <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"/>
+                <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+            </Style>
+
+        </ResourceDictionary>
+    </vsui:DialogWindow.Resources>
+
+    <Grid Margin="12">
+
+        <!-- MAIN TABS -->
+        <TabControl x:Name="MainTabControl"
+                    Margin="0,0,0,40"
+                    Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                    Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}">
+
+            <!-- GENERAL TAB -->
+            <TabItem x:Name="TabGeneral" Header="General">
                 <StackPanel Margin="12">
-                    <TextBlock Text="Defaults" FontWeight="Bold"/>
+                    <TextBlock Text="Defaults" FontWeight="Bold"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Default Agent:" VerticalAlignment="Center" Width="120" />
-                        <ComboBox x:Name="DefaultAgentCombo" Width="200" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Default Mode:" VerticalAlignment="Center" Width="120" />
-                        <ComboBox x:Name="DefaultModeCombo" Width="200" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <TextBlock Text="Logging Level:" VerticalAlignment="Center" Width="120" />
-                        <ComboBox x:Name="LoggingLevelCombo" Width="200" />
-                    </StackPanel>
-                </StackPanel>
-            </TabItem>
-            <TabItem Header="Models" x:Name="TabModels">
-                <DockPanel Margin="12">
-                    <!-- Add-connection form -->
-                    <StackPanel DockPanel.Dock="Top">
-                        <TextBlock Text="Add a connection" FontWeight="Bold"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <TextBox x:Name="ConnNameBox" Width="140" Margin="4" VerticalAlignment="Center"
-                                     ToolTip="Display name for this proxy connection"/>
-                            <TextBox x:Name="ConnUrlBox" Width="260" Margin="4" VerticalAlignment="Center"
-                                     ToolTip="Base URL of the Ollama-compatible proxy, e.g. http://localhost:8388"/>
-                            <TextBox x:Name="ConnKeyBox" Width="160" Margin="4" VerticalAlignment="Center"
-                                     ToolTip="Optional API key"/>
-                            <Button x:Name="AddConnButton" Content="Add" Width="60" Margin="4" Click="AddConnButton_Click"/>
-                            <Button x:Name="RefreshModelsButton" Content="Refresh models" Width="110" Margin="4" Click="RefreshModelsButton_Click"/>
-                        </StackPanel>
-                        <TextBlock x:Name="ModelsStatusText" Margin="4" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}"/>
+                        <TextBlock Text="Default Agent:" Width="120" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                        <ComboBox x:Name="DefaultAgentCombo" Width="200"/>
                     </StackPanel>
 
-                    <!-- Connections → models tree -->
-                    <TreeView x:Name="ConnectionsTree" Margin="0,8,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="Default Mode:" Width="120" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                        <ComboBox x:Name="DefaultModeCombo" Width="200"/>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBlock Text="Logging Level:" Width="120" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                        <ComboBox x:Name="LoggingLevelCombo" Width="200"/>
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <!-- MODELS TAB -->
+            <TabItem x:Name="TabModels" Header="Models">
+                <DockPanel Margin="12">
+
+                    <StackPanel DockPanel.Dock="Top">
+                        <TextBlock Text="Add a connection" FontWeight="Bold"
+                                   Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBox x:Name="ConnNameBox" Width="140" Margin="4"
+                                     ToolTip="Display name for this proxy connection"/>
+                            <TextBox x:Name="ConnUrlBox" Width="260" Margin="4"
+                                     ToolTip="Base URL of the Ollama-compatible proxy"/>
+                            <TextBox x:Name="ConnKeyBox" Width="160" Margin="4"
+                                     ToolTip="Optional API key"/>
+                            <Button x:Name="AddConnButton" Content="Add" Width="60" Margin="4"
+                                    Click="AddConnButton_Click"/>
+                            <Button x:Name="RefreshModelsButton" Content="Refresh models" Width="110" Margin="4"
+                                    Click="RefreshModelsButton_Click"/>
+                        </StackPanel>
+
+                        <TextBlock x:Name="ModelsStatusText" Margin="4"
+                                   Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.SystemGrayTextBrushKey}}"/>
+                    </StackPanel>
+
+                    <!-- THEMED TREEVIEW -->
+                    <TreeView x:Name="ConnectionsTree" Margin="0,8,0,0"
+                              Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                              BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                              Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
                 </DockPanel>
             </TabItem>
-            <TabItem Header="Agents" x:Name="TabAgents">
+
+            <!-- AGENTS TAB -->
+            <TabItem x:Name="TabAgents" Header="Agents">
                 <StackPanel Margin="12">
-                    <TextBlock Text="Agents" FontWeight="Bold"/>
-                    <ListBox x:Name="AgentsList" Margin="0,8,0,0" />
+                    <TextBlock Text="Agents" FontWeight="Bold"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                    <ListBox x:Name="AgentsList" Margin="0,8,0,0"
+                             Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                             BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                             Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
                 </StackPanel>
             </TabItem>
-            <TabItem Header="MCP" x:Name="TabMcp">
+
+            <!-- MCP TAB -->
+            <TabItem x:Name="TabMcp" Header="MCP">
                 <StackPanel Margin="12">
-                    <TextBlock Text="MCP Servers" FontWeight="Bold"/>
-                    <ListBox x:Name="McpServersList" Margin="0,8,0,0" />
+                    <TextBlock Text="MCP Servers" FontWeight="Bold"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
+                    <ListBox x:Name="McpServersList" Margin="0,8,0,0"
+                             Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                             BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBorderBrushKey}}"
+                             Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"/>
                 </StackPanel>
             </TabItem>
+
         </TabControl>
-        <Button Content="Close" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="12" Width="80" Click="OnClose"/>
+
+        <!-- CLOSE BUTTON -->
+        <Button Content="Close"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Bottom"
+                Width="80"
+                Margin="0,0,0,0"
+                Click="OnClose"/>
     </Grid>
 </vsui:DialogWindow>

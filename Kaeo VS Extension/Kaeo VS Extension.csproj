@@ -31,14 +31,25 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
+    <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
+    <!-- ModelContextProtocol brings in netstandard2.0 polyfills needed by net48 -->
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <!-- net48 lacks System.Text.Json; ModelContextProtocol ships it but we pin explicitly -->
+    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+    <!-- net48 lacks async-enumerable/ValueTask shims -->
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
     <PackageReference Include="MessagePack" Version="3.1.8" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+  </ItemGroup>
+
+  <!-- Allow tests to access internal types in the VS Extension assembly -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
   </ItemGroup>
 
   <!-- Compile Commands.vsct into the Menus.ctmenu command-table resource embedded in the
