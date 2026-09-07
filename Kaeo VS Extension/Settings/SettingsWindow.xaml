@@ -8,7 +8,8 @@
 
         Title="Settings" Height="600" Width="800"
         Background="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-        Foreground="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowTextBrushKey}}">
+        Foreground="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowTextBrushKey}}"
+        ui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
 
     <ui:VsUIDialogWindow.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
