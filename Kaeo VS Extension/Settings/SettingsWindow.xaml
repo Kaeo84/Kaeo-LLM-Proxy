@@ -6,7 +6,9 @@
         
         toolkit:Themes.UseVsTheme="True"
 
-        Title="Settings" Height="600" Width="800">
+        Title="Settings" Height="600" Width="800"
+        Background="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+        Foreground="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowTextBrushKey}}">
 
     <ui:VsUIDialogWindow.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -79,6 +81,5 @@
             </TabItem>
         </TabControl>
 
-            </Grid>
-
-        </ui:VsUIDialogWindow>
+                </Grid>
+            </ui:VsUIDialogWindow>
