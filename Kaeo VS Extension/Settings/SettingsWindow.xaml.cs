@@ -36,6 +36,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             }
         }
 
+        private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            // DialogWindow reopens if DialogResult is null during Closing.
+            // Setting it here ensures the X button (and Escape) close the window.
+            if (Owner != null)
+            {
+                DialogResult = true;
+            }
+        }
+
         private void OnClose(object sender, RoutedEventArgs e)
         {
             // If the window was shown modally (ShowDialog), setting DialogResult ensures the dialog closes

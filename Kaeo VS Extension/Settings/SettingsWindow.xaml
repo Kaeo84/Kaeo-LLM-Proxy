@@ -8,7 +8,8 @@
         Height="600" Width="800"
         toolkit:Themes.UseVsTheme="True"
         vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True"
-        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}">
+        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+        Closing="OnClosing">
 
     <vsui:DialogWindow.Resources>
         <ResourceDictionary>
