@@ -71,13 +71,24 @@ public partial class ToolWindowControl : UserControl
     private void GearButton_Click(object? sender, RoutedEventArgs e)
     {
         var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
+
         // After a connection is added/removed or models refreshed, re-pull the live list.
         // LoadAsync fires ModelsLoaded, which syncs the combo selection.
+        Action? handler = null;
         if (_vm is not null)
         {
             var vm = _vm;
-            wnd.ModelsChanged += () => _ = vm.LoadAsync();
+            handler = () => _ = vm.LoadAsync();
+            wnd.ModelsChanged += handler;
         }
+
+        void OnClosed(object? s, EventArgs e2)
+        {
+            wnd.ModelsChanged -= handler;
+            wnd.Closed -= OnClosed;
+        }
+        wnd.Closed += OnClosed;
+
         wnd.OpenTab("Models");
         wnd.Owner = Application.Current?.MainWindow;
         wnd.ShowDialog();
