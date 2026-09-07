@@ -78,6 +78,8 @@ internal sealed class ModelEntry
     public string[]? Capabilities { get; set; }
     public long ContextSize { get; set; }
     public bool Pinned { get; set; }
+    /// <summary>Whether this model is available in the tool window dropdown. Defaults to true so existing settings keep working.</summary>
+    public bool Enabled { get; set; } = true;
 }
 
 internal sealed class Agent

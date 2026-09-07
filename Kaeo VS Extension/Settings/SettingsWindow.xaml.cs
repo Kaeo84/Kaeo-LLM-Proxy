@@ -1,171 +1,212 @@
-using Kaeo.LlmProxy.VSExtension.Core;
-using Microsoft.VisualStudio.PlatformUI;
+﻿using Microsoft.VisualStudio.PlatformUI;
 using System;
-using System.ComponentModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
+using Kaeo.LlmProxy.VSExtension.Core;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings
 {
-    public partial class SettingsWindow : DialogWindow
+    /// <summary>
+    /// The extension's settings window. Manages Ollama connections and their models in a
+    /// single "Models" tab. Every change auto-saves to the shared <see cref="ExtensionSettingsStore"/>
+    /// (no explicit Save button); the built-in VS OK/Cancel command bar simply closes the window.
+    /// </summary>
+    public partial class SettingsWindow : VsUIDialogWindow
     {
-        private readonly ExtensionSettingsStore _settings;
+        private readonly ExtensionSettingsStore _store;
+        private readonly ObservableCollection<ConnectionViewModel> _connections = new();
+        private ExtensionSettings _settings = new();
+        private DispatcherTimer? _saveTimer;
+        private bool _loaded;
 
+        /// <summary>Raised after a settings change has been persisted, so the tool window can refresh its model list.</summary>
         public event Action? ModelsChanged;
 
-        internal SettingsWindow(ExtensionSettingsStore settings)
+        /// <summary>Connections shown in the Models tab.</summary>
+        public ObservableCollection<ConnectionViewModel> Connections => _connections;
+
+        /// <summary>Creates a window that owns its own settings store.</summary>
+        public SettingsWindow() : this(new ExtensionSettingsStore())
         {
-            _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        }
 
-            // Ensure VS theme dictionaries and dialog styles are merged before the visual tree is created.
-            // This must run before InitializeComponent so DynamicResource lookups resolve to VS brushes.
-            ThemedDialogStyleLoader.SetUseDefaultThemedDialogStyles(this, true);
-
+        /// <summary>Creates a window backed by the given settings store (shared with the tool window).</summary>
+        internal SettingsWindow(ExtensionSettingsStore store)
+        {
+            _store = store ?? throw new ArgumentNullException(nameof(store));
             InitializeComponent();
+            DataContext = this;
+            _ = LoadAsync();
+        }
 
-            // Kick off async load (fire-and-forget is fine here; exceptions are handled inside the method)
-            _ = LoadModelsTabAsync();
+        /// <summary>Loads settings and populates the connection list.</summary>
+        private async Task LoadAsync()
+        {
+            _settings = await _store.LoadAsync();
 
-            // Designer-safe: avoid runtime-only calls while in the XAML designer
-            if (!DesignerProperties.GetIsInDesignMode(this))
+            foreach (var c in _settings.Connections ?? Array.Empty<Connection>())
             {
-                // Safe to call again at runtime; ensures styles are applied if anything changed.
-                ThemedDialogStyleLoader.SetUseDefaultThemedDialogStyles(this, true);
+                var vm = new ConnectionViewModel
+                {
+                    Name = c.Name ?? string.Empty,
+                    Url = c.BaseUrl ?? string.Empty,
+                    ApiKey = c.ApiKey ?? string.Empty,
+                    Enabled = c.Enabled,
+                    IsExpanded = true,
+                };
+                foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
+                {
+                    vm.Models.Add(new ModelViewModel
+                    {
+                        Name = m.Name ?? string.Empty,
+                        ModelId = m.Name ?? string.Empty,
+                        Capabilities = m.Capabilities != null ? string.Join(", ", m.Capabilities) : string.Empty,
+                        Enabled = m.Enabled,
+                        IsPinned = m.Pinned,
+                    });
+                }
+                WireForSave(vm);
+                _connections.Add(vm);
             }
+            _loaded = true;
         }
 
-        private void OnClosing(object sender, CancelEventArgs e)
+        /// <summary>Adds a new, empty connection ready for editing.</summary>
+        private void AddConnection_Click(object sender, RoutedEventArgs e)
         {
-            // When the title bar close button is used, DialogWindow still needs a result set
-            // before the window is fully closed. If this is omitted, the modal can reopen.
-            DialogResult = true;
-        }
-
-        private void OnClose(object sender, RoutedEventArgs e)
-        {
-            DialogResult = true;
-            Close();
-        }
-
-        public void OpenTab(string tabName)
-        {
-            MainTabControl.SelectedItem = tabName switch
+            var vm = new ConnectionViewModel
             {
-                "General" => TabGeneral,
-                "Models" => TabModels,
-                "Agents" => TabAgents,
-                "MCP" => TabMcp,
-                _ => TabGeneral
+                Name = $"Connection {_connections.Count + 1}",
+                IsExpanded = true,
+            };
+            WireForSave(vm);
+            _connections.Add(vm);
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Removes the connection whose header Delete button was clicked.</summary>
+        private void DeleteConnection_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button { DataContext: ConnectionViewModel conn })
+                return;
+
+            var result = MessageBox.Show(
+                $"Delete connection \"{conn.Name}\"?",
+                "Delete Connection",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (result != MessageBoxResult.Yes)
+                return;
+
+            _connections.Remove(conn);
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Refreshes the single connection whose header Refresh button was clicked.</summary>
+        private async void RefreshConnection_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button { DataContext: ConnectionViewModel conn })
+                return;
+
+            await conn.RefreshAsync();
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Refreshes every enabled connection in parallel.</summary>
+        private async void RefreshAll_Click(object sender, RoutedEventArgs e)
+        {
+            var tasks = _connections.Where(c => c.Enabled).Select(c => c.RefreshAsync()).ToList();
+            await Task.WhenAll(tasks);
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>
+        /// Subscribes to a connection and its models so any edit triggers a debounced auto-save.
+        /// Selecting a model as Default unpins its siblings.
+        /// </summary>
+        private void WireForSave(ConnectionViewModel conn)
+        {
+            conn.PropertyChanged += (_, e) => ScheduleSave();
+
+            conn.Models.CollectionChanged += (_, e) =>
+            {
+                if (e.NewItems != null)
+                {
+                    foreach (ModelViewModel m in e.NewItems)
+                        m.PropertyChanged += (_, ev) =>
+                        {
+                            if (ev.PropertyName == nameof(ModelViewModel.IsPinned) && m.IsPinned)
+                                conn.UnpinOthers(m);
+                            ScheduleSave();
+                        };
+                }
+                ScheduleSave();
             };
         }
 
-        private async Task LoadModelsTabAsync()
+        /// <summary>Schedules a debounced save (500 ms) to coalesce rapid edits.</summary>
+        private void ScheduleSave()
         {
-            try
+            _saveTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _saveTimer.Stop();
+            _saveTimer.Tick += (_, _) =>
             {
-                var s = await _settings.LoadAsync();
-                ConnectionsTree.Items.Clear();
-
-                foreach (var conn in s.Connections ?? Array.Empty<Connection>())
-                {
-                    if (string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
-
-                    var connNode = new TreeViewItem { Header = $"{conn.Name}  ({conn.BaseUrl})" };
-                    var client = new OllamaApiClient(conn.BaseUrl, conn.ApiKey);
-
-                    try
-                    {
-                        var models = await client.GetModelsAsync();
-                        foreach (var m in models)
-                        {
-                            var flag = m.SupportsTools ? "  [tools]" : string.Empty;
-                            connNode.Items.Add(new TreeViewItem { Header = $"{m.Name}{flag}" });
-                        }
-                    }
-                    catch
-                    {
-                        connNode.Items.Add(new TreeViewItem { Header = "(unreachable)" });
-                    }
-
-                    ConnectionsTree.Items.Add(connNode);
-                }
-
-                ModelsStatusText.Text = s.Connections?.Any(c => c.Enabled) == true
-                    ? "Models loaded from enabled connections. Tool-capable models are marked [tools]."
-                    : "No connections configured. Add one above.";
-            }
-            catch (Exception ex)
-            {
-                // Surface load errors in the status text so the user sees them
-                ModelsStatusText.Text = $"Error loading models: {ex.Message}";
-            }
+                _saveTimer.Stop();
+                SaveNow();
+            };
+            _saveTimer.Start();
         }
 
-        private async void AddConnButton_Click(object sender, RoutedEventArgs e)
+        /// <summary>Persists the current state and notifies the tool window on success.</summary>
+        private void SaveNow()
         {
-            try
+            if (!_loaded)
+                return;
+
+            _settings.Connections = _connections.Select(MapToConnection).ToArray();
+
+            _ = _store.SaveAsync(_settings).ContinueWith(t =>
             {
-                var name = ConnNameBox.Text.Trim();
-                var url = ConnUrlBox.Text.Trim();
-
-                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
-                {
-                    ModelsStatusText.Text = "Both a name and a base URL are required.";
-                    return;
-                }
-
-                if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                    (uri.Scheme != "http" && uri.Scheme != "https"))
-                {
-                    ModelsStatusText.Text = "Base URL must be a valid http(s) URL.";
-                    return;
-                }
-
-                var s = await _settings.LoadAsync();
-                s.Connections ??= Array.Empty<Connection>();
-
-                if (s.Connections.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    ModelsStatusText.Text = $"Connection '{name}' already exists.";
-                    return;
-                }
-
-                s.Connections = s.Connections.Append(new Connection
-                {
-                    Name = name,
-                    BaseUrl = url,
-                    ApiKey = string.IsNullOrWhiteSpace(ConnKeyBox.Text) ? null : ConnKeyBox.Text.Trim(),
-                    Enabled = true
-                }).ToArray();
-
-                await _settings.SaveAsync(s);
-
-                ConnNameBox.Clear();
-                ConnUrlBox.Clear();
-                ConnKeyBox.Clear();
-
-                await LoadModelsTabAsync();
-                ModelsChanged?.Invoke();
-            }
-            catch (Exception ex)
-            {
-                ModelsStatusText.Text = $"Error adding connection: {ex.Message}";
-            }
+                if (!t.IsFaulted && !t.IsCanceled)
+                    RaiseModelsChanged();
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
-        private async void RefreshModelsButton_Click(object sender, RoutedEventArgs e)
+        /// <summary>Maps a connection view model back to the persisted <see cref="Connection"/> shape.</summary>
+        private static Connection MapToConnection(ConnectionViewModel c)
         {
-            try
+            return new Connection
             {
-                await LoadModelsTabAsync();
-                ModelsChanged?.Invoke();
-            }
-            catch (Exception ex)
-            {
-                ModelsStatusText.Text = $"Error refreshing models: {ex.Message}";
-            }
+                Name = c.Name,
+                BaseUrl = c.Url,
+                ApiKey = c.ApiKey,
+                Enabled = c.Enabled,
+                Models = c.Models.Select(m => new ModelEntry
+                {
+                    Name = m.Name,
+                    Capabilities = m.Capabilities
+                        .Split(',')
+                        .Select(s => s.Trim())
+                        .Where(s => s.Length > 0)
+                        .ToArray(),
+                    Pinned = m.IsPinned,
+                    Enabled = m.Enabled,
+                }).ToArray(),
+            };
+        }
+
+        /// <summary>Notifies subscribers (the tool window) that the model set changed.</summary>
+        protected virtual void RaiseModelsChanged()
+        {
+            ModelsChanged?.Invoke();
         }
     }
 }

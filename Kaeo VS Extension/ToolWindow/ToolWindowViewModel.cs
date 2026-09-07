@@ -171,6 +171,16 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             }
         }
 
+        // When no connection yielded a model, surface a single placeholder so the user
+        // knows to open settings. It never resolves to a real model, so SendAsync short-circuits.
+        if (_modelSelections.Count == 0)
+        {
+            Models.Add(NoModelsPlaceholder);
+            CurrentModel = NoModelsPlaceholder;
+            ModelsLoaded?.Invoke();
+            return;
+        }
+
         // Default to the first tool-capable model, else the first model.
         if (string.IsNullOrEmpty(CurrentModel) || !Models.Contains(CurrentModel))
         {
@@ -194,11 +204,14 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         return (new OllamaApiClient(sel.BaseUrl, sel.ApiKey), sel.Name);
     }
 
+    /// <summary>Shown in the model dropdown when no connection has returned a model.</summary>
+    public const string NoModelsPlaceholder = "Configure Models… (⚙ → Settings)";
+
     /// <summary>Sends the prompt and streams the agent's response into the transcript.</summary>
     public async Task SendAsync(string prompt)
     {
         if (string.IsNullOrWhiteSpace(prompt)) return;
-        if (Models.Count == 0)
+        if (Models.Count == 0 || CurrentModel == NoModelsPlaceholder)
         {
             Lines.Add(new ChatLine { Kind = "status", Text = "No models available. Add a connection in settings (⚙ → Models)." });
             return;

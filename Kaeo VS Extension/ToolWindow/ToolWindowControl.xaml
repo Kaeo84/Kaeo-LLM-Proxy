@@ -40,7 +40,7 @@
                      TextWrapping="Wrap" AcceptsReturn="True" MinHeight="30" MaxHeight="80"
                      VerticalScrollBarVisibility="Auto" />
             <Button x:Name="SendButton" Grid.Column="1" Content="Send" Width="60" Margin="4" Click="SendButton_Click" />
-            <Button x:Name="GearButton" Grid.Column="2" Content="⚙" Width="40" Height="24" Margin="4" Click="GearButton_Click" />
+            <Button x:Name="GearButton" Grid.Column="2" Content="⚙" Width="40" Height="24" Margin="4" />
         </Grid>
 
         <!-- Bottom bar: Agent/Mode/Model pills -->

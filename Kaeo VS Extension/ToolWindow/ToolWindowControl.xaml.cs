@@ -1,6 +1,10 @@
+using Community.VisualStudio.Toolkit;
+using Kaeo.LlmProxy.VSExtension.Core;
 using System.Windows;
 using System.Windows.Controls;
-using Kaeo.LlmProxy.VSExtension.Core;
+using System.Windows.Interop;
+using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 
 namespace Kaeo.LlmProxy.VSExtension.ToolWindow;
 
@@ -64,27 +68,43 @@ public partial class ToolWindowControl : UserControl
         catch (Exception ex)
         {
             SendButton.IsEnabled = true;
-            MessageBox.Show($"Error sending message: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+
+            await Microsoft.VisualStudio.Shell.ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            await Community.VisualStudio.Toolkit.VS.MessageBox.ShowErrorAsync(
+                "Error",
+                $"Error sending message: {ex.Message}"
+            );
         }
     }
 
     private void GearButton_Click(object? sender, RoutedEventArgs e)
     {
+        // 1. Force the execution onto Visual Studio's main UI thread immediately
+        Microsoft.VisualStudio.Shell.ThreadHelper.ThrowIfNotOnUIThread();
+
+        var uiShell = (IVsUIShell)ServiceProvider.GlobalProvider.GetService(typeof(SVsUIShell));
+        if (uiShell == null) return;
+
         var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
 
-        // After a connection is added/removed or models refreshed, re-pull the live list.
-        // LoadAsync fires ModelsLoaded, which syncs the combo selection.
-        if (_vm is not null)
-        {
-            var vm = _vm;
-            Action refreshHandler = () => _ = vm.LoadAsync();
-            wnd.ModelsChanged += refreshHandler;
-            wnd.Closed += (_, _) => wnd.ModelsChanged -= refreshHandler;
-        }
+        wnd.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        // 3. Use Visual Studio's absolute main window wrapper as the explicit owner
+        IntPtr hwndOwner;
+        uiShell.GetDialogOwnerHwnd(out hwndOwner);
+        //wnd.Owner = (Window)HwndSource.FromHwnd(hwndOwner)?.RootVisual;
 
-        wnd.OpenTab("Models");
-        wnd.Owner = Application.Current?.MainWindow;
-        wnd.ShowDialog();
+        // Refresh the tool window's model list whenever the settings window persists a change.
+        Action? onModelsChanged = () => _ = _vm?.LoadAsync();
+        wnd.ModelsChanged += onModelsChanged;
+        try
+        {
+            wnd.ShowDialog();
+        }
+        finally
+        {
+            wnd.ModelsChanged -= onModelsChanged;
+        }
     }
 
     /// <summary>Selects the current model in the combo after a live model pull.</summary>
