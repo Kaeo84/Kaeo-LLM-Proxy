@@ -206,10 +206,31 @@ internal sealed class McpServerManager
 
     /// <summary>
     /// Returns tool definitions in the Ollama/OpenAI tool schema format for the /api/chat "tools" field.
+    /// Includes both external MCP server tools and built-in VS tools.
     /// </summary>
     public IReadOnlyList<JsonObject> GetAvailableToolDefinitions(IReadOnlyList<string>? allowedNames = null)
     {
         var result = new List<JsonObject>();
+
+        // Add built-in VS tools (always available)
+        foreach (var tool in BuiltInVsTools.GetToolDefinitions())
+        {
+            if (!tool.Enabled) continue;
+            if (allowedNames is not null && !allowedNames.Contains(tool.Name ?? ""))
+                continue;
+            result.Add(new JsonObject
+            {
+                ["type"] = "function",
+                ["function"] = new JsonObject
+                {
+                    ["name"] = tool.Name,
+                    ["description"] = tool.Description ?? string.Empty,
+                    ["parameters"] = tool.Schema?.DeepClone() ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+                }
+            });
+        }
+
+        // Add external MCP server tools
         foreach (var server in _servers.Values)
         {
             if (!server.Enabled) continue;
@@ -236,9 +257,16 @@ internal sealed class McpServerManager
 
     /// <summary>
     /// Executes a tool by routing to the correct MCP server based on the "<server>-<tool>" name prefix.
+    /// Built-in VS tools (prefixed with "vs_") are handled directly without external server routing.
     /// </summary>
     public async Task<string> ExecuteToolAsync(string toolName, string? argumentsJson, CancellationToken ct = default)
     {
+        // Check if this is a built-in VS tool
+        if (toolName.StartsWith("vs_", StringComparison.Ordinal))
+        {
+            return await BuiltInVsTools.ExecuteAsync(toolName, argumentsJson, ct).ConfigureAwait(false);
+        }
+
         // Parse "<server-key>-<tool-name>" or fall back to searching all servers.
         var dashIdx = toolName.IndexOf('-');
         if (dashIdx > 0)
