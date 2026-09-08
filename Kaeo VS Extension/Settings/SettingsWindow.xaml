@@ -230,7 +230,25 @@
                                                 <DataGridTextColumn Header="Model ID" Binding="{Binding ModelId}" Width="*" IsReadOnly="True" />
                                                 <DataGridTextColumn Header="Capabilities" Binding="{Binding Capabilities}" Width="*" IsReadOnly="True" />
                                                 <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="Auto" />
-                                                <DataGridCheckBoxColumn Header="Default" Binding="{Binding IsPinned}" Width="Auto" />
+                                                <!--
+                                                     The "Default" cell cannot be a DataGridCheckBoxColumn: that column type
+                                                     never binds the visible checkbox to the row, it routes the toggle through
+                                                     the DataGrid cell edit transaction. A cell that has been realized/edited
+                                                     then keeps its own pending value, so when UnpinAllExcept clears a sibling's
+                                                     IsPinned the stale checkmark stays on screen even though only one model is
+                                                     actually the default. A read-only template column keeps the CheckBox bound
+                                                     straight to the view model: the click commits at once (no two-click edit
+                                                     mode) and an un-pinned sibling re-renders through the same binding.
+                                                -->
+                                                <DataGridTemplateColumn Header="Default" Width="Auto" IsReadOnly="True"
+                                                                          CanUserSort="False">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <CheckBox IsChecked="{Binding IsPinned, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
                                             </DataGrid.Columns>
                                         </DataGrid>
                                     </StackPanel>
