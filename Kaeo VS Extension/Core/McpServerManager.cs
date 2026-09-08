@@ -17,6 +17,9 @@ internal sealed class McpServerManager
     private readonly ExtensionSettingsStore _settings;
     private readonly Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>The settings instance <see cref="InitializeAsync"/> loaded; pulls are cached back into it.</summary>
+    private ExtensionSettings? _loadedSettings;
+
     public McpServerManager(ExtensionSettingsStore settings)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -28,46 +31,93 @@ internal sealed class McpServerManager
     public async Task InitializeAsync(CancellationToken ct = default)
     {
         var all = await _settings.LoadAsync().ConfigureAwait(false);
+        _loadedSettings = all;
         _servers.Clear();
         foreach (var server in all.McpServers ?? Array.Empty<McpServer>())
         {
             if (!server.Enabled || string.IsNullOrWhiteSpace(server.Name))
                 continue;
             _servers[server.Name!] = server;
-            _ = PullToolsAsync(server, ct);
+            _ = PullAndCacheAsync(server, ct);
         }
     }
 
     /// <summary>
-    /// Connects to the MCP server and pulls its tool definitions via tools/list.
-    /// Caches results back into the settings store.
+    /// Background pull used during initialization: never throws, so one dead server cannot fault
+    /// an unobserved task. Cached definitions are kept and the server is marked stale.
     /// </summary>
-    public async Task<IReadOnlyList<McpTool>> PullToolsAsync(McpServer server, CancellationToken ct = default)
+    private async Task PullAndCacheAsync(McpServer server, CancellationToken ct)
     {
         try
         {
-            // HTTP Streamable transport: POST /mcp with JSON-RPC tools/list.
-            if (server.Transport == "http" && !string.IsNullOrWhiteSpace(server.Url))
-            {
-                var tools = await PullToolsHttpAsync(server.Url!, server.ApiKey, ct).ConfigureAwait(false);
-                    server.Tools = tools.ToArray();
-                    await _settings.SaveAsync(await _settings.LoadAsync().ConfigureAwait(false));
-                    return tools;
-            }
-
-            // stdio transport: spawn process and send JSON-RPC over stdin/stdout.
-            if (server.Transport == "stdio" && !string.IsNullOrWhiteSpace(server.Command))
-            {
-                var tools = await PullToolsStdioAsync(server, ct).ConfigureAwait(false);
-                server.Tools = tools.ToList().ToArray();
-                return tools;
-            }
+            await PullToolsAsync(server, ct: ct).ConfigureAwait(false);
         }
         catch
         {
-            // Server unreachable — keep cached definitions, mark stale.
+            server.Stale = true;
         }
-        return server.Tools ?? Array.Empty<McpTool>();
+    }
+
+    /// <summary>
+    /// Pulls a server's tools without touching the settings file. Callers that own an
+    /// <see cref="ExtensionSettings"/> instance (the settings window) use this and persist the
+    /// merged result themselves, so two writers never race on the same file.
+    /// </summary>
+    public Task<IReadOnlyList<McpTool>> FetchToolsAsync(McpServer server, CancellationToken ct = default)
+        => PullToolsAsync(server, persist: false, ct);
+
+    /// <summary>
+    /// Connects to the MCP server and pulls its tool definitions via tools/list, merging them with
+    /// the cached list so a refresh never discards the user's per-tool enable choices.
+    /// Throws when the server cannot be reached so an explicit refresh can report why.
+    /// </summary>
+    public async Task<IReadOnlyList<McpTool>> PullToolsAsync(McpServer server, bool persist = true, CancellationToken ct = default)
+    {
+        IReadOnlyList<McpTool> pulled;
+
+        // HTTP Streamable transport: POST /mcp with JSON-RPC tools/list.
+        if (server.Transport == "http" && !string.IsNullOrWhiteSpace(server.Url))
+            pulled = await PullToolsHttpAsync(server.Url!, server.ApiKey, ct).ConfigureAwait(false);
+        // stdio transport: spawn process and send JSON-RPC over stdin/stdout.
+        else if (server.Transport == "stdio" && !string.IsNullOrWhiteSpace(server.Command))
+            pulled = await PullToolsStdioAsync(server, ct).ConfigureAwait(false);
+        else
+            return server.Tools ?? Array.Empty<McpTool>();
+
+        server.Tools = MergeTools(server.Tools, pulled).ToArray();
+        server.Stale = false;
+        server.LastSyncUtc = DateTime.UtcNow;
+
+        if (persist)
+            await PersistLoadedAsync().ConfigureAwait(false);
+
+        return server.Tools;
+    }
+
+    /// <summary>
+    /// Keeps each tool's enable flag across a refresh. Tools that disappeared drop out, new tools
+    /// arrive enabled, and a tool the user switched off stays off even after the server is re-queried.
+    /// </summary>
+    internal static IReadOnlyList<McpTool> MergeTools(McpTool[]? previous, IReadOnlyList<McpTool> pulled)
+    {
+        var enabledByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tool in previous ?? Array.Empty<McpTool>())
+            if (!string.IsNullOrWhiteSpace(tool.Name))
+                enabledByName[tool.Name!] = tool.Enabled;
+
+        foreach (var tool in pulled)
+            if (!string.IsNullOrWhiteSpace(tool.Name))
+                tool.Enabled = !enabledByName.TryGetValue(tool.Name!, out var enabled) || enabled;
+
+        return pulled;
+    }
+
+    /// <summary>Saves the settings instance this manager loaded, so cached tools survive a restart.</summary>
+    private async Task PersistLoadedAsync()
+    {
+        if (_loadedSettings is null)
+            return;
+        await _settings.SaveAsync(_loadedSettings).ConfigureAwait(false);
     }
 
     /// <summary>

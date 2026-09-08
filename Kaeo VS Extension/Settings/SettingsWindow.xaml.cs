@@ -19,8 +19,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     public partial class SettingsWindow : Window
     {
         private readonly ExtensionSettingsStore _store;
+        private readonly McpServerManager _mcpManager;
         private readonly ObservableCollection<ConnectionViewModel> _connections = new();
         private readonly ObservableCollection<AgentViewModel> _agents = new();
+        private readonly ObservableCollection<McpServerViewModel> _mcpServers = new();
         private AgentViewModel? _editingAgent;
         private bool _loadingEditor;
         private ExtensionSettings _settings = new();
@@ -37,6 +39,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Agents shown in the Agents tab.</summary>
         public ObservableCollection<AgentViewModel> Agents => _agents;
 
+        /// <summary>MCP servers shown in the MCP tab.</summary>
+        public ObservableCollection<McpServerViewModel> McpServers => _mcpServers;
+
         /// <summary>Creates a window that owns its own settings store.</summary>
         public SettingsWindow() : this(new ExtensionSettingsStore())
         {
@@ -46,6 +51,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         internal SettingsWindow(ExtensionSettingsStore store)
         {
             _store = store ?? throw new ArgumentNullException(nameof(store));
+            _mcpManager = new McpServerManager(_store);
             try
             {
                 InitializeComponent();
@@ -123,6 +129,35 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         DefaultModel = a.DefaultModel,
                     });
                 }
+
+                foreach (var m in _settings.McpServers ?? Array.Empty<McpServer>())
+                {
+                    var vm = new McpServerViewModel
+                    {
+                        Name = m.Name ?? string.Empty,
+                        Transport = string.IsNullOrWhiteSpace(m.Transport) ? "http" : m.Transport!,
+                        Url = m.Url ?? string.Empty,
+                        ApiKey = m.ApiKey ?? string.Empty,
+                        Command = m.Command ?? string.Empty,
+                        Arguments = McpServerViewModel.JoinArguments(m.Args),
+                        Enabled = m.Enabled,
+                        LastSyncUtc = m.LastSyncUtc,
+                    };
+                    foreach (var t in m.Tools ?? Array.Empty<McpTool>())
+                    {
+                        vm.Tools.Add(new McpToolViewModel
+                        {
+                            Name = t.Name ?? string.Empty,
+                            Description = t.Description ?? string.Empty,
+                            Schema = t.Schema,
+                            Enabled = t.Enabled,
+                        });
+                    }
+                    // Wire after loading so restoring persisted values does not schedule a save.
+                    WireMcpForSave(vm);
+                    _mcpServers.Add(vm);
+                }
+
                 _loaded = true;
             }
             catch (Exception ex)
@@ -237,6 +272,144 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         m.IsPinned = false;
         }
 
+        /// <summary>
+        /// Subscribes a server and its tools so any edit triggers the debounced auto-save.
+        /// Wiring happens after the values are restored from settings, so loading never saves.
+        /// </summary>
+        private void WireMcpForSave(McpServerViewModel server)
+        {
+            server.PropertyChanged += (_, _) => ScheduleSave();
+
+            void WireTool(McpToolViewModel tool) => tool.PropertyChanged += (_, ev) =>
+            {
+                // A single toggle leaves the Tools collection untouched, so the enabled-count
+                // summary has to be re-raised by hand.
+                if (ev.PropertyName == nameof(McpToolViewModel.Enabled))
+                    server.RefreshToolSummary();
+                ScheduleSave();
+            };
+
+            foreach (var tool in server.Tools) WireTool(tool);
+
+            server.Tools.CollectionChanged += (_, e) =>
+            {
+                if (e.NewItems is not null)
+                    foreach (McpToolViewModel tool in e.NewItems) WireTool(tool);
+                ScheduleSave();
+            };
+        }
+
+        /// <summary>Adds a new, empty MCP server and selects it for editing.</summary>
+        private void NewMcpServer_Click(object sender, RoutedEventArgs e)
+        {
+            var vm = new McpServerViewModel { Name = $"MCP Server {_mcpServers.Count + 1}" };
+            WireMcpForSave(vm);
+            _mcpServers.Add(vm);
+            McpServersList.SelectedItem = vm;
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Removes the selected MCP server after a confirmation prompt.</summary>
+        private void DeleteMcpServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (McpServersList.SelectedItem is not McpServerViewModel vm)
+                return;
+
+            bool confirmed = Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirm(
+                "Delete MCP Server",
+                $"Delete MCP server \"{vm.Name}\"?");
+            if (!confirmed)
+                return;
+
+            _mcpServers.Remove(vm);
+            ShowMcpEditor(McpServersList.SelectedItem as McpServerViewModel);
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        private void McpServersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+            => ShowMcpEditor(McpServersList.SelectedItem as McpServerViewModel);
+
+        /// <summary>Points the editor pane at the selected server, or shows the empty-state hint.</summary>
+        private void ShowMcpEditor(McpServerViewModel? server)
+        {
+            McpEditor.DataContext = server;
+            McpEditor.Visibility = server is null ? Visibility.Collapsed : Visibility.Visible;
+            NoMcpServerHint.Visibility = server is null ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>
+        /// Pulls the server's tool list live and repopulates the grid. The pull is not persisted by
+        /// the manager: this window owns the settings object, so it saves the merged result itself.
+        /// </summary>
+        private async void RefreshMcpTools_Click(object sender, RoutedEventArgs e)
+        {
+            if (McpServersList.SelectedItem is not McpServerViewModel server)
+                return;
+
+            server.IsRefreshing = true;
+            server.LastError = null;
+            try
+            {
+                var tools = await _mcpManager.FetchToolsAsync(MapToMcpServer(server));
+                server.ReplaceTools(tools);
+                server.LastSyncUtc = DateTime.UtcNow;
+                SaveNow();
+                RaiseModelsChanged();
+            }
+            catch (Exception ex)
+            {
+                server.LastError = ex.Message;
+            }
+            finally
+            {
+                server.IsRefreshing = false;
+            }
+        }
+
+        private void EnableAllTools_Click(object sender, RoutedEventArgs e) => SetAllToolsEnabled(true);
+
+        private void DisableAllTools_Click(object sender, RoutedEventArgs e) => SetAllToolsEnabled(false);
+
+        /// <summary>Bulk-toggles every tool of the selected server.</summary>
+        private void SetAllToolsEnabled(bool enabled)
+        {
+            if (McpServersList.SelectedItem is not McpServerViewModel server)
+                return;
+
+            foreach (var tool in server.Tools)
+                tool.Enabled = enabled;
+
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Maps an MCP server view model back to the persisted <see cref="McpServer"/> shape.</summary>
+        private static McpServer MapToMcpServer(McpServerViewModel s)
+        {
+            return new McpServer
+            {
+                Name = s.Name,
+                Transport = s.Transport,
+                Url = s.Url,
+                ApiKey = s.ApiKey,
+                Command = s.Command,
+                Args = McpServerViewModel.SplitArguments(s.Arguments),
+                Enabled = s.Enabled,
+                LastSyncUtc = s.LastSyncUtc,
+                // DeepClone: a JsonNode cannot be parented by both the live view model and the
+                // settings object being serialized.
+                Tools = s.Tools.Select(t => new McpTool
+                {
+                    Name = t.Name,
+                    Description = t.Description,
+                    Schema = t.Schema?.DeepClone(),
+                    Enabled = t.Enabled,
+                }).ToArray(),
+            };
+        }
+
         /// <summary>Schedules a debounced save (500 ms) to coalesce rapid edits.</summary>
         private void ScheduleSave()
         {
@@ -257,6 +430,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 return;
 
             _settings.Connections = _connections.Select(MapToConnection).ToArray();
+            _settings.McpServers = _mcpServers.Select(MapToMcpServer).ToArray();
             PersistAsync();
         }
 

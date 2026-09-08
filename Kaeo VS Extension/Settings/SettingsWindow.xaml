@@ -318,6 +318,113 @@
                     </Grid>
                 </Grid>
             </TabItem>
+            <TabItem Header="MCP">
+                <Grid Margin="6">
+                    <Grid.ColumnDefinitions>
+                        <!-- Server list capped at 25% of the tab width; the editor takes the rest. -->
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="3*" />
+                    </Grid.ColumnDefinitions>
+
+                    <DockPanel Grid.Column="0" Margin="0,0,8,0">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
+                            <Button Content="New" Click="NewMcpServer_Click" MinWidth="60" Margin="0,0,4,0" />
+                            <Button Content="Delete" Click="DeleteMcpServer_Click" MinWidth="60" />
+                        </StackPanel>
+                        <ListView x:Name="McpServersList"
+                                  ItemsSource="{Binding McpServers}"
+                                  DisplayMemberPath="Name"
+                                  SelectionChanged="McpServersList_SelectionChanged" />
+                    </DockPanel>
+
+                    <TextBlock x:Name="NoMcpServerHint" Grid.Column="1" VerticalAlignment="Top"
+                               Text="Select or add an MCP server to edit its tools."
+                               Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+
+                    <!-- DataContext is the selected server, assigned in McpServersList_SelectionChanged. -->
+                    <Grid x:Name="McpEditor" Grid.Column="1" Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,8,4" />
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Transport:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <ComboBox Grid.Row="0" Grid.Column="3" Width="100" HorizontalAlignment="Left"
+                                  ItemsSource="{Binding TransportOptions}" SelectedItem="{Binding Transport}"
+                                  VerticalAlignment="Center" Margin="0,0,0,4" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="URL:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="1" Grid.Column="1" IsEnabled="{Binding IsHttp}"
+                                 Text="{Binding Url, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,8,4" />
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="API key:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="1" Grid.Column="3" IsEnabled="{Binding IsHttp}"
+                                 Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,0,4" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Command:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="2" Grid.Column="1" IsEnabled="{Binding IsStdio}"
+                                 Text="{Binding Command, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,8,4" />
+                        <TextBlock Grid.Row="2" Grid.Column="2" Text="Arguments:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="2" Grid.Column="3" IsEnabled="{Binding IsStdio}"
+                                 Text="{Binding Arguments, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,0,4" />
+
+                        <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,2,0,4">
+                            <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <Button Content="Refresh Tools" Click="RefreshMcpTools_Click" IsEnabled="{Binding CanRefresh}"
+                                    MinWidth="100" Margin="0,0,4,0" />
+                            <Button Content="Enable All" Click="EnableAllTools_Click" MinWidth="80" Margin="0,0,4,0" />
+                            <Button Content="Disable All" Click="DisableAllTools_Click" MinWidth="80" />
+                            <TextBlock Text="{Binding ToolSummary}" VerticalAlignment="Center" Margin="8,0,0,0"
+                                       Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding LastError}"
+                                   Margin="0,0,0,4" Foreground="#FFCE4747"
+                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+
+                        <DataGrid Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="4"
+                                  ItemsSource="{Binding Tools}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  IsReadOnly="False"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <!--
+                                     Read-only template column: the CheckBox binds straight to the row, so a
+                                     toggle reaches the view model at once instead of waiting for the DataGrid
+                                     cell edit transaction to commit (same reason as the Default column above).
+                                -->
+                                <DataGridTemplateColumn Header="Enabled" Width="Auto" IsReadOnly="True">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTextColumn Header="Tool" Binding="{Binding Name}" Width="Auto" IsReadOnly="True" />
+                                <DataGridTextColumn Header="Description" Binding="{Binding Description}" Width="*" IsReadOnly="True" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </Grid>
+            </TabItem>
         </TabControl>
     </Grid>
 </Window>

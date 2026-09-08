@@ -11,15 +11,52 @@
              Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Message list placeholder -->
-        <ListView x:Name="MessageList" Grid.Row="0" BorderThickness="0"
+        <!-- Top toolbar: conversation actions. -->
+        <Border Grid.Row="0" Padding="4,2"
+                BorderThickness="0,0,0,1"
+                BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
+                Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarGradientBeginKey}}">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="ExportButton" Width="26" Height="22" Padding="0"
+                        ToolTip="Export conversation"
+                        AutomationProperties.Name="Export conversation"
+                        FontFamily="Segoe MDL2 Assets" FontSize="14" Content="&#xE8DE;"
+                        Click="ExportButton_Click">
+                    <Button.ContextMenu>
+                        <ContextMenu Placement="Bottom">
+                            <MenuItem Header="Markdown (.md)" Click="ExportMarkdown_Click" />
+                            <MenuItem Header="Plain text (.txt)" Click="ExportPlainText_Click" />
+                            <MenuItem Header="HTML (.html)" Click="ExportHtml_Click" />
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- Transcript: rows are multi-selectable (Ctrl/Shift+click) so several messages can be copied at once. -->
+        <ListView x:Name="MessageList" Grid.Row="1" BorderThickness="0"
+                  SelectionMode="Extended"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   HorizontalContentAlignment="Stretch">
+            <ListView.CommandBindings>
+                <CommandBinding Command="ApplicationCommands.Copy"
+                                CanExecute="CopySelected_CanExecute" Executed="CopySelected_Executed" />
+            </ListView.CommandBindings>
+            <ListView.InputBindings>
+                <KeyBinding Gesture="Ctrl+C" Command="ApplicationCommands.Copy" />
+            </ListView.InputBindings>
+            <ListView.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Copy Selected" Command="ApplicationCommands.Copy" />
+                    <MenuItem Header="Copy All" Click="CopyAll_Click" />
+                </ContextMenu>
+            </ListView.ContextMenu>
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <StackPanel Margin="8,4">
@@ -32,7 +69,7 @@
         </ListView>
 
         <!-- Message input row -->
-        <Grid Grid.Row="1" Margin="6">
+        <Grid Grid.Row="2" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -46,7 +83,7 @@
         </Grid>
 
         <!-- Bottom bar: Agent/Mode/Model pills -->
-        <StackPanel Orientation="Horizontal" Grid.Row="2" HorizontalAlignment="Stretch" Background="Transparent" Margin="6">
+        <StackPanel Orientation="Horizontal" Grid.Row="3" HorizontalAlignment="Stretch" Background="Transparent" Margin="6">
             <ComboBox x:Name="AgentCombo" Width="140" Margin="4" />
             <ComboBox x:Name="ModeCombo" Width="100" Margin="4" />
             <ComboBox x:Name="ModelCombo" Width="300" Margin="4" />
