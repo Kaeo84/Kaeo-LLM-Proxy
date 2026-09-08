@@ -1,19 +1,157 @@
-﻿<ui:VsUIDialogWindow x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
+﻿<vsui:DialogWindow x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:ui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+        xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+        xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:toolkit="clr-namespace:Community.VisualStudio.Toolkit;assembly=Community.VisualStudio.Toolkit"
-        
+                   
         toolkit:Themes.UseVsTheme="True"
 
         Title="Settings" Height="600" Width="800"
-        Background="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
-        Foreground="{DynamicResource {x:Static ui:EnvironmentColors.ToolWindowTextBrushKey}}"
-        ui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
+        WindowStartupLocation="CenterOwner"
+        FontFamily="{DynamicResource {x:Static shell:VsFonts.EnvironmentFontFamilyKey}}"
+        FontSize="{DynamicResource {x:Static shell:VsFonts.Environment122PercentFontSizeKey}}"
+        Background="{DynamicResource {x:Static vsui:EnvironmentColors.DialogBrushKey}}"
+        Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.DialogTextBrushKey}}">
 
-    <ui:VsUIDialogWindow.Resources>
+    <vsui:DialogWindow.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
-    </ui:VsUIDialogWindow.Resources>
+
+        <!-- Implicit styles from the VS shell (themed dialog variants) -->
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ThemedDialogButtonStyleKey}}" />
+        <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ThemedDialogCheckBoxStyleKey}}" />
+        <Style TargetType="RadioButton" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ThemedDialogRadioButtonStyleKey}}" />
+        <Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ComboBoxItemStyleKey}}" />
+        <Style TargetType="ListBox" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ThemedDialogListBoxStyleKey}}" />
+        <Style TargetType="ListView" BasedOn="{StaticResource {x:Static shell:VsResourceKeys.ThemedDialogListViewStyleKey}}" />
+
+        <!-- Tabs -->
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogBrushKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.ListBoxBorderBrushKey}}" />
+            <Setter Property="Padding" Value="4" />
+        </Style>
+        <Style TargetType="TabItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogTextBrushKey}}" />
+            <Setter Property="Padding" Value="10,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="Transparent"
+                                BorderThickness="0,0,0,2"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter x:Name="Content" ContentSource="Header"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarMouseOverBackgroundGradientBrushKey}}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.SelectedItemActiveBrushKey}}" />
+                                <Setter TargetName="Content" Property="TextElement.Foreground" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.SelectedItemActiveTextBrushKey}}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Connection expanders -->
+        <Style TargetType="Expander">
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogTextBrushKey}}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <Border BorderBrush="{DynamicResource {x:Static vsui:ThemedDialogColors.ListBoxBorderBrushKey}}"
+                                BorderThickness="1">
+                            <DockPanel>
+                                <ToggleButton DockPanel.Dock="Top"
+                                              Content="{TemplateBinding Header}"
+                                              IsChecked="{Binding IsExpanded, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                              Cursor="Hand">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border x:Name="HeadBd" Padding="6,4"
+                                                    Background="{DynamicResource {x:Static vsui:ThemedDialogColors.WindowPanelBrushKey}}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock x:Name="Arrow" Text="&#xE76D;" FontFamily="Segoe MDL2 Assets"
+                                                               FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"
+                                                               Foreground="{DynamicResource {x:Static vsui:ThemedDialogColors.WindowPanelTextBrushKey}}" />
+                                                    <ContentPresenter VerticalAlignment="Center" />
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsChecked" Value="True">
+                                                    <Setter TargetName="Arrow" Property="Text" Value="&#xE70E;" />
+                                                </Trigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="HeadBd" Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarMouseOverBackgroundGradientBrushKey}}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <ContentPresenter x:Name="Body" Visibility="Collapsed" />
+                            </DockPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="Body" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Model grid -->
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.GridHeadingBackgroundBrushKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.GridHeadingTextBrushKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.GridLineBrushKey}}" />
+            <Setter Property="BorderThickness" Value="0,0,1,1" />
+            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogTextBrushKey}}" />
+            <Setter Property="Padding" Value="4,2" />
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.SelectedItemActiveBrushKey}}" />
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.SelectedItemActiveTextBrushKey}}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.SelectedItemActiveBrushKey}}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogBrushKey}}" />
+            <Style.Triggers>
+                <Trigger Property="AlternationIndex" Value="1">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.WindowPanelBrushKey}}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="{x:Type DataGrid}">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogBrushKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogTextBrushKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.ListBoxBorderBrushKey}}" />
+            <Setter Property="RowBackground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.DialogBrushKey}}" />
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource {x:Static vsui:ThemedDialogColors.WindowPanelBrushKey}}" />
+            <Setter Property="GridLinesVisibility" Value="All" />
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.GridLineBrushKey}}" />
+            <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.GridLineBrushKey}}" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="RowHeaderWidth" Value="0" />
+        </Style>
+    </vsui:DialogWindow.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -21,11 +159,15 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <ToolBar Grid.Row="0">
-            <Button Content="Add Connection" Click="AddConnection_Click" />
-            <Separator />
-            <Button Content="Refresh All" Click="RefreshAll_Click" />
-        </ToolBar>
+        <Border Grid.Row="0" Padding="4"
+                BorderThickness="0,0,0,1"
+                BorderBrush="{DynamicResource {x:Static vsui:ThemedDialogColors.SectionDividerBrushKey}}"
+                Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientMiddleBrushKey}}">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="Add Connection" Click="AddConnection_Click" Padding="10,2" Margin="0,0,4,0" />
+                <Button Content="Refresh All" Click="RefreshAll_Click" Padding="10,2" />
+            </StackPanel>
+        </Border>
 
         <TabControl Grid.Row="1">
             <TabItem Header="Models">
@@ -57,7 +199,9 @@
                                             <Button Grid.Column="6" Content="Delete" Click="DeleteConnection_Click" MinWidth="60" />
                                         </Grid>
 
-                                        <TextBlock Text="{Binding RefreshError}" Foreground="Red" Margin="0,0,0,4" Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
+                                        <TextBlock Text="{Binding RefreshError}" Margin="0,0,0,4"
+                                                   Foreground="{DynamicResource {x:Static vsui:ThemedDialogColors.ValidationErrorTextBrushKey}}"
+                                                   Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
 
                                         <DataGrid ItemsSource="{Binding Models}"
                                                     AutoGenerateColumns="False"
@@ -81,6 +225,5 @@
                 </ScrollViewer>
             </TabItem>
         </TabControl>
-
-                </Grid>
-            </ui:VsUIDialogWindow>
+    </Grid>
+</vsui:DialogWindow>
