@@ -12,10 +12,25 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow;
 /// <summary>
 /// A single line in the chat transcript: a user/assistant message or a tool-activity block.
 /// </summary>
-internal sealed class ChatLine
+internal sealed class ChatLine : INotifyPropertyChanged
 {
+    private string _text = string.Empty;
+
     public string Kind { get; init; } = "assistant"; // "user" | "assistant" | "tool" | "status"
-    public string Text { get; set; } = string.Empty;
+
+    /// <summary>Raises change notifications so streamed deltas and the final text re-render in place.</summary>
+    public string Text
+    {
+        get => _text;
+        set
+        {
+            if (_text == value) return;
+            _text = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 /// <summary>
@@ -37,6 +52,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools);
 
     private readonly List<ModelSelection> _modelSelections = new();
+    private readonly SemaphoreSlim _loadGate = new(1, 1);
 
     private string _currentAgent = "Agent";
     private string _currentMode = "Interactive";
@@ -113,8 +129,23 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// Loads agents from settings and pulls the live model list from every enabled connection's
     /// Ollama /api/tags endpoint. Models are displayed grouped by connection; those advertising
     /// the Ollama "tools" capability are auto-enabled for tool calling.
+    /// Reloads are serialized: overlapping calls would otherwise interleave clear/add around
+    /// the network awaits and duplicate every entry in the model dropdown.
     /// </summary>
     public async Task LoadAsync()
+    {
+        await _loadGate.WaitAsync();
+        try
+        {
+            await LoadCoreAsync();
+        }
+        finally
+        {
+            _loadGate.Release();
+        }
+    }
+
+    private async Task LoadCoreAsync()
     {
         var s = await _settings.LoadAsync();
 
@@ -146,9 +177,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             });
         }
 
-        // Pull live models from every enabled connection.
-        _modelSelections.Clear();
-        Models.Clear();
+        // Pull live models from every enabled connection into local lists first, so the
+        // bound collections are only mutated in one synchronous pass at the end.
+        var selections = new List<ModelSelection>();
+        var labels = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var conn in s.Connections ?? Array.Empty<Connection>())
         {
             if (!conn.Enabled || string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
@@ -167,15 +200,20 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
             foreach (var m in fetched)
             {
+                if (conn.Name is null || conn.BaseUrl is null) continue;
+
                 // Label disambiguates same-named models across connections.
                 var label = $"{conn.Name} / {m.Name}";
-                if (conn.Name is not null && conn.BaseUrl is not null)
-                {
-                    _modelSelections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
-                    Models.Add(label);
-                }
+                if (!seen.Add(label)) continue;
+                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
+                labels.Add(label);
             }
         }
+
+        _modelSelections.Clear();
+        _modelSelections.AddRange(selections);
+        Models.Clear();
+        foreach (var label in labels) Models.Add(label);
 
         // When no connection yielded a model, surface a single placeholder so the user
         // knows to open settings. It never resolves to a real model, so SendAsync short-circuits.
@@ -217,6 +255,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public async Task SendAsync(string prompt)
     {
         if (string.IsNullOrWhiteSpace(prompt)) return;
+
+        // Echo the prompt into the transcript so the user's side of the conversation is visible.
+        Lines.Add(new ChatLine { Kind = "user", Text = prompt });
+
         if (Models.Count == 0 || CurrentModel == NoModelsPlaceholder)
         {
             Lines.Add(new ChatLine { Kind = "status", Text = "No models available. Add a connection in settings (⚙ → Models)." });

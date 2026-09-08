@@ -25,6 +25,13 @@ public partial class ToolWindowControl : UserControl
 
         // Bind the transcript and pills.
         MessageList.ItemsSource = _vm.Lines;
+        _vm.Lines.CollectionChanged += (_, e) =>
+        {
+            if (e.NewItems is null) return;
+            foreach (ChatLine line in e.NewItems)
+                line.PropertyChanged += (_, _) => RequestScroll();
+            RequestScroll();
+        };
         AgentCombo.ItemsSource = _vm.Agents;
         AgentCombo.DisplayMemberPath = "DisplayName";
         AgentCombo.SelectedValuePath = "Name";
@@ -113,5 +120,20 @@ public partial class ToolWindowControl : UserControl
         var label = _vm.CurrentModel;
         if (!string.IsNullOrEmpty(label) && _vm.Models.Contains(label))
             ModelCombo.SelectedItem = label;
+    }
+
+    private bool _scrollPending;
+
+    /// <summary>Coalesces scroll requests so per-token streaming updates scroll once per UI burst.</summary>
+    private void RequestScroll()
+    {
+        if (_scrollPending) return;
+        _scrollPending = true;
+        Dispatcher.BeginInvoke(new System.Action(() =>
+        {
+            _scrollPending = false;
+            if (MessageList.Items.Count > 0)
+                MessageList.ScrollIntoView(MessageList.Items[MessageList.Items.Count - 1]);
+        }), System.Windows.Threading.DispatcherPriority.Background);
     }
 }

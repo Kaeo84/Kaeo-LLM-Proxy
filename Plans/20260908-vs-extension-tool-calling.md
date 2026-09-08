@@ -28,3 +28,25 @@ Chat streaming worked, but the "model can interface and do work" path was broken
 ## Verification (user)
 - Needs a running proxy + a tools-capable model + at least one enabled MCP server (configured in Settings -> Models, and MCP servers in settings.jsonc).
 - Pick Agent/Plan mode, send a prompt that requires a tool; expect a tool line in the transcript and, in Interactive mode, an "Allow tool call" confirm dialog.
+
+## Round 2 - settings file sharing violation (IOException 0x80070020)
+Adding the first connection threw "file is being used by another process" from `ExtensionSettingsStore.SaveAsync`. Cause: multiple `ExtensionSettingsStore` instances (tool window, settings window, MCP manager) plus the 500ms debounced auto-save can write the same file concurrently, and a second devenv instance (main + Exp with the extension installed) can hold it open cross-process.
+
+Fixes in `ExtensionSettingsStore.cs`:
+- Static `SemaphoreSlim` serializes writes in-process.
+- Writes use `FileShare.Read` + retry/backoff (8 attempts, 50ms steps) for transient cross-process locks; persistent failure still surfaces via the themed error popup.
+- Reads use `FileShare.ReadWrite` and retry transient `IOException`/`JsonException` before falling back to defaults (prevents a truncated read followed by a save from wiping real settings).
+- [x] Committed + pushed as Kaeo84.
+
+## Round 3 - duplicate model dropdown entries + empty transcript
+Symptoms: model combo listed every model 3x; transcript showed only an empty "assistant" line plus the status line (user prompt never posted, response text never rendered).
+
+Causes:
+- `SettingsWindow.ModelsChanged` fires per add/refresh/save; each fire starts `_ = LoadAsync()`. Overlapping runs each `Models.Clear()` then `await` the /api/tags fetch before adding, so all clears land before any adds -> N interleaved copies.
+- `SendAsync` never added a `user` ChatLine, and `ChatLine.Text` had no change notification, so streamed deltas and the final `FinalText` assignment never re-rendered the bound ListView row.
+
+Fixes:
+- `ToolWindowViewModel.cs`: `LoadAsync` now serializes through a `SemaphoreSlim` gate into `LoadCoreAsync`; models are collected into local lists (label-deduped via HashSet) across awaits and swapped into `_modelSelections`/`Models` in one synchronous pass; `SendAsync` echoes the prompt as a `user` line; `ChatLine` implements `INotifyPropertyChanged` for `Text`.
+- `ToolWindowControl.xaml.cs`: transcript auto-scrolls to the newest line, coalesced via background-priority dispatcher invoke so per-token deltas scroll once per burst.
+- [x] Build clean (0 errors).
+- [x] Committed + pushed as Kaeo84.
