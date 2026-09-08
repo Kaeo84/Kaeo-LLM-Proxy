@@ -26,6 +26,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 {
     private readonly ChatEngine _engine;
     private readonly ExtensionSettingsStore _settings;
+    private readonly McpServerManager _mcp;
     private readonly List<AgentMessage> _history = new();
     private CancellationTokenSource? _cts;
 
@@ -41,10 +42,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private string _currentMode = "Interactive";
     private string _currentModel = string.Empty;
 
-    public ToolWindowViewModel(ChatEngine engine, ExtensionSettingsStore settings)
+    public ToolWindowViewModel(ChatEngine engine, ExtensionSettingsStore settings, McpServerManager mcp)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _mcp = mcp ?? throw new ArgumentNullException(nameof(mcp));
 
         // Built-in agents.
         Agents.Add(new AgentConfig { Name = "Agent", DisplayName = "Agent", SystemPrompt = "You are a capable coding agent. Use available tools to read, write, and execute code. Be concise in explanations but thorough in code changes.", IsBuiltin = true });
@@ -115,6 +117,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public async Task LoadAsync()
     {
         var s = await _settings.LoadAsync();
+
+        // Connect to enabled MCP servers and pull their tool definitions (per-server
+        // failures are swallowed inside; a dead server just contributes no tools).
+        await _mcp.InitializeAsync();
 
         // User-defined agents (map the settings-store Agent type to AgentConfig).
         var hadUserAgents = Agents.Any(a => !a.IsBuiltin);
@@ -239,12 +245,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             TextDelta = delta => AppendDelta(delta),
             ToolCallStart = tc => Lines.Add(new ChatLine { Kind = "tool", Text = $"→ {tc.Name}({tc.Arguments?.ToJsonString()})" }),
             ToolCallComplete = (tc, ok, res) => Lines.Add(new ChatLine { Kind = "tool", Text = ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {res}" }),
-            // Interactive mode: prompt the user per tool.
-            RequestPermission = tc => Task.Run(() =>
-            {
-                // Default to approve for now; a real UI would show a confirm dialog.
-                return true;
-            }),
+            // Interactive mode: prompt the user per tool (VS-themed, UI-thread marshaled).
+            RequestPermission = tc => Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirmAsync(
+                "Allow tool call",
+                $"Allow the model to run \"{tc.Name}\"?\n\n{tc.Arguments?.ToJsonString()}"),
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
         };
 
@@ -277,7 +281,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// <summary>Appends a streamed delta to the last assistant line.</summary>
     private void AppendDelta(string delta)
     {
-        var last = Lines.Count > 0 ? Lines[^1] : null;
+        var last = Lines.Count > 0 ? Lines[Lines.Count - 1] : null;
         if (last is { Kind: "assistant" })
             last.Text += delta;
         else

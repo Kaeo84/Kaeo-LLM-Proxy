@@ -1,5 +1,4 @@
 ﻿using Kaeo.LlmProxy.VSExtension.Core;
-using Microsoft.VisualStudio.PlatformUI;
 using System;
 using System.ComponentModel;
 using System.Collections.ObjectModel;
@@ -17,7 +16,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// single "Models" tab. Every change auto-saves to the shared <see cref="ExtensionSettingsStore"/>
     /// (no explicit Save button); the built-in VS OK/Cancel command bar simply closes the window.
     /// </summary>
-    public partial class SettingsWindow : DialogWindow
+    public partial class SettingsWindow : Window
     {
         private readonly ExtensionSettingsStore _store;
         private readonly ObservableCollection<ConnectionViewModel> _connections = new();

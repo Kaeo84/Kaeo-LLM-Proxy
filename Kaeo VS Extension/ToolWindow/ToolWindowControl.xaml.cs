@@ -21,7 +21,7 @@ public partial class ToolWindowControl : UserControl
         // live from each connection's Ollama /api/tags endpoint (see ToolWindowViewModel).
         var mcp = new McpServerManager(_settings);
         var engine = new ChatEngine(new AgentRuntime(mcp));
-        _vm = new ToolWindowViewModel(engine, _settings);
+        _vm = new ToolWindowViewModel(engine, _settings, mcp);
 
         // Bind the transcript and pills.
         MessageList.ItemsSource = _vm.Lines;

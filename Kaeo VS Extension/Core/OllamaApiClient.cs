@@ -3,6 +3,7 @@ using System.IO;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -112,9 +113,26 @@ internal sealed class OllamaApiClient
             if (string.IsNullOrWhiteSpace(line)) continue;
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            var text = root.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object && msg.TryGetProperty("content", out var c) ? c.GetString() : null;
+
+            JsonElement? message = null;
+            if (root.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object)
+                message = msg;
+
+            var text = message is not null && message.Value.TryGetProperty("content", out var c)
+                ? c.GetString()
+                : null;
+
+            // Ollama returns structured tool calls on the assistant message (typically the
+            // final chunk). Keep them verbatim so the runtime can replay them to the model.
+            JsonNode? toolCalls = null;
+            if (message is not null && message.Value.TryGetProperty("tool_calls", out var tc)
+                && tc.ValueKind == JsonValueKind.Array && tc.GetArrayLength() > 0)
+            {
+                toolCalls = JsonNode.Parse(tc.GetRawText());
+            }
+
             var done = root.TryGetProperty("done", out var d) && d.ValueKind == JsonValueKind.True;
-            yield return new ChatChunk(text, done);
+            yield return new ChatChunk(text, done, toolCalls);
         }
     }
 }
@@ -126,5 +144,9 @@ internal sealed class OllamaApiClient
 /// </summary>
 internal sealed record ModelInfo(string Name, long ContextLength, IReadOnlyList<string> Capabilities, bool SupportsTools);
 
-/// <summary>A single streamed chat token chunk from the proxy's /api/chat NDJSON stream.</summary>
-internal sealed record ChatChunk(string? Text, bool Done);
+/// <summary>
+/// A single streamed chat token chunk from the proxy's /api/chat NDJSON stream.
+/// <see cref="ToolCalls"/> carries the raw Ollama <c>message.tool_calls</c> array when the
+/// model requests tool execution; otherwise it is null.
+/// </summary>
+internal sealed record ChatChunk(string? Text, bool Done, JsonNode? ToolCalls = null);

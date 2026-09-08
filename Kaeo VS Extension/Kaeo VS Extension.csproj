@@ -35,15 +35,33 @@
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
     <!-- ModelContextProtocol brings in netstandard2.0 polyfills needed by net48 -->
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-    <!-- net48 lacks System.Text.Json; ModelContextProtocol ships it but we pin explicitly.
-         VSSDK strips shell-provided assemblies from the VSIX payload, but the devenv copy
-         has a different assembly version than this pin, so force ours in (resolved from the
-         extension folder by VS's AppDomain assembly probing). -->
+    <!-- net48 lacks System.Text.Json and the modern BCL polyfills; ModelContextProtocol and
+         System.Text.Json pull them in transitively. VSSDK strips "shell-provided" assemblies
+         from the VSIX payload, but the devenv copy has a different assembly version than these
+         pins, so the extension's JSON/async save path throws FileNotFound at runtime. Force the
+         whole set in (resolved from the extension folder by VS's AppDomain assembly probing).
+         Versions match the net48 restore graph (obj/project.assets.json). -->
     <PackageReference Include="System.Text.Json" Version="10.0.11">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
-    <!-- net48 lacks async-enumerable/ValueTask shims -->
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.11">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.11">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Memory" Version="4.6.3">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Buffers" Version="4.6.1">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
     <PackageReference Include="MessagePack" Version="3.1.8" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">

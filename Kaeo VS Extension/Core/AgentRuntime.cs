@@ -38,9 +38,11 @@ internal sealed class AgentConfig
 }
 
 /// <summary>
-/// A single message in the conversation history.
+/// A single message in the conversation history. <see cref="ToolCalls"/> holds the Ollama
+/// <c>message.tool_calls</c> array on an assistant turn; <see cref="ToolCallId"/> ties a
+/// <c>role:"tool"</c> result back to the call it answers.
 /// </summary>
-internal sealed record AgentMessage(string Role, string Content, JsonNode? ToolCall = null, JsonNode? ToolResult = null);
+internal sealed record AgentMessage(string Role, string Content, JsonNode? ToolCalls = null, string? ToolCallId = null);
 
 /// <summary>
 /// A tool call the model has requested.
@@ -129,7 +131,7 @@ internal sealed class AgentRuntime
             var payload = BuildChatPayload(agent, model, history, mode);
 
             var streamedText = new List<string>();
-            var pendingToolCalls = new List<ToolCallRequest>();
+            JsonNode? toolCallsNode = null;
 
             // Stream the model response.
             await foreach (var chunk in ollama.StreamChatAsync(payload, ct))
@@ -140,30 +142,25 @@ internal sealed class AgentRuntime
                     events.TextDelta?.Invoke(chunk.Text);
                 }
 
-                if (chunk.Done)
-                {
-                    // The final chunk in Ollama NDJSON may carry tool_calls in the message.
-                    // We parse the accumulated text for tool-call markers as a fallback.
-                    break;
-                }
+                if (chunk.ToolCalls is not null)
+                    toolCallsNode = chunk.ToolCalls;
             }
 
             var fullText = string.Concat(streamedText);
 
-            // Check for tool calls in the response.
-            pendingToolCalls = ParseToolCalls(fullText);
+            // The model signals work to do via structured Ollama tool_calls on its message.
+            var pendingToolCalls = ParseToolCalls(toolCallsNode);
 
-            if (pendingToolCalls.Count == 0)
+            if (pendingToolCalls.Count == 0 || toolCallsNode is null)
             {
                 // No tool calls — this is the final answer.
                 finalText = fullText;
                 break;
             }
 
-            // Record the assistant's tool-call message in history.
-            // JsonNode.Parse(JsonSerializer.Serialize(...)) is the net48-compatible
-            // equivalent of JsonSerializer.SerializeToNode (net7+).
-            history.Add(new AgentMessage("assistant", fullText, ToolCall: JsonNode.Parse(JsonSerializer.Serialize(pendingToolCalls))));
+            // Record the assistant's tool-call message in history, replaying the model's
+            // own tool_calls array verbatim so the next request matches Ollama's format.
+            history.Add(new AgentMessage("assistant", fullText, ToolCalls: toolCallsNode));
 
             // Execute each tool call.
             foreach (var tc in pendingToolCalls)
@@ -191,7 +188,9 @@ internal sealed class AgentRuntime
                 }
 
                 events.ToolCallComplete?.Invoke(tc, approved, toolResult);
-                history.Add(new AgentMessage("tool", toolResult ?? string.Empty, ToolResult: tc.Arguments));
+
+                // Ollama expects tool output as a role:"tool" message correlated by tool_call_id.
+                history.Add(new AgentMessage("tool", toolResult ?? string.Empty, ToolCallId: tc.Id));
             }
         }
 
@@ -229,13 +228,10 @@ internal sealed class AgentRuntime
         foreach (var m in history)
         {
             var msg = new JsonObject { ["role"] = m.Role, ["content"] = m.Content };
-            if (m.ToolCall is not null) msg["tool_calls"] = m.ToolCall;
-            if (m.ToolResult is not null) msg["tool_result"] = m.ToolResult;
+            if (m.ToolCalls is not null) msg["tool_calls"] = m.ToolCalls.DeepClone();
+            if (m.ToolCallId is not null) msg["tool_call_id"] = m.ToolCallId;
             messages.Add(msg);
         }
-
-        // Filter tools by agent config if specified.
-        var availableTools = agent.Tools is null ? null : agent.Tools;
 
         var messagesArray = new JsonArray();
         foreach (var m in messages) messagesArray.Add(m);
@@ -248,10 +244,11 @@ internal sealed class AgentRuntime
             ["options"] = new JsonObject { ["temperature"] = 0.2 }
         };
 
-        // Tools are only sent when the agent has tool access (Agent/Plan), not plain Ask.
-        if (agent.Tools is not null)
+        // Tools are sent for any agent that has tool access. Tools == null means "all tools"
+        // (Agent/Plan); an explicit empty array means none (Ask).
+        if (agent.Tools is null || agent.Tools.Count > 0)
         {
-            var tools = _mcp.GetAvailableToolDefinitions(availableTools);
+            var tools = _mcp.GetAvailableToolDefinitions(agent.Tools);
             if (tools.Count > 0)
             {
                 var toolsArray = new JsonArray();
@@ -284,49 +281,35 @@ internal sealed class AgentRuntime
     }
 
     /// <summary>
-    /// Parses tool-call markers from the model's response text.
-    /// The proxy's Ollama format returns tool calls as structured JSON in the message;
-    /// this is a fallback text-based parser for models that emit tool calls inline.
+    /// Converts the Ollama <c>message.tool_calls</c> array
+    /// (<c>[{ "id", "function": { "name", "arguments" } }]</c>) into runtime tool-call requests.
     /// </summary>
-    private static List<ToolCallRequest> ParseToolCalls(string text)
+    private static List<ToolCallRequest> ParseToolCalls(JsonNode? toolCallsNode)
     {
         var results = new List<ToolCallRequest>();
-        if (string.IsNullOrWhiteSpace(text)) return results;
+        if (toolCallsNode is not JsonArray array) return results;
 
-        // Try to find JSON tool-call blocks in the text.
-        // Convention: {"tool_call": {"name": "...", "arguments": {...}}}
-        var idx = 0;
-        while ((idx = text.IndexOf("\"tool_call\"", idx, StringComparison.OrdinalIgnoreCase)) >= 0)
+        foreach (var item in array)
         {
-            try
+            if (item is not JsonObject call) continue;
+            if (call["function"] is not JsonObject fn) continue;
+
+            var name = fn["name"]?.GetValue<string>() ?? string.Empty;
+            if (string.IsNullOrEmpty(name)) continue;
+
+            // Ollama may deliver arguments as a nested object or as a JSON-encoded string.
+            JsonNode? args = fn["arguments"];
+            if (args is JsonValue value && value.TryGetValue<string>(out var argText))
             {
-                // Find the enclosing JSON object.
-                var start = text.LastIndexOf('{', idx);
-                var depth = 0;
-                var end = start;
-                for (var i = start; i < text.Length; i++)
-                {
-                    if (text[i] == '{') depth++;
-                    else if (text[i] == '}') { depth--; if (depth == 0) { end = i + 1; break; } }
-                }
-                if (end > start)
-                {
-                    var obj = JsonNode.Parse(text[start..end]);
-                    if (obj is JsonObject o && o["tool_call"] is JsonObject tc)
-                    {
-                        var name = tc["name"]?.GetValue<string>() ?? string.Empty;
-                        var args = tc["arguments"];
-                        var id = tc["id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N");
-                        if (!string.IsNullOrEmpty(name))
-                            results.Add(new ToolCallRequest(id, name, args));
-                    }
-                }
+                try { args = JsonNode.Parse(argText); }
+                catch { args = null; }
             }
-            catch
-            {
-                // Malformed JSON — skip.
-            }
-            idx++;
+
+            var id = call["id"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(id))
+                id = Guid.NewGuid().ToString("N");
+
+            results.Add(new ToolCallRequest(id!, name, args));
         }
 
         return results;

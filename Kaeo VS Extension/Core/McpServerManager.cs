@@ -109,8 +109,8 @@ internal sealed class McpServerManager
         var dashIdx = toolName.IndexOf('-');
         if (dashIdx > 0)
         {
-            var serverKey = toolName[..dashIdx];
-            var actualToolName = toolName[(dashIdx + 1)..];
+            var serverKey = toolName.Substring(0, dashIdx);
+            var actualToolName = toolName.Substring(dashIdx + 1);
             if (_servers.TryGetValue(serverKey, out var server))
             {
                 return await ExecuteOnServerAsync(server, actualToolName, argumentsJson, ct).ConfigureAwait(false);
