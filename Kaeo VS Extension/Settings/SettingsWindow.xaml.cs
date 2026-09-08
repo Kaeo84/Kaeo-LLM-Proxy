@@ -1,12 +1,14 @@
-﻿using Microsoft.VisualStudio.PlatformUI;
+﻿using Kaeo.LlmProxy.VSExtension.Core;
+using Microsoft.VisualStudio.PlatformUI;
 using System;
+using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
-using Kaeo.LlmProxy.VSExtension.Core;
+using Microsoft.VisualStudio.Shell;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings
 {
@@ -15,13 +17,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// single "Models" tab. Every change auto-saves to the shared <see cref="ExtensionSettingsStore"/>
     /// (no explicit Save button); the built-in VS OK/Cancel command bar simply closes the window.
     /// </summary>
-    public partial class SettingsWindow : VsUIDialogWindow
+    public partial class SettingsWindow : DialogWindow
     {
         private readonly ExtensionSettingsStore _store;
         private readonly ObservableCollection<ConnectionViewModel> _connections = new();
         private ExtensionSettings _settings = new();
         private DispatcherTimer? _saveTimer;
         private bool _loaded;
+        private bool _saveErrorReported;
 
         /// <summary>Raised after a settings change has been persisted, so the tool window can refresh its model list.</summary>
         public event Action? ModelsChanged;
@@ -38,7 +41,18 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         internal SettingsWindow(ExtensionSettingsStore store)
         {
             _store = store ?? throw new ArgumentNullException(nameof(store));
-            InitializeComponent();
+            try
+            {
+                InitializeComponent();
+            }
+            catch (Exception ex)
+            {
+                // The VS theme resource keys only resolve inside the devenv process; if one fails
+                // to load we want a clear message to report, not a silent/unhandled crash.
+                ReportError("initializing the settings window", ex);
+                throw;
+            }
+
             DataContext = this;
             _ = LoadAsync();
         }
@@ -46,33 +60,40 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Loads settings and populates the connection list.</summary>
         private async Task LoadAsync()
         {
-            _settings = await _store.LoadAsync();
-
-            foreach (var c in _settings.Connections ?? Array.Empty<Connection>())
+            try
             {
-                var vm = new ConnectionViewModel
+                _settings = await _store.LoadAsync();
+
+                foreach (var c in _settings.Connections ?? Array.Empty<Connection>())
                 {
-                    Name = c.Name ?? string.Empty,
-                    Url = c.BaseUrl ?? string.Empty,
-                    ApiKey = c.ApiKey ?? string.Empty,
-                    Enabled = c.Enabled,
-                    IsExpanded = true,
-                };
-                foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
-                {
-                    vm.Models.Add(new ModelViewModel
+                    var vm = new ConnectionViewModel
                     {
-                        Name = m.Name ?? string.Empty,
-                        ModelId = m.Name ?? string.Empty,
-                        Capabilities = m.Capabilities != null ? string.Join(", ", m.Capabilities) : string.Empty,
-                        Enabled = m.Enabled,
-                        IsPinned = m.Pinned,
-                    });
+                        Name = c.Name ?? string.Empty,
+                        Url = c.BaseUrl ?? string.Empty,
+                        ApiKey = c.ApiKey ?? string.Empty,
+                        Enabled = c.Enabled,
+                        IsExpanded = true,
+                    };
+                    foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
+                    {
+                        vm.Models.Add(new ModelViewModel
+                        {
+                            Name = m.Name ?? string.Empty,
+                            ModelId = m.Name ?? string.Empty,
+                            Capabilities = m.Capabilities != null ? string.Join(", ", m.Capabilities) : string.Empty,
+                            Enabled = m.Enabled,
+                            IsPinned = m.Pinned,
+                        });
+                    }
+                    WireForSave(vm);
+                    _connections.Add(vm);
                 }
-                WireForSave(vm);
-                _connections.Add(vm);
+                _loaded = true;
             }
-            _loaded = true;
+            catch (Exception ex)
+            {
+                ReportError("loading settings", ex);
+            }
         }
 
         /// <summary>Adds a new, empty connection ready for editing.</summary>
@@ -95,12 +116,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (sender is not Button { DataContext: ConnectionViewModel conn })
                 return;
 
-            var result = MessageBox.Show(
-                $"Delete connection \"{conn.Name}\"?",
+            // VS-owned, theme-matched message box (the plain WPF MessageBox ignores the VS theme).
+            bool confirmed = Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirm(
                 "Delete Connection",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
-            if (result != MessageBoxResult.Yes)
+                $"Delete connection \"{conn.Name}\"?");
+            if (!confirmed)
                 return;
 
             _connections.Remove(conn);
@@ -114,18 +134,32 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (sender is not Button { DataContext: ConnectionViewModel conn })
                 return;
 
-            await conn.RefreshAsync();
-            SaveNow();
-            RaiseModelsChanged();
+            try
+            {
+                await conn.RefreshAsync();
+                SaveNow();
+                RaiseModelsChanged();
+            }
+            catch (Exception ex)
+            {
+                ReportError($"refreshing connection \"{conn.Name}\"", ex);
+            }
         }
 
         /// <summary>Refreshes every enabled connection in parallel.</summary>
         private async void RefreshAll_Click(object sender, RoutedEventArgs e)
         {
-            var tasks = _connections.Where(c => c.Enabled).Select(c => c.RefreshAsync()).ToList();
-            await Task.WhenAll(tasks);
-            SaveNow();
-            RaiseModelsChanged();
+            try
+            {
+                var tasks = _connections.Where(c => c.Enabled).Select(c => c.RefreshAsync()).ToList();
+                await Task.WhenAll(tasks);
+                SaveNow();
+                RaiseModelsChanged();
+            }
+            catch (Exception ex)
+            {
+                ReportError("refreshing connections", ex);
+            }
         }
 
         /// <summary>
@@ -175,9 +209,63 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
             _ = _store.SaveAsync(_settings).ContinueWith(t =>
             {
-                if (!t.IsFaulted && !t.IsCanceled)
+                if (t.IsFaulted)
+                {
+                    if (!_saveErrorReported)
+                    {
+                        _saveErrorReported = true;
+                        ReportError("saving settings", t.Exception);
+                    }
+                }
+                else if (!t.IsCanceled)
+                {
+                    _saveErrorReported = false;
                     RaiseModelsChanged();
+                }
             }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+
+        /// <summary>
+        /// Shows a VS-themed, parented error dialog with the operation that failed and the
+        /// underlying reason, so problems are visible to the user instead of silently swallowed.
+        /// </summary>
+        private static void ReportError(string operation, Exception? ex)
+        {
+            var detail = FlattenException(ex);
+            Community.VisualStudio.Toolkit.VS.MessageBox.ShowError(
+                "Kaeo Settings",
+                $"There was a problem {operation}.\n\n{detail}");
+        }
+
+        /// <summary>Collapses aggregate/inner exception chains into a readable multi-line message.</summary>
+        private static string FlattenException(Exception? ex)
+        {
+            var seen = new System.Collections.Generic.HashSet<Exception>();
+            var sb = new System.Text.StringBuilder();
+            FlattenInto(ex, sb, seen);
+            return sb.Length > 0 ? sb.ToString() : "Unknown error.";
+        }
+
+        private static void FlattenInto(Exception? ex, System.Text.StringBuilder sb, System.Collections.Generic.HashSet<Exception> seen)
+        {
+            if (ex == null || !seen.Add(ex))
+                return;
+
+            if (sb.Length > 0)
+                sb.AppendLine();
+
+            if (ex is AggregateException agg)
+            {
+                sb.Append($"{agg.GetType().Name}: {agg.Message}");
+                foreach (var inner in agg.InnerExceptions)
+                    FlattenInto(inner, sb, seen);
+                return;
+            }
+
+            if (ex.InnerException != null)
+                sb.Append($"{ex.GetType().Name}: ");
+            sb.Append(ex.Message);
+            FlattenInto(ex.InnerException, sb, seen);
         }
 
         /// <summary>Maps a connection view model back to the persisted <see cref="Connection"/> shape.</summary>

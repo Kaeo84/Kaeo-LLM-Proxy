@@ -69,9 +69,7 @@ public partial class ToolWindowControl : UserControl
         {
             SendButton.IsEnabled = true;
 
-            await Microsoft.VisualStudio.Shell.ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-
-            await Community.VisualStudio.Toolkit.VS.MessageBox.ShowErrorAsync(
+            VS.MessageBox.ShowError(
                 "Error",
                 $"Error sending message: {ex.Message}"
             );
@@ -89,10 +87,11 @@ public partial class ToolWindowControl : UserControl
         var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
 
         wnd.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        // 3. Use Visual Studio's absolute main window wrapper as the explicit owner
-        IntPtr hwndOwner;
-        uiShell.GetDialogOwnerHwnd(out hwndOwner);
-        //wnd.Owner = (Window)HwndSource.FromHwnd(hwndOwner)?.RootVisual;
+        // Parent to Visual Studio's dialog-owner window so modality, centering, and
+        // theming behave like a native VS dialog (WindowInteropHelper needs the raw HWND;
+        // HwndSource.FromHwnd(...).RootVisual is null for the native VS shell window).
+        uiShell.GetDialogOwnerHwnd(out IntPtr hwndOwner);
+        new WindowInteropHelper(wnd).Owner = hwndOwner;
 
         // Refresh the tool window's model list whenever the settings window persists a change.
         Action? onModelsChanged = () => _ = _vm?.LoadAsync();
