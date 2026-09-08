@@ -19,11 +19,11 @@ internal sealed class ChatEngine
     }
 
     /// <summary>
-    /// Runs a full agent turn (Ask/Agent/Plan) with streaming events against the given Ollama connection.
+    /// Runs a full agent turn (Ask/Agent/Plan) with streaming events against the given upstream.
     /// Ask mode = no tools (plain chat); Agent/Plan = tool loop via the proxy.
     /// </summary>
     public Task<AgentTurnResult> RunAsync(
-        OllamaApiClient ollama,
+        IUpstreamClient upstream,
         AgentConfig agent,
         string model,
         AgentMode mode,
@@ -32,6 +32,6 @@ internal sealed class ChatEngine
         AgentEvents events,
         CancellationToken ct = default)
     {
-        return _runtime.RunTurnAsync(ollama, agent, model, mode, history, prompt, events, ct);
+        return _runtime.RunTurnAsync(upstream, agent, model, mode, history, prompt, events, ct);
     }
 }

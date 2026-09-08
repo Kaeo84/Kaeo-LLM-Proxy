@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace Kaeo.LlmProxy.VSExtension.Core;
 
-internal sealed class OllamaApiClient
+internal sealed class OllamaApiClient : IUpstreamClient
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;

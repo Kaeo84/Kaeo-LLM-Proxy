@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -11,13 +12,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// <summary>
     /// A foldable connection section in the settings window. Holds the connection's
     /// editable fields and its live model list. <see cref="RefreshAsync"/> pulls the
-    /// model list from the Ollama /api/tags endpoint.
+    /// model list from the configured upstream (Ollama today; OpenAI/Anthropic stubbed).
     /// </summary>
     public sealed class ConnectionViewModel : INotifyPropertyChanged
     {
         private string _name = string.Empty;
         private string _url = string.Empty;
         private string _apiKey = string.Empty;
+        private string _upstream = "Ollama";
         private bool _enabled = true;
         private bool _isExpanded;
         private bool _isRefreshing;
@@ -46,6 +48,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             get => _apiKey;
             set { _apiKey = value; OnPropertyChanged(); }
         }
+
+        /// <summary>Upstream API flavor: Ollama today, OpenAI/Anthropic stubbed for later.</summary>
+        public string Upstream
+        {
+            get => _upstream;
+            set { _upstream = value; OnPropertyChanged(); }
+        }
+
+        /// <summary>Choices for the upstream dropdown.</summary>
+        public IReadOnlyList<string> UpstreamOptions => UpstreamKinds.DisplayNames;
 
         public bool Enabled
         {
@@ -93,7 +105,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         public ObservableCollection<ModelViewModel> Models { get; }
 
         /// <summary>
-        /// Pulls the model list from the Ollama /api/tags endpoint and repopulates
+        /// Pulls the model list from the configured upstream and repopulates
         /// <see cref="Models"/>, restoring each model's enabled/pinned state from the
         /// previous list so a refresh does not wipe user selections.
         /// </summary>
@@ -116,7 +128,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     return;
                 }
 
-                var client = new OllamaApiClient(Url, string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey);
+                var client = UpstreamClientFactory.Create(UpstreamKinds.Parse(Upstream), Url, string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey);
                 var fetched = await client.GetModelsAsync();
 
                 var previous = Models.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
@@ -144,16 +156,6 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             finally
             {
                 IsRefreshing = false;
-            }
-        }
-
-        /// <summary>Unpins every other model so <paramref name="model"/> is the sole default.</summary>
-        public void UnpinOthers(ModelViewModel model)
-        {
-            foreach (var m in Models)
-            {
-                if (!ReferenceEquals(m, model))
-                    m.IsPinned = false;
             }
         }
 

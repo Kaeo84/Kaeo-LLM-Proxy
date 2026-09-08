@@ -100,12 +100,12 @@ internal sealed class AgentRuntime
     }
 
     /// <summary>
-    /// Runs a single agent turn against the given Ollama connection: streams the model response,
+    /// Runs a single agent turn against the given upstream: streams the model response,
     /// executes any requested tool calls, feeds results back, and repeats until the model produces
     /// a final answer or the iteration budget is exhausted. Emits events via <paramref name="events"/>.
     /// </summary>
     public async Task<AgentTurnResult> RunTurnAsync(
-        OllamaApiClient ollama,
+        IUpstreamClient upstream,
         AgentConfig agent,
         string model,
         AgentMode mode,
@@ -134,7 +134,7 @@ internal sealed class AgentRuntime
             JsonNode? toolCallsNode = null;
 
             // Stream the model response.
-            await foreach (var chunk in ollama.StreamChatAsync(payload, ct))
+            await foreach (var chunk in upstream.StreamChatAsync(payload, ct))
             {
                 if (chunk.Text is not null)
                 {
@@ -202,7 +202,7 @@ internal sealed class AgentRuntime
             events.AutoPilotContinuing?.Invoke(autopilotBudget);
 
             // Recurse with a continuation prompt.
-            var continuation = await RunTurnAsync(ollama, agent, model, mode, history,
+            var continuation = await RunTurnAsync(upstream, agent, model, mode, history,
                 "Continue. You were not finished. Complete the remaining work.", events, ct);
             return new AgentTurnResult(continuation.FinalText, continuation.Completed,
                 toolCallsExecuted + continuation.ToolCallsExecuted, true);

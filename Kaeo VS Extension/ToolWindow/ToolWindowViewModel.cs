@@ -47,9 +47,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
     /// <summary>
     /// A model selectable in the pill bar: the model name, the owning connection (baseUrl + key),
-    /// and whether the Ollama "tools" capability is present (tool-calling models are auto-enabled).
+    /// whether the Ollama "tools" capability is present (tool-calling models are auto-enabled),
+    /// the connection's upstream kind, and whether it is the single pinned default model.
     /// </summary>
-    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools);
+    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault);
 
     private readonly List<ModelSelection> _modelSelections = new();
     private readonly SemaphoreSlim _loadGate = new(1, 1);
@@ -64,16 +65,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _mcp = mcp ?? throw new ArgumentNullException(nameof(mcp));
 
-        // Built-in agents.
-        Agents.Add(new AgentConfig { Name = "Agent", DisplayName = "Agent", SystemPrompt = "You are a capable coding agent. Use available tools to read, write, and execute code. Be concise in explanations but thorough in code changes.", IsBuiltin = true });
-        Agents.Add(new AgentConfig { Name = "Ask", DisplayName = "Ask", SystemPrompt = "You answer questions concisely. Do not use tools. Provide direct, focused answers.", IsBuiltin = true, Tools = Array.Empty<string>() });
-        Agents.Add(new AgentConfig
-        {
-            Name = "Plan",
-            DisplayName = "Plan",
-            SystemPrompt = "You are a senior software engineer producing structured implementation plans. Do NOT edit files or run commands; plan only. Respond in markdown with exactly these sections: ## Understanding (1-3 sentences restating the task), ## Assumptions (bullet list of decisions and scope boundaries), ## Approach (1-3 paragraphs with specific file/symbol references), ## Key Files (bullet list with one-line reasons), ## Risks and Open Questions (bullet list), ## Steps (numbered checklist, one verb + one target per step, with indented sub-bullets for breakdown). Be concrete: name real files, types, and endpoints. If the request is ambiguous, state assumptions explicitly.",
-            IsBuiltin = true
-        });
+        // Built-in agents (single source of truth: BuiltinAgents; settings may override them).
+        foreach (var b in BuiltinAgents.All) Agents.Add(b);
 
         Modes.Add("Interactive");
         Modes.Add("Bypass");
@@ -153,18 +146,38 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // failures are swallowed inside; a dead server just contributes no tools).
         await _mcp.InitializeAsync();
 
-        // User-defined agents (map the settings-store Agent type to AgentConfig).
-        var hadUserAgents = Agents.Any(a => !a.IsBuiltin);
-        if (hadUserAgents)
+        // Agents: built-ins first (with any saved override applied), then user-defined ones.
+        var savedAgents = s.Agents ?? Array.Empty<Agent>();
+        var overrides = new Dictionary<string, Agent>(StringComparer.Ordinal);
+        foreach (var a in savedAgents)
+            if (!string.IsNullOrWhiteSpace(a.Name))
+                overrides[a.Name!] = a;
+
+        Agents.Clear();
+        foreach (var b in BuiltinAgents.All)
         {
-            // Remove existing user-defined agents before re-adding.
-            var builtins = Agents.Where(a => a.IsBuiltin).ToList();
-            Agents.Clear();
-            foreach (var b in builtins) Agents.Add(b);
+            if (overrides.TryGetValue(b.Name, out var o))
+            {
+                Agents.Add(new AgentConfig
+                {
+                    Name = b.Name,
+                    DisplayName = b.DisplayName,
+                    Description = o.Description ?? b.Description,
+                    SystemPrompt = string.IsNullOrWhiteSpace(o.SystemPrompt) ? b.SystemPrompt : o.SystemPrompt!,
+                    Tools = b.Tools,
+                    DefaultModel = b.DefaultModel,
+                    IsBuiltin = true,
+                });
+            }
+            else
+            {
+                Agents.Add(b);
+            }
         }
-        foreach (var a in s.Agents ?? Array.Empty<Agent>())
+        foreach (var a in savedAgents)
         {
             if (string.IsNullOrWhiteSpace(a.Name)) continue;
+            if (overrides.ContainsKey(a.Name!)) continue; // already applied as a built-in override
             Agents.Add(new AgentConfig
             {
                 Name = a.Name,
@@ -186,7 +199,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         {
             if (!conn.Enabled || string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
 
-            var client = new OllamaApiClient(conn.BaseUrl, conn.ApiKey);
+            var kind = UpstreamKinds.Parse(conn.Upstream);
+            var client = UpstreamClientFactory.Create(kind, conn.BaseUrl, conn.ApiKey);
+            var pinned = new HashSet<string>(
+                (conn.Models ?? Array.Empty<ModelEntry>()).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
+                StringComparer.Ordinal);
             IReadOnlyList<ModelInfo> fetched;
             try
             {
@@ -205,7 +222,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 // Label disambiguates same-named models across connections.
                 var label = $"{conn.Name} / {m.Name}";
                 if (!seen.Add(label)) continue;
-                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools));
+                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools, kind, pinned.Contains(m.Name)));
                 labels.Add(label);
             }
         }
@@ -225,11 +242,18 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             return;
         }
 
-        // Default to the first tool-capable model, else the first model.
+        // Prefer the pinned default model, then the last-used model, then the first
+        // tool-capable model, else the first model.
         if (string.IsNullOrEmpty(CurrentModel) || !Models.Contains(CurrentModel))
         {
-            var firstTools = _modelSelections.FirstOrDefault(sel => sel.SupportsTools);
-            var pick = firstTools ?? _modelSelections.FirstOrDefault();
+            ModelSelection? pick = _modelSelections.FirstOrDefault(sel => sel.IsDefault);
+            if (pick is null && !string.IsNullOrEmpty(s.Defaults?.Model))
+            {
+                var savedLabel = s.Defaults.Model;
+                pick = _modelSelections.FirstOrDefault(sel => $"{sel.ConnectionName} / {sel.Name}" == savedLabel);
+            }
+            pick ??= _modelSelections.FirstOrDefault(sel => sel.SupportsTools);
+            pick ??= _modelSelections.FirstOrDefault();
             if (pick is not null)
             {
                 CurrentModel = $"{pick.ConnectionName} / {pick.Name}";
@@ -240,12 +264,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     }
 
     /// <summary>Resolves the current model label back to its connection + client.</summary>
-    private (OllamaApiClient Client, string ModelName)? ResolveCurrentModel()
+    private (IUpstreamClient Client, string ModelName)? ResolveCurrentModel()
     {
         if (string.IsNullOrEmpty(CurrentModel)) return null;
         var sel = _modelSelections.FirstOrDefault(m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
         if (sel is null) return null;
-        return (new OllamaApiClient(sel.BaseUrl, sel.ApiKey), sel.Name);
+        return (UpstreamClientFactory.Create(sel.Kind, sel.BaseUrl, sel.ApiKey), sel.Name);
     }
 
     /// <summary>Shown in the model dropdown when no connection has returned a model.</summary>

@@ -198,6 +198,8 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
 
                                             <TextBlock Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,0" />
@@ -206,9 +208,12 @@
                                             <TextBlock Grid.Column="2" Text="URL:" VerticalAlignment="Center" Margin="0,0,4,0" />
                                             <TextBox Grid.Column="3" Text="{Binding Url, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,8,0" />
 
-                                            <CheckBox Grid.Column="4" Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                            <Button Grid.Column="5" Content="Refresh" Click="RefreshConnection_Click" IsEnabled="{Binding CanRefresh}" MinWidth="70" Margin="0,0,8,0" />
-                                            <Button Grid.Column="6" Content="Delete" Click="DeleteConnection_Click" MinWidth="60" />
+                                            <TextBlock Grid.Column="4" Text="Upstream:" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                            <ComboBox Grid.Column="5" ItemsSource="{Binding UpstreamOptions}" SelectedItem="{Binding Upstream}" Width="110" VerticalAlignment="Center" Margin="0,0,8,0" />
+
+                                            <CheckBox Grid.Column="6" Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <Button Grid.Column="7" Content="Refresh" Click="RefreshConnection_Click" IsEnabled="{Binding CanRefresh}" MinWidth="70" Margin="0,0,8,0" />
+                                            <Button Grid.Column="8" Content="Delete" Click="DeleteConnection_Click" MinWidth="60" />
                                         </Grid>
 
                                         <TextBlock Text="{Binding RefreshError}" Margin="0,0,0,4"
@@ -287,6 +292,8 @@
                                  TextChanged="AgentEditor_TextChanged" />
 
                         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="RevertAgentButton" Content="Revert to Default" Click="RevertAgent_Click"
+                                    IsEnabled="False" MinWidth="110" Padding="10,2" Margin="0,0,4,0" />
                             <Button x:Name="SaveAgentButton" Content="Save" Click="SaveAgent_Click"
                                     IsEnabled="False" MinWidth="80" Padding="10,2" />
                         </StackPanel>

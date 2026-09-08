@@ -39,6 +39,15 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Model label this agent prefers; not edited in this tab.</summary>
         public string? DefaultModel { get; set; }
 
+        /// <summary>True for the built-in Agent/Ask/Plan entries, which can be reverted to defaults.</summary>
+        public bool IsBuiltin { get; set; }
+
+        /// <summary>Shipped description for built-ins; null for user agents.</summary>
+        public string? DefaultDescription { get; set; }
+
+        /// <summary>Shipped system prompt for built-ins; null for user agents.</summary>
+        public string? DefaultSystemPrompt { get; set; }
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private void OnPropertyChanged([CallerMemberName] string? name = null)

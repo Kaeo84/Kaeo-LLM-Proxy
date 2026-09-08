@@ -1,7 +1,9 @@
 using System;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Kaeo.LlmProxy.VSExtension.Core;
@@ -9,6 +11,13 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 internal sealed class ExtensionSettingsStore
 {
     private readonly string _path;
+
+    /// <summary>
+    /// Serializes writes within this process: the tool window, the settings window, and the
+    /// MCP manager all save through (possibly several) store instances against one file, and
+    /// the debounced auto-save can overlap a previous save.
+    /// </summary>
+    private static readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
     public ExtensionSettingsStore(string? path = null)
     {
@@ -20,29 +29,86 @@ internal sealed class ExtensionSettingsStore
         if (!File.Exists(_path))
             return new ExtensionSettings();
 
-        // File.ReadAllTextAsync is net6+; run the synchronous version on a thread-pool
-        // thread so the net48 target stays compatible (settings file is small).
-        var text = await Task.Run(() => File.ReadAllText(_path)).ConfigureAwait(false);
-        try
+        // Retry transient failures: another process may hold the file open (second devenv
+        // instance) or we may have caught it mid-write (truncated). Falling back to defaults
+        // too eagerly risks a later save wiping real settings, so try a few times first.
+        const int maxAttempts = 4;
+        for (var attempt = 1; ; attempt++)
         {
-            return JsonSerializer.Deserialize<ExtensionSettings>(text) ?? new ExtensionSettings();
-        }
-        catch
-        {
+            try
+            {
+                // File.ReadAllText is net48-safe; run it off the UI thread. Read with
+                // FileShare.ReadWrite so a concurrent writer never makes the read throw.
+                var text = await Task.Run(() => ReadShared(_path)).ConfigureAwait(false);
+                var loaded = JsonSerializer.Deserialize<ExtensionSettings>(text);
+                if (loaded is not null)
+                    return loaded;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && (ex is IOException || ex is JsonException))
+            {
+                await Task.Delay(75 * attempt).ConfigureAwait(false);
+                continue;
+            }
+            catch
+            {
+                // Fall through to defaults below.
+            }
+
             return new ExtensionSettings();
         }
     }
 
     public async Task SaveAsync(ExtensionSettings settings)
     {
-        var dir = Path.GetDirectoryName(_path);
-        if (!Directory.Exists(dir))
-            Directory.CreateDirectory(dir!);
-
         var text = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        // File.WriteAllTextAsync is net6+; run the synchronous version on a thread-pool
-        // thread for net48 compatibility.
-        await Task.Run(() => File.WriteAllText(_path, text)).ConfigureAwait(false);
+
+        await _writeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await Task.Run(() => WriteWithRetry(_path, text)).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private static string ReadShared(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Writes the file with a short retry/backoff loop. Sharing violations (0x80070020) are
+    /// transient: another VS instance holding the extension, a still-running debounced save,
+    /// or an antivirus/indexer scan. After the retries are exhausted the exception propagates
+    /// so the caller can surface it.
+    /// </summary>
+    private static void WriteWithRetry(string path, string text)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+
+        const int maxAttempts = 8;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                using (var writer = new StreamWriter(stream, Encoding.UTF8))
+                {
+                    writer.Write(text);
+                }
+                return;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                Thread.Sleep(50 * attempt); // 50, 100, 150 ... ms
+            }
+        }
     }
 }
 
@@ -69,6 +135,8 @@ internal sealed class Connection
     public string? BaseUrl { get; set; }
     public string? ApiKey { get; set; }
     public bool Enabled { get; set; } = true;
+    /// <summary>Upstream API flavor: "Ollama" (default), "OpenAI", or "Anthropic".</summary>
+    public string? Upstream { get; set; } = "Ollama";
     public ModelEntry[]? Models { get; set; } = Array.Empty<ModelEntry>();
 }
 

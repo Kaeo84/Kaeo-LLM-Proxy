@@ -77,6 +77,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         Url = c.BaseUrl ?? string.Empty,
                         ApiKey = c.ApiKey ?? string.Empty,
                         Enabled = c.Enabled,
+                        Upstream = string.IsNullOrWhiteSpace(c.Upstream) ? "Ollama" : c.Upstream,
                         IsExpanded = true,
                     };
                     foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
@@ -94,8 +95,25 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     _connections.Add(vm);
                 }
 
-                foreach (var a in _settings.Agents ?? Array.Empty<Agent>())
+                var savedAgents = _settings.Agents ?? Array.Empty<Agent>();
+                foreach (var b in BuiltinAgents.All)
                 {
+                    var o = savedAgents.FirstOrDefault(a => a.Name == b.Name);
+                    _agents.Add(new AgentViewModel
+                    {
+                        Name = b.Name,
+                        Description = o?.Description ?? b.Description,
+                        SystemPrompt = string.IsNullOrWhiteSpace(o?.SystemPrompt) ? b.SystemPrompt : o!.SystemPrompt!,
+                        Tools = o?.Tools ?? b.Tools?.ToArray(),
+                        DefaultModel = o?.DefaultModel ?? b.DefaultModel,
+                        IsBuiltin = true,
+                        DefaultDescription = b.Description,
+                        DefaultSystemPrompt = b.SystemPrompt,
+                    });
+                }
+                foreach (var a in savedAgents)
+                {
+                    if (BuiltinAgents.All.Any(b => b.Name == a.Name)) continue;
                     _agents.Add(new AgentViewModel
                     {
                         Name = a.Name ?? string.Empty,
@@ -187,20 +205,36 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         {
             conn.PropertyChanged += (_, e) => ScheduleSave();
 
+            void WireModel(ModelViewModel m)
+            {
+                m.PropertyChanged += (_, ev) =>
+                {
+                    if (ev.PropertyName == nameof(ModelViewModel.IsPinned) && m.IsPinned)
+                        UnpinAllExcept(m);
+                    ScheduleSave();
+                };
+            }
+
+            // Models loaded before wiring still need edit notifications (Enabled/Default).
+            foreach (var m in conn.Models) WireModel(m);
+
             conn.Models.CollectionChanged += (_, e) =>
             {
                 if (e.NewItems != null)
                 {
-                    foreach (ModelViewModel m in e.NewItems)
-                        m.PropertyChanged += (_, ev) =>
-                        {
-                            if (ev.PropertyName == nameof(ModelViewModel.IsPinned) && m.IsPinned)
-                                conn.UnpinOthers(m);
-                            ScheduleSave();
-                        };
+                    foreach (ModelViewModel m in e.NewItems) WireModel(m);
                 }
                 ScheduleSave();
             };
+        }
+
+        /// <summary>Keeps Default exclusive across every connection: only one model may be the default.</summary>
+        private void UnpinAllExcept(ModelViewModel pinned)
+        {
+            foreach (var c in _connections)
+                foreach (var m in c.Models)
+                    if (!ReferenceEquals(m, pinned) && m.IsPinned)
+                        m.IsPinned = false;
         }
 
         /// <summary>Schedules a debounced save (500 ms) to coalesce rapid edits.</summary>
@@ -232,7 +266,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (!_loaded)
                 return;
 
-            _settings.Agents = _agents.Select(MapToAgent).ToArray();
+            // Built-ins are only persisted as an override when they differ from their defaults.
+            _settings.Agents = _agents
+                .Where(a => !a.IsBuiltin || a.Description != a.DefaultDescription || a.SystemPrompt != a.DefaultSystemPrompt)
+                .Select(MapToAgent)
+                .ToArray();
             PersistAsync();
         }
 
@@ -308,6 +346,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 BaseUrl = c.Url,
                 ApiKey = c.ApiKey,
                 Enabled = c.Enabled,
+                Upstream = c.Upstream,
                 Models = c.Models.Select(m => new ModelEntry
                 {
                     Name = m.Name,
@@ -336,6 +375,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             AgentDescriptionBox.Text = agent?.Description ?? string.Empty;
             AgentPromptBox.Text = agent?.SystemPrompt ?? string.Empty;
             _loadingEditor = false;
+            AgentNameBox.IsReadOnly = agent?.IsBuiltin == true;
+            RevertAgentButton.IsEnabled = agent?.IsBuiltin == true;
             SaveAgentButton.IsEnabled = false;
         }
 
@@ -394,12 +435,23 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         {
             if (_editingAgent is null) return;
 
-            if (!string.IsNullOrWhiteSpace(AgentNameBox.Text))
+            if (!_editingAgent.IsBuiltin && !string.IsNullOrWhiteSpace(AgentNameBox.Text))
                 _editingAgent.Name = AgentNameBox.Text.Trim();
             _editingAgent.Description = string.IsNullOrWhiteSpace(AgentDescriptionBox.Text) ? null : AgentDescriptionBox.Text;
             _editingAgent.SystemPrompt = AgentPromptBox.Text;
             SaveAgentsNow();
             LoadAgentEditor(_editingAgent);
+        }
+
+        /// <summary>Restores a built-in agent's description/prompt to the shipped defaults.</summary>
+        private void RevertAgent_Click(object sender, RoutedEventArgs e)
+        {
+            if (_editingAgent is not { IsBuiltin: true } agent) return;
+
+            agent.Description = agent.DefaultDescription;
+            agent.SystemPrompt = agent.DefaultSystemPrompt ?? string.Empty;
+            SaveAgentsNow();
+            LoadAgentEditor(agent);
         }
 
         /// <summary>Maps an agent view model back to the persisted <see cref="Agent"/> shape.</summary>
