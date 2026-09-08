@@ -24,6 +24,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private bool _enabled = true;
         private bool _isRefreshing;
         private string? _lastError;
+        private string? _lastErrorDetail;
+        private string? _statusMessage;
         private DateTime? _lastSyncUtc;
 
         public McpServerViewModel()
@@ -96,7 +98,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             }
         }
 
-        /// <summary>Last refresh failure, or null when the last attempt succeeded.</summary>
+        /// <summary>Short failure text shown inline, or null when the last attempt succeeded.</summary>
         public string? LastError
         {
             get => _lastError;
@@ -105,10 +107,73 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 _lastError = value;
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasError));
+                OnPropertyChanged(nameof(LastErrorTooltip));
             }
         }
 
+        /// <summary>
+        /// Full failure text (type, message, inner chain and stack trace) for the tooltip and for
+        /// copying, so a truncated inline message can still be investigated.
+        /// </summary>
+        public string? LastErrorDetail
+        {
+            get => _lastErrorDetail;
+            set
+            {
+                _lastErrorDetail = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(LastErrorTooltip));
+            }
+        }
+
+        /// <summary>Tooltip shown when hovering the inline error; also tells the user it is clickable.</summary>
+        public string? LastErrorTooltip
+            => string.IsNullOrEmpty(_lastErrorDetail)
+                ? null
+                : _lastErrorDetail + Environment.NewLine + Environment.NewLine + "Click to copy this error.";
+
+        /// <summary>Non-error feedback (e.g. a successful connectivity test), cleared on the next action.</summary>
+        public string? StatusMessage
+        {
+            get => _statusMessage;
+            set
+            {
+                _statusMessage = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(HasStatus));
+            }
+        }
+
+        public bool HasStatus => !string.IsNullOrEmpty(_statusMessage);
+
         public bool HasError => !string.IsNullOrEmpty(_lastError);
+
+        /// <summary>
+        /// Records a failure: the inline line carries the deepest message (usually the readable one),
+        /// while the detail keeps the whole <see cref="Exception.ToString"/> including the stack trace.
+        /// </summary>
+        public void SetError(Exception ex)
+        {
+            StatusMessage = null;
+            LastErrorDetail = ex.ToString();
+            LastError = ex.GetBaseException().Message;
+        }
+
+        /// <summary>Shows a transient info line and clears any error state.</summary>
+        public void SetStatus(string message)
+        {
+            LastError = null;
+            LastErrorDetail = null;
+            StatusMessage = message;
+        }
+
+        /// <summary>Clears the previous error and status lines before a new action.</summary>
+        public void ClearDiagnostics()
+        {
+            LastError = null;
+            LastErrorDetail = null;
+            StatusMessage = null;
+        }
 
         /// <summary>True when a tool pull is not in flight (drives the Refresh button).</summary>
         public bool CanRefresh => !IsRefreshing;

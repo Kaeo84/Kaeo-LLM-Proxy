@@ -336,6 +336,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         catch (Exception ex)
         {
             streaming.Text = $"[error] {ex.Message}";
+            DebugLog.Error("The agent turn failed.", ex);
         }
         finally
         {

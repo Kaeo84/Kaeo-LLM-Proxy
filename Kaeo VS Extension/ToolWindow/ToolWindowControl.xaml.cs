@@ -90,6 +90,7 @@ public partial class ToolWindowControl : UserControl
         catch (Exception ex)
         {
             SendButton.IsEnabled = true;
+            DebugLog.Error("Sending the message failed.", ex);
 
             VS.MessageBox.ShowError(
                 "Error",
@@ -125,6 +126,24 @@ public partial class ToolWindowControl : UserControl
         finally
         {
             wnd.ModelsChanged -= onModelsChanged;
+        }
+    }
+
+    /// <summary>Shows (or focuses) the Kaeo Debug tool window.</summary>
+    private async void DebugButton_Click(object sender, RoutedEventArgs e)
+    {
+        // The package owns ShowToolWindowAsync because its DisposalToken is protected.
+        var pkg = VsPackage.Instance;
+        if (pkg is null)
+            return;
+
+        try
+        {
+            await pkg.ShowDebugWindowAsync();
+        }
+        catch (Exception ex)
+        {
+            VS.MessageBox.ShowError("Debug Window", $"Could not open the debug window.\n\n{ex.Message}");
         }
     }
 

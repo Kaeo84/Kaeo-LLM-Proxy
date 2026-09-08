@@ -349,7 +349,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 return;
 
             server.IsRefreshing = true;
-            server.LastError = null;
+            server.ClearDiagnostics();
             try
             {
                 var tools = await _mcpManager.FetchToolsAsync(MapToMcpServer(server));
@@ -357,14 +357,86 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 server.LastSyncUtc = DateTime.UtcNow;
                 SaveNow();
                 RaiseModelsChanged();
+                server.SetStatus($"Pulled {tools.Count} tool(s) from \"{server.Name}\".");
+                DebugLog.Info($"MCP tools pulled for '{server.Name}': {tools.Count}.");
             }
             catch (Exception ex)
             {
-                server.LastError = ex.Message;
+                server.SetError(ex);
+                DebugLog.Error($"Pulling MCP tools for '{server.Name}' failed.", ex);
             }
             finally
             {
                 server.IsRefreshing = false;
+            }
+        }
+
+        /// <summary>Probes the selected server and reports the outcome inline (hover or click an error for detail).</summary>
+        private async void TestMcpConnection_Click(object sender, RoutedEventArgs e)
+        {
+            if (McpServersList.SelectedItem is not McpServerViewModel server)
+                return;
+
+            server.IsRefreshing = true;
+            server.SetStatus("Testing connection...");
+            try
+            {
+                var summary = await _mcpManager.TestConnectionAsync(MapToMcpServer(server));
+                server.SetStatus(summary);
+            }
+            catch (Exception ex)
+            {
+                server.SetError(ex);
+                DebugLog.Error($"MCP connectivity test for '{server.Name}' failed.", ex);
+            }
+            finally
+            {
+                server.IsRefreshing = false;
+            }
+        }
+
+        /// <summary>
+        /// Persists the selected server immediately instead of waiting for the debounce, and reports
+        /// the result inline. If the write itself fails, the existing save-error dialog still surfaces it.
+        /// </summary>
+        private void SaveMcpServer_Click(object sender, RoutedEventArgs e)
+        {
+            if (McpServersList.SelectedItem is not McpServerViewModel server)
+                return;
+
+            _saveTimer?.Stop();
+            SaveNow();
+            RaiseModelsChanged();
+            server.SetStatus($"Saved \"{server.Name}\" ({server.Tools.Count} tool(s)).");
+            DebugLog.Info($"MCP server '{server.Name}' saved (transport={server.Transport}, tools={server.Tools.Count}).");
+        }
+
+        /// <summary>
+        /// Copies the full error for the selected server - message, inner chain and stack trace - to
+        /// the clipboard, so a truncated inline line can still be shared in full.
+        /// </summary>
+        private void McpError_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+
+            if (sender is not TextBlock block)
+                return;
+
+            var text = (block.DataContext as McpServerViewModel)?.LastErrorDetail ?? block.Text;
+            if (string.IsNullOrEmpty(text))
+                return;
+
+            try
+            {
+                System.Windows.Clipboard.SetText(text);
+                if (block.DataContext is McpServerViewModel server)
+                    server.StatusMessage = "Error copied to the clipboard.";
+                DebugLog.Verbose("Copied an MCP error with its stack trace to the clipboard.");
+            }
+            catch (Exception ex)
+            {
+                // The clipboard can be held by another process; log rather than replace the error the user is reading.
+                DebugLog.Error("Copying the MCP error to the clipboard failed.", ex);
             }
         }
 
@@ -475,6 +547,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private static void ReportError(string operation, Exception? ex)
         {
             var detail = FlattenException(ex);
+            DebugLog.Error($"There was a problem {operation}.", ex);
             Community.VisualStudio.Toolkit.VS.MessageBox.ShowError(
                 "Kaeo Settings",
                 $"There was a problem {operation}.\n\n{detail}");
@@ -640,6 +713,12 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 DefaultModel = a.DefaultModel,
             };
         }
+
+        /// <summary>
+        /// Closes the window. Everything auto-saves as it is edited, so there is nothing to confirm;
+        /// the button exists because the VS command bar's OK/Cancel is not obvious in this dialog.
+        /// </summary>
+        private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
         /// <summary>Notifies subscribers (the tool window) that the model set changed.</summary>
         protected virtual void RaiseModelsChanged()

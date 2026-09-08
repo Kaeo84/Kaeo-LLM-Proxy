@@ -52,9 +52,98 @@ internal sealed class McpServerManager
         {
             await PullToolsAsync(server, ct: ct).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
             server.Stale = true;
+            DebugLog.Error($"MCP server '{server.Name}' could not be reached; keeping cached tools.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Probes a server without changing any state. Performs the MCP <c>initialize</c> handshake so
+    /// an endpoint that merely answers HTTP is not mistaken for a working server, and falls back to
+    /// <c>tools/list</c> if the handshake is declined (some servers reject our protocol version but
+    /// still serve tools). Returns a human-readable summary; throws when unreachable.
+    /// </summary>
+    public async Task<string> TestConnectionAsync(McpServer server, CancellationToken ct = default)
+    {
+        if (string.Equals(server.Transport, "stdio", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException(
+                "The stdio transport is not implemented yet, so connectivity cannot be tested. Use an HTTP (streamable) endpoint.");
+
+        if (string.IsNullOrWhiteSpace(server.Url))
+            throw new InvalidOperationException("No URL is configured for this server.");
+
+        if (!Uri.TryCreate(server.Url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            throw new InvalidOperationException("The URL must be an absolute http:// or https:// address.");
+
+        // A dead endpoint would otherwise sit on HttpClient's 100s default and look like a hang.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        var token = timeout.Token;
+
+        try
+        {
+            var (name, version) = await InitializeHttpAsync(server.Url!, server.ApiKey, token).ConfigureAwait(false);
+            var summary = string.IsNullOrEmpty(version) ? name : $"{name} {version}";
+            DebugLog.Info($"MCP test '{server.Name}': connected ({summary}).");
+            return $"Connected to {summary}";
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            DebugLog.Warn($"MCP test '{server.Name}': timed out after 15s.");
+            throw new TimeoutException("The server did not respond within 15 seconds.");
+        }
+        catch (Exception ex)
+        {
+            // initialize declined or unsupported - confirm the endpoint still serves tools before failing.
+            var tools = await PullToolsHttpAsync(server.Url!, server.ApiKey, token).ConfigureAwait(false);
+            DebugLog.Info($"MCP test '{server.Name}': connected via tools/list ({tools.Count} tools).");
+            return $"Connected - {tools.Count} tool(s) available (initialize handshake declined: {ex.GetBaseException().Message})";
+        }
+    }
+
+    /// <summary>Sends an MCP <c>initialize</c> request and returns the advertised server name/version.</summary>
+    private static async Task<(string Name, string Version)> InitializeHttpAsync(string url, string? apiKey, CancellationToken ct)
+    {
+        using var http = new HttpClient { BaseAddress = new Uri(url) };
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+
+        var body = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 0,
+            ["method"] = "initialize",
+            ["params"] = new JsonObject
+            {
+                ["protocolVersion"] = "2024-11-05",
+                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+                ["capabilities"] = new JsonObject(),
+            }
+        };
+
+        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+        var info = JsonNode.Parse(respText)?["result"]?["serverInfo"];
+        return (TextOf(info?["name"]), TextOf(info?["version"]));
+    }
+
+    /// <summary>Reads a JSON value as text without throwing when the server sends a non-string.</summary>
+    private static string TextOf(JsonNode? node)
+    {
+        if (node is null)
+            return string.Empty;
+        try
+        {
+            return node.GetValue<string>() ?? string.Empty;
+        }
+        catch
+        {
+            return node.ToString();
         }
     }
 
@@ -194,6 +283,7 @@ internal sealed class McpServerManager
         }
         catch (Exception ex)
         {
+            DebugLog.Error($"MCP tool '{toolName}' on server '{server.Name}' failed.", ex);
             return $"Tool execution failed: {ex.Message}";
         }
     }

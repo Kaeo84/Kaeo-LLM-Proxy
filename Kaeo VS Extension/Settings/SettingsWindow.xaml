@@ -4,7 +4,8 @@
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
 
-        Title="Settings" Height="600" Width="800"
+        Title="Settings" Height="800" Width="1024"
+        ResizeMode="CanMinimize"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
         vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True"
@@ -169,6 +170,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Padding="4"
@@ -349,6 +351,8 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
@@ -384,8 +388,16 @@
                                  Text="{Binding Arguments, UpdateSourceTrigger=PropertyChanged}"
                                  VerticalAlignment="Center" Margin="0,0,0,4" />
 
+                        <!-- Server-level actions: connectivity check and an explicit save. -->
                         <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,2,0,4">
                             <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                            <Button Content="Test Connection" Click="TestMcpConnection_Click" IsEnabled="{Binding CanRefresh}"
+                                    MinWidth="110" Margin="0,0,4,0" />
+                            <Button Content="Save" Click="SaveMcpServer_Click" MinWidth="80" />
+                        </StackPanel>
+
+                        <!-- Tool-level actions. -->
+                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,0,0,4">
                             <Button Content="Refresh Tools" Click="RefreshMcpTools_Click" IsEnabled="{Binding CanRefresh}"
                                     MinWidth="100" Margin="0,0,4,0" />
                             <Button Content="Enable All" Click="EnableAllTools_Click" MinWidth="80" Margin="0,0,4,0" />
@@ -394,11 +406,23 @@
                                        Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
                         </StackPanel>
 
-                        <TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding LastError}"
-                                   Margin="0,0,0,4" Foreground="#FFCE4747"
+                        <!--
+                             Feedback line. Successes are grey; errors are red, show the full detail
+                             (including the stack trace) on hover, and copy it to the clipboard when clicked.
+                        -->
+                        <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding StatusMessage}"
+                                   Margin="0,0,0,4" TextTrimming="CharacterEllipsis"
+                                   Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}"
+                                   Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="4"
+                                   Text="{Binding LastError}" Margin="0,0,0,4" Foreground="#FFCE4747"
+                                   TextTrimming="CharacterEllipsis" Cursor="Hand"
+                                   ToolTip="{Binding LastErrorTooltip}"
+                                   MouseLeftButtonUp="McpError_MouseLeftButtonUp"
                                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
 
-                        <DataGrid Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="4"
+                        <DataGrid Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="4"
                                   ItemsSource="{Binding Tools}"
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"
@@ -426,5 +450,17 @@
                 </Grid>
             </TabItem>
         </TabControl>
+
+        <!-- Outside the TabControl, so the Close action is available on every tab. -->
+        <Border Grid.Row="2" Padding="6"
+                BorderThickness="0,1,0,0"
+                BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
+                Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarMenuBackgroundGradientKey}}">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Close" IsCancel="True" Click="Close_Click"
+                        MinWidth="88" Padding="10,2"
+                        AutomationProperties.Name="Close settings" />
+            </StackPanel>
+        </Border>
     </Grid>
 </Window>

@@ -17,13 +17,18 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Top toolbar: conversation actions. -->
+        <!-- Top toolbar: Debug on the left, Export on the right. -->
         <Border Grid.Row="0" Padding="4,2"
                 BorderThickness="0,0,0,1"
                 BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
                 Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarGradientBeginKey}}">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="ExportButton" Width="26" Height="22" Padding="0"
+            <DockPanel LastChildFill="False">
+                <Button x:Name="DebugButton" DockPanel.Dock="Left" Width="26" Height="22" Padding="0"
+                        ToolTip="Debug output"
+                        AutomationProperties.Name="Debug output"
+                        FontFamily="Segoe MDL2 Assets" FontSize="14" Content="&#xE90F;"
+                        Click="DebugButton_Click" />
+                <Button x:Name="ExportButton" DockPanel.Dock="Right" Width="26" Height="22" Padding="0"
                         ToolTip="Export conversation"
                         AutomationProperties.Name="Export conversation"
                         FontFamily="Segoe MDL2 Assets" FontSize="14" Content="&#xE8DE;"
@@ -36,7 +41,7 @@
                         </ContextMenu>
                     </Button.ContextMenu>
                 </Button>
-            </StackPanel>
+            </DockPanel>
         </Border>
 
         <!-- Transcript: rows are multi-selectable (Ctrl/Shift+click) so several messages can be copied at once. -->
@@ -79,14 +84,30 @@
                      TextWrapping="Wrap" AcceptsReturn="True" MinHeight="30" MaxHeight="80"
                      VerticalScrollBarVisibility="Auto" />
             <Button x:Name="SendButton" Grid.Column="1" Content="Send" Width="60" Margin="4" Click="SendButton_Click" />
-            <Button x:Name="GearButton" Grid.Column="2" Content="⚙" Width="40" Height="24" Margin="4" />
+            <!-- Icon-only to keep the input row narrow; the click handler is wired in code-behind. -->
+            <Button x:Name="GearButton" Grid.Column="2" Width="28" Height="24" Margin="4" Padding="0"
+                    ToolTip="Settings"
+                    AutomationProperties.Name="Settings"
+                    FontFamily="Segoe MDL2 Assets" FontSize="14" Content="&#xE713;" />
         </Grid>
 
-        <!-- Bottom bar: Agent/Mode/Model pills -->
-        <StackPanel Orientation="Horizontal" Grid.Row="3" HorizontalAlignment="Stretch" Background="Transparent" Margin="6">
-            <ComboBox x:Name="AgentCombo" Width="140" Margin="4" />
-            <ComboBox x:Name="ModeCombo" Width="100" Margin="4" />
-            <ComboBox x:Name="ModelCombo" Width="300" Margin="4" />
-        </StackPanel>
+        <!--
+             Bottom bar: Agent/Mode/Model pills. Mode is a fixed width (about 16 characters) so it
+             fits Interactive/Bypass/AutoPilot but can never grow; the model combo takes whatever
+             width is left and clips long names instead of pushing the bar past the window edge.
+        -->
+        <Grid Grid.Row="3" Margin="6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" MinWidth="0" />
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="AgentCombo" Grid.Column="0" Width="140" Margin="4"
+                      VerticalAlignment="Center" HorizontalAlignment="Left" />
+            <ComboBox x:Name="ModeCombo" Grid.Column="1" Width="120" Margin="4"
+                      VerticalAlignment="Center" HorizontalAlignment="Left" />
+            <ComboBox x:Name="ModelCombo" Grid.Column="2" Margin="4"
+                      VerticalAlignment="Center" HorizontalAlignment="Stretch" MinWidth="0" />
+        </Grid>
     </Grid>
 </UserControl>
