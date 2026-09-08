@@ -43,5 +43,5 @@ Core fix required to make the toggles meaningful: `McpServerManager.cs` must per
 - [x] 7. Wire the MCP tab in `SettingsWindow.xaml.cs` - load, wire for auto-save, add/delete/refresh, map back on save
 - [x] 8. Fix `McpServerManager` - persist the mutated settings object and merge pulled tools by name to keep `Enabled`
 - [x] 9. Build the solution and resolve any compile or XAML errors
-- [ ] 10. Save the plan to `Plans/` and commit + push to `main` as Kaeo84
-- [ ] 11. Answer the copilot-sdk questions - built-in tool set/toggles and driving Visual Studio over MCP
+- [x] 10. Save the plan to `Plans/` and commit + push to `main` as Kaeo84
+- [x] 11. Answer the copilot-sdk questions - built-in tool set/toggles and driving Visual Studio over MCP
