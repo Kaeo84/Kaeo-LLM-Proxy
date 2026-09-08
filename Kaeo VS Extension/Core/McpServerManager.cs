@@ -107,9 +107,7 @@ internal sealed class McpServerManager
     /// <summary>Sends an MCP <c>initialize</c> request and returns the advertised server name/version.</summary>
     private static async Task<(string Name, string Version)> InitializeHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        using var http = new HttpClient { BaseAddress = new Uri(url) };
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
         var body = new JsonObject
         {
@@ -124,11 +122,8 @@ internal sealed class McpServerManager
             }
         };
 
-        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-
-        var info = JsonNode.Parse(respText)?["result"]?["serverInfo"];
+        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
+        var info = doc?["result"]?["serverInfo"];
         return (TextOf(info?["name"]), TextOf(info?["version"]));
     }
 
@@ -290,6 +285,21 @@ internal sealed class McpServerManager
 
     // --- HTTP Streamable transport (JSON-RPC over /mcp) ---
 
+    private const string McpSessionIdHeader = "Mcp-Session-Id";
+
+    /// <summary>
+    /// Tracks an MCP session: the HttpClient and the session ID returned by initialize.
+    /// </summary>
+    private sealed class McpHttpSession : IDisposable
+    {
+        public HttpClient Http { get; }
+        public string? SessionId { get; set; }
+
+        public McpHttpSession(HttpClient http) => Http = http;
+
+        public void Dispose() => Http.Dispose();
+    }
+
     /// <summary>
     /// Creates an HttpClient configured for the given MCP endpoint with optional Bearer auth.
     /// </summary>
@@ -302,23 +312,94 @@ internal sealed class McpServerManager
     }
 
     /// <summary>
-    /// Sends a JSON-RPC POST to the MCP endpoint and returns the parsed response body.
+    /// Parses an SSE-framed response body and extracts the JSON payload from the first "data:" line.
+    /// MCP Streamable HTTP wraps JSON-RPC responses in SSE frames like:
+    ///   event: message
+    ///   data: {"jsonrpc":"2.0",...}
     /// </summary>
-    private static async Task<JsonNode?> SendJsonRpcAsync(HttpClient http, JsonObject body, CancellationToken ct)
+    private static JsonNode? ParseSseResponse(string sseBody)
     {
-        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(sseBody))
+            return null;
+
+        // Look for "data:" lines and extract the JSON payload
+        foreach (var line in sseBody.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("data:", StringComparison.Ordinal))
+            {
+                var json = trimmed.Substring("data:".Length).Trim();
+                if (!string.IsNullOrEmpty(json))
+                    return JsonNode.Parse(json);
+            }
+        }
+
+        // Fallback: try parsing the whole body as JSON (some servers may not use SSE framing)
+        if (sseBody.TrimStart().StartsWith("{", StringComparison.Ordinal))
+            return JsonNode.Parse(sseBody);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Sends a JSON-RPC POST to the MCP endpoint and returns the parsed response body.
+    /// Handles SSE-framed responses and tracks the session ID.
+    /// </summary>
+    private static async Task<JsonNode?> SendJsonRpcAsync(McpHttpSession session, JsonObject body, CancellationToken ct)
+    {
+        // Add session ID header if we have one
+        if (!string.IsNullOrEmpty(session.SessionId))
+        {
+            session.Http.DefaultRequestHeaders.Remove(McpSessionIdHeader);
+            session.Http.DefaultRequestHeaders.Add(McpSessionIdHeader, session.SessionId);
+        }
+
+        var resp = await session.Http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
+
+        // Capture session ID from response if present
+        if (resp.Headers.TryGetValues(McpSessionIdHeader, out var values))
+            session.SessionId = values.FirstOrDefault();
+
+        // Notifications return 202 Accepted with no body
+        if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)
+            return null;
+
         var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-        return JsonNode.Parse(respText);
+
+        // Parse SSE-framed response
+        return ParseSseResponse(respText);
     }
 
     private static async Task<IReadOnlyList<McpTool>> PullToolsHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        using var http = CreateHttpClient(url, apiKey);
+        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
-        // MCP Streamable HTTP requires an initialize handshake before any other call.
-        await InitializeHttpAsync(url, apiKey, ct).ConfigureAwait(false);
+        // Perform initialize handshake and capture session ID
+        var initBody = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 0,
+            ["method"] = "initialize",
+            ["params"] = new JsonObject
+            {
+                ["protocolVersion"] = "2024-11-05",
+                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+                ["capabilities"] = new JsonObject(),
+            }
+        };
 
+        var initDoc = await SendJsonRpcAsync(session, initBody, ct).ConfigureAwait(false);
+
+        // Send initialized notification (no response expected)
+        var notifiedBody = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = "notifications/initialized"
+        };
+        await SendJsonRpcAsync(session, notifiedBody, ct).ConfigureAwait(false);
+
+        // Now pull tools
         var body = new JsonObject
         {
             ["jsonrpc"] = "2.0",
@@ -327,7 +408,7 @@ internal sealed class McpServerManager
             ["params"] = new JsonObject()
         };
 
-        var doc = await SendJsonRpcAsync(http, body, ct).ConfigureAwait(false);
+        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
         var tools = new List<McpTool>();
         if (doc?["result"]?["tools"] is JsonArray arr)
         {
@@ -347,11 +428,32 @@ internal sealed class McpServerManager
 
     private static async Task<string> ExecuteToolHttpAsync(string url, string? apiKey, string toolName, string? argsJson, CancellationToken ct)
     {
-        using var http = CreateHttpClient(url, apiKey);
+        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
-        // MCP Streamable HTTP requires an initialize handshake before any other call.
-        await InitializeHttpAsync(url, apiKey, ct).ConfigureAwait(false);
+        // Perform initialize handshake
+        var initBody = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = 0,
+            ["method"] = "initialize",
+            ["params"] = new JsonObject
+            {
+                ["protocolVersion"] = "2024-11-05",
+                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+                ["capabilities"] = new JsonObject(),
+            }
+        };
+        await SendJsonRpcAsync(session, initBody, ct).ConfigureAwait(false);
 
+        // Send initialized notification
+        var notifiedBody = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = "notifications/initialized"
+        };
+        await SendJsonRpcAsync(session, notifiedBody, ct).ConfigureAwait(false);
+
+        // Call the tool
         var body = new JsonObject
         {
             ["jsonrpc"] = "2.0",
@@ -364,7 +466,7 @@ internal sealed class McpServerManager
             }
         };
 
-        var doc = await SendJsonRpcAsync(http, body, ct).ConfigureAwait(false);
+        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
         return doc?["result"]?.ToJsonString() ?? string.Empty;
     }
 
