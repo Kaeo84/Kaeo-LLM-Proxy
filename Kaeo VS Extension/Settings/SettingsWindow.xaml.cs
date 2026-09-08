@@ -20,6 +20,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     {
         private readonly ExtensionSettingsStore _store;
         private readonly ObservableCollection<ConnectionViewModel> _connections = new();
+        private readonly ObservableCollection<AgentViewModel> _agents = new();
+        private AgentViewModel? _editingAgent;
+        private bool _loadingEditor;
         private ExtensionSettings _settings = new();
         private DispatcherTimer? _saveTimer;
         private bool _loaded;
@@ -30,6 +33,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         /// <summary>Connections shown in the Models tab.</summary>
         public ObservableCollection<ConnectionViewModel> Connections => _connections;
+
+        /// <summary>Agents shown in the Agents tab.</summary>
+        public ObservableCollection<AgentViewModel> Agents => _agents;
 
         /// <summary>Creates a window that owns its own settings store.</summary>
         public SettingsWindow() : this(new ExtensionSettingsStore())
@@ -86,6 +92,18 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     }
                     WireForSave(vm);
                     _connections.Add(vm);
+                }
+
+                foreach (var a in _settings.Agents ?? Array.Empty<Agent>())
+                {
+                    _agents.Add(new AgentViewModel
+                    {
+                        Name = a.Name ?? string.Empty,
+                        Description = a.Description,
+                        SystemPrompt = a.SystemPrompt ?? string.Empty,
+                        Tools = a.Tools,
+                        DefaultModel = a.DefaultModel,
+                    });
                 }
                 _loaded = true;
             }
@@ -205,7 +223,21 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 return;
 
             _settings.Connections = _connections.Select(MapToConnection).ToArray();
+            PersistAsync();
+        }
 
+        /// <summary>Persists the agent list (structural changes and explicit Save clicks).</summary>
+        private void SaveAgentsNow()
+        {
+            if (!_loaded)
+                return;
+
+            _settings.Agents = _agents.Select(MapToAgent).ToArray();
+            PersistAsync();
+        }
+
+        private void PersistAsync()
+        {
             _ = _store.SaveAsync(_settings).ContinueWith(t =>
             {
                 if (t.IsFaulted)
@@ -287,6 +319,99 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     Pinned = m.IsPinned,
                     Enabled = m.Enabled,
                 }).ToArray(),
+            };
+        }
+
+        /// <summary>Loads the selected agent into the editor and clears the dirty state.</summary>
+        private void AgentsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            LoadAgentEditor(AgentsList.SelectedItem as AgentViewModel);
+        }
+
+        private void LoadAgentEditor(AgentViewModel? agent)
+        {
+            _editingAgent = agent;
+            _loadingEditor = true;
+            AgentNameBox.Text = agent?.Name ?? string.Empty;
+            AgentDescriptionBox.Text = agent?.Description ?? string.Empty;
+            AgentPromptBox.Text = agent?.SystemPrompt ?? string.Empty;
+            _loadingEditor = false;
+            SaveAgentButton.IsEnabled = false;
+        }
+
+        /// <summary>Enables Save once the user edits any editor field for the selected agent.</summary>
+        private void AgentEditor_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_loadingEditor) return;
+            SaveAgentButton.IsEnabled = _editingAgent is not null;
+        }
+
+        /// <summary>Creates a new empty agent and selects it for editing.</summary>
+        private void NewAgent_Click(object sender, RoutedEventArgs e)
+        {
+            var agent = new AgentViewModel { Name = $"Agent {_agents.Count + 1}" };
+            _agents.Add(agent);
+            AgentsList.SelectedItem = agent;
+            SaveAgentsNow();
+        }
+
+        /// <summary>Copies the selected agent, including its prompt, under a new name.</summary>
+        private void DuplicateAgent_Click(object sender, RoutedEventArgs e)
+        {
+            if (AgentsList.SelectedItem is not AgentViewModel source) return;
+
+            var copy = new AgentViewModel
+            {
+                Name = $"{source.Name} (copy)",
+                Description = source.Description,
+                SystemPrompt = source.SystemPrompt,
+                Tools = source.Tools,
+                DefaultModel = source.DefaultModel,
+            };
+            _agents.Add(copy);
+            AgentsList.SelectedItem = copy;
+            SaveAgentsNow();
+        }
+
+        /// <summary>Deletes the selected agent after a confirmation prompt.</summary>
+        private void DeleteAgent_Click(object sender, RoutedEventArgs e)
+        {
+            if (AgentsList.SelectedItem is not AgentViewModel agent) return;
+
+            bool confirmed = Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirm(
+                "Delete Agent",
+                $"Delete agent \"{agent.Name}\"?");
+            if (!confirmed) return;
+
+            _agents.Remove(agent);
+            if (ReferenceEquals(_editingAgent, agent))
+                LoadAgentEditor(null);
+            SaveAgentsNow();
+        }
+
+        /// <summary>Commits the editor text into the selected agent and persists the list.</summary>
+        private void SaveAgent_Click(object sender, RoutedEventArgs e)
+        {
+            if (_editingAgent is null) return;
+
+            if (!string.IsNullOrWhiteSpace(AgentNameBox.Text))
+                _editingAgent.Name = AgentNameBox.Text.Trim();
+            _editingAgent.Description = string.IsNullOrWhiteSpace(AgentDescriptionBox.Text) ? null : AgentDescriptionBox.Text;
+            _editingAgent.SystemPrompt = AgentPromptBox.Text;
+            SaveAgentsNow();
+            LoadAgentEditor(_editingAgent);
+        }
+
+        /// <summary>Maps an agent view model back to the persisted <see cref="Agent"/> shape.</summary>
+        private static Agent MapToAgent(AgentViewModel a)
+        {
+            return new Agent
+            {
+                Name = a.Name,
+                Description = a.Description,
+                SystemPrompt = a.SystemPrompt,
+                Tools = a.Tools,
+                DefaultModel = a.DefaultModel,
             };
         }
 

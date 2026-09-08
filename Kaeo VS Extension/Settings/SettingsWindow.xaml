@@ -98,7 +98,8 @@
                                         <ControlTemplate TargetType="ToggleButton">
                                             <Border x:Name="HeadBd" Padding="6,4"
                                                     Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarGradientBeginKey}}">
-                                                <StackPanel Orientation="Horizontal">
+                                                <StackPanel Orientation="Horizontal"
+                                                            TextElement.Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}">
                                                     <TextBlock x:Name="Arrow" Text="&#xE76D;" FontFamily="Segoe MDL2 Assets"
                                                                FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"
                                                                Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
@@ -233,6 +234,64 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
+            </TabItem>
+            <TabItem Header="Agents">
+                <Grid Margin="6">
+                    <Grid.ColumnDefinitions>
+                        <!-- Agent list capped at 25% of the tab width; the editor takes the rest. -->
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="3*" />
+                    </Grid.ColumnDefinitions>
+
+                    <DockPanel Grid.Column="0" Margin="0,0,8,0">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
+                            <Button Content="New" Click="NewAgent_Click" MinWidth="60" Margin="0,0,4,0" />
+                            <Button Content="Duplicate" Click="DuplicateAgent_Click" MinWidth="70" Margin="0,0,4,0" />
+                            <Button Content="Delete" Click="DeleteAgent_Click" MinWidth="60" />
+                        </StackPanel>
+                        <ListView x:Name="AgentsList"
+                                  ItemsSource="{Binding Agents}"
+                                  DisplayMemberPath="Name"
+                                  SelectionChanged="AgentsList_SelectionChanged" />
+                    </DockPanel>
+
+                    <Grid Grid.Column="1">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Name:" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            <TextBox x:Name="AgentNameBox" Width="220" VerticalAlignment="Center"
+                                     TextChanged="AgentEditor_TextChanged" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,4">
+                            <TextBlock Text="Description:" VerticalAlignment="Center" Margin="0,0,4,0" />
+                            <TextBox x:Name="AgentDescriptionBox" Width="320" VerticalAlignment="Center"
+                                     TextChanged="AgentEditor_TextChanged" />
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="2" Text="System prompt:" Margin="0,0,0,2" />
+                        <TextBox Grid.Row="3" x:Name="AgentPromptBox"
+                                 AcceptsReturn="True" AcceptsTab="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 FontFamily="Consolas" FontSize="12"
+                                 Margin="0,0,0,4"
+                                 TextChanged="AgentEditor_TextChanged" />
+
+                        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button x:Name="SaveAgentButton" Content="Save" Click="SaveAgent_Click"
+                                    IsEnabled="False" MinWidth="80" Padding="10,2" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
             </TabItem>
         </TabControl>
     </Grid>

@@ -17,7 +17,9 @@
         </Grid.RowDefinitions>
 
         <!-- Message list placeholder -->
-        <ListView x:Name="MessageList" Grid.Row="0" BorderThickness="0">
+        <ListView x:Name="MessageList" Grid.Row="0" BorderThickness="0"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  HorizontalContentAlignment="Stretch">
             <ListView.ItemTemplate>
                 <DataTemplate>
                     <StackPanel Margin="8,4">

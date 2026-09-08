@@ -50,3 +50,10 @@ Fixes:
 - `ToolWindowControl.xaml.cs`: transcript auto-scrolls to the newest line, coalesced via background-priority dispatcher invoke so per-token deltas scroll once per burst.
 - [x] Build clean (0 errors).
 - [x] Committed + pushed as Kaeo84.
+
+## Round 4 - settings theming, chat word wrap, Agents tab
+- Connection expander header text ("AI.Kaeo Proxy") was near-invisible on dark themes: the themed ToggleButton foreground won over the Expander's. Fixed by pinning `TextElement.Foreground` to `VsBrushes.ToolWindowTextKey` on the header StackPanel in the Expander template.
+- Chat transcript never wrapped (ListView's horizontal ScrollViewer measured items with infinite width). Fixed with `ScrollViewer.HorizontalScrollBarVisibility="Disabled"` + `HorizontalContentAlignment="Stretch"` so text wraps at the pane width and re-wraps on resize.
+- New Agents tab in Settings: scrollable agent list capped at 25% of tab width (1*/3* columns) with New / Duplicate / Delete; right side edits Name, Description, and a large wrapping multi-line Consolas TextBox for the system prompt; text edits only persist via an explicit Save button (dirty-tracked), structural changes persist immediately. New `Settings/AgentViewModel.cs`; saves map to the persisted `Agent` shape (Tools/DefaultModel carried through) and raise ModelsChanged so the tool window reloads agents.
+- [x] Build clean (0 errors).
+- [x] Committed + pushed as Kaeo84.
