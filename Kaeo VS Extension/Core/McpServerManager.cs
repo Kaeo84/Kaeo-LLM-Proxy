@@ -226,7 +226,7 @@ internal sealed class McpServerManager
                     {
                         ["name"] = runtimeName,
                         ["description"] = tool.Description ?? string.Empty,
-                        ["parameters"] = tool.Schema ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+                        ["parameters"] = tool.Schema?.DeepClone() ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
                     }
                 });
             }
