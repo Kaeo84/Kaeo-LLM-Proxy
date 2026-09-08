@@ -50,4 +50,4 @@ MCP tab: add `LastErrorDetail`/`StatusMessage`/`SetError(Exception)` to `McpServ
 - [ ] 9. Add MCP Save + Test Connection buttons and a hover/click-to-copy error display in the tab
 - [ ] 10. Wire the MCP and settings/chat error paths to DebugLog and add the Save/Test/Close/copy handlers
 - [ ] 11. Build the extension and resolve any compile or XAML errors
-- [ ] 12. Commit and push to main as Kaeo84
+- [x] 12. Commit and push to main as Kaeo84
