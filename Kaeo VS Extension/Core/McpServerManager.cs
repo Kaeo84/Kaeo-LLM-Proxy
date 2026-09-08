@@ -290,11 +290,34 @@ internal sealed class McpServerManager
 
     // --- HTTP Streamable transport (JSON-RPC over /mcp) ---
 
-    private static async Task<IReadOnlyList<McpTool>> PullToolsHttpAsync(string url, string? apiKey, CancellationToken ct)
+    /// <summary>
+    /// Creates an HttpClient configured for the given MCP endpoint with optional Bearer auth.
+    /// </summary>
+    private static HttpClient CreateHttpClient(string url, string? apiKey)
     {
-        using var http = new HttpClient { BaseAddress = new Uri(url) };
+        var http = new HttpClient { BaseAddress = new Uri(url) };
         if (!string.IsNullOrWhiteSpace(apiKey))
             http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        return http;
+    }
+
+    /// <summary>
+    /// Sends a JSON-RPC POST to the MCP endpoint and returns the parsed response body.
+    /// </summary>
+    private static async Task<JsonNode?> SendJsonRpcAsync(HttpClient http, JsonObject body, CancellationToken ct)
+    {
+        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        return JsonNode.Parse(respText);
+    }
+
+    private static async Task<IReadOnlyList<McpTool>> PullToolsHttpAsync(string url, string? apiKey, CancellationToken ct)
+    {
+        using var http = CreateHttpClient(url, apiKey);
+
+        // MCP Streamable HTTP requires an initialize handshake before any other call.
+        await InitializeHttpAsync(url, apiKey, ct).ConfigureAwait(false);
 
         var body = new JsonObject
         {
@@ -304,11 +327,7 @@ internal sealed class McpServerManager
             ["params"] = new JsonObject()
         };
 
-        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        // ReadAsStringAsync(ct) is net5+; use the parameterless overload for net48.
-        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var doc = JsonNode.Parse(respText);
+        var doc = await SendJsonRpcAsync(http, body, ct).ConfigureAwait(false);
         var tools = new List<McpTool>();
         if (doc?["result"]?["tools"] is JsonArray arr)
         {
@@ -328,9 +347,10 @@ internal sealed class McpServerManager
 
     private static async Task<string> ExecuteToolHttpAsync(string url, string? apiKey, string toolName, string? argsJson, CancellationToken ct)
     {
-        using var http = new HttpClient { BaseAddress = new Uri(url) };
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        using var http = CreateHttpClient(url, apiKey);
+
+        // MCP Streamable HTTP requires an initialize handshake before any other call.
+        await InitializeHttpAsync(url, apiKey, ct).ConfigureAwait(false);
 
         var body = new JsonObject
         {
@@ -344,12 +364,8 @@ internal sealed class McpServerManager
             }
         };
 
-        var resp = await http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        // ReadAsStringAsync(ct) is net5+; use the parameterless overload for net48.
-        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-        var doc = JsonNode.Parse(respText);
-        return doc?["result"]?.ToJsonString() ?? respText;
+        var doc = await SendJsonRpcAsync(http, body, ct).ConfigureAwait(false);
+        return doc?["result"]?.ToJsonString() ?? string.Empty;
     }
 
     // --- stdio transport (JSON-RPC over stdin/stdout of a child process) ---
