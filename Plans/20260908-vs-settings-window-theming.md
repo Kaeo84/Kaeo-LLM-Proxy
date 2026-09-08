@@ -27,3 +27,9 @@ The `SettingsWindow` (opened from the tool window's gear button) should look lik
 ## Notes for testing
 - If the window throws on load, the popup will now say exactly what failed ("There was a problem initializing the settings window...") — send that text back.
 - The `Newtonsoft.Json 13.0.3 > 13.0.1` CVST build warning (CVSTBLD002) is pre-existing and unrelated.
+
+## Round 2 (after first user test)
+- [x] 7. Fix `System.Text.Json` FileNotFound at runtime: VSSDK excluded it from the VSIX payload; added `ForceIncludeInVSIX=true` on the PackageReference. Verified `System.Text.Json.dll` is now inside the .vsix.
+- [x] 8. Fix light-gray tab content area: default net48 TabControl template ignores Background; added themed ControlTemplate bound to `EnvironmentColors.DialogBrushKey`.
+- [x] 9. The ~47 "namespace" errors in the editor are stale XAML-designer false positives (ToolWindowControl.xaml resolves the same namespaces with zero errors; reflection confirms all types exist; MSBuild compiles clean). Clear via: close SettingsWindow.xaml tab, Clean solution, reopen.
+- [ ] 10. USER: rebuild VSIX, reinstall to Exp (`VSIXInstaller.exe /quiet /rootSuffix:Exp "...\Kaeo VS Extension.vsix"`), reopen Settings — confirm dark content area + no load error.

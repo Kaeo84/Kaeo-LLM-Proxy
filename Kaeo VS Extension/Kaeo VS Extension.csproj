@@ -35,8 +35,13 @@
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
     <!-- ModelContextProtocol brings in netstandard2.0 polyfills needed by net48 -->
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-    <!-- net48 lacks System.Text.Json; ModelContextProtocol ships it but we pin explicitly -->
-    <PackageReference Include="System.Text.Json" Version="10.0.10" />
+    <!-- net48 lacks System.Text.Json; ModelContextProtocol ships it but we pin explicitly.
+         VSSDK strips shell-provided assemblies from the VSIX payload, but the devenv copy
+         has a different assembly version than this pin, so force ours in (resolved from the
+         extension folder by VS's AppDomain assembly probing). -->
+    <PackageReference Include="System.Text.Json" Version="10.0.11">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
     <!-- net48 lacks async-enumerable/ValueTask shims -->
     <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
