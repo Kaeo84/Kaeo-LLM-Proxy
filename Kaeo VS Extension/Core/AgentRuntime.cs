@@ -87,6 +87,7 @@ internal sealed record AgentTurnResult(string FinalText, bool Completed, int Too
 internal sealed class AgentRuntime
 {
     private readonly McpServerManager _mcp;
+    private readonly ExtensionSettingsStore _settings;
 
     /// <summary>Maximum tool-call iterations per turn (prevents infinite tool loops).</summary>
     private const int MaxToolIterations = 10;
@@ -94,9 +95,10 @@ internal sealed class AgentRuntime
     /// <summary>Default AutoPilot continuation budget.</summary>
     private const int DefaultAutoPilotBudget = 5;
 
-    public AgentRuntime(McpServerManager mcp)
+    public AgentRuntime(McpServerManager mcp, ExtensionSettingsStore settings)
     {
         _mcp = mcp ?? throw new ArgumentNullException(nameof(mcp));
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
     }
 
     /// <summary>
@@ -323,7 +325,7 @@ internal sealed class AgentRuntime
     }
 
     /// <summary>
-    /// Loads instruction files from solution and project directories.
+    /// Loads instruction files from solution and project directories, plus user-configured entries.
     /// Returns combined instruction content for model context.
     /// </summary>
     private string LoadInstructionFiles()
@@ -334,8 +336,11 @@ internal sealed class AgentRuntime
             if (string.IsNullOrEmpty(solutionRoot))
                 return string.Empty;
 
+            var allInstructions = new List<InstructionFile>();
+
             // Get solution-level instructions (inherited by all projects)
             var solutionInstructions = InstructionFileLoader.GetSolutionInstructionsAsync(solutionRoot).GetAwaiter().GetResult();
+            allInstructions.AddRange(solutionInstructions);
 
             // Get active file's project directory for project-level instructions
             var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE80.DTE2;
@@ -344,16 +349,20 @@ internal sealed class AgentRuntime
                 ? null
                 : System.IO.Path.GetDirectoryName(activeFile);
 
-            List<InstructionFile> projectInstructions = new();
             if (!string.IsNullOrEmpty(projectDir))
             {
-                projectInstructions = InstructionFileLoader.GetInstructionsForProjectAsync(
+                var projectInstructions = InstructionFileLoader.GetInstructionsForProjectAsync(
                     solutionRoot, projectDir).GetAwaiter().GetResult()
                     .Where(i => i.Scope == InstructionScope.Project)
                     .ToList();
+                allInstructions.AddRange(projectInstructions);
             }
 
-            var allInstructions = solutionInstructions.Concat(projectInstructions).ToList();
+            // Load user-configured instruction entries from settings
+            var settings = _settings.LoadAsync().GetAwaiter().GetResult();
+            var settingsInstructions = InstructionFileLoader.LoadFromSettings(settings.Instructions ?? Array.Empty<InstructionEntry>());
+            allInstructions.AddRange(settingsInstructions);
+
             return InstructionFileLoader.CombineInstructions(allInstructions);
         }
         catch

@@ -16,9 +16,14 @@ internal sealed class McpServerManager
 {
     private readonly ExtensionSettingsStore _settings;
     private readonly Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
+    private Timer? _heartbeatTimer;
+    private readonly TimeSpan _heartbeatInterval = TimeSpan.FromMinutes(5);
 
     /// <summary>The settings instance <see cref="InitializeAsync"/> loaded; pulls are cached back into it.</summary>
     private ExtensionSettings? _loadedSettings;
+
+    /// <summary>Raised when a server's health status changes.</summary>
+    public event Action<McpServer, bool>? ServerHealthChanged;
 
     public McpServerManager(ExtensionSettingsStore settings)
     {
@@ -40,6 +45,67 @@ internal sealed class McpServerManager
             _servers[server.Name!] = server;
             _ = PullAndCacheAsync(server, ct);
         }
+
+        // Start heartbeat monitoring
+        StartHeartbeat();
+    }
+
+    /// <summary>
+    /// Starts periodic heartbeat monitoring for all enabled servers.
+    /// </summary>
+    private void StartHeartbeat()
+    {
+        StopHeartbeat();
+        _heartbeatTimer = new Timer(
+            _ => _ = HeartbeatAsync(),
+            null,
+            _heartbeatInterval,
+            _heartbeatInterval);
+    }
+
+    /// <summary>
+    /// Stops the heartbeat timer.
+    /// </summary>
+    private void StopHeartbeat()
+    {
+        _heartbeatTimer?.Dispose();
+        _heartbeatTimer = null;
+    }
+
+    /// <summary>
+    /// Periodic health check for all enabled servers.
+    /// </summary>
+    private async Task HeartbeatAsync()
+    {
+        foreach (var server in _servers.Values.Where(s => s.Enabled))
+        {
+            try
+            {
+                await TestConnectionAsync(server).ConfigureAwait(false);
+                bool wasStale = server.Stale;
+                server.Stale = false;
+                if (wasStale)
+                    ServerHealthChanged?.Invoke(server, true);
+            }
+            catch
+            {
+                if (!server.Stale)
+                {
+                    server.Stale = true;
+                    ServerHealthChanged?.Invoke(server, false);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns all servers that are enabled but currently unhealthy.
+    /// </summary>
+    public IReadOnlyList<McpServer> GetUnhealthyServers()
+    {
+        return _servers.Values
+            .Where(s => s.Enabled && s.Stale)
+            .ToList();
     }
 
     /// <summary>

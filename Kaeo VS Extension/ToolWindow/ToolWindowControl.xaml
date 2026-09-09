@@ -12,13 +12,35 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
+        <!-- Alert bar for unhealthy MCP servers (expandable) -->
+        <Expander x:Name="McpAlertBar" Grid.Row="0"
+                  IsExpanded="False"
+                  Visibility="Collapsed"
+                  Background="#FFFFE4B5"
+                  BorderBrush="#FFFFA500"
+                  BorderThickness="1"
+                  Margin="4"
+                  Padding="8,4">
+            <Expander.Header>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="⚠" FontSize="16" Margin="0,0,8,0" />
+                    <TextBlock x:Name="McpAlertText" Text="Some MCP servers are unavailable"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+            </Expander.Header>
+            <TextBlock x:Name="McpAlertDetails" TextWrapping="Wrap"
+                       Foreground="#FF333333" />
+        </Expander>
+
         <!-- Top toolbar: Debug on the left, Export on the right. -->
-        <Border Grid.Row="0" Padding="4,2"
+        <Border Grid.Row="1" Padding="4,2"
                 BorderThickness="0,0,0,1"
                 BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
                 Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarGradientBeginKey}}">
@@ -45,7 +67,7 @@
         </Border>
 
         <!-- Transcript: rows are multi-selectable (Ctrl/Shift+click) so several messages can be copied at once. -->
-        <ListView x:Name="MessageList" Grid.Row="1" BorderThickness="0"
+        <ListView x:Name="MessageList" Grid.Row="2" BorderThickness="0"
                   SelectionMode="Extended"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                   HorizontalContentAlignment="Stretch">
@@ -67,7 +89,23 @@
                     <StackPanel Margin="8,4">
                         <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
                         <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
-                                   FontFamily="Consolas" FontSize="13" />
+                                   FontFamily="Consolas" FontSize="13">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Kind}" Value="warning">
+                                            <Setter Property="Foreground" Value="#FFFF8C00" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Kind}" Value="error">
+                                            <Setter Property="Foreground" Value="#FFFF4500" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                     </StackPanel>
                 </DataTemplate>
             </ListView.ItemTemplate>

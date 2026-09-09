@@ -118,6 +118,7 @@ internal sealed class ExtensionSettings
     public Connection[]? Connections { get; set; } = Array.Empty<Connection>();
     public Agent[]? Agents { get; set; } = Array.Empty<Agent>();
     public McpServer[]? McpServers { get; set; } = Array.Empty<McpServer>();
+    public InstructionEntry[]? Instructions { get; set; } = Array.Empty<InstructionEntry>();
     public Logging? Logging { get; set; } = new Logging();
 }
 
@@ -170,6 +171,7 @@ internal sealed class McpServer
     public bool Enabled { get; set; } = true;
     public bool Stale { get; set; }
     public DateTime? LastSyncUtc { get; set; }
+    public string? LastError { get; set; }
     public McpTool[]? Tools { get; set; } = Array.Empty<McpTool>();
 }
 
@@ -179,6 +181,13 @@ internal sealed class McpTool
     public string? Description { get; set; }
     public JsonNode? Schema { get; set; }
     public bool Enabled { get; set; } = true;
+}
+
+public sealed class InstructionEntry
+{
+    public string? Path { get; set; }
+    public bool Enabled { get; set; } = true;
+    public int Order { get; set; }
 }
 
 internal sealed class Logging

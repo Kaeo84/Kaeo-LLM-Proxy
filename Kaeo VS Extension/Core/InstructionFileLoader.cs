@@ -45,6 +45,54 @@ internal static class InstructionFileLoader
     }
 
     /// <summary>
+    /// Loads instruction files from user-configured settings entries.
+    /// Only includes enabled entries, ordered by their Order property.
+    /// </summary>
+    public static List<InstructionFile> LoadFromSettings(IEnumerable<InstructionEntry> entries)
+    {
+        var instructions = new List<InstructionFile>();
+
+        if (entries == null)
+            return instructions;
+
+        foreach (var entry in entries.Where(e => e.Enabled).OrderBy(e => e.Order))
+        {
+            if (string.IsNullOrWhiteSpace(entry.Path))
+                continue;
+
+            // Resolve relative paths against the solution root
+            var path = entry.Path;
+            if (!Path.IsPathRooted(path))
+            {
+                var solutionRoot = GetSolutionRootPath();
+                if (solutionRoot != null)
+                    path = Path.Combine(solutionRoot, path);
+            }
+
+            if (!File.Exists(path))
+                continue;
+
+            try
+            {
+                var content = File.ReadAllText(path);
+                instructions.Add(new InstructionFile
+                {
+                    Path = path,
+                    Content = content,
+                    Scope = InstructionScope.Solution,
+                    Name = $"User Instruction ({Path.GetFileName(path)})"
+                });
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Error($"Failed to load instruction file '{path}': {ex.Message}");
+            }
+        }
+
+        return instructions;
+    }
+
+    /// <summary>
     /// Gets solution-level instructions only (not project-specific).
     /// </summary>
     public static async Task<List<InstructionFile>> GetSolutionInstructionsAsync(

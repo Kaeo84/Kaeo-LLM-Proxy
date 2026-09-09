@@ -24,7 +24,7 @@ public partial class ToolWindowControl : UserControl
         // No hardcoded proxy URL: connections come from settings, and models are pulled
         // live from each connection's Ollama /api/tags endpoint (see ToolWindowViewModel).
         var mcp = new McpServerManager(_settings);
-        var engine = new ChatEngine(new AgentRuntime(mcp));
+        var engine = new ChatEngine(new AgentRuntime(mcp, _settings));
         _vm = new ToolWindowViewModel(engine, _settings, mcp);
 
         // Bind the transcript and pills.
@@ -68,6 +68,43 @@ public partial class ToolWindowControl : UserControl
         };
 
         GearButton.Click += GearButton_Click;
+
+        // Wire up MCP server health monitoring
+        mcp.ServerHealthChanged += OnMcpServerHealthChanged;
+    }
+
+    private void OnMcpServerHealthChanged(McpServer server, bool isHealthy)
+    {
+        // Must marshal to UI thread
+        Dispatcher.InvokeAsync(() =>
+        {
+            var unhealthy = _vm?.GetUnhealthyMcpServers() ?? Array.Empty<McpServer>();
+
+            if (unhealthy.Count > 0)
+            {
+                // Show alert bar
+                McpAlertBar.Visibility = Visibility.Visible;
+                McpAlertText.Text = $"{unhealthy.Count} MCP server(s) unavailable";
+
+                var details = string.Join("\n", unhealthy.Select(s => $"• {s.Name}: {s.LastError ?? "Unknown error"}"));
+                McpAlertDetails.Text = details;
+
+                // Add warning to chat if not already present
+                if (_vm != null && !_vm.Lines.Any(l => l.Kind == "warning" && l.Text.Contains("MCP server")))
+                {
+                    _vm.Lines.Add(new ChatLine
+                    {
+                        Kind = "warning",
+                        Text = $" {unhealthy.Count} MCP server(s) unavailable: {string.Join(", ", unhealthy.Select(s => s.Name))}"
+                    });
+                }
+            }
+            else
+            {
+                // Hide alert bar
+                McpAlertBar.Visibility = Visibility.Collapsed;
+            }
+        });
     }
 
     private async void SendButton_Click(object? sender, RoutedEventArgs e)

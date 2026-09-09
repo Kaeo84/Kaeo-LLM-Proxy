@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -76,6 +77,14 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         CurrentMode = "Interactive";
 
         _ = LoadAsync();
+    }
+
+    /// <summary>
+    /// Returns all MCP servers that are enabled but currently unhealthy.
+    /// </summary>
+    public IReadOnlyList<McpServer> GetUnhealthyMcpServers()
+    {
+        return _mcp.GetUnhealthyServers();
     }
 
     public ObservableCollection<ChatLine> Lines { get; } = new();

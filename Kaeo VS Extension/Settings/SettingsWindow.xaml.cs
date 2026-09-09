@@ -23,6 +23,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private readonly ObservableCollection<ConnectionViewModel> _connections = new();
         private readonly ObservableCollection<AgentViewModel> _agents = new();
         private readonly ObservableCollection<McpServerViewModel> _mcpServers = new();
+        private readonly ObservableCollection<InstructionEntry> _instructions = new();
         private AgentViewModel? _editingAgent;
         private bool _loadingEditor;
         private ExtensionSettings _settings = new();
@@ -41,6 +42,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         /// <summary>MCP servers shown in the MCP tab.</summary>
         public ObservableCollection<McpServerViewModel> McpServers => _mcpServers;
+
+        /// <summary>Instruction files shown in the Instructions tab.</summary>
+        public ObservableCollection<InstructionEntry> Instructions => _instructions;
 
         /// <summary>Creates a window that owns its own settings store.</summary>
         public SettingsWindow() : this(new ExtensionSettingsStore())
@@ -156,6 +160,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     // Wire after loading so restoring persisted values does not schedule a save.
                     WireMcpForSave(vm);
                     _mcpServers.Add(vm);
+                }
+
+                foreach (var i in _settings.Instructions ?? Array.Empty<InstructionEntry>())
+                {
+                    _instructions.Add(new InstructionEntry
+                    {
+                        Path = i.Path ?? string.Empty,
+                        Enabled = i.Enabled,
+                        Order = i.Order,
+                    });
                 }
 
                 _loaded = true;
@@ -503,7 +517,84 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
             _settings.Connections = _connections.Select(MapToConnection).ToArray();
             _settings.McpServers = _mcpServers.Select(MapToMcpServer).ToArray();
+            _settings.Instructions = _instructions.Select(MapToInstructionEntry).ToArray();
             PersistAsync();
+        }
+
+        // ── Instructions Tab ──────────────────────────────────────────────────
+
+        /// <summary>Adds a new instruction file entry.</summary>
+        private void AddInstruction_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = new InstructionEntry
+            {
+                Path = string.Empty,
+                Enabled = true,
+                Order = _instructions.Count,
+            };
+            _instructions.Add(entry);
+            InstructionsList.SelectedItem = entry;
+            SaveNow();
+        }
+
+        /// <summary>Removes the selected instruction file entry.</summary>
+        private void RemoveInstruction_Click(object sender, RoutedEventArgs e)
+        {
+            if (InstructionsList.SelectedItem is not InstructionEntry entry)
+                return;
+
+            _instructions.Remove(entry);
+            // Re-order remaining items
+            for (int i = 0; i < _instructions.Count; i++)
+                _instructions[i].Order = i;
+            SaveNow();
+        }
+
+        /// <summary>Moves the selected instruction file entry up in the list.</summary>
+        private void MoveInstructionUp_Click(object sender, RoutedEventArgs e)
+        {
+            if (InstructionsList.SelectedItem is not InstructionEntry entry)
+                return;
+
+            int idx = _instructions.IndexOf(entry);
+            if (idx > 0)
+            {
+                _instructions.RemoveAt(idx);
+                _instructions.Insert(idx - 1, entry);
+                // Re-order
+                for (int i = 0; i < _instructions.Count; i++)
+                    _instructions[i].Order = i;
+                SaveNow();
+            }
+        }
+
+        /// <summary>Moves the selected instruction file entry down in the list.</summary>
+        private void MoveInstructionDown_Click(object sender, RoutedEventArgs e)
+        {
+            if (InstructionsList.SelectedItem is not InstructionEntry entry)
+                return;
+
+            int idx = _instructions.IndexOf(entry);
+            if (idx < _instructions.Count - 1)
+            {
+                _instructions.RemoveAt(idx);
+                _instructions.Insert(idx + 1, entry);
+                // Re-order
+                for (int i = 0; i < _instructions.Count; i++)
+                    _instructions[i].Order = i;
+                SaveNow();
+            }
+        }
+
+        /// <summary>Maps an instruction entry view model back to the persisted shape.</summary>
+        private static InstructionEntry MapToInstructionEntry(InstructionEntry e)
+        {
+            return new InstructionEntry
+            {
+                Path = e.Path,
+                Enabled = e.Enabled,
+                Order = e.Order,
+            };
         }
 
         /// <summary>Persists the agent list (structural changes and explicit Save clicks).</summary>
