@@ -112,7 +112,7 @@
         </ListView>
 
         <!-- Message input row -->
-        <Grid Grid.Row="2" Margin="6">
+        <Grid Grid.Row="3" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -134,7 +134,7 @@
              fits Interactive/Bypass/AutoPilot but can never grow; the model combo takes whatever
              width is left and clips long names instead of pushing the bar past the window edge.
         -->
-        <Grid Grid.Row="3" Margin="6">
+        <Grid Grid.Row="4" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
