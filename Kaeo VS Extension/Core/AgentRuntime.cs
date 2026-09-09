@@ -220,6 +220,13 @@ internal sealed class AgentRuntime
     {
         var messages = new List<JsonObject>();
 
+        // Load and inject instruction files into system context
+        var instructionContent = LoadInstructionFiles();
+        if (!string.IsNullOrWhiteSpace(instructionContent))
+        {
+            messages.Add(new JsonObject { ["role"] = "system", ["content"] = instructionContent });
+        }
+
         // System prompt first.
         if (!string.IsNullOrWhiteSpace(agent.SystemPrompt))
             messages.Add(new JsonObject { ["role"] = "system", ["content"] = agent.SystemPrompt });
@@ -313,5 +320,45 @@ internal sealed class AgentRuntime
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Loads instruction files from solution and project directories.
+    /// Returns combined instruction content for model context.
+    /// </summary>
+    private string LoadInstructionFiles()
+    {
+        try
+        {
+            var solutionRoot = InstructionFileLoader.GetSolutionRootPath();
+            if (string.IsNullOrEmpty(solutionRoot))
+                return string.Empty;
+
+            // Get solution-level instructions (inherited by all projects)
+            var solutionInstructions = InstructionFileLoader.GetSolutionInstructionsAsync(solutionRoot).GetAwaiter().GetResult();
+
+            // Get active file's project directory for project-level instructions
+            var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE80.DTE2;
+            var activeFile = dte?.ActiveDocument?.FullName;
+            var projectDir = string.IsNullOrEmpty(activeFile)
+                ? null
+                : System.IO.Path.GetDirectoryName(activeFile);
+
+            List<InstructionFile> projectInstructions = new();
+            if (!string.IsNullOrEmpty(projectDir))
+            {
+                projectInstructions = InstructionFileLoader.GetInstructionsForProjectAsync(
+                    solutionRoot, projectDir).GetAwaiter().GetResult()
+                    .Where(i => i.Scope == InstructionScope.Project)
+                    .ToList();
+            }
+
+            var allInstructions = solutionInstructions.Concat(projectInstructions).ToList();
+            return InstructionFileLoader.CombineInstructions(allInstructions);
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 }

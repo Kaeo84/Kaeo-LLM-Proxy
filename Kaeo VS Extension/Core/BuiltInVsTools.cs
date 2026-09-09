@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using EnvDTE;
@@ -228,6 +229,185 @@ internal static class BuiltInVsTools
                     ["type"] = "object",
                     ["properties"] = new JsonObject()
                 }
+            },
+            new()
+            {
+                Name = "vs_create_file",
+                Description = "Create a new file with the specified content. The directory will be created if it does not exist.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The file path to create (relative to solution root or absolute)"
+                        },
+                        ["content"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The content to write to the file"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "content" }
+                }
+            },
+            new()
+            {
+                Name = "vs_replace_in_file",
+                Description = "Replace a specific string in a file with another string. The oldString must match exactly including whitespace.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The file path (relative to solution root or absolute)"
+                        },
+                        ["oldString"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The exact text to find and replace (include 3-5 lines of context)"
+                        },
+                        ["newString"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The replacement text"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "oldString", "newString" }
+                }
+            },
+            new()
+            {
+                Name = "vs_run_command",
+                Description = "Run a command in PowerShell and return the output.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["command"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The PowerShell command to execute"
+                        },
+                        ["summary"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "A one-sentence summary of what the command does"
+                        },
+                        ["background"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "Run in background (default: false)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "command" }
+                }
+            },
+            new()
+            {
+                Name = "vs_get_output_logs",
+                Description = "Get logs from the Visual Studio Output tool window pane (Build, Debug, Git, etc.).",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["paneName"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Output pane name (Build, Debug, General). Omit to list available panes."
+                        },
+                        ["tailLines"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Number of tail lines to return (default: 200)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_get_web_pages",
+                Description = "Get the contents of web pages by URL. Returns page content as text.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["urls"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Array of URLs to fetch"
+                        }
+                    },
+                    ["required"] = new JsonArray { "urls" }
+                }
+            },
+            new()
+            {
+                Name = "vs_remove_file",
+                Description = "Delete a file and remove references to it from the project.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The file path to remove (relative to solution root)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath" }
+                }
+            },
+            new()
+            {
+                Name = "vs_inquiry",
+                Description = "Ask the user a question with optional suggestions. Shows a dialog with numbered suggestions and a text area for response. Blocks until user responds.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["question"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The question to ask the user"
+                        },
+                        ["suggestions"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Optional list of 5-10 suggestions shown as numbered list"
+                        }
+                    },
+                    ["required"] = new JsonArray { "question" }
+                }
+            },
+            new()
+            {
+                Name = "vs_detect_memories",
+                Description = "Analyze code to detect coding patterns, preferences, and conventions. Returns detected memories that should be saved.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "File path to analyze (optional, analyzes active file if omitted)"
+                        }
+                    }
+                }
             }
         };
     }
@@ -253,6 +433,14 @@ internal static class BuiltInVsTools
                 "vs_get_diagnostics" => await GetDiagnosticsAsync(args, ct),
                 "vs_get_active_file" => await GetActiveFileAsync(ct),
                 "vs_get_selection" => await GetSelectionAsync(ct),
+                "vs_create_file" => await CreateFileAsync(args, ct),
+                "vs_replace_in_file" => await ReplaceInFileAsync(args, ct),
+                "vs_run_command" => await RunCommandAsync(args, ct),
+                "vs_get_output_logs" => await GetOutputLogsAsync(args, ct),
+                "vs_get_web_pages" => await GetWebPagesAsync(args, ct),
+                "vs_remove_file" => await RemoveFileAsync(args, ct),
+                "vs_inquiry" => await InquiryAsync(args, ct),
+                "vs_detect_memories" => await DetectMemoriesAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
@@ -642,5 +830,362 @@ internal static class BuiltInVsTools
             return "No text selected.";
 
         return selectedText;
+    }
+
+    private static Task<string> CreateFileAsync(JsonNode? args, CancellationToken ct)
+    {
+        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var content = args?["content"]?.GetValue<string>() ?? throw new ArgumentException("content is required");
+
+        var directory = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(filePath, content);
+        return Task.FromResult($"File created: {filePath}");
+    }
+
+    private static Task<string> ReplaceInFileAsync(JsonNode? args, CancellationToken ct)
+    {
+        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var oldString = args?["oldString"]?.GetValue<string>() ?? throw new ArgumentException("oldString is required");
+        var newString = args?["newString"]?.GetValue<string>() ?? throw new ArgumentException("newString is required");
+
+        if (!File.Exists(filePath))
+            return Task.FromResult($"File not found: {filePath}");
+
+        var content = File.ReadAllText(filePath);
+        if (!content.Contains(oldString))
+            return Task.FromResult($"String not found in file: {oldString}");
+
+        var updated = content.Replace(oldString, newString);
+        File.WriteAllText(filePath, updated);
+        return Task.FromResult($"Replaced in {filePath}");
+    }
+
+    private static Task<string> RunCommandAsync(JsonNode? args, CancellationToken ct)
+    {
+        var command = args?["command"]?.GetValue<string>() ?? throw new ArgumentException("command is required");
+        var summary = args?["summary"]?.GetValue<string>();
+        var background = args?["background"]?.GetValue<bool>() ?? false;
+
+        var process = new System.Diagnostics.Process();
+        process.StartInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -Command \"{command.Replace("\"", "\\\"")}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = !background
+        };
+
+        process.Start();
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        var result = string.IsNullOrWhiteSpace(error) ? output : $"{output}\n[ERROR] {error}";
+        return Task.FromResult(string.IsNullOrWhiteSpace(result) ? "Command completed." : result);
+    }
+
+    private static async Task<string> GetOutputLogsAsync(JsonNode? args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var paneName = args?["paneName"]?.GetValue<string>();
+        var tailLines = args?["tailLines"]?.GetValue<int>() ?? 200;
+
+        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        if (dte == null)
+            return "Visual Studio DTE not available.";
+
+        var outputWindow = dte.ToolWindows.OutputWindow;
+
+        if (string.IsNullOrEmpty(paneName))
+        {
+            var panes = new List<string>();
+            foreach (OutputWindowPane p in outputWindow.OutputWindowPanes)
+            {
+                panes.Add(p.Name ?? "Unknown");
+            }
+            return "Available panes:\n" + string.Join("\n", panes);
+        }
+
+        OutputWindowPane targetPane = null;
+        foreach (OutputWindowPane p in outputWindow.OutputWindowPanes)
+        {
+            if (p.Name?.Equals(paneName, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                targetPane = p;
+                break;
+            }
+        }
+
+        if (targetPane == null)
+            return $"Pane '{paneName}' not found.";
+
+        var textDoc = targetPane.TextDocument;
+        if (textDoc == null)
+            return "No text document for pane.";
+
+        var endPoint = textDoc.EndPoint;
+        var startPoint = textDoc.StartPoint.CreateEditPoint();
+        var fullText = startPoint.GetText(endPoint);
+
+        if (string.IsNullOrWhiteSpace(fullText))
+            return "No output.";
+
+        if (tailLines > 0)
+        {
+            var lines = fullText.Split('\n');
+            if (lines.Length > tailLines)
+            {
+                lines = lines.Skip(lines.Length - tailLines).ToArray();
+            }
+            return string.Join("\n", lines);
+        }
+
+        return fullText;
+    }
+
+    private static async Task<string> GetWebPagesAsync(JsonNode? args, CancellationToken ct)
+    {
+        var urlsNode = args?["urls"];
+        if (urlsNode is not JsonArray urlsArray)
+            throw new ArgumentException("urls array is required");
+
+        var results = new List<string>();
+        using var client = new System.Net.Http.HttpClient();
+
+        foreach (var urlNode in urlsArray)
+        {
+            var url = urlNode?.GetValue<string>();
+            if (string.IsNullOrEmpty(url))
+                continue;
+
+            try
+            {
+                var response = await client.GetAsync(url, ct);
+                var content = await response.Content.ReadAsStringAsync();
+                results.Add($"[{url}]: {content.Substring(0, Math.Min(500, content.Length))}...");
+            }
+            catch (Exception ex)
+            {
+                results.Add($"[{url}]: Error - {ex.Message}");
+            }
+        }
+
+        return results.Count == 0 ? "No URLs provided." : string.Join("\n\n", results);
+    }
+
+    private static async Task<string> RemoveFileAsync(JsonNode? args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+
+        if (!File.Exists(filePath))
+            return $"File not found: {filePath}";
+
+        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        if (dte?.Solution?.IsOpen == true)
+        {
+            var projectItem = FindProjectItem(dte.Solution, filePath);
+            if (projectItem != null)
+            {
+                projectItem.Delete();
+                return $"Removed from project and deleted: {filePath}";
+            }
+        }
+
+        File.Delete(filePath);
+        return $"Deleted: {filePath}";
+    }
+
+    private static ProjectItem? FindProjectItem(Solution solution, string filePath)
+    {
+        foreach (Project project in solution.Projects)
+        {
+            var item = FindItemInProject(project, filePath);
+            if (item != null)
+                return item;
+        }
+        return null;
+    }
+
+    private static ProjectItem? FindItemInProject(Project project, string filePath)
+    {
+        if (project.ProjectItems == null)
+            return null;
+
+        foreach (ProjectItem item in project.ProjectItems)
+        {
+            var found = FindItemRecursive(item, filePath);
+            if (found != null)
+                return found;
+        }
+        return null;
+    }
+
+    private static ProjectItem? FindItemRecursive(ProjectItem item, string filePath)
+    {
+        var fileName = item.FileNames[1];
+        if (fileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true)
+            return item;
+
+        if (item.ProjectItems != null)
+        {
+            foreach (ProjectItem subItem in item.ProjectItems)
+            {
+                var found = FindItemRecursive(subItem, filePath);
+                if (found != null)
+                    return found;
+            }
+        }
+        return null;
+    }
+
+    private static async Task<string> InquiryAsync(JsonNode? args, CancellationToken ct)
+    {
+        var question = args?["question"]?.GetValue<string>() ?? throw new ArgumentException("question is required");
+        var suggestions = args?["suggestions"]?.AsArray()
+            .Select(n => n?.GetValue<string>())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
+
+        string response = null;
+        int? selectedIndex = null;
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var dialog = new ToolWindow.InquiryDialog(question, suggestions);
+        var owner = System.Windows.Application.Current?.MainWindow;
+        if (owner != null)
+            dialog.Owner = owner;
+
+        var result = dialog.ShowDialog();
+        if (result == true)
+        {
+            response = dialog.Response;
+            selectedIndex = dialog.SelectedSuggestionIndex;
+        }
+
+        if (response == null)
+            return "[User cancelled inquiry]";
+
+        var resultObj = new JsonObject
+        {
+            ["response"] = response
+        };
+        if (selectedIndex.HasValue)
+            resultObj["selectedIndex"] = selectedIndex.Value;
+
+        return resultObj.ToJsonString();
+    }
+
+    private static async Task<string> DetectMemoriesAsync(JsonNode? args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var filePath = args?["filePath"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(filePath))
+        {
+            var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+            filePath = dte?.ActiveDocument?.FullName;
+        }
+
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            return "No file to analyze.";
+
+        var content = File.ReadAllText(filePath);
+        var memories = new List<string>();
+
+        // Detect using directives patterns
+        if (content.Contains("using System.Text.Json;") && !content.Contains("using Newtonsoft.Json;"))
+            memories.Add("Prefer System.Text.Json over Newtonsoft.Json");
+
+        if (content.Contains("System.Text.Json.Nodes"))
+            memories.Add("Use System.Text.Json.Nodes for JSON manipulation");
+
+        // Detect async patterns
+        if (content.Contains("async Task<") || content.Contains("async void"))
+        {
+            if (content.Contains("ConfigureAwait(false)"))
+                memories.Add("Use ConfigureAwait(false) in library code");
+        }
+
+        // Detect nullable patterns
+        if (content.Contains("#nullable enable") || content.Contains("<Nullable>enable</Nullable>"))
+            memories.Add("Enable nullable reference types");
+
+        // Detect file-scoped namespace
+        if (Regex.IsMatch(content, @"^namespace\s+\S+;\s*$", RegexOptions.Multiline))
+            memories.Add("Use file-scoped namespaces");
+
+        // Detect record types
+        if (content.Contains("record ") || content.Contains("record class"))
+            memories.Add("Prefer records for immutable data");
+
+        // Detect pattern matching
+        if (content.Contains("is not null") || content.Contains("is { "))
+            memories.Add("Use modern pattern matching");
+
+        // Detect switch expressions
+        if (Regex.IsMatch(content, @"=>\s*\w+\s+switch\s*\{"))
+            memories.Add("Prefer switch expressions over switch statements");
+
+        // Detect LINQ patterns
+        if (content.Contains(".Where(") && content.Contains(".Select("))
+            memories.Add("Use LINQ for data transformations");
+
+        // Detect string interpolation
+        if (content.Contains("$\"") && !content.Contains("string.Format("))
+            memories.Add("Prefer string interpolation over string.Format");
+
+        // Detect target-typed new
+        if (Regex.IsMatch(content, @"new\s+\w+\(\);"))
+            memories.Add("Use target-typed new expressions");
+
+        // Detect global usings
+        if (content.Contains("global using "))
+            memories.Add("Use global using directives");
+
+        // Detect primary constructors
+        if (Regex.IsMatch(content, @"public\s+\w+\s*\([^)]*\)\s*:"))
+            memories.Add("Use primary constructors");
+
+        // Detect collection expressions
+        if (content.Contains("[] = [") || content.Contains("[] = {"))
+            memories.Add("Use collection expressions");
+
+        // Detect minimal APIs
+        if (content.Contains("app.MapGet(") || content.Contains("app.MapPost("))
+            memories.Add("Use minimal APIs");
+
+        // Detect DI patterns
+        if (content.Contains("IServiceCollection") || content.Contains("AddScoped<") || content.Contains("AddTransient<"))
+            memories.Add("Use dependency injection");
+
+        // Detect xUnit patterns
+        if (content.Contains("[Fact]") || content.Contains("[Theory]"))
+            memories.Add("Use xUnit for testing");
+
+        // Detect FluentAssertions
+        if (content.Contains(".Should()"))
+            memories.Add("Use FluentAssertions for test assertions");
+
+        if (memories.Count == 0)
+            return "No coding patterns detected.";
+
+        var result = new JsonObject
+        {
+            ["file"] = filePath,
+            ["memories"] = new JsonArray(memories.Select(m => (JsonNode)m).ToArray())
+        };
+
+        return result.ToJsonString();
     }
 }
