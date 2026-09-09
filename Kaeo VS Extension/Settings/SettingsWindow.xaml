@@ -14,8 +14,17 @@
         Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}">
 
     <Window.Resources>
+        <!--
+            THEME NOTE (applies to the whole Settings window):
+            Every GUI element here MUST use Visual Studio theme brushes (DynamicResource via
+            VsBrushes.* / VsColors.*) for foreground, background, borders and text, and must
+            repaint automatically when the user changes the selected VS color scheme. Do NOT use
+            hardcoded colors (Brushes.Black, #RRGGBB, etc.) for content that has to stay legible -
+            they break dark/light themes. ThemedDialogStyleLoader themes the common controls;
+            anything drawn manually (list item text, status/error lines, markers) must bind to a
+            DynamicResource brush, not a converter that returns a fixed color.
+        -->
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <local:EnabledToColorConverter x:Key="EnabledToColorConverter" />
 
         <!-- ThemedDialogStyleLoader (set on the root) already themes Button/CheckBox/
              TextBox/ComboBox/ListView/etc. - exactly how the tool window works. Only the
@@ -274,12 +283,23 @@
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
                             <Button Content="New" Click="NewAgent_Click" MinWidth="60" Margin="0,0,4,0" />
                             <Button Content="Duplicate" Click="DuplicateAgent_Click" MinWidth="70" Margin="0,0,4,0" />
-                            <Button Content="Delete" Click="DeleteAgent_Click" MinWidth="60" />
+                            <Button Content="Delete" Click="DeleteAgent_Click" MinWidth="60" Margin="0,0,4,0" />
+                            <Button Content="Make Default" Click="MakeDefaultAgent_Click" MinWidth="90"
+                                    ToolTip="Use this agent by default in the chat window" />
                         </StackPanel>
                         <ListView x:Name="AgentsList"
                                   ItemsSource="{Binding Agents}"
-                                  DisplayMemberPath="Name"
-                                  SelectionChanged="AgentsList_SelectionChanged" />
+                                  SelectionChanged="AgentsList_SelectionChanged">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="&#x2605;" Width="16" Foreground="#FFFFC83D"
+                                                   Visibility="{Binding IsDefault, Converter={StaticResource BoolToVis}}" />
+                                        <TextBlock Text="{Binding Name}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
                     </DockPanel>
 
                     <Grid Grid.Column="1">
@@ -333,15 +353,33 @@
                     <DockPanel Grid.Column="0" Margin="0,0,8,0">
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,4">
                             <Button Content="New" Click="NewMcpServer_Click" MinWidth="60" Margin="0,0,4,0" />
-                            <Button Content="Delete" Click="DeleteMcpServer_Click" MinWidth="60" />
+                            <Button x:Name="DeleteMcpButton" Content="Delete" Click="DeleteMcpServer_Click" MinWidth="60" />
                         </StackPanel>
                         <ListView x:Name="McpServersList"
                                   ItemsSource="{Binding McpServers}"
                                   SelectionChanged="McpServersList_SelectionChanged">
                             <ListView.ItemTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding Name}"
-                                               Foreground="{Binding Enabled, Converter={StaticResource EnabledToColorConverter}}" />
+                                    <!--
+                                         Themed foreground via DynamicResource so the text is readable in
+                                         every VS color scheme and repaints when the theme changes. A
+                                         disabled server dims to the theme's gray text instead of a
+                                         hardcoded color.
+                                    -->
+                                    <TextBlock Text="{Binding Name}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground"
+                                                        Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                        <Setter Property="Foreground"
+                                                                Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
@@ -359,53 +397,63 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalAlignment="Center" Margin="0,0,8,4" />
-                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Transport:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <ComboBox Grid.Row="0" Grid.Column="3" Width="100" HorizontalAlignment="Left"
-                                  ItemsSource="{Binding TransportOptions}" SelectedItem="{Binding Transport}"
-                                  VerticalAlignment="Center" Margin="0,0,0,4" />
+                        <!--
+                             Connection fields. Collapsed for the built-in VS tools server, which has no
+                             transport/URL/command to configure.
+                        -->
+                        <Grid x:Name="McpConnectionFields" Grid.Row="0" Margin="0,0,0,4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="URL:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <TextBox Grid.Row="1" Grid.Column="1" IsEnabled="{Binding IsHttp}"
-                                 Text="{Binding Url, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalAlignment="Center" Margin="0,0,8,4" />
-                        <TextBlock Grid.Row="1" Grid.Column="2" Text="API key:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <TextBox Grid.Row="1" Grid.Column="3" IsEnabled="{Binding IsHttp}"
-                                 Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalAlignment="Center" Margin="0,0,0,4" />
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center" Margin="0,0,8,4" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Transport:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <ComboBox Grid.Row="0" Grid.Column="3" Width="100" HorizontalAlignment="Left"
+                                      ItemsSource="{Binding TransportOptions}" SelectedItem="{Binding Transport}"
+                                      VerticalAlignment="Center" Margin="0,0,0,4" />
 
-                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Command:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <TextBox Grid.Row="2" Grid.Column="1" IsEnabled="{Binding IsStdio}"
-                                 Text="{Binding Command, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalAlignment="Center" Margin="0,0,8,4" />
-                        <TextBlock Grid.Row="2" Grid.Column="2" Text="Arguments:" VerticalAlignment="Center" Margin="0,0,4,4" />
-                        <TextBox Grid.Row="2" Grid.Column="3" IsEnabled="{Binding IsStdio}"
-                                 Text="{Binding Arguments, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalAlignment="Center" Margin="0,0,0,4" />
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="URL:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <TextBox Grid.Row="1" Grid.Column="1" IsEnabled="{Binding IsHttp}"
+                                     Text="{Binding Url, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center" Margin="0,0,8,4" />
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="API key:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <TextBox Grid.Row="1" Grid.Column="3" IsEnabled="{Binding IsHttp}"
+                                     Text="{Binding ApiKey, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center" Margin="0,0,0,4" />
 
-                        <!-- Server-level actions: connectivity check and an explicit save. -->
-                        <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,2,0,4">
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="Command:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <TextBox Grid.Row="2" Grid.Column="1" IsEnabled="{Binding IsStdio}"
+                                     Text="{Binding Command, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center" Margin="0,0,8,4" />
+                            <TextBlock Grid.Row="2" Grid.Column="2" Text="Arguments:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                            <TextBox Grid.Row="2" Grid.Column="3" IsEnabled="{Binding IsStdio}"
+                                     Text="{Binding Arguments, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalAlignment="Center" Margin="0,0,0,4" />
+                        </Grid>
+
+                        <!-- Server-level actions. Test/Save are hidden for the built-in server. -->
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,2,0,4">
                             <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <Button Content="Test Connection" Click="TestMcpConnection_Click" IsEnabled="{Binding CanRefresh}"
+                            <Button x:Name="TestMcpButton" Content="Test Connection" Click="TestMcpConnection_Click" IsEnabled="{Binding CanRefresh}"
                                     MinWidth="110" Margin="0,0,4,0" />
-                            <Button Content="Save" Click="SaveMcpServer_Click" MinWidth="80" />
+                            <Button x:Name="SaveMcpButton" Content="Save" Click="SaveMcpServer_Click" MinWidth="80" />
                         </StackPanel>
 
                         <!-- Tool-level actions. -->
-                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4" Orientation="Horizontal" Margin="0,0,0,4">
+                        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,4">
                             <Button Content="Refresh Tools" Click="RefreshMcpTools_Click" IsEnabled="{Binding CanRefresh}"
                                     MinWidth="100" Margin="0,0,4,0" />
                             <Button Content="Enable All" Click="EnableAllTools_Click" MinWidth="80" Margin="0,0,4,0" />
@@ -418,19 +466,19 @@
                              Feedback line. Successes are grey; errors are red, show the full detail
                              (including the stack trace) on hover, and copy it to the clipboard when clicked.
                         -->
-                        <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding StatusMessage}"
+                        <TextBlock Grid.Row="3" Text="{Binding StatusMessage}"
                                    Margin="0,0,0,4" TextTrimming="CharacterEllipsis"
                                    Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}"
                                    Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
 
-                        <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="4"
+                        <TextBlock Grid.Row="4"
                                    Text="{Binding LastError}" Margin="0,0,0,4" Foreground="#FFCE4747"
                                    TextTrimming="CharacterEllipsis" Cursor="Hand"
                                    ToolTip="{Binding LastErrorTooltip}"
                                    MouseLeftButtonUp="McpError_MouseLeftButtonUp"
                                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
 
-                        <DataGrid Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="4"
+                        <DataGrid Grid.Row="5"
                                   ItemsSource="{Binding Tools}"
                                   AutoGenerateColumns="False"
                                   CanUserAddRows="False"

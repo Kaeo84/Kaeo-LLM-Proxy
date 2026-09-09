@@ -1,0 +1,6 @@
+
+MCP
+A web crawler, so for sites that are registered to it, it crawls them and indexes them in the VectorStore requires Embedding and Vectorstore
+A proxying abilit so I can register a proxy and if needed credentials in the proxy and then I can use the MCP centrally
+Ability to run/use stdio MCPs
+

@@ -134,8 +134,24 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     });
                 }
 
+                // Mark the persisted default agent so the Agents list shows a star next to it.
+                var defaultAgentName = _settings.Defaults?.Agent;
+                if (!string.IsNullOrEmpty(defaultAgentName))
+                {
+                    var def = _agents.FirstOrDefault(a => a.Name == defaultAgentName);
+                    if (def is not null)
+                        def.IsDefault = true;
+                }
+
+                McpServer? persistedBuiltin = null;
                 foreach (var m in _settings.McpServers ?? Array.Empty<McpServer>())
                 {
+                    if (string.Equals(m.Transport, McpServerViewModel.BuiltinTransport, StringComparison.OrdinalIgnoreCase))
+                    {
+                        persistedBuiltin = m;
+                        continue;
+                    }
+
                     var vm = new McpServerViewModel
                     {
                         Name = m.Name ?? string.Empty,
@@ -161,6 +177,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     WireMcpForSave(vm);
                     _mcpServers.Add(vm);
                 }
+
+                // The built-in VS tools always appear at the top of the list, even before they have
+                // ever been saved, so they are manageable like any other server.
+                EnsureBuiltinVm(persistedBuiltin);
 
                 foreach (var i in _settings.Instructions ?? Array.Empty<InstructionEntry>())
                 {
@@ -313,6 +333,42 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             };
         }
 
+        /// <summary>
+        /// Inserts the synthetic "Built-in VS Tools" server at the top of the MCP list. Its tools come
+        /// from the shipped <see cref="BuiltInVsTools"/> definitions, with the per-tool enable flags
+        /// restored from the persisted entry so choices survive a restart; newly added built-in tools
+        /// default to enabled. The entry is always present so the built-in tools are manageable.
+        /// </summary>
+        private void EnsureBuiltinVm(McpServer? persisted)
+        {
+            var enabledByName = new System.Collections.Generic.Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in persisted?.Tools ?? Array.Empty<McpTool>())
+                if (!string.IsNullOrWhiteSpace(t.Name))
+                    enabledByName[t.Name!] = t.Enabled;
+
+            var vm = new McpServerViewModel
+            {
+                Name = McpServerViewModel.BuiltinName,
+                Transport = McpServerViewModel.BuiltinTransport,
+                Enabled = persisted?.Enabled ?? true,
+                LastSyncUtc = persisted?.LastSyncUtc ?? DateTime.UtcNow,
+            };
+            foreach (var tool in BuiltInVsTools.GetToolDefinitions())
+            {
+                if (string.IsNullOrWhiteSpace(tool.Name))
+                    continue;
+                vm.Tools.Add(new McpToolViewModel
+                {
+                    Name = tool.Name!,
+                    Description = tool.Description ?? string.Empty,
+                    Schema = tool.Schema,
+                    Enabled = !enabledByName.TryGetValue(tool.Name!, out var enabled) || enabled,
+                });
+            }
+            WireMcpForSave(vm);
+            _mcpServers.Insert(0, vm);
+        }
+
         /// <summary>Adds a new, empty MCP server and selects it for editing.</summary>
         private void NewMcpServer_Click(object sender, RoutedEventArgs e)
         {
@@ -328,6 +384,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private void DeleteMcpServer_Click(object sender, RoutedEventArgs e)
         {
             if (McpServersList.SelectedItem is not McpServerViewModel vm)
+                return;
+
+            // The built-in server is synthetic and its Delete button is hidden; guard anyway.
+            if (vm.IsBuiltin)
                 return;
 
             bool confirmed = Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirm(
@@ -351,6 +411,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             McpEditor.DataContext = server;
             McpEditor.Visibility = server is null ? Visibility.Collapsed : Visibility.Visible;
             NoMcpServerHint.Visibility = server is null ? Visibility.Visible : Visibility.Collapsed;
+
+            // The built-in server has no transport/URL/command to configure and cannot be deleted,
+            // so hide those controls; its tool grid and enable checkboxes remain.
+            bool builtin = server?.IsBuiltin == true;
+            McpConnectionFields.Visibility = builtin ? Visibility.Collapsed : Visibility.Visible;
+            TestMcpButton.Visibility = builtin ? Visibility.Collapsed : Visibility.Visible;
+            SaveMcpButton.Visibility = builtin ? Visibility.Collapsed : Visibility.Visible;
+            DeleteMcpButton.Visibility = builtin ? Visibility.Collapsed : Visibility.Visible;
         }
 
         /// <summary>
@@ -361,6 +429,19 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         {
             if (McpServersList.SelectedItem is not McpServerViewModel server)
                 return;
+
+            // The built-in tools live in-process; "refresh" just re-syncs the grid from the shipped
+            // definitions so tools added in a newer build appear, keeping current enable flags.
+            if (server.IsBuiltin)
+            {
+                server.ClearDiagnostics();
+                server.ReplaceTools(BuiltInVsTools.GetToolDefinitions());
+                server.LastSyncUtc = DateTime.UtcNow;
+                SaveNow();
+                RaiseModelsChanged();
+                server.SetStatus($"Re-synced {server.Tools.Count} built-in tool(s).");
+                return;
+            }
 
             server.IsRefreshing = true;
             server.ClearDiagnostics();
@@ -790,6 +871,21 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             agent.SystemPrompt = agent.DefaultSystemPrompt ?? string.Empty;
             SaveAgentsNow();
             LoadAgentEditor(agent);
+        }
+
+        /// <summary>Marks the selected agent as the default the chat window starts on and persists it.</summary>
+        private void MakeDefaultAgent_Click(object sender, RoutedEventArgs e)
+        {
+            var agent = _editingAgent ?? AgentsList.SelectedItem as AgentViewModel;
+            if (agent is null)
+                return;
+
+            foreach (var a in _agents)
+                a.IsDefault = ReferenceEquals(a, agent);
+
+            _settings.Defaults ??= new Defaults();
+            _settings.Defaults.Agent = agent.Name;
+            SaveAgentsNow();
         }
 
         /// <summary>Maps an agent view model back to the persisted <see cref="Agent"/> shape.</summary>

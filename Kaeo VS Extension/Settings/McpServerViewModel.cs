@@ -15,6 +15,12 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// </summary>
     public sealed class McpServerViewModel : INotifyPropertyChanged
     {
+        /// <summary>Transport key for the synthetic, always-present built-in VS tools server.</summary>
+        public const string BuiltinTransport = "builtin";
+
+        /// <summary>Display name of the built-in VS tools server.</summary>
+        public const string BuiltinName = "Built-in VS Tools";
+
         private string _name = string.Empty;
         private string _transport = "http";
         private string _url = string.Empty;
@@ -39,7 +45,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             set { _name = value; OnPropertyChanged(); }
         }
 
-        /// <summary>Transport key: "http" (streamable HTTP) or "stdio".</summary>
+        /// <summary>Transport key: "http" (streamable HTTP), "stdio", or "builtin" (the built-in VS tools).</summary>
         public string Transport
         {
             get => _transport;
@@ -49,6 +55,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(IsHttp));
                 OnPropertyChanged(nameof(IsStdio));
+                OnPropertyChanged(nameof(IsBuiltin));
             }
         }
 
@@ -180,7 +187,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         public bool IsHttp => string.Equals(_transport, "http", StringComparison.OrdinalIgnoreCase);
 
-        public bool IsStdio => !IsHttp;
+        /// <summary>True for the synthetic built-in VS tools server (no connection to configure).</summary>
+        public bool IsBuiltin => string.Equals(_transport, BuiltinTransport, StringComparison.OrdinalIgnoreCase);
+
+        public bool IsStdio => !IsHttp && !IsBuiltin;
 
         /// <summary>Choices for the transport dropdown.</summary>
         public IReadOnlyList<string> TransportOptions { get; } = new[] { "http", "stdio" };

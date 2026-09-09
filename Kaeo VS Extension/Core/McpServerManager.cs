@@ -42,6 +42,9 @@ internal sealed class McpServerManager
         {
             if (!server.Enabled || string.IsNullOrWhiteSpace(server.Name))
                 continue;
+            // The built-in VS tools are synthesized in GetAvailableToolDefinitions; never connect/pull.
+            if (string.Equals(server.Transport, "builtin", StringComparison.OrdinalIgnoreCase))
+                continue;
             _servers[server.Name!] = server;
             _ = PullAndCacheAsync(server, ct);
         }
@@ -278,22 +281,35 @@ internal sealed class McpServerManager
     {
         var result = new List<JsonObject>();
 
-        // Add built-in VS tools (always available)
-        foreach (var tool in BuiltInVsTools.GetToolDefinitions())
+        // Built-in VS tools: expose the shipped definitions, honoring the per-tool enable flags
+        // persisted under the synthetic "builtin" server. When that entry has not been saved yet
+        // (or the built-in server is absent) every built-in tool stays enabled, preserving prior behavior.
+        var builtinEntry = (_loadedSettings?.McpServers ?? Array.Empty<McpServer>())
+            .FirstOrDefault(s => string.Equals(s.Transport, "builtin", StringComparison.OrdinalIgnoreCase));
+        if (builtinEntry is null || builtinEntry.Enabled)
         {
-            if (!tool.Enabled) continue;
-            if (allowedNames is not null && !allowedNames.Contains(tool.Name ?? ""))
-                continue;
-            result.Add(new JsonObject
+            var builtinEnabledByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in builtinEntry?.Tools ?? Array.Empty<McpTool>())
+                if (!string.IsNullOrWhiteSpace(t.Name))
+                    builtinEnabledByName[t.Name!] = t.Enabled;
+
+            foreach (var tool in BuiltInVsTools.GetToolDefinitions())
             {
-                ["type"] = "function",
-                ["function"] = new JsonObject
+                if (string.IsNullOrWhiteSpace(tool.Name)) continue;
+                if (builtinEnabledByName.TryGetValue(tool.Name!, out var en) && !en) continue;
+                if (allowedNames is not null && !allowedNames.Contains(tool.Name))
+                    continue;
+                result.Add(new JsonObject
                 {
-                    ["name"] = tool.Name,
-                    ["description"] = tool.Description ?? string.Empty,
-                    ["parameters"] = tool.Schema?.DeepClone() ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
-                }
-            });
+                    ["type"] = "function",
+                    ["function"] = new JsonObject
+                    {
+                        ["name"] = tool.Name,
+                        ["description"] = tool.Description ?? string.Empty,
+                        ["parameters"] = tool.Schema?.DeepClone() ?? new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+                    }
+                });
+            }
         }
 
         // Add external MCP server tools

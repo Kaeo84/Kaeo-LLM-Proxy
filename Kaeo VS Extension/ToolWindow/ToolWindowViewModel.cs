@@ -199,6 +199,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             });
         }
 
+        // Apply the saved default agent (set via Settings → Agents → Make Default).
+        var savedDefaultAgent = s.Defaults?.Agent;
+        if (!string.IsNullOrEmpty(savedDefaultAgent) && Agents.Any(a => a.Name == savedDefaultAgent))
+            CurrentAgent = savedDefaultAgent!;
+
         // Pull live models from every enabled connection into local lists first, so the
         // bound collections are only mutated in one synchronous pass at the end.
         var selections = new List<ModelSelection>();

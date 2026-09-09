@@ -272,6 +272,11 @@ public partial class ToolWindowControl : UserControl
         var label = _vm.CurrentModel;
         if (!string.IsNullOrEmpty(label) && _vm.Models.Contains(label))
             ModelCombo.SelectedItem = label;
+
+        // Reflect the default agent applied during load (Settings → Agents → Make Default).
+        var agent = _vm.CurrentAgent;
+        if (!string.IsNullOrEmpty(agent))
+            AgentCombo.SelectedValue = agent;
     }
 
     private bool _scrollPending;

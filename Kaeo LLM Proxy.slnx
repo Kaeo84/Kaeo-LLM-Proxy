@@ -1,5 +1,8 @@
-﻿<Solution>
+<Solution>
   <Project Path="Kaeo LLM Proxy.csproj" />
+  <Folder Name="/Notes/">
+    <File Path="Notes.txt" />
+  </Folder>
   <Project Path="Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
   <Project Path="Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
   <Project Path="Kaeo LLM Proxy Services/Kaeo LLM Proxy Services.csproj" />

@@ -48,6 +48,15 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Shipped system prompt for built-ins; null for user agents.</summary>
         public string? DefaultSystemPrompt { get; set; }
 
+        private bool _isDefault;
+
+        /// <summary>True when this agent is the default the tool window starts on (mirrors the pinned model).</summary>
+        public bool IsDefault
+        {
+            get => _isDefault;
+            set { _isDefault = value; OnPropertyChanged(); }
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private void OnPropertyChanged([CallerMemberName] string? name = null)
