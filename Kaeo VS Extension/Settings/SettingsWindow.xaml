@@ -179,24 +179,29 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Padding="4"
-                BorderThickness="0,0,0,1"
-                BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
-                Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarMenuBackgroundGradientKey}}">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="Add Connection" Click="AddConnection_Click" Padding="10,2" Margin="0,0,4,0" />
-                <Button Content="Refresh All" Click="RefreshAll_Click" Padding="10,2" />
-            </StackPanel>
-        </Border>
-
-        <TabControl Grid.Row="1">
+        <TabControl Grid.Row="0">
             <TabItem Header="Models">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="6">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Padding="4"
+                            BorderThickness="0,0,0,1"
+                            BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
+                            Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarMenuBackgroundGradientKey}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Add Connection" Click="AddConnection_Click" Padding="10,2" Margin="0,0,4,0" />
+                            <Button Content="Refresh All" Click="RefreshAll_Click" Padding="10,2" />
+                        </StackPanel>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="6">
                     <ItemsControl ItemsSource="{Binding Connections}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
@@ -270,6 +275,7 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
+                </Grid>
             </TabItem>
             <TabItem Header="Agents">
                 <Grid Margin="6">
@@ -600,7 +606,7 @@
         </TabControl>
 
         <!-- Outside the TabControl, so the Close action is available on every tab. -->
-        <Border Grid.Row="2" Padding="6"
+        <Border Grid.Row="1" Padding="6"
                 BorderThickness="0,1,0,0"
                 BorderBrush="{DynamicResource {x:Static shell:VsBrushes.CommandBarBorderKey}}"
                 Background="{DynamicResource {x:Static shell:VsBrushes.CommandBarMenuBackgroundGradientKey}}">
