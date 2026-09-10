@@ -121,7 +121,7 @@ internal sealed class AgentRuntime
         if (events is null) throw new ArgumentNullException(nameof(events));
 
         history.Add(new AgentMessage("user", userPrompt));
-        var defaults = (await _settings.LoadAsync().ConfigureAwait(false)).Defaults ?? new Defaults();
+        var defaults = (await _settings.LoadAsync()).Defaults ?? new Defaults();
         var maxIterations = defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
         var toolCallsExecuted = 0;
         var autoPilotContinued = false;
