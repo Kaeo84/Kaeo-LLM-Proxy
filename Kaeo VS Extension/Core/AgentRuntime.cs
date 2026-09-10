@@ -121,16 +121,18 @@ internal sealed class AgentRuntime
         if (events is null) throw new ArgumentNullException(nameof(events));
 
         history.Add(new AgentMessage("user", userPrompt));
+        var defaults = (await _settings.LoadAsync().ConfigureAwait(false)).Defaults ?? new Defaults();
+        var maxIterations = defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
         var toolCallsExecuted = 0;
         var autoPilotContinued = false;
         var autopilotBudget = DefaultAutoPilotBudget;
 
         string? finalText = null;
 
-        for (var iteration = 0; iteration < MaxToolIterations; iteration++)
+        for (var iteration = 0; iteration < maxIterations; iteration++)
         {
             // Build the request payload for the proxy's /api/chat.
-            var payload = await BuildChatPayload(agent, model, history, mode);
+            var payload = await BuildChatPayload(agent, model, history, mode, defaults.DefaultTemperature);
 
             var streamedText = new List<string>();
             JsonNode? toolCallsNode = null;
@@ -218,7 +220,7 @@ internal sealed class AgentRuntime
     /// <summary>
     /// Builds the JSON payload for the proxy's /api/chat endpoint.
     /// </summary>
-    private async Task<object> BuildChatPayload(AgentConfig agent, string model, List<AgentMessage> history, AgentMode mode)
+    private async Task<object> BuildChatPayload(AgentConfig agent, string model, List<AgentMessage> history, AgentMode mode, double temperature)
     {
         var messages = new List<JsonObject>();
 
@@ -250,7 +252,7 @@ internal sealed class AgentRuntime
             ["model"] = model,
             ["messages"] = messagesArray,
             ["stream"] = true,
-            ["options"] = new JsonObject { ["temperature"] = 0.2 }
+            ["options"] = new JsonObject { ["temperature"] = temperature }
         };
 
         // Tools are sent for any agent that has tool access. Tools == null means "all tools"
@@ -337,7 +339,7 @@ internal sealed class AgentRuntime
             var entries = settings.Instructions;
             if (entries is null || entries.Length == 0)
                 entries = InstructionFileLoader.DefaultEntries().ToArray();
-            var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);
+            var instructions = await Task.Run(() => { InstructionFileLoader.EnsureDefaultFiles(entries, solutionRoot); return InstructionFileLoader.LoadFromSettings(entries, solutionRoot); }).ConfigureAwait(false);
             return InstructionFileLoader.CombineInstructions(instructions);
         }
         catch

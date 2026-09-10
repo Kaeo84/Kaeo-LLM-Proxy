@@ -17,7 +17,7 @@ internal sealed class McpServerManager
     private readonly ExtensionSettingsStore _settings;
     private readonly Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
     private Timer? _heartbeatTimer;
-    private readonly TimeSpan _heartbeatInterval = TimeSpan.FromMinutes(5);
+    private TimeSpan _heartbeatInterval = TimeSpan.FromMinutes(5);
 
     /// <summary>The settings instance <see cref="InitializeAsync"/> loaded; pulls are cached back into it.</summary>
     private ExtensionSettings? _loadedSettings;
@@ -37,6 +37,7 @@ internal sealed class McpServerManager
     {
         var all = await _settings.LoadAsync().ConfigureAwait(false);
         _loadedSettings = all;
+        _heartbeatInterval = TimeSpan.FromMinutes(Math.Max(1, all.Defaults?.HeartbeatMinutes ?? 5));
         _servers.Clear();
         foreach (var server in all.McpServers ?? Array.Empty<McpServer>())
         {

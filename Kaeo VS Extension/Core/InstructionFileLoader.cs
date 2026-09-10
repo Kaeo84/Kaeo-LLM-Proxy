@@ -26,8 +26,8 @@ internal static class InstructionFileLoader
     /// </summary>
     public static List<InstructionEntry> DefaultEntries() => new()
     {
-        new InstructionEntry { Name = "User Preferences", Kind = InstructionKind.Text, Content = string.Empty, Enabled = true, Order = 0 },
-        new InstructionEntry { Name = "Solution Instructions", Kind = InstructionKind.File, Path = SolutionInstructionFile, Enabled = true, Order = 1 },
+        new InstructionEntry { Name = "User Preferences", Kind = InstructionKind.Text, Content = string.Empty, Enabled = true, Order = 0, IsDefault = true, Scope = InstructionScopeKind.Global },
+        new InstructionEntry { Name = "Solution Instructions", Kind = InstructionKind.File, Path = SolutionInstructionFile, Enabled = true, Order = 1, IsDefault = true, Scope = InstructionScopeKind.Solution },
     };
 
     /// <summary>
@@ -42,7 +42,7 @@ internal static class InstructionFileLoader
         {
             if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
             {
-                var path = ResolvePath(entry.Path, solutionRoot);
+                var path = ResolvePath(entry.Path, solutionRoot, entry.Scope);
                 if (string.IsNullOrEmpty(path) || !File.Exists(path))
                     continue;
                 try
@@ -99,15 +99,57 @@ internal static class InstructionFileLoader
         File.WriteAllText(full, content ?? string.Empty);
     }
 
-    /// <summary>Resolves a possibly solution-relative path to an absolute path (null when empty).</summary>
-    public static string? ResolvePath(string? path, string? solutionRoot = null)
+    /// <summary>Resolves a possibly relative path to an absolute path (null when empty). Global scope resolves against the user profile; otherwise the solution root.</summary>
+    public static string? ResolvePath(string? path, string? solutionRoot = null, string? scope = null)
     {
         if (string.IsNullOrWhiteSpace(path))
             return null;
         if (Path.IsPathRooted(path))
             return path;
-        var root = solutionRoot ?? GetSolutionRootPath();
+        var root = BaseDir(solutionRoot, scope);
         return root != null ? Path.Combine(root, path!) : path;
+    }
+
+    /// <summary>Base directory for a relative path: user profile for global scope, else the solution root.</summary>
+    private static string? BaseDir(string? solutionRoot, string? scope)
+        => string.Equals(scope, InstructionScopeKind.Global, StringComparison.OrdinalIgnoreCase)
+            ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            : solutionRoot ?? GetSolutionRootPath();
+
+    /// <summary>Starter content written when a default instruction file has to be (re)created.</summary>
+    public const string DefaultFileTemplate =
+        "# Kaeo LLM Proxy \u2014 Instructions\r\n\r\nAdd project rules, conventions, and context here. Enabled files like this are included in the model's prompt.\r\n";
+
+    /// <summary>
+    /// Recreates any default, file-backed instruction whose file is missing on disk, so the seeded
+    /// defaults always exist. Safe to call repeatedly; existing files are left untouched.
+    /// </summary>
+    public static void EnsureDefaultFiles(IEnumerable<InstructionEntry>? entries, string? solutionRoot)
+    {
+        if (entries is null)
+            return;
+
+        foreach (var entry in entries)
+        {
+            if (!entry.IsDefault || !entry.IsFile)
+                continue;
+
+            var full = ResolvePath(entry.Path, solutionRoot, entry.Scope);
+            if (string.IsNullOrEmpty(full) || File.Exists(full))
+                continue;
+
+            try
+            {
+                var dir = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                File.WriteAllText(full, DefaultFileTemplate);
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Error($"Failed to recreate default instruction file '{full}': {ex.Message}");
+            }
+        }
     }
 
     private static string Display(InstructionEntry e)

@@ -282,8 +282,8 @@
             <TabItem Header="Agents">
                 <Grid Margin="6">
                     <Grid.ColumnDefinitions>
-                        <!-- Agent list capped at 25% of the tab width; the editor takes the rest. -->
-                        <ColumnDefinition Width="*" />
+                        <!-- Agent list capped at 40% of the tab width so the toolbar buttons fit. -->
+                        <ColumnDefinition Width="2*" />
                         <ColumnDefinition Width="3*" />
                     </Grid.ColumnDefinitions>
 
@@ -292,7 +292,7 @@
                             <Button Content="New" Click="NewAgent_Click" MinWidth="60" Margin="0,0,4,0" />
                             <Button Content="Duplicate" Click="DuplicateAgent_Click" MinWidth="70" Margin="0,0,4,0" />
                             <Button Content="Delete" Click="DeleteAgent_Click" MinWidth="60" Margin="0,0,4,0" />
-                            <Button Content="Make Default" Click="MakeDefaultAgent_Click" MinWidth="90"
+                            <Button Content="Default" Click="MakeDefaultAgent_Click" MinWidth="72"
                                     ToolTip="Use this agent by default in the chat window" />
                         </StackPanel>
                         <ListView x:Name="AgentsList"
@@ -513,10 +513,10 @@
                     </Grid>
                 </Grid>
             </TabItem>
-            <TabItem Header="Instructions">
+            <TabItem Header="Rules">
                 <Grid Margin="6">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="2*" />
                         <ColumnDefinition Width="3*" />
                     </Grid.ColumnDefinitions>
                     <DockPanel Grid.Column="0" Margin="0,0,8,0">
@@ -548,6 +548,8 @@
                                     </TextBlock>
                                     <TextBlock Text="{Binding KindLabel}" Margin="6,0,0,0"
                                                Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                    <TextBlock Text="{Binding ScopeLabel}" Margin="6,0,0,0"
+                                               Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -555,7 +557,7 @@
                     </DockPanel>
 
                     <TextBlock x:Name="NoInstructionHint" Grid.Column="1" VerticalAlignment="Top"
-                               Text="Select or add an instruction source to edit it."
+                               Text="Select or add an instruction, rule, or context file."
                                Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
 
                     <!-- DataContext is the selected entry, assigned in InstructionsList_SelectionChanged. -->
@@ -576,11 +578,17 @@
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,4" />
                         <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
                                  VerticalAlignment="Center" Margin="0,0,8,4" />
-                        <ComboBox Grid.Row="0" Grid.Column="2" Width="90" HorizontalAlignment="Left"
-                                  SelectedIndex="{Binding KindIndex, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,0,4">
-                            <ComboBoxItem Content="Text" />
-                            <ComboBoxItem Content="File" />
-                        </ComboBox>
+                        <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,0,4">
+                            <ComboBox Width="80" SelectedIndex="{Binding KindIndex, Mode=TwoWay}" ToolTip="Source kind" Margin="0,0,4,0">
+                                <ComboBoxItem Content="Text" />
+                                <ComboBoxItem Content="File" />
+                            </ComboBox>
+                            <ComboBox Width="90" SelectedIndex="{Binding ScopeIndex, Mode=TwoWay}" ToolTip="Scope: global (user profile), solution, or project">
+                                <ComboBoxItem Content="Global" />
+                                <ComboBoxItem Content="Solution" />
+                                <ComboBoxItem Content="Project" />
+                            </ComboBox>
+                        </StackPanel>
 
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="File:" VerticalAlignment="Center" Margin="0,0,4,4"
                                    Visibility="{Binding IsFile, Converter={StaticResource BoolToVis}}" />
@@ -604,6 +612,24 @@
                         </StackPanel>
                     </Grid>
                 </Grid>
+            </TabItem>
+            <TabItem Header="Preferences">
+                <StackPanel Margin="12" MaxWidth="560" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="MCP heartbeat (minutes):" Width="220" VerticalAlignment="Center" />
+                        <TextBox x:Name="HeartbeatBox" Width="80" TextAlignment="Right" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Max tool iterations per turn:" Width="220" VerticalAlignment="Center" />
+                        <TextBox x:Name="MaxIterBox" Width="80" TextAlignment="Right" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Default temperature (0-2):" Width="220" VerticalAlignment="Center" />
+                        <TextBox x:Name="TempBox" Width="80" TextAlignment="Right" />
+                    </StackPanel>
+                    <CheckBox x:Name="AutoAttachCheck" Content="Auto-attach current file context" Margin="0,0,0,12" />
+                    <Button Content="Save" Click="SavePreferences_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
+                </StackPanel>
             </TabItem>
         </TabControl>
 

@@ -130,6 +130,15 @@ internal sealed class Defaults
     public string? Mode { get; set; }
     public string? Model { get; set; }
     public bool AutoAttachContext { get; set; } = true;
+
+    /// <summary>Sampling temperature sent with each chat request (0-2).</summary>
+    public double DefaultTemperature { get; set; } = 0.2;
+
+    /// <summary>How often enabled MCP servers are health-probed, in minutes.</summary>
+    public int HeartbeatMinutes { get; set; } = 5;
+
+    /// <summary>Maximum tool-call iterations before a turn is forced to conclude.</summary>
+    public int MaxToolIterations { get; set; } = 10;
 }
 
 internal sealed class Connection
@@ -201,6 +210,8 @@ public sealed class InstructionEntry : INotifyPropertyChanged
     private string? _content;
     private bool _enabled = true;
     private int _order;
+    private string _scope = InstructionScopeKind.Solution;
+    private bool _isDefault;
 
     /// <summary>Display title shown in the Instructions list and editor.</summary>
     public string? Name
@@ -250,6 +261,14 @@ public sealed class InstructionEntry : INotifyPropertyChanged
         set { _order = value; OnPropertyChanged(nameof(Order)); }
     }
 
+    public string Scope { get => _scope; set { _scope = value; OnPropertyChanged(nameof(Scope)); OnPropertyChanged(nameof(ScopeIndex)); OnPropertyChanged(nameof(ScopeLabel)); } }
+
+    public bool IsDefault { get => _isDefault; set { _isDefault = value; OnPropertyChanged(nameof(IsDefault)); } }
+
+    [JsonIgnore] public int ScopeIndex { get => string.Equals(_scope, InstructionScopeKind.Global, StringComparison.OrdinalIgnoreCase) ? 0 : string.Equals(_scope, InstructionScopeKind.Project, StringComparison.OrdinalIgnoreCase) ? 2 : 1; set => Scope = value == 0 ? InstructionScopeKind.Global : value == 2 ? InstructionScopeKind.Project : InstructionScopeKind.Solution; }
+
+    [JsonIgnore] public string ScopeLabel => _scope;
+
     [JsonIgnore]
     public bool IsFile => string.Equals(_kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase);
 
@@ -285,6 +304,14 @@ internal static class InstructionKind
 {
     public const string Text = "text";
     public const string File = "file";
+}
+
+/// <summary>Well-known <see cref="InstructionEntry.Scope"/> values.</summary>
+internal static class InstructionScopeKind
+{
+    public const string Global = "global";
+    public const string Solution = "solution";
+    public const string Project = "project";
 }
 
 internal sealed class Logging

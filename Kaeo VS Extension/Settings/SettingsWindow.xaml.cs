@@ -190,9 +190,28 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     // Migrate legacy path-only entries (no Kind recorded) to file kind.
                     if (i.IsText && i.Content is null && !string.IsNullOrWhiteSpace(i.Path))
                         i.Kind = InstructionKind.File;
+                    if (string.IsNullOrEmpty(i.Scope))
+                        i.Scope = InstructionScopeKind.Solution;
                     WireInstructionForSave(i);
                     _instructions.Add(i);
                 }
+                // The seeded defaults are always present (disable, never delete).
+                int insertAt = 0;
+                foreach (var def in InstructionFileLoader.DefaultEntries())
+                    if (!_instructions.Any(x => string.Equals(x.Name, def.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        WireInstructionForSave(def);
+                        _instructions.Insert(insertAt++, def);
+                    }
+                for (int i = 0; i < _instructions.Count; i++)
+                    _instructions[i].Order = i;
+                InstructionFileLoader.EnsureDefaultFiles(_instructions, InstructionFileLoader.GetSolutionRootPath());
+
+                var d = _settings.Defaults ??= new Defaults();
+                HeartbeatBox.Text = d.HeartbeatMinutes.ToString();
+                MaxIterBox.Text = d.MaxToolIterations.ToString();
+                TempBox.Text = d.DefaultTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                AutoAttachCheck.IsChecked = d.AutoAttachContext;
 
                 _loaded = true;
             }
@@ -686,6 +705,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (InstructionsList.SelectedItem is not InstructionEntry entry)
                 return;
 
+            // Seeded defaults can be disabled but not deleted.
+            if (entry.IsDefault)
+                return;
+
             _instructions.Remove(entry);
             for (int i = 0; i < _instructions.Count; i++)
                 _instructions[i].Order = i;
@@ -837,7 +860,26 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 Content = isFile ? null : e.Content,
                 Enabled = e.Enabled,
                 Order = e.Order,
+                Scope = e.Scope,
+                IsDefault = e.IsDefault,
             };
+        }
+
+        /// <summary>Parses the Preferences controls into the shared Defaults and persists them.</summary>
+        private void SavePreferences_Click(object sender, RoutedEventArgs e)
+        {
+            var d = _settings.Defaults ??= new Defaults();
+            if (int.TryParse(HeartbeatBox.Text, out var hb) && hb >= 1)
+                d.HeartbeatMinutes = hb;
+            if (int.TryParse(MaxIterBox.Text, out var mi) && mi >= 1)
+                d.MaxToolIterations = mi;
+            if (double.TryParse(TempBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var temp) && temp >= 0 && temp <= 2)
+                d.DefaultTemperature = temp;
+            d.AutoAttachContext = AutoAttachCheck.IsChecked == true;
+
+            _saveTimer?.Stop();
+            SaveNow();
+            RaiseModelsChanged();
         }
 
         /// <summary>Persists the agent list (structural changes and explicit Save clicks).</summary>
