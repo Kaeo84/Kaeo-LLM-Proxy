@@ -34,7 +34,7 @@ internal static class InstructionFileLoader
     /// Resolves enabled settings entries (ordered) into instruction content. Text entries use their
     /// inline content; file entries are read from disk. Missing or empty sources are skipped.
     /// </summary>
-    public static List<InstructionFile> LoadFromSettings(IEnumerable<InstructionEntry>? entries)
+    public static List<InstructionFile> LoadFromSettings(IEnumerable<InstructionEntry>? entries, string? solutionRoot = null)
     {
         var result = new List<InstructionFile>();
 
@@ -42,7 +42,7 @@ internal static class InstructionFileLoader
         {
             if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
             {
-                var path = ResolvePath(entry.Path);
+                var path = ResolvePath(entry.Path, solutionRoot);
                 if (string.IsNullOrEmpty(path) || !File.Exists(path))
                     continue;
                 try
@@ -100,13 +100,13 @@ internal static class InstructionFileLoader
     }
 
     /// <summary>Resolves a possibly solution-relative path to an absolute path (null when empty).</summary>
-    public static string? ResolvePath(string? path)
+    public static string? ResolvePath(string? path, string? solutionRoot = null)
     {
         if (string.IsNullOrWhiteSpace(path))
             return null;
         if (Path.IsPathRooted(path))
             return path;
-        var root = GetSolutionRootPath();
+        var root = solutionRoot ?? GetSolutionRootPath();
         return root != null ? Path.Combine(root, path!) : path;
     }
 

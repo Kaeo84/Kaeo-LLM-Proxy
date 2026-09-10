@@ -69,7 +69,7 @@ internal sealed class McpServerManager
     /// <summary>
     /// Stops the heartbeat timer.
     /// </summary>
-    private void StopHeartbeat()
+    public void StopHeartbeat()
     {
         _heartbeatTimer?.Dispose();
         _heartbeatTimer = null;

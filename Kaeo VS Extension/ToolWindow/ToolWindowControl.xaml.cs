@@ -70,7 +70,7 @@ public partial class ToolWindowControl : UserControl
         GearButton.Click += GearButton_Click;
 
         // Wire up MCP server health monitoring
-        mcp.ServerHealthChanged += OnMcpServerHealthChanged;
+        mcp.ServerHealthChanged += OnMcpServerHealthChanged; if (VsPackage.Instance is { } pkg) pkg.DisposalToken.Register(mcp.StopHeartbeat);
     }
 
     private void OnMcpServerHealthChanged(McpServer server, bool isHealthy)

@@ -130,7 +130,7 @@ internal sealed class AgentRuntime
         for (var iteration = 0; iteration < MaxToolIterations; iteration++)
         {
             // Build the request payload for the proxy's /api/chat.
-            var payload = BuildChatPayload(agent, model, history, mode);
+            var payload = await BuildChatPayload(agent, model, history, mode);
 
             var streamedText = new List<string>();
             JsonNode? toolCallsNode = null;
@@ -218,12 +218,12 @@ internal sealed class AgentRuntime
     /// <summary>
     /// Builds the JSON payload for the proxy's /api/chat endpoint.
     /// </summary>
-    private object BuildChatPayload(AgentConfig agent, string model, List<AgentMessage> history, AgentMode mode)
+    private async Task<object> BuildChatPayload(AgentConfig agent, string model, List<AgentMessage> history, AgentMode mode)
     {
         var messages = new List<JsonObject>();
 
         // Load and inject instruction files into system context
-        var instructionContent = LoadInstructionFiles();
+        var instructionContent = await LoadInstructionFilesAsync();
         if (!string.IsNullOrWhiteSpace(instructionContent))
         {
             messages.Add(new JsonObject { ["role"] = "system", ["content"] = instructionContent });
@@ -329,15 +329,15 @@ internal sealed class AgentRuntime
     /// source of truth (inline text entries plus files read from disk). When nothing has been
     /// configured yet, the two defaults are used so the common case keeps working.
     /// </summary>
-    private string LoadInstructionFiles()
+    private async Task<string> LoadInstructionFilesAsync()
     {
         try
         {
-            var settings = _settings.LoadAsync().GetAwaiter().GetResult();
+            var solutionRoot = InstructionFileLoader.GetSolutionRootPath(); var settings = await _settings.LoadAsync().ConfigureAwait(false);
             var entries = settings.Instructions;
             if (entries is null || entries.Length == 0)
                 entries = InstructionFileLoader.DefaultEntries().ToArray();
-            var instructions = InstructionFileLoader.LoadFromSettings(entries);
+            var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);
             return InstructionFileLoader.CombineInstructions(instructions);
         }
         catch
