@@ -11,186 +11,109 @@ using Microsoft.VisualStudio.Shell;
 namespace Kaeo.LlmProxy.VSExtension.Core;
 
 /// <summary>
-/// Loads instruction/context files from solution and project directories.
-/// Solution-level instructions are inherited by all projects.
-/// Project-level instructions are only available to that specific project.
+/// Resolves the Settings → Instructions list into the instruction content injected into the model
+/// prompt. The list is the single source of truth: each entry is either inline text or a file that
+/// is read from disk. Relative file paths resolve against the solution root.
 /// </summary>
 internal static class InstructionFileLoader
 {
+    /// <summary>Default solution-root file used by the seeded "Solution Instructions" entry.</summary>
     public const string SolutionInstructionFile = ".kaeo-instructions.md";
-    public const string ProjectInstructionFile = ".kaeo-instructions.md";
-    public const string CopilotInstructionsFile = ".github/copilot-instructions.md";
-    public const string UserInstructionsFile = "copilot-instructions.md";
 
     /// <summary>
-    /// Gets all applicable instruction files for a given project context.
-    /// Returns solution-level instructions plus project-level instructions.
+    /// The two instruction sources seeded into an empty list: an inline "User Preferences" text entry
+    /// and a "Solution Instructions" file entry pointing at <see cref="SolutionInstructionFile"/>.
     /// </summary>
-    public static async Task<List<InstructionFile>> GetInstructionsForProjectAsync(
-        string solutionRootPath,
-        string projectDirectory,
-        CancellationToken ct = default)
+    public static List<InstructionEntry> DefaultEntries() => new()
     {
-        var instructions = new List<InstructionFile>();
-
-        // Load solution-level instructions (inherited by all projects)
-        var solutionInstructions = await LoadSolutionInstructionsAsync(solutionRootPath, ct);
-        instructions.AddRange(solutionInstructions);
-
-        // Load project-level instructions (only for this project)
-        var projectInstructions = await LoadProjectInstructionsAsync(projectDirectory, ct);
-        instructions.AddRange(projectInstructions);
-
-        return instructions;
-    }
+        new InstructionEntry { Name = "User Preferences", Kind = InstructionKind.Text, Content = string.Empty, Enabled = true, Order = 0 },
+        new InstructionEntry { Name = "Solution Instructions", Kind = InstructionKind.File, Path = SolutionInstructionFile, Enabled = true, Order = 1 },
+    };
 
     /// <summary>
-    /// Loads instruction files from user-configured settings entries.
-    /// Only includes enabled entries, ordered by their Order property.
+    /// Resolves enabled settings entries (ordered) into instruction content. Text entries use their
+    /// inline content; file entries are read from disk. Missing or empty sources are skipped.
     /// </summary>
-    public static List<InstructionFile> LoadFromSettings(IEnumerable<InstructionEntry> entries)
+    public static List<InstructionFile> LoadFromSettings(IEnumerable<InstructionEntry>? entries)
     {
-        var instructions = new List<InstructionFile>();
+        var result = new List<InstructionFile>();
 
-        if (entries == null)
-            return instructions;
-
-        foreach (var entry in entries.Where(e => e.Enabled).OrderBy(e => e.Order))
+        foreach (var entry in (entries ?? Array.Empty<InstructionEntry>()).Where(e => e.Enabled).OrderBy(e => e.Order))
         {
-            if (string.IsNullOrWhiteSpace(entry.Path))
-                continue;
-
-            // Resolve relative paths against the solution root
-            var path = entry.Path;
-            if (!Path.IsPathRooted(path))
+            if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
             {
-                var solutionRoot = GetSolutionRootPath();
-                if (solutionRoot != null)
-                    path = Path.Combine(solutionRoot, path);
-            }
-
-            if (!File.Exists(path))
-                continue;
-
-            try
-            {
-                var content = File.ReadAllText(path);
-                instructions.Add(new InstructionFile
+                var path = ResolvePath(entry.Path);
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                    continue;
+                try
                 {
-                    Path = path,
-                    Content = content,
-                    Scope = InstructionScope.Solution,
-                    Name = $"User Instruction ({Path.GetFileName(path)})"
-                });
-            }
-            catch (Exception ex)
-            {
-                DebugLog.Error($"Failed to load instruction file '{path}': {ex.Message}");
-            }
-        }
-
-        return instructions;
-    }
-
-    /// <summary>
-    /// Gets solution-level instructions only (not project-specific).
-    /// </summary>
-    public static async Task<List<InstructionFile>> GetSolutionInstructionsAsync(
-        string solutionRootPath,
-        CancellationToken ct = default)
-    {
-        return await LoadSolutionInstructionsAsync(solutionRootPath, ct);
-    }
-
-    /// <summary>
-    /// Loads solution-level instruction files from the solution root directory.
-    /// </summary>
-    private static Task<List<InstructionFile>> LoadSolutionInstructionsAsync(
-        string solutionRootPath,
-        CancellationToken ct)
-    {
-        var instructions = new List<InstructionFile>();
-
-        if (string.IsNullOrEmpty(solutionRootPath) || !Directory.Exists(solutionRootPath))
-            return Task.FromResult(instructions);
-
-        // Check for .kaeo-instructions.md in solution root
-        var kaeoFile = Path.Combine(solutionRootPath, SolutionInstructionFile);
-        if (File.Exists(kaeoFile))
-        {
-            var content = File.ReadAllText(kaeoFile);
-            instructions.Add(new InstructionFile
-            {
-                Path = kaeoFile,
-                Content = content,
-                Scope = InstructionScope.Solution,
-                Name = "Solution Instructions (.kaeo-instructions.md)"
-            });
-        }
-
-        // Check for .github/copilot-instructions.md (GitHub Copilot format)
-        var githubDir = Path.Combine(solutionRootPath, ".github");
-        if (Directory.Exists(githubDir))
-        {
-            var copilotFile = Path.Combine(githubDir, CopilotInstructionsFile);
-            if (File.Exists(copilotFile))
-            {
-                var content = File.ReadAllText(copilotFile);
-                instructions.Add(new InstructionFile
+                    result.Add(new InstructionFile
+                    {
+                        Path = path,
+                        Content = File.ReadAllText(path),
+                        Scope = InstructionScope.Solution,
+                        Name = Display(entry),
+                    });
+                }
+                catch (Exception ex)
                 {
-                    Path = copilotFile,
-                    Content = content,
+                    DebugLog.Error($"Failed to read instruction file '{path}': {ex.Message}");
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(entry.Content))
+                    continue;
+                result.Add(new InstructionFile
+                {
+                    Path = "(inline)",
+                    Content = entry.Content!,
                     Scope = InstructionScope.Solution,
-                    Name = "GitHub Copilot Instructions"
+                    Name = Display(entry),
                 });
             }
         }
 
-        // Check for copilot-instructions.md in solution root (user-level)
-        var userFile = Path.Combine(solutionRootPath, UserInstructionsFile);
-        if (File.Exists(userFile))
-        {
-            var content = File.ReadAllText(userFile);
-            instructions.Add(new InstructionFile
-            {
-                Path = userFile,
-                Content = content,
-                Scope = InstructionScope.Solution,
-                Name = "User Instructions (copilot-instructions.md)"
-            });
-        }
-
-        return Task.FromResult(instructions);
+        return result;
     }
 
-    /// <summary>
-    /// Loads project-level instruction files from the project directory.
-    /// </summary>
-    private static Task<List<InstructionFile>> LoadProjectInstructionsAsync(
-        string projectDirectory,
-        CancellationToken ct)
+    /// <summary>Reads the current on-disk content for a file entry (empty when missing). Used by the editor and tools.</summary>
+    public static string ReadFileContent(string? path)
     {
-        var instructions = new List<InstructionFile>();
-
-        if (string.IsNullOrEmpty(projectDirectory) || !Directory.Exists(projectDirectory))
-            return Task.FromResult(instructions);
-
-        // Check for .kaeo-instructions.md in project directory
-        var kaeoFile = Path.Combine(projectDirectory, ProjectInstructionFile);
-        if (File.Exists(kaeoFile))
-        {
-            var content = File.ReadAllText(kaeoFile);
-            instructions.Add(new InstructionFile
-            {
-                Path = kaeoFile,
-                Content = content,
-                Scope = InstructionScope.Project,
-                Name = "Project Instructions (.kaeo-instructions.md)"
-            });
-        }
-
-        return Task.FromResult(instructions);
+        var full = ResolvePath(path);
+        if (string.IsNullOrEmpty(full) || !File.Exists(full))
+            return string.Empty;
+        try { return File.ReadAllText(full); }
+        catch { return string.Empty; }
     }
+
+    /// <summary>Writes <paramref name="content"/> to the file entry's resolved path, creating directories as needed.</summary>
+    public static void WriteFileContent(string? path, string? content)
+    {
+        var full = ResolvePath(path);
+        if (string.IsNullOrEmpty(full))
+            throw new ArgumentException("No file path is set for this instruction.", nameof(path));
+        var dir = Path.GetDirectoryName(full);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+        File.WriteAllText(full, content ?? string.Empty);
+    }
+
+    /// <summary>Resolves a possibly solution-relative path to an absolute path (null when empty).</summary>
+    public static string? ResolvePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+        if (Path.IsPathRooted(path))
+            return path;
+        var root = GetSolutionRootPath();
+        return root != null ? Path.Combine(root, path!) : path;
+    }
+
+    private static string Display(InstructionEntry e)
+        => !string.IsNullOrWhiteSpace(e.Name) ? e.Name!
+         : !string.IsNullOrWhiteSpace(e.Path) ? Path.GetFileName(e.Path!)
+         : "Instruction";
 
     /// <summary>
     /// Combines all instruction content into a single string for model context.
@@ -237,35 +160,7 @@ internal static class InstructionFileLoader
         }
     }
 
-    /// <summary>
-    /// Gets the project directory path from a project name.
-    /// </summary>
-    public static string GetProjectDirectoryPath(string projectName)
-    {
-        try
-        {
-            var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-            if (dte?.Solution?.IsOpen != true)
-                return null;
-
-            foreach (Project project in dte.Solution.Projects)
-            {
-                if (project.Name?.Equals(projectName, StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    var projectPath = project.FullName;
-                    if (!string.IsNullOrEmpty(projectPath))
-                        return Path.GetDirectoryName(projectPath);
-                }
-            }
-        }
-        catch
-        {
-            // Ignore errors
-        }
-
-        return null;
     }
-}
 
 /// <summary>
 /// Represents an instruction file with its content and scope.

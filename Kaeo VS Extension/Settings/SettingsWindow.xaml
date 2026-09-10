@@ -507,49 +507,94 @@
             </TabItem>
             <TabItem Header="Instructions">
                 <Grid Margin="6">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button Content="Add File" Click="AddInstruction_Click" MinWidth="80" Margin="0,0,4,0" />
-                        <Button Content="Remove" Click="RemoveInstruction_Click" MinWidth="80" Margin="0,0,4,0" />
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="3*" />
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0" Margin="0,0,8,0">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="New Text" Click="NewTextInstruction_Click" MinWidth="80" Margin="0,0,4,0" />
+                        <Button Content="New File" Click="NewFileInstruction_Click" MinWidth="80" Margin="0,0,4,0" />
+                        <Button Content="Delete" Click="DeleteInstruction_Click" MinWidth="80" Margin="0,0,4,0" />
                         <Button Content="Move Up" Click="MoveInstructionUp_Click" MinWidth="80" Margin="0,0,4,0" />
                         <Button Content="Move Down" Click="MoveInstructionDown_Click" MinWidth="80" />
                     </StackPanel>
 
                     <ListBox x:Name="InstructionsList"
-                             Grid.Row="1"
                              ItemsSource="{Binding Instructions}"
-                             SelectionMode="Single">
+                             SelectionChanged="InstructionsList_SelectionChanged">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,2">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-
-                                    <CheckBox Grid.Column="0"
-                                              IsChecked="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              VerticalAlignment="Center"
-                                              Margin="0,0,8,0" />
-
-                                    <TextBox Grid.Column="1"
-                                             Text="{Binding Path, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                             VerticalAlignment="Center"
-                                             Margin="0,0,8,0" />
-
-                                    <TextBlock Grid.Column="2"
-                                               Text="{Binding Order}"
-                                               VerticalAlignment="Center"
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding DisplayName}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Enabled}" Value="False">
+                                                        <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding KindLabel}" Margin="6,0,0,0"
                                                Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
-                                </Grid>
+                                </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
+                    </DockPanel>
+
+                    <TextBlock x:Name="NoInstructionHint" Grid.Column="1" VerticalAlignment="Top"
+                               Text="Select or add an instruction source to edit it."
+                               Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+
+                    <!-- DataContext is the selected entry, assigned in InstructionsList_SelectionChanged. -->
+                    <Grid x:Name="InstructionEditor" Grid.Column="1" Visibility="Collapsed">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Name:" VerticalAlignment="Center" Margin="0,0,4,4" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,8,4" />
+                        <ComboBox Grid.Row="0" Grid.Column="2" Width="90" HorizontalAlignment="Left"
+                                  SelectedIndex="{Binding KindIndex, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,0,4">
+                            <ComboBoxItem Content="Text" />
+                            <ComboBoxItem Content="File" />
+                        </ComboBox>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="File:" VerticalAlignment="Center" Margin="0,0,4,4"
+                                   Visibility="{Binding IsFile, Converter={StaticResource BoolToVis}}" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Path, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center" Margin="0,0,8,4"
+                                 Visibility="{Binding IsFile, Converter={StaticResource BoolToVis}}" />
+                        <Button Grid.Row="1" Grid.Column="2" Content="Browse..." Click="BrowseInstructionFile_Click"
+                                MinWidth="80" HorizontalAlignment="Left" Margin="0,0,0,4"
+                                Visibility="{Binding IsFile, Converter={StaticResource BoolToVis}}" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Text="Content:" Margin="0,0,0,2" />
+                        <TextBox Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="3"
+                                 Text="{Binding Content, UpdateSourceTrigger=PropertyChanged}"
+                                 AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                 FontFamily="Consolas" FontSize="12" Margin="0,0,0,4" />
+
+                        <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <CheckBox Content="Enabled" IsChecked="{Binding Enabled}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                            <Button Content="Save" Click="SaveInstruction_Click" MinWidth="80" Padding="10,2" />
+                        </StackPanel>
+                    </Grid>
                 </Grid>
             </TabItem>
         </TabControl>

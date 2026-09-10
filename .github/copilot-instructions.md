@@ -72,3 +72,6 @@ See `WebSearchTools.cs`, `SshTools.cs`, and `CodeVectorTools.cs` for the referen
 
 ## General Guidelines
 - Once the work is done and committed, stop — no trailing summary.
+
+## GUI Elements
+- In the Kaeo VS Extension Settings window, all GUI elements must use Visual Studio theme brushes (DynamicResource via VsBrushes/VsColors) for foreground/background/borders/text and must repaint automatically when the VS color scheme changes. Never hardcode colors (Brushes.Black, #RRGGBB) for content that must stay legible across light/dark themes; use themed brushes in style triggers instead of converters that return fixed colors.

@@ -325,45 +325,20 @@ internal sealed class AgentRuntime
     }
 
     /// <summary>
-    /// Loads instruction files from solution and project directories, plus user-configured entries.
-    /// Returns combined instruction content for model context.
+    /// Builds the instruction system-prompt content from the Settings → Instructions list, the single
+    /// source of truth (inline text entries plus files read from disk). When nothing has been
+    /// configured yet, the two defaults are used so the common case keeps working.
     /// </summary>
     private string LoadInstructionFiles()
     {
         try
         {
-            var solutionRoot = InstructionFileLoader.GetSolutionRootPath();
-            if (string.IsNullOrEmpty(solutionRoot))
-                return string.Empty;
-
-            var allInstructions = new List<InstructionFile>();
-
-            // Get solution-level instructions (inherited by all projects)
-            var solutionInstructions = InstructionFileLoader.GetSolutionInstructionsAsync(solutionRoot).GetAwaiter().GetResult();
-            allInstructions.AddRange(solutionInstructions);
-
-            // Get active file's project directory for project-level instructions
-            var dte = Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE80.DTE2;
-            var activeFile = dte?.ActiveDocument?.FullName;
-            var projectDir = string.IsNullOrEmpty(activeFile)
-                ? null
-                : System.IO.Path.GetDirectoryName(activeFile);
-
-            if (!string.IsNullOrEmpty(projectDir))
-            {
-                var projectInstructions = InstructionFileLoader.GetInstructionsForProjectAsync(
-                    solutionRoot, projectDir).GetAwaiter().GetResult()
-                    .Where(i => i.Scope == InstructionScope.Project)
-                    .ToList();
-                allInstructions.AddRange(projectInstructions);
-            }
-
-            // Load user-configured instruction entries from settings
             var settings = _settings.LoadAsync().GetAwaiter().GetResult();
-            var settingsInstructions = InstructionFileLoader.LoadFromSettings(settings.Instructions ?? Array.Empty<InstructionEntry>());
-            allInstructions.AddRange(settingsInstructions);
-
-            return InstructionFileLoader.CombineInstructions(allInstructions);
+            var entries = settings.Instructions;
+            if (entries is null || entries.Length == 0)
+                entries = InstructionFileLoader.DefaultEntries().ToArray();
+            var instructions = InstructionFileLoader.LoadFromSettings(entries);
+            return InstructionFileLoader.CombineInstructions(instructions);
         }
         catch
         {

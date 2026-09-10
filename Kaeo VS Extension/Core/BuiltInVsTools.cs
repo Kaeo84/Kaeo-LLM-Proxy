@@ -408,6 +408,41 @@ internal static class BuiltInVsTools
                         }
                     }
                 }
+            },
+            new()
+            {
+                Name = "vs_list_instructions",
+                Description = "List the configured instruction sources (name, kind text|file, path, enabled, order) that are injected into the model prompt.",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_read_instruction",
+                Description = "Read the full content of one instruction source by its name.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["name"] = new JsonObject { ["type"] = "string", ["description"] = "The instruction name as shown by vs_list_instructions" }
+                    },
+                    ["required"] = new JsonArray { "name" }
+                }
+            },
+            new()
+            {
+                Name = "vs_update_instruction",
+                Description = "Update (or create) an instruction source by name. For a text source this sets its inline content; for a file source it writes the file. Use to record user preferences.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["name"] = new JsonObject { ["type"] = "string" },
+                        ["content"] = new JsonObject { ["type"] = "string" }
+                    },
+                    ["required"] = new JsonArray { "name", "content" }
+                }
             }
         };
     }
@@ -441,6 +476,9 @@ internal static class BuiltInVsTools
                 "vs_remove_file" => await RemoveFileAsync(args, ct),
                 "vs_inquiry" => await InquiryAsync(args, ct),
                 "vs_detect_memories" => await DetectMemoriesAsync(args, ct),
+                "vs_list_instructions" => await ListInstructionsAsync(ct),
+                "vs_read_instruction" => await ReadInstructionAsync(args, ct),
+                "vs_update_instruction" => await UpdateInstructionAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
@@ -1187,5 +1225,111 @@ internal static class BuiltInVsTools
         };
 
         return result.ToJsonString();
+    }
+
+    // --- Instruction sources (Settings -> Instructions) ---
+
+    /// <summary>Lists the configured instruction sources so the model knows what context it is given.</summary>
+    private static async Task<string> ListInstructionsAsync(CancellationToken ct)
+    {
+        var store = new ExtensionSettingsStore();
+        var settings = await store.LoadAsync();
+        var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
+            ? InstructionFileLoader.DefaultEntries()
+            : settings.Instructions.ToList();
+
+        var arr = new JsonArray();
+        foreach (var e in entries.OrderBy(e => e.Order))
+        {
+            arr.Add(new JsonObject
+            {
+                ["name"] = e.Name ?? string.Empty,
+                ["kind"] = e.Kind,
+                ["path"] = e.Path ?? string.Empty,
+                ["enabled"] = e.Enabled,
+                ["order"] = e.Order,
+            });
+        }
+        return arr.ToJsonString();
+    }
+
+    /// <summary>Returns the full content of one instruction source (inline text or the file on disk).</summary>
+    private static async Task<string> ReadInstructionAsync(JsonNode? args, CancellationToken ct)
+    {
+        var name = args?["name"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(name))
+            return "A 'name' is required.";
+
+        var store = new ExtensionSettingsStore();
+        var settings = await store.LoadAsync();
+        var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
+            ? InstructionFileLoader.DefaultEntries()
+            : settings.Instructions.ToList();
+
+        var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (entry is null)
+            return $"No instruction named '{name}'.";
+
+        var content = string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase)
+            ? InstructionFileLoader.ReadFileContent(entry.Path)
+            : entry.Content ?? string.Empty;
+
+        return new JsonObject
+        {
+            ["name"] = entry.Name ?? string.Empty,
+            ["kind"] = entry.Kind,
+            ["path"] = entry.Path ?? string.Empty,
+            ["content"] = content,
+        }.ToJsonString();
+    }
+
+    /// <summary>Updates (or creates) an instruction source by name: inline text, or writes the file.</summary>
+    private static async Task<string> UpdateInstructionAsync(JsonNode? args, CancellationToken ct)
+    {
+        var name = args?["name"]?.GetValue<string>();
+        var content = args?["content"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(name))
+            return "A 'name' is required.";
+        if (content is null)
+            return "A 'content' is required.";
+
+        var store = new ExtensionSettingsStore();
+        var settings = await store.LoadAsync();
+        var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
+            ? InstructionFileLoader.DefaultEntries()
+            : settings.Instructions.ToList();
+
+        var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (entry is null)
+        {
+            entry = new InstructionEntry
+            {
+                Name = name,
+                Kind = InstructionKind.Text,
+                Content = content,
+                Enabled = true,
+                Order = entries.Count,
+            };
+            entries.Add(entry);
+        }
+        else if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                InstructionFileLoader.WriteFileContent(entry.Path, content);
+            }
+            catch (Exception ex)
+            {
+                return $"Could not write the instruction file: {ex.Message}";
+            }
+        }
+        else
+        {
+            entry.Content = content;
+        }
+
+        settings.Instructions = entries.ToArray();
+        await store.SaveAsync(settings);
+        return $"Updated instruction '{name}'.";
     }
 }

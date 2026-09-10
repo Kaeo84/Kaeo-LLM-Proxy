@@ -1,8 +1,10 @@
 using System;
+using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -183,11 +185,106 @@ internal sealed class McpTool
     public bool Enabled { get; set; } = true;
 }
 
-public sealed class InstructionEntry
+/// <summary>
+/// A single instruction source shown in the Settings → Instructions list and bound directly in the
+/// editor. It is both the persisted shape and the editable view model: <see cref="NotifyPropertyChanged"/>
+/// drives the master/detail editor, while only the data properties serialize (computed helpers are ignored).
+/// A <see cref="Kind"/> of <c>text</c> stores its body inline in <see cref="Content"/>; a <c>file</c>
+/// stores only <see cref="Path"/> and reads its body from disk (so <see cref="Content"/> is just the
+/// transient editor buffer and is never persisted for file entries).
+/// </summary>
+public sealed class InstructionEntry : INotifyPropertyChanged
 {
-    public string? Path { get; set; }
-    public bool Enabled { get; set; } = true;
-    public int Order { get; set; }
+    private string? _name;
+    private string _kind = InstructionKind.Text;
+    private string? _path;
+    private string? _content;
+    private bool _enabled = true;
+    private int _order;
+
+    /// <summary>Display title shown in the Instructions list and editor.</summary>
+    public string? Name
+    {
+        get => _name;
+        set { _name = value; OnPropertyChanged(nameof(Name)); OnPropertyChanged(nameof(DisplayName)); }
+    }
+
+    /// <summary>Source kind: <see cref="InstructionKind.Text"/> (inline) or <see cref="InstructionKind.File"/>.</summary>
+    public string Kind
+    {
+        get => _kind;
+        set
+        {
+            _kind = value;
+            OnPropertyChanged(nameof(Kind));
+            OnPropertyChanged(nameof(IsFile));
+            OnPropertyChanged(nameof(IsText));
+            OnPropertyChanged(nameof(KindIndex));
+            OnPropertyChanged(nameof(KindLabel));
+        }
+    }
+
+    /// <summary>File path for a <c>file</c> entry (absolute, or relative to the solution root).</summary>
+    public string? Path
+    {
+        get => _path;
+        set { _path = value; OnPropertyChanged(nameof(Path)); OnPropertyChanged(nameof(DisplayName)); }
+    }
+
+    /// <summary>Inline body for a <c>text</c> entry; for a <c>file</c> entry this is the editor buffer only.</summary>
+    public string? Content
+    {
+        get => _content;
+        set { _content = value; OnPropertyChanged(nameof(Content)); }
+    }
+
+    public bool Enabled
+    {
+        get => _enabled;
+        set { _enabled = value; OnPropertyChanged(nameof(Enabled)); }
+    }
+
+    public int Order
+    {
+        get => _order;
+        set { _order = value; OnPropertyChanged(nameof(Order)); }
+    }
+
+    [JsonIgnore]
+    public bool IsFile => string.Equals(_kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsText => !IsFile;
+
+    /// <summary>Combo index for the Text/File picker (0 = Text, 1 = File).</summary>
+    [JsonIgnore]
+    public int KindIndex
+    {
+        get => IsFile ? 1 : 0;
+        set => Kind = value == 1 ? InstructionKind.File : InstructionKind.Text;
+    }
+
+    [JsonIgnore]
+    public string KindLabel => IsFile ? "(file)" : "(text)";
+
+    /// <summary>List label: the name, falling back to the file name, then a generic placeholder.</summary>
+    [JsonIgnore]
+    public string DisplayName
+        => !string.IsNullOrWhiteSpace(_name) ? _name!
+         : !string.IsNullOrWhiteSpace(_path) ? System.IO.Path.GetFileName(_path!)
+         : "Instruction";
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged(string name)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>Well-known <see cref="InstructionEntry.Kind"/> values.</summary>
+internal static class InstructionKind
+{
+    public const string Text = "text";
+    public const string File = "file";
 }
 
 internal sealed class Logging

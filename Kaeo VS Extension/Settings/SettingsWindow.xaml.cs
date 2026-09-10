@@ -182,14 +182,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 // ever been saved, so they are manageable like any other server.
                 EnsureBuiltinVm(persistedBuiltin);
 
-                foreach (var i in _settings.Instructions ?? Array.Empty<InstructionEntry>())
+                var instructionEntries = _settings.Instructions;
+                if (instructionEntries is null || instructionEntries.Length == 0)
+                    instructionEntries = InstructionFileLoader.DefaultEntries().ToArray();
+                foreach (var i in instructionEntries)
                 {
-                    _instructions.Add(new InstructionEntry
-                    {
-                        Path = i.Path ?? string.Empty,
-                        Enabled = i.Enabled,
-                        Order = i.Order,
-                    });
+                    // Migrate legacy path-only entries (no Kind recorded) to file kind.
+                    if (i.IsText && i.Content is null && !string.IsNullOrWhiteSpace(i.Path))
+                        i.Kind = InstructionKind.File;
+                    WireInstructionForSave(i);
+                    _instructions.Add(i);
                 }
 
                 _loaded = true;
@@ -604,34 +606,58 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         // ── Instructions Tab ──────────────────────────────────────────────────
 
-        /// <summary>Adds a new instruction file entry.</summary>
-        private void AddInstruction_Click(object sender, RoutedEventArgs e)
+        /// <summary>Wires an instruction entry so edits auto-persist (debounced), like the MCP tools.</summary>
+        private void WireInstructionForSave(InstructionEntry entry)
+            => entry.PropertyChanged += (_, _) => ScheduleSave();
+
+        /// <summary>Adds a new inline-text instruction and selects it.</summary>
+        private void NewTextInstruction_Click(object sender, RoutedEventArgs e)
         {
             var entry = new InstructionEntry
             {
-                Path = string.Empty,
+                Name = "New Instruction",
+                Kind = InstructionKind.Text,
+                Content = string.Empty,
                 Enabled = true,
                 Order = _instructions.Count,
             };
+            WireInstructionForSave(entry);
             _instructions.Add(entry);
             InstructionsList.SelectedItem = entry;
             SaveNow();
         }
 
-        /// <summary>Removes the selected instruction file entry.</summary>
-        private void RemoveInstruction_Click(object sender, RoutedEventArgs e)
+        /// <summary>Adds a new file-backed instruction and selects it.</summary>
+        private void NewFileInstruction_Click(object sender, RoutedEventArgs e)
+        {
+            var entry = new InstructionEntry
+            {
+                Name = "New File Instruction",
+                Kind = InstructionKind.File,
+                Path = string.Empty,
+                Enabled = true,
+                Order = _instructions.Count,
+            };
+            WireInstructionForSave(entry);
+            _instructions.Add(entry);
+            InstructionsList.SelectedItem = entry;
+            SaveNow();
+        }
+
+        /// <summary>Removes the selected instruction and re-orders the rest.</summary>
+        private void DeleteInstruction_Click(object sender, RoutedEventArgs e)
         {
             if (InstructionsList.SelectedItem is not InstructionEntry entry)
                 return;
 
             _instructions.Remove(entry);
-            // Re-order remaining items
             for (int i = 0; i < _instructions.Count; i++)
                 _instructions[i].Order = i;
+            ShowInstructionEditor(InstructionsList.SelectedItem as InstructionEntry);
             SaveNow();
         }
 
-        /// <summary>Moves the selected instruction file entry up in the list.</summary>
+        /// <summary>Moves the selected instruction up one position.</summary>
         private void MoveInstructionUp_Click(object sender, RoutedEventArgs e)
         {
             if (InstructionsList.SelectedItem is not InstructionEntry entry)
@@ -642,14 +668,12 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             {
                 _instructions.RemoveAt(idx);
                 _instructions.Insert(idx - 1, entry);
-                // Re-order
-                for (int i = 0; i < _instructions.Count; i++)
-                    _instructions[i].Order = i;
+                ReorderInstructions();
                 SaveNow();
             }
         }
 
-        /// <summary>Moves the selected instruction file entry down in the list.</summary>
+        /// <summary>Moves the selected instruction down one position.</summary>
         private void MoveInstructionDown_Click(object sender, RoutedEventArgs e)
         {
             if (InstructionsList.SelectedItem is not InstructionEntry entry)
@@ -660,19 +684,121 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             {
                 _instructions.RemoveAt(idx);
                 _instructions.Insert(idx + 1, entry);
-                // Re-order
-                for (int i = 0; i < _instructions.Count; i++)
-                    _instructions[i].Order = i;
+                ReorderInstructions();
                 SaveNow();
             }
         }
 
-        /// <summary>Maps an instruction entry view model back to the persisted shape.</summary>
+        private void ReorderInstructions()
+        {
+            for (int i = 0; i < _instructions.Count; i++)
+                _instructions[i].Order = i;
+        }
+
+        private void InstructionsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+            => ShowInstructionEditor(InstructionsList.SelectedItem as InstructionEntry);
+
+        /// <summary>
+        /// Points the instruction editor at the selected entry. For a file entry, the current on-disk
+        /// content is loaded into the text area so the user edits the real file body.
+        /// </summary>
+        private void ShowInstructionEditor(InstructionEntry? entry)
+        {
+            InstructionEditor.DataContext = entry;
+            bool has = entry is not null;
+            InstructionEditor.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+            NoInstructionHint.Visibility = has ? Visibility.Collapsed : Visibility.Visible;
+
+            if (entry is { IsFile: true })
+                entry.Content = InstructionFileLoader.ReadFileContent(entry.Path);
+        }
+
+        /// <summary>Browses for a Markdown/text file and loads its content into the editor.</summary>
+        private void BrowseInstructionFile_Click(object sender, RoutedEventArgs e)
+        {
+            if (InstructionEditor.DataContext is not InstructionEntry entry)
+                return;
+
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Choose an instruction file",
+                Filter = "Markdown / Text (*.md;*.txt)|*.md;*.txt|All files (*.*)|*.*",
+                CheckFileExists = true,
+            };
+            if (dialog.ShowDialog() != true)
+                return;
+
+            entry.Path = MakeRelativeIfUnderSolution(dialog.FileName);
+            entry.Content = InstructionFileLoader.ReadFileContent(entry.Path);
+            SaveNow();
+        }
+
+        /// <summary>
+        /// Saves the selected instruction: file entries write their body back to disk; text entries
+        /// keep it inline. Then persists the list and notifies the tool window.
+        /// </summary>
+        private void SaveInstruction_Click(object sender, RoutedEventArgs e)
+        {
+            if (InstructionEditor.DataContext is not InstructionEntry entry)
+                return;
+
+            if (entry.IsFile)
+            {
+                if (string.IsNullOrWhiteSpace(entry.Path))
+                {
+                    Community.VisualStudio.Toolkit.VS.MessageBox.ShowError(
+                        "Instruction", "Set a file path before saving a file-based instruction.");
+                    return;
+                }
+                try
+                {
+                    InstructionFileLoader.WriteFileContent(entry.Path, entry.Content);
+                }
+                catch (Exception ex)
+                {
+                    Community.VisualStudio.Toolkit.VS.MessageBox.ShowError(
+                        "Instruction", $"Could not write the file.\n\n{ex.Message}");
+                    return;
+                }
+            }
+
+            _saveTimer?.Stop();
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
+        /// <summary>Converts an absolute path under the solution root into a solution-relative one.</summary>
+        private static string MakeRelativeIfUnderSolution(string absolutePath)
+        {
+            var root = InstructionFileLoader.GetSolutionRootPath();
+            if (string.IsNullOrEmpty(root))
+                return absolutePath;
+            try
+            {
+                var trimmed = root!.EndsWith(System.IO.Path.DirectorySeparatorChar.ToString()) ? root : root + System.IO.Path.DirectorySeparatorChar;
+                var rootUri = new Uri(trimmed);
+                var fileUri = new Uri(absolutePath);
+                if (rootUri.IsBaseOf(fileUri))
+                    return Uri.UnescapeDataString(rootUri.MakeRelativeUri(fileUri).ToString())
+                        .Replace('/', System.IO.Path.DirectorySeparatorChar);
+            }
+            catch
+            {
+                // Fall through to the absolute path.
+            }
+            return absolutePath;
+        }
+
+        /// <summary>Maps a live instruction entry to its persisted shape (file bodies are never stored inline).</summary>
         private static InstructionEntry MapToInstructionEntry(InstructionEntry e)
         {
+            bool isFile = string.Equals(e.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase);
             return new InstructionEntry
             {
-                Path = e.Path,
+                Name = e.Name,
+                Kind = e.Kind,
+                Path = isFile ? e.Path : null,
+                Content = isFile ? null : e.Content,
                 Enabled = e.Enabled,
                 Order = e.Order,
             };
