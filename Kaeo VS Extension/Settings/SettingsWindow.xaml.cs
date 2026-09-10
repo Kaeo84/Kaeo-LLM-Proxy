@@ -216,6 +216,42 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             RaiseModelsChanged();
         }
 
+        /// <summary>
+        /// Duplicates the connection whose Copy button was clicked, including its models, so the user
+        /// can tweak a copy instead of configuring a new connection from scratch. Copied models start
+        /// unpinned so the single-default rule (one default across all connections) still holds.
+        /// </summary>
+        private void CopyConnection_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button { DataContext: ConnectionViewModel source })
+                return;
+
+            var copy = new ConnectionViewModel
+            {
+                Name = $"{source.Name} (copy)",
+                Url = source.Url,
+                ApiKey = source.ApiKey,
+                Upstream = source.Upstream,
+                Enabled = source.Enabled,
+                IsExpanded = true,
+            };
+            foreach (var m in source.Models)
+            {
+                copy.Models.Add(new ModelViewModel
+                {
+                    Name = m.Name,
+                    ModelId = m.ModelId,
+                    Capabilities = m.Capabilities,
+                    Enabled = m.Enabled,
+                    IsPinned = false,
+                });
+            }
+            WireForSave(copy);
+            _connections.Add(copy);
+            SaveNow();
+            RaiseModelsChanged();
+        }
+
         /// <summary>Removes the connection whose header Delete button was clicked.</summary>
         private void DeleteConnection_Click(object sender, RoutedEventArgs e)
         {
