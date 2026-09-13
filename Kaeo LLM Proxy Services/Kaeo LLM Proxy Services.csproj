@@ -11,6 +11,8 @@
 	<ItemGroup>
 		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" />
+		<!-- Shared wire <-> MEAI adapter; consumed by the Phase-B translation pipeline. -->
+		<ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
 	</ItemGroup>
 
 	<!-- Serilog, ModelContextProtocol, and Microsoft.Data.Sqlite (with the pinned

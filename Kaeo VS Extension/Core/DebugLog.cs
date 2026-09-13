@@ -39,8 +39,10 @@ namespace Kaeo.LlmProxy.VSExtension.Core
 
         private static void Write(string level, string message)
         {
-            if (!IsEnabled)
-                return;
+            // Errors must be recorded even without an attached debugger: they are the only
+            // trace of a failed send in normal (non-F5) use. Verbose/Info stay gated.
+            if (level != "ERROR" && !IsEnabled)
+                return; 
 
             var line = $"[{DateTime.Now:HH:mm:ss.fff}] [{level}] {message}";
 

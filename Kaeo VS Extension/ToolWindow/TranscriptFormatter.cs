@@ -23,9 +23,9 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
     /// </summary>
     internal static class TranscriptFormatter
     {
-        /// <summary>True for lines that belong to the conversation itself (user or assistant).</summary>
+        /// <summary>True for lines that belong to the conversation itself (user input, redirects, or answers).</summary>
         public static bool IsConversation(ChatLine line)
-            => line is not null && (line.Kind == "user" || line.Kind == "assistant");
+            => line is not null && (line.Kind == "user" || line.Kind == "assistant" || line.Kind == "redirect");
 
         /// <summary>Renders the given lines in the requested format for file export.</summary>
         public static string Format(IEnumerable<ChatLine> lines, TranscriptFormat format)
@@ -63,7 +63,12 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
             => "kaeo-chat-" + DateTime.Now.ToString("yyyyMMdd-HHmm", CultureInfo.InvariantCulture);
 
         private static string Label(ChatLine line)
-            => line.Kind == "user" ? "You" : "Assistant";
+            => line.Kind switch
+            {
+                "user" => "You",
+                "redirect" => "You (redirect)",
+                _ => "Assistant",
+            };
 
         private static string ToPlainText(List<ChatLine> lines)
         {

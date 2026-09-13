@@ -769,6 +769,15 @@ internal sealed class AppSettings
     public bool EnableStreamingHeartbeats { get; set; } = true;
 
     /// <summary>
+    /// When true, /api/chat request translation runs through the Microsoft.Extensions.AI IR
+    /// pipeline (Translation/OllamaRequestTranslation) instead of the legacy mapper. Golden
+    /// structural-parity tests pin the IR route to the legacy output; the flag stays off by
+    /// default until the IR route has held in practice. Default: false.
+    /// </summary>
+    [JsonIgnore]
+    public bool UseIrTranslation { get; set; } = false;
+
+    /// <summary>
     /// Seconds between streaming heartbeat frames while waiting for upstream tokens. Min: 5, Max: 300. Default: 15.
     /// </summary>
     [JsonIgnore]

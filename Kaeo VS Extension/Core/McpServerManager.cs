@@ -350,22 +350,25 @@ internal sealed class McpServerManager
             return await BuiltInVsTools.ExecuteAsync(toolName, argumentsJson, ct).ConfigureAwait(false);
         }
 
-        // Parse "<server-key>-<tool-name>" or fall back to searching all servers.
-        var dashIdx = toolName.IndexOf('-');
-        if (dashIdx > 0)
+        // Route by the exact "<server-key>-<tool-name>" composite the definitions advertise.
+        // Splitting on the first dash breaks when a server name itself contains a dash
+        // (e.g. "AI-on-Proxy"), so instead match the full prefix per enabled server - longest
+        // server name first so a name that is a prefix of another resolves to the longer one.
+        var enabledServers = _servers.Values.Where(s => s.Enabled).ToList();
+        foreach (var server in enabledServers.OrderByDescending(s => s.Name?.Length ?? 0))
         {
-            var serverKey = toolName.Substring(0, dashIdx);
-            var actualToolName = toolName.Substring(dashIdx + 1);
-            if (_servers.TryGetValue(serverKey, out var server))
-            {
+            var prefix = $"{server.Name}-";
+            if (string.IsNullOrEmpty(server.Name) || !toolName.StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+
+            var actualToolName = toolName.Substring(prefix.Length);
+            if ((server.Tools ?? Array.Empty<McpTool>()).Any(t => t.Name == actualToolName))
                 return await ExecuteOnServerAsync(server, actualToolName, argumentsJson, ct).ConfigureAwait(false);
-            }
         }
 
-        // Fallback: search all servers for a matching tool name.
-        foreach (var server in _servers.Values)
+        // Fallback: a bare tool name with no server prefix.
+        foreach (var server in enabledServers)
         {
-            if (!server.Enabled) continue;
             if ((server.Tools ?? Array.Empty<McpTool>()).Any(t => t.Name == toolName))
                 return await ExecuteOnServerAsync(server, toolName, argumentsJson, ct).ConfigureAwait(false);
         }

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Kaeo.LlmProxy.VSExtension.Core;
+using Microsoft.Extensions.AI;
 
 namespace Kaeo.LlmProxy.VSExtension.ToolWindow;
 
@@ -16,8 +17,17 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow;
 internal sealed class ChatLine : INotifyPropertyChanged
 {
     private string _text = string.Empty;
+    private string _reasoning = string.Empty;
+    private bool _isReasoningVisible;
+    private bool _isAnswered;
 
-    public string Kind { get; init; } = "assistant"; // "user" | "assistant" | "tool" | "status"
+    public string Kind { get; init; } = "assistant"; // "user" | "assistant" | "tool" | "status" | "redirect" | "permission"
+
+    /// <summary>
+    /// Approval handshake for pending permission cards; null for every other line kind.
+    /// The runtime loop awaits it, the card's buttons resolve it - no modal dialog.
+    /// </summary>
+    public TaskCompletionSource<bool>? Approval { get; set; }
 
     /// <summary>Raises change notifications so streamed deltas and the final text re-render in place.</summary>
     public string Text
@@ -31,6 +41,46 @@ internal sealed class ChatLine : INotifyPropertyChanged
         }
     }
 
+    /// <summary>Model reasoning (thinking) streamed for this line, shown as an expandable section.</summary>
+    public string Reasoning
+    {
+        get => _reasoning;
+        set
+        {
+            if (_reasoning == value) return;
+            _reasoning = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Reasoning)));
+        }
+    }
+
+    /// <summary>Whether the reasoning section is shown (false when empty or the display pref is Hidden).</summary>
+    public bool IsReasoningVisible
+    {
+        get => _isReasoningVisible;
+        set
+        {
+            if (_isReasoningVisible == value) return;
+            _isReasoningVisible = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsReasoningVisible)));
+        }
+    }
+
+    /// <summary>True once the user answered a permission card; hides its buttons.</summary>
+    public bool IsAnswered
+    {
+        get => _isAnswered;
+        set
+        {
+            if (_isAnswered == value) return;
+            _isAnswered = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsAnswered)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowsApprovalButtons)));
+        }
+    }
+
+    /// <summary>Whether this line shows the Allow/Always/Deny buttons (unanswered permission card).</summary>
+    public bool ShowsApprovalButtons => Kind == "permission" && !_isAnswered;
+
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -43,18 +93,35 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private readonly ChatEngine _engine;
     private readonly ExtensionSettingsStore _settings;
     private readonly McpServerManager _mcp;
-    private readonly List<AgentMessage> _history = new();
+    private readonly List<ChatMessage> _history = new();
     private CancellationTokenSource? _cts;
+    private bool _isBusy;
+    private readonly Queue<string> _redirects = new();
+
+    /// <summary>True while a turn is streaming; drives the Send/Stop button toggle.</summary>
+    public bool IsBusy
+    {
+        get => _isBusy;
+        private set { _isBusy = value; OnPropertyChanged(); }
+    }
 
     /// <summary>
     /// A model selectable in the pill bar: the model name, the owning connection (baseUrl + key),
     /// whether the Ollama "tools" capability is present (tool-calling models are auto-enabled),
-    /// the connection's upstream kind, and whether it is the single pinned default model.
+    /// the connection's upstream kind, whether it is the single pinned default model, and the
+    /// per-model reasoning-source override from settings ("Auto" when unset).
     /// </summary>
-    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault);
+    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault, string? ReasoningSource);
 
     private readonly List<ModelSelection> _modelSelections = new();
     private readonly SemaphoreSlim _loadGate = new(1, 1);
+
+    /// <summary>
+    /// One chat client per (connection, model, key, reasoning source). Reused across turns
+    /// instead of newsing an HttpClient per turn - per-turn churn is a socket-exhaustion
+    /// (TIME_WAIT) risk on net48.
+    /// </summary>
+    private readonly Dictionary<string, OllamaChatClient> _clients = new(StringComparer.Ordinal);
 
     private string _currentAgent = "Agent";
     private string _currentMode = "Interactive";
@@ -91,6 +158,39 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public ObservableCollection<AgentConfig> Agents { get; } = new();
     public ObservableCollection<string> Modes { get; } = new();
     public ObservableCollection<string> Models { get; } = new();
+
+    private bool _reasoningHidden;
+    private bool _reasoningInline;
+    private string? _reasoningForegroundHex;
+    private string? _reasoningBackgroundHex;
+
+    /// <summary>True when reasoning content is suppressed entirely (Defaults.ReasoningDisplay = "Hidden").</summary>
+    public bool ReasoningHidden
+    {
+        get => _reasoningHidden;
+        private set { _reasoningHidden = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>True when reasoning renders always-expanded ("Inline"); otherwise inside a collapsed expander.</summary>
+    public bool ReasoningInline
+    {
+        get => _reasoningInline;
+        private set { _reasoningInline = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB override for reasoning text; null falls back to the VS theme.</summary>
+    public string? ReasoningForegroundHex
+    {
+        get => _reasoningForegroundHex;
+        private set { _reasoningForegroundHex = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB override for the reasoning background; null stays transparent.</summary>
+    public string? ReasoningBackgroundHex
+    {
+        get => _reasoningBackgroundHex;
+        private set { _reasoningBackgroundHex = value; OnPropertyChanged(); }
+    }
 
     /// <summary>Raised after <see cref="LoadAsync"/> finishes pulling the live model list.</summary>
     public event Action? ModelsLoaded;
@@ -151,6 +251,15 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     {
         var s = await _settings.LoadAsync();
 
+        // Reasoning-display preferences (Defaults.ReasoningDisplay + optional colors) snapshot
+        // here so transcript changes take effect from the next streamed line onwards.
+        var reasoningDefaults = s.Defaults ?? new Defaults();
+        string display = ReasoningDisplayKinds.Parse(reasoningDefaults.ReasoningDisplay);
+        ReasoningHidden = display == ReasoningDisplayKinds.Hidden;
+        ReasoningInline = display == ReasoningDisplayKinds.Inline;
+        ReasoningForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningForeground) ? null : reasoningDefaults.ReasoningForeground;
+        ReasoningBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningBackground) ? null : reasoningDefaults.ReasoningBackground;
+
         // Connect to enabled MCP servers and pull their tool definitions (per-server
         // failures are swallowed inside; a dead server just contributes no tools).
         await _mcp.InitializeAsync();
@@ -204,6 +313,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         if (!string.IsNullOrEmpty(savedDefaultAgent) && Agents.Any(a => a.Name == savedDefaultAgent))
             CurrentAgent = savedDefaultAgent!;
 
+        // Apply the saved default mode (set via Settings → Modes), when it matches a known
+        // mode name; an unknown value falls back to the Interactive default from the ctor.
+        var savedDefaultMode = s.Defaults?.Mode;
+        if (!string.IsNullOrEmpty(savedDefaultMode) && Modes.Any(m => m == savedDefaultMode))
+            CurrentMode = savedDefaultMode!;
+
         // Pull live models from every enabled connection into local lists first, so the
         // bound collections are only mutated in one synchronous pass at the end.
         var selections = new List<ModelSelection>();
@@ -233,10 +348,17 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             {
                 if (conn.Name is null || conn.BaseUrl is null) continue;
 
+                // Honor the per-model enable flag: a model the user switched off in
+                // Settings → Models is excluded even though the connection still serves it.
+                var entry = (conn.Models ?? Array.Empty<ModelEntry>())
+                    .FirstOrDefault(me => string.Equals(me.Name, m.Name, StringComparison.Ordinal));
+                if (entry is { Enabled: false })
+                    continue;
+
                 // Label disambiguates same-named models across connections.
                 var label = $"{conn.Name} / {m.Name}";
                 if (!seen.Add(label)) continue;
-                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools, kind, pinned.Contains(m.Name)));
+                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools, kind, pinned.Contains(m.Name), entry?.ReasoningSource));
                 labels.Add(label);
             }
         }
@@ -277,30 +399,77 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         ModelsLoaded?.Invoke();
     }
 
-    /// <summary>Resolves the current model label back to its connection + client.</summary>
-    private (IUpstreamClient Client, string ModelName)? ResolveCurrentModel()
+    /// <summary>
+    /// Resolves the current model label back to its connection and a Microsoft.Extensions.AI
+    /// chat client for it. Only the Ollama protocol (the proxy) has a chat client today; the
+    /// stub upstream kinds surface a clear status line instead of failing mid-stream.
+    /// </summary>
+    private (IChatClient? Client, string ModelName, string? Error)? ResolveCurrentModel()
     {
         if (string.IsNullOrEmpty(CurrentModel)) return null;
         var sel = _modelSelections.FirstOrDefault(m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
         if (sel is null) return null;
-        return (UpstreamClientFactory.Create(sel.Kind, sel.BaseUrl, sel.ApiKey), sel.Name);
+        if (sel.Kind != UpstreamKind.Ollama)
+            return (null, sel.Name, $"The {UpstreamKinds.Display(sel.Kind)} chat client is not implemented yet. Use an Ollama connection (the proxy) for agent turns.");
+        // Reuse one client per (connection, model, key, reasoning source) rather than
+        // newsing an HttpClient per turn.
+        var cacheKey = $"{sel.BaseUrl}|{sel.Name}|{sel.ApiKey}|{sel.ReasoningSource}";
+        if (!_clients.TryGetValue(cacheKey, out var client))
+        {
+            client = new OllamaChatClient(sel.BaseUrl, sel.Name, sel.ApiKey, reasoningSource: ReasoningSources.Parse(sel.ReasoningSource));
+            _clients[cacheKey] = client;
+        }
+        return (client, sel.Name, null);
     }
 
     /// <summary>Shown in the model dropdown when no connection has returned a model.</summary>
     public const string NoModelsPlaceholder = "Configure Models… (⚙ → Settings)";
 
-    /// <summary>Sends the prompt and streams the agent's response into the transcript.</summary>
+    /// <summary>
+    /// Sends the prompt and streams the agent's response into the transcript. Submitting
+    /// while a turn is running queues the text as a redirect: the live turn injects it at
+    /// its next iteration boundary, or a follow-up turn picks it up when the turn ends,
+    /// so mid-run input is never lost.
+    /// </summary>
     public async Task SendAsync(string prompt)
     {
         if (string.IsNullOrWhiteSpace(prompt)) return;
 
+        if (IsBusy)
+        {
+            lock (_redirects) { _redirects.Enqueue(prompt); }
+            Lines.Add(new ChatLine { Kind = "redirect", Text = prompt });
+            return;
+        }
+
         // Echo the prompt into the transcript so the user's side of the conversation is visible.
         Lines.Add(new ChatLine { Kind = "user", Text = prompt });
 
+        if (await RunTurnAsync(prompt))
+        {
+            // Redirects typed after the runtime's last drain become follow-up turns so
+            // nothing queued during the run is dropped.
+            while (true)
+            {
+                string? redirect;
+                lock (_redirects) { redirect = _redirects.Count > 0 ? _redirects.Dequeue() : null; }
+                if (redirect is null || !await RunTurnAsync(redirect))
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs one agent turn for an already-echoed prompt. Returns true when the turn
+    /// completed normally; cancellation or error clears queued redirects - stopping a run
+    /// means stopping its follow-ups too.
+    /// </summary>
+    private async Task<bool> RunTurnAsync(string prompt)
+    {
         if (Models.Count == 0 || CurrentModel == NoModelsPlaceholder)
         {
             Lines.Add(new ChatLine { Kind = "status", Text = "No models available. Add a connection in settings (⚙ → Models)." });
-            return;
+            return false;
         }
 
         var agent = Agents.FirstOrDefault(a => a.Name == CurrentAgent) ?? Agents[0];
@@ -316,57 +485,161 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         if (resolved is null)
         {
             Lines.Add(new ChatLine { Kind = "status", Text = "No connection/model selected. Add a connection in settings (⚙ → Models)." });
-            return;
+            return false;
         }
-        var (client, modelName) = resolved.Value;
+        var (client, modelName, clientError) = resolved.Value;
+        if (client is null)
+        {
+            Lines.Add(new ChatLine { Kind = "status", Text = clientError ?? "No usable chat client for the selected model." });
+            return false;
+        }
+
+        // Create the single assistant line up front and route every text/reasoning delta of
+        // this turn into it explicitly. The previous "append to the last line" behavior broke
+        // once a tool line was pushed (deltas then spawned a new assistant line, and the
+        // final assignment overwrote the orphaned placeholder), and dropped reasoning that
+        // arrived right after a tool line.
+        _cts = new CancellationTokenSource();
+        IsBusy = true;
+        var streaming = new ChatLine { Kind = "assistant", Text = string.Empty };
+        Lines.Add(streaming);
 
         var events = new AgentEvents
         {
-            TextDelta = delta => AppendDelta(delta),
+            TextDelta = delta => streaming.Text += delta,
+            ReasoningDelta = delta =>
+            {
+                if (ReasoningHidden) return;
+                streaming.Reasoning += delta;
+                streaming.IsReasoningVisible = true;
+            },
+            DrainRedirects = TakeRedirects,
             ToolCallStart = tc => Lines.Add(new ChatLine { Kind = "tool", Text = $"→ {tc.Name}({tc.Arguments?.ToJsonString()})" }),
             ToolCallComplete = (tc, ok, res) => Lines.Add(new ChatLine { Kind = "tool", Text = ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {res}" }),
-            // Interactive mode: prompt the user per tool (VS-themed, UI-thread marshaled).
-            RequestPermission = tc => Community.VisualStudio.Toolkit.VS.MessageBox.ShowConfirmAsync(
-                "Allow tool call",
-                $"Allow the model to run \"{tc.Name}\"?\n\n{tc.Arguments?.ToJsonString()}"),
+            // Interactive mode: an inline permission card in the transcript - the GUI stays
+            // live (scroll, stop, steer) while the runtime awaits the user's answer.
+            RequestPermission = RequestPermissionAsync,
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
         };
-
-        _cts = new CancellationTokenSource();
-        var streaming = new ChatLine { Kind = "assistant", Text = string.Empty };
-        Lines.Add(streaming);
 
         try
         {
             var result = await _engine.RunAsync(client, agent, modelName, mode, _history, prompt, events, _cts.Token);
-            streaming.Text = result.FinalText;
-            _history.Add(new AgentMessage("assistant", result.FinalText));
+            // Fill the line only when nothing streamed in (e.g. a tool-only turn that ended
+            // with a terse final answer) - otherwise the streamed text is already here and
+            // reassigning would duplicate it.
+            if (streaming.Text.Length == 0 && result.FinalText.Length > 0)
+                streaming.Text = result.FinalText;
+            _history.Add(new ChatMessage(ChatRole.Assistant, result.FinalText));
             _ = PersistCurrentModelAsync();
+            return true;
         }
         catch (OperationCanceledException)
         {
             streaming.Text = "[cancelled]";
+            DenyPendingPermissions();
+            ClearRedirects();
+            return false;
         }
         catch (Exception ex)
         {
             streaming.Text = $"[error] {ex.Message}";
             DebugLog.Error("The agent turn failed.", ex);
+            DenyPendingPermissions();
+            ClearRedirects();
+            return false;
         }
         finally
         {
+            IsBusy = false;
             _cts?.Dispose();
             _cts = null;
         }
     }
 
-    /// <summary>Appends a streamed delta to the last assistant line.</summary>
-    private void AppendDelta(string delta)
+    /// <summary>Pops every queued redirect; the runtime calls this at iteration boundaries.</summary>
+    private IReadOnlyList<string> TakeRedirects()
     {
-        var last = Lines.Count > 0 ? Lines[Lines.Count - 1] : null;
-        if (last is { Kind: "assistant" })
-            last.Text += delta;
-        else
-            Lines.Add(new ChatLine { Kind = "assistant", Text = delta });
+        lock (_redirects)
+        {
+            if (_redirects.Count == 0)
+                return Array.Empty<string>();
+
+            var all = _redirects.ToArray();
+            _redirects.Clear();
+            return all;
+        }
+    }
+
+    private void ClearRedirects()
+    {
+        lock (_redirects) { _redirects.Clear(); }
+    }
+
+    private bool _alwaysAllowSession;
+
+    /// <summary>
+    /// Shows an inline permission card instead of a modal dialog and awaits its answer, so
+    /// the transcript stays interactive while the tool loop is gated. Session "always allow"
+    /// short-circuits before any card is created.
+    /// </summary>
+    private async Task<bool> RequestPermissionAsync(ToolCallRequest tc)
+    {
+        if (_alwaysAllowSession)
+            return true;
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Lines.Add(new ChatLine
+        {
+            Kind = "permission",
+            Text = $"Allow the model to run \"{tc.Name}\"? {tc.Arguments?.ToJsonString()}",
+            Approval = tcs,
+        });
+
+        // Stop must release the runtime loop too: cancelling the turn resolves the card as
+        // denied so the await never dangles on an unanswered prompt.
+        var cts = _cts;
+        using var registration = cts is null
+            ? default
+            : cts.Token.Register(() => tcs.TrySetResult(false));
+
+        return await tcs.Task;
+    }
+
+    /// <summary>
+    /// Resolves a permission card (called by its buttons, or by cancellation denial below).
+    /// "Always allow" flips the session flag and records that visibly in the transcript.
+    /// </summary>
+    public void AnswerPermission(ChatLine line, bool allow, bool always)
+    {
+        if (line.Approval is null || line.IsAnswered)
+            return;
+
+        line.IsAnswered = true;
+        line.Text += allow
+            ? (always ? " - always allowed" : " - allowed")
+            : " - denied";
+
+        if (allow && always && !_alwaysAllowSession)
+        {
+            _alwaysAllowSession = true;
+            Lines.Add(new ChatLine { Kind = "status", Text = "Tool calls auto-allowed for the rest of this session." });
+        }
+
+        line.Approval.TrySetResult(allow);
+    }
+
+    /// <summary>
+    /// Cancelling or erroring a turn must not leave cards pending: any unanswered
+    /// permission card is denied so the awaited handshake completes.
+    /// </summary>
+    private void DenyPendingPermissions()
+    {
+        foreach (var line in Lines)
+        {
+            if (line.Kind == "permission" && !line.IsAnswered)
+                AnswerPermission(line, allow: false, always: false);
+        }
     }
 
     public void Cancel() => _cts?.Cancel();

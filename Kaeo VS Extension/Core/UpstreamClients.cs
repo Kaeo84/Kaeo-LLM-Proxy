@@ -34,15 +34,50 @@ internal static class UpstreamKinds
 }
 
 /// <summary>
-/// Contract every upstream backend implements: health, model discovery, and streaming chat.
-/// The chat payload shape is upstream-specific; see AgentRuntime.BuildChatPayload for the
-/// Ollama shape used today. OpenAI/Anthropic implementations are stubs for now.
+/// Parsing/display helpers for the persisted reasoning-display preference
+/// (<see cref="Defaults.ReasoningDisplay"/>).
+/// </summary>
+internal static class ReasoningDisplayKinds
+{
+    public const string Collapsed = "Collapsed";
+    public const string Inline = "Inline";
+    public const string Hidden = "Hidden";
+
+    public static readonly IReadOnlyList<string> DisplayNames = new[] { Collapsed, Inline, Hidden };
+
+    public static string Parse(string? value) => value switch
+    {
+        Inline => Inline,
+        Hidden => Hidden,
+        _ => Collapsed,
+    };
+}
+
+/// <summary>
+/// Parses the per-model "reasoningSource" string (see <see cref="ModelEntry.ReasoningSource"/>)
+/// into the adapter's wire-mapping mode.
+/// </summary>
+internal static class ReasoningSources
+{
+    public static ReasoningSource Parse(string? value) => value switch
+    {
+        "ThinkingField" => ReasoningSource.ThinkingField,
+        "InlineTags" => ReasoningSource.InlineTags,
+        "Disabled" => ReasoningSource.Disabled,
+        _ => ReasoningSource.Auto,
+    };
+}
+
+/// <summary>
+/// Contract every upstream backend implements for connection diagnostics and model
+/// discovery. Chat itself flows through Microsoft.Extensions.AI (OllamaChatClient);
+/// OpenAI/Anthropic implementations remain discovery stubs for the upcoming upstream
+/// mappings (see the proxy Phase-B plan).
 /// </summary>
 internal interface IUpstreamClient
 {
     Task<bool> HealthAsync(CancellationToken ct = default);
     Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default);
-    IAsyncEnumerable<ChatChunk> StreamChatAsync(object payload, CancellationToken ct = default);
 }
 
 /// <summary>Creates the client implementation for a connection's configured upstream.</summary>
@@ -73,9 +108,6 @@ internal sealed class OpenAiUpstreamClient : IUpstreamClient
 
     public Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
         => throw new NotSupportedException("The OpenAI upstream is stubbed but not implemented yet.");
-
-    public IAsyncEnumerable<ChatChunk> StreamChatAsync(object payload, CancellationToken ct = default)
-        => throw new NotSupportedException("The OpenAI upstream is stubbed but not implemented yet.");
 }
 
 /// <summary>
@@ -94,8 +126,5 @@ internal sealed class AnthropicUpstreamClient : IUpstreamClient
     public Task<bool> HealthAsync(CancellationToken ct = default) => Task.FromResult(false);
 
     public Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
-        => throw new NotSupportedException("The Anthropic upstream is stubbed but not implemented yet.");
-
-    public IAsyncEnumerable<ChatChunk> StreamChatAsync(object payload, CancellationToken ct = default)
         => throw new NotSupportedException("The Anthropic upstream is stubbed but not implemented yet.");
 }

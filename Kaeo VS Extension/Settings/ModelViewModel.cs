@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
@@ -9,11 +10,15 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// </summary>
     public sealed class ModelViewModel : INotifyPropertyChanged
     {
+        /// <summary>Values offered by the grid's Reasoning source column (ModelEntry.ReasoningSource).</summary>
+        public static IReadOnlyList<string> ReasoningSourceOptions { get; } = new[] { "Auto", "ThinkingField", "InlineTags", "Disabled" };
+
         private string _name = string.Empty;
         private string _modelId = string.Empty;
         private string _capabilities = string.Empty;
         private bool _enabled;
         private bool _isPinned;
+        private string _reasoningSource = "Auto";
 
         public string Name
         {
@@ -47,6 +52,17 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         {
             get => _isPinned;
             set { _isPinned = value; OnPropertyChanged(); }
+        }
+
+        /// <summary>
+        /// Where this model's reasoning (thinking) content arrives on the wire:
+        /// "Auto", "ThinkingField", "InlineTags" or "Disabled". Conflicts between the
+        /// structured thinking field and inline tags are resolved per model, not per connection.
+        /// </summary>
+        public string ReasoningSource
+        {
+            get => _reasoningSource;
+            set { _reasoningSource = value; OnPropertyChanged(); }
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

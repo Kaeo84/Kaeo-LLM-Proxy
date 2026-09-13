@@ -12,6 +12,8 @@ using Kaeo.LlmProxy.Core.Modules;
 using Kaeo.LlmProxy.Services.Mcp;
 using Serilog;
 
+using Kaeo.LlmProxy.Services.Translation;
+
 namespace Kaeo.LlmProxy.Services;
 
 /// <summary>
@@ -31,7 +33,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private volatile AppSettings _settings = settings;
 
-    // Shared pooled HttpClient — avoids socket exhaustion under load.
+    // Shared pooled HttpClient Ã¢â‚¬â€ avoids socket exhaustion under load.
     private HttpClient _httpClient = BuildHttpClient();
 
     // Number of requests currently being processed by HandleAsync. Used to defer disposal of a
@@ -439,8 +441,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         };
 
     /// <summary>
-    /// Applies the resolved reasoning effort — the mapping's configured value under Proxy
-    /// priority, the client's <c>think</c> field under Client App priority — to a translated
+    /// Applies the resolved reasoning effort Ã¢â‚¬â€ the mapping's configured value under Proxy
+    /// priority, the client's <c>think</c> field under Client App priority Ã¢â‚¬â€ to a translated
     /// chat request, emitting every wire shape selected in the mapping's
     /// <see cref="ReasoningEffortFormat"/> flags: legacy top-level field, modern nested
     /// object, the Qwen Cloud <c>extra_body</c> wrapper, and/or <c>chat_template_kwargs</c>.
@@ -654,14 +656,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     resp.Headers["X-Context-Original-Tokens"] = estimated.ToString();
                     resp.Headers["X-Context-Compacted-Tokens"] = (compactedBody.Length / 4).ToString();
 
-                    Log.Information("Auto-compaction succeeded: {OriginalTokens} → {CompactedTokens} tokens",
+                    Log.Information("Auto-compaction succeeded: {OriginalTokens} Ã¢â€ â€™ {CompactedTokens} tokens",
                         estimated, compactedBody.Length / 4);
 
                     // Stream notification: compaction finished
                     if (outputStream is not null)
                     {
                         int compactedTokens = compactedBody.Length / 4;
-                        string notification = $": <ignorethis>kaeo-compaction-complete: Context compacted successfully. {estimated} tokens → {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)</ignorethis>\n\n";
+                        string notification = $": <ignorethis>kaeo-compaction-complete: Context compacted successfully. {estimated} tokens Ã¢â€ â€™ {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)</ignorethis>\n\n";
                         byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
                         await outputStream.WriteAsync(notificationBytes, ct);
                         await outputStream.FlushAsync(ct);
@@ -705,11 +707,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             catch (Exception ex)
             {
                 Log.Warning(ex, "Auto-compaction failed for model {Model}", model);
-                // Fall through — but do not send a proactive 413; allow upstream to decide.
+                // Fall through Ã¢â‚¬â€ but do not send a proactive 413; allow upstream to decide.
             }
         }
 
-        // No compaction produced. Do not short-circuit with 413 here — let upstream
+        // No compaction produced. Do not short-circuit with 413 here Ã¢â‚¬â€ let upstream
         // return the authoritative error if it overflows. Return (false, null) so
         // the caller proceeds with the original body.
         return (false, null);
@@ -776,7 +778,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (compacted is not null && streamAlreadyOpen)
             {
                 byte[] done = Encoding.UTF8.GetBytes(
-                    $": <ignorethis>kaeo-compaction-complete: Conversation compacted ({body.Length / 4} → {compacted.Length / 4} est. tokens). Retrying upstream...</ignorethis>\n\n");
+                    $": <ignorethis>kaeo-compaction-complete: Conversation compacted ({body.Length / 4} Ã¢â€ â€™ {compacted.Length / 4} est. tokens). Retrying upstream...</ignorethis>\n\n");
                 await resp.OutputStream.WriteAsync(done, ct);
                 await resp.OutputStream.FlushAsync(ct);
             }
@@ -919,7 +921,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
 
         // Load balancer / uptime health checks commonly probe "/" with GET or HEAD. Answer
-        // directly without logging. HEAD must never write body bytes — HttpListener treats the
+        // directly without logging. HEAD must never write body bytes Ã¢â‚¬â€ HttpListener treats the
         // response as having a 0-byte entity body for HEAD requests, and writing anything to the
         // output stream (even via WriteJsonAsync's normal JSON payload) throws
         // ProtocolViolationException ("Bytes to be written to the stream exceed the Content-Length
@@ -951,7 +953,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Static version probe answered without logging — infrastructure noise that would inflate
+        // Static version probe answered without logging Ã¢â‚¬â€ infrastructure noise that would inflate
         // the request log on every client connection.
         if (method == "GET" && path == "/api/version")
         {
@@ -968,7 +970,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Scalar API explorer — served only when explicitly enabled in settings.
+        // Scalar API explorer Ã¢â‚¬â€ served only when explicitly enabled in settings.
         if (_settings.EnableApiExplorer && method == "GET")
         {
             if (path is "/scalar" or "/scalar/")
@@ -1016,7 +1018,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "POST" && path == "/api/show")
             {
-                log.UpstreamPath = "(local mapping — no upstream call)";
+                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
                 await HandleShowAsync(req, resp, log, ct);
             }
             else if (method == "POST" && path == "/api/generate")
@@ -1043,12 +1045,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "GET" && path == "/v1/models")
             {
-                log.UpstreamPath = "(local mapping — no upstream call)";
+                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
                 await HandleV1ModelsAsync(resp, log, ct);
             }
             else if (method == "GET" && path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase))
             {
-                log.UpstreamPath = "(local mapping — no upstream call)";
+                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
                 await HandleV1ModelAsync(path, resp, log, ct);
             }
             else if (method == "POST" && path.Equals("/v1/responses/compact", StringComparison.OrdinalIgnoreCase))
@@ -1070,7 +1072,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
             {
-                // Transparent passthrough — forward OpenAI-native requests (e.g. from VS Copilot,
+                // Transparent passthrough Ã¢â‚¬â€ forward OpenAI-native requests (e.g. from VS Copilot,
                 // OpenAI SDKs) directly to the upstream llama.cpp /v1/* surface unchanged.
                 log.UpstreamPath = path;
                 await PassthroughAsync(req, resp, log, ct);
@@ -1088,7 +1090,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         catch (RequestBodyTooLargeException ex)
         {
-            // Oversized request body — reject before buffering to protect against memory exhaustion.
+            // Oversized request body Ã¢â‚¬â€ reject before buffering to protect against memory exhaustion.
             log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
             Log.Warning("Rejected oversized request body on {Path}: {Message}", path, ex.Message);
@@ -1124,7 +1126,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             catch { }
 
-            // Skip the finally AddLog — we already logged above with the exception.
+            // Skip the finally AddLog Ã¢â‚¬â€ we already logged above with the exception.
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
             return;
@@ -1156,7 +1158,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             || name.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── /v1/* → transparent passthrough ────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /v1/* Ã¢â€ â€™ transparent passthrough Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
     /// Forwards any OpenAI-native /v1/* request verbatim to the upstream llama.cpp server
@@ -1202,6 +1204,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Captured upstream-bound JSON body so an overflow rejection can be compacted and retried.
         string? passthroughBody = null;
         string? consumedErrorBody = null;
+        // Function names the client declared in its "tools" array. Null = unknown/unrestricted;
+        // an empty set means the client (e.g. the Copilot Help surface) cannot execute ANY tool
+        // call, so the response paths must strip or inline every tool call.
+        IReadOnlySet<string>? passthroughDeclaredTools = null;
 
         if (req.HasEntityBody)
         {
@@ -1227,6 +1233,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
                 isStreamingRequest = isCompletionPath && IsStreamingJsonBody(bodyText);
                 log.Streaming = isStreamingRequest;
+                passthroughDeclaredTools = ExtractDeclaredToolNames(bodyText);
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
                 // Skip proactive auto-compaction for recognized Copilot requests when
@@ -1430,7 +1437,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (headersPreCommitted)
             {
-                // Headers already sent as 200/SSE — emit the error as a data frame so the
+                // Headers already sent as 200/SSE Ã¢â‚¬â€ emit the error as a data frame so the
                 // client sees it rather than getting a silent stream close.
                 string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{clientStatusCode}}}}}\n\n";
                 byte[] errorFrameBytes = Encoding.UTF8.GetBytes(errorFrame);
@@ -1488,7 +1495,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     ct,
                     () => _stats.IncrementHeartbeat(originalModel),
                     onUsage,
-                    rawCapture);
+                    rawCapture,
+                    declaredToolNames: passthroughDeclaredTools);
 
                 if (rawCapture is not null)
                 {
@@ -1548,7 +1556,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 thinkingMode,
                 ct,
                 onBody,
-                extractToolCalls: shouldMirrorReasoningContent);
+                extractToolCalls: shouldMirrorReasoningContent,
+                declaredToolNames: passthroughDeclaredTools);
         }
 
         log.ResponseBytes = countingStream.BytesWritten;
@@ -1589,7 +1598,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         ThinkingMode thinkingMode,
         CancellationToken ct,
         Action<string>? onBody = null,
-        bool extractToolCalls = false)
+        bool extractToolCalls = false,
+        IReadOnlySet<string>? declaredToolNames = null)
     {
         if (thinkingMode == ThinkingMode.LeaveInline && onBody is null && !extractToolCalls)
         {
@@ -1602,7 +1612,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         onBody?.Invoke(body);
         string outgoing = thinkingMode == ThinkingMode.LeaveInline && !extractToolCalls
             ? body
-            : TransformNonStreamingChatBody(body, thinkingMode, extractToolCalls);
+            : TransformNonStreamingChatBody(body, thinkingMode, extractToolCalls, declaredToolNames);
         byte[] bytes = Encoding.UTF8.GetBytes(outgoing);
         await destination.WriteAsync(bytes, ct);
     }
@@ -1616,10 +1626,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <paramref name="extractToolCalls"/> is set, inline XML tool-call blocks left in the
     /// content are converted into structured OpenAI <c>message.tool_calls</c> (skipping choices
     /// the upstream already answered with structured tool calls) and <c>finish_reason</c> is
-    /// forced to <c>"tool_calls"</c> — the non-streaming parity of the streaming
-    /// <see cref="OpenAiSseRewriter"/>. Returns the original text unchanged if parsing fails.
+    /// forced to <c>"tool_calls"</c> Ã¢â‚¬â€ the non-streaming parity of the streaming
+    /// <see cref="OpenAiSseRewriter"/>. When <paramref name="declaredToolNames"/> is supplied,
+    /// only calls naming a client-declared function are kept; the rest are stripped (structured)
+    /// or left visible as text (inline XML). Returns the original text unchanged if parsing fails.
     /// </summary>
-    internal static string TransformNonStreamingChatBody(string json, ThinkingMode thinkingMode, bool extractToolCalls = false)
+    internal static string TransformNonStreamingChatBody(
+        string json,
+        ThinkingMode thinkingMode,
+        bool extractToolCalls = false,
+        IReadOnlySet<string>? declaredToolNames = null)
     {
         try
         {
@@ -1656,7 +1672,37 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     message["content"] = JsonValue.Create(answer);
                 }
 
-                // XML tool-call extraction — only for choices the upstream did not already
+                // Structured tool calls from the upstream may name functions the client never
+                // declared Ã¢â‚¬â€ a function part the client cannot bind (Copilot UI crash). Strip
+                // those; when nothing survives, the turn ends as a plain answer.
+                if (extractToolCalls && message["tool_calls"] is JsonArray structured && structured.Count > 0)
+                {
+                    int keptCalls = 0;
+                    List<JsonNode?> dropped = [];
+                    foreach (JsonNode? callNode in structured)
+                    {
+                        string? callName = (callNode as JsonObject)?["function"] is JsonObject fnNode
+                            && fnNode["name"] is JsonValue nameVal
+                            && nameVal.TryGetValue(out string? nameStr) ? nameStr : null;
+
+                        if (IsToolNameAllowed(declaredToolNames, callName))
+                            keptCalls++;
+                        else
+                            dropped.Add(callNode);
+                    }
+
+                    foreach (JsonNode? droppedNode in dropped)
+                        structured.Remove(droppedNode);
+
+                    if (keptCalls == 0)
+                    {
+                        message.Remove("tool_calls");
+                        message["content"] ??= JsonValue.Create(string.Empty);
+                        choice["finish_reason"] = "stop";
+                    }
+                }
+
+                // XML tool-call extraction Ã¢â‚¬â€ only for choices the upstream did not already
                 // answer with structured tool_calls (same guard as the /api/chat path).
                 if (extractToolCalls
                     && !string.IsNullOrEmpty(content)
@@ -1665,9 +1711,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     ToolCallExtraction extraction = ExtractXmlToolCalls(content);
                     if (extraction.ToolCalls is { Count: > 0 })
                     {
-                        message["tool_calls"] = BuildOpenAiToolCallsArray(extraction.ToolCalls);
-                        message["content"] = JsonValue.Create(extraction.Content ?? string.Empty);
-                        choice["finish_reason"] = "tool_calls";
+                        List<OllamaToolCall> allowedCalls = [.. extraction.ToolCalls
+                            .Where(tc => IsToolNameAllowed(declaredToolNames, tc.Function?.Name))];
+
+                        if (allowedCalls.Count > 0)
+                        {
+                            message["tool_calls"] = BuildOpenAiToolCallsArray(allowedCalls);
+                            // Strip only the accepted blocks; rejected XML stays visible as text.
+                            message["content"] = JsonValue.Create(XmlToolCallRegex.Replace(
+                                content,
+                                match => IsToolNameAllowed(declaredToolNames, match.Groups["name"].Value.Trim())
+                                    ? string.Empty
+                                    : match.Value).Trim());
+                            choice["finish_reason"] = "tool_calls";
+                        }
                     }
                 }
             }
@@ -1708,6 +1765,63 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         return array;
     }
+
+    /// <summary>
+    /// Collects the function names a request declares in its "tools" array, or null when the
+    /// body cannot be parsed. An empty set means the client declared no tools at all (e.g. the
+    /// Copilot Help surface) so responses must carry no tool calls; null means unknown, so
+    /// filtering is skipped and legacy behaviour is preserved.
+    /// </summary>
+    internal static IReadOnlySet<string>? ExtractDeclaredToolNames(string json)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("tools", out JsonElement tools)
+                || tools.ValueKind != JsonValueKind.Array)
+            {
+                return new HashSet<string>(StringComparer.Ordinal);
+            }
+
+            HashSet<string> names = new(StringComparer.Ordinal);
+            foreach (JsonElement tool in tools.EnumerateArray())
+            {
+                if (tool.TryGetProperty("function", out JsonElement fn)
+                    && fn.TryGetProperty("name", out JsonElement name)
+                    && name.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(name.GetString()))
+                {
+                    names.Add(name.GetString()!);
+                }
+            }
+
+            return names;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Decides whether a tool call for <paramref name="name"/> may reach the client: a null
+    /// declared set is unrestricted (legacy), an empty set means no tool was declared (drop
+    /// everything), otherwise the name must match a declared function exactly.
+    /// </summary>
+    private static bool IsToolNameAllowed(IReadOnlySet<string>? declaredToolNames, string? name)
+        => declaredToolNames is null
+            || (!string.IsNullOrEmpty(name) && declaredToolNames.Contains(name));
+
+    // Inline XML tool-call format emitted by some llama.cpp templates; shared by the
+    // streaming rewriter and the non-streaming transform.
+    private static readonly Regex XmlToolCallRegex = new(
+        @"<tool_call>\s*<function=(?<name>[^>\s]+)>\s*(?<body>.*?)\s*</function>\s*</tool_call>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    private static readonly Regex XmlParameterRegex = new(
+        @"<parameter=(?<n>[^>\s]+)>\s*(?<v>.*?)\s*</parameter>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     /// <summary>
     /// Returns true when a JSON POST body has <c>"stream": true</c>, indicating the client
@@ -1805,12 +1919,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         CancellationToken ct,
         Action? onHeartbeatSent = null,
         Action<LlamaCppStreamChunk>? onUsage = null,
-        Stream? rawCapture = null)
+        Stream? rawCapture = null,
+        IReadOnlySet<string>? declaredToolNames = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
         TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
-        OpenAiSseRewriter rewriter = new(thinkingMode);
+        OpenAiSseRewriter rewriter = new(thinkingMode, declaredToolNames);
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
         while (!ct.IsCancellationRequested)
@@ -1842,7 +1957,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // Because a single inbound "data:" line may expand into multiple outbound
             // "data:" frames (original + synthesised tool_call deltas), we must emit
             // each outbound line as its OWN complete SSE event ("\n\n") rather than
-            // relying on the upstream blank line — otherwise SSE parsers will join
+            // relying on the upstream blank line Ã¢â‚¬â€ otherwise SSE parsers will join
             // consecutive data: lines into one event payload and JSON parsing fails.
             if (line.Length == 0)
                 continue;
@@ -2073,17 +2188,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Rewrites an OpenAI-compatible SSE chat-completion stream on the fly:
-    ///   • mirrors <c>reasoning_content</c> into <c>content</c> when <c>content</c> is empty,
-    ///   • detects inline XML tool-call blocks (<c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=K&gt;V&lt;/parameter&gt;…&lt;/function&gt;&lt;/tool_call&gt;</c>)
+    ///   Ã¢â‚¬Â¢ mirrors <c>reasoning_content</c> into <c>content</c> when <c>content</c> is empty,
+    ///   Ã¢â‚¬Â¢ detects inline XML tool-call blocks (<c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=K&gt;V&lt;/parameter&gt;Ã¢â‚¬Â¦&lt;/function&gt;&lt;/tool_call&gt;</c>)
     ///     emitted by some llama.cpp templates and converts them into proper OpenAI streaming
     ///     <c>tool_calls</c> deltas so that downstream OpenAI SDK clients (e.g. VS Copilot agent mode)
     ///     execute the tool instead of receiving raw XML text,
-    ///   • forces <c>finish_reason</c> to <c>"tool_calls"</c> on the terminal chunk when tool calls were emitted.
+    ///   Ã¢â‚¬Â¢ forces <c>finish_reason</c> to <c>"tool_calls"</c> on the terminal chunk when tool calls were emitted,
+    ///   Ã¢â‚¬Â¢ keeps only tool calls (structured or synthesised) whose function name appears in
+    ///     <paramref name="declaredToolNames"/>; calls the client cannot bind are stripped or
+    ///     returned as plain text.
     /// </summary>
-    private sealed class OpenAiSseRewriter(ThinkingMode thinkingMode)
+    private sealed class OpenAiSseRewriter(ThinkingMode thinkingMode, IReadOnlySet<string>? declaredToolNames)
     {
         // Per-choice buffer of streamed delta.content prior to/within a tool_call block.
         private readonly Dictionary<int, ChoiceState> _state = [];
+
+        private readonly IReadOnlySet<string>? _declaredToolNames = declaredToolNames;
 
         // Per-choice incremental <think> tag extractor, used in every mode except LeaveInline.
         private readonly Dictionary<int, ThinkTagExtractor> _thinkExtractors = [];
@@ -2133,7 +2253,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 int index = choice["index"]?.GetValue<int>() ?? 0;
                 if (!_state.TryGetValue(index, out ChoiceState? cs))
                 {
-                    cs = new ChoiceState();
+                    cs = new ChoiceState(_declaredToolNames);
                     _state[index] = cs;
                 }
 
@@ -2171,17 +2291,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     }
 
                     // Rewrite content based on what the extractor produced:
-                    // - non-empty remainder → set it (will be post-processed by tool-call ingestion below)
+                    // - non-empty remainder Ã¢â€ â€™ set it (will be post-processed by tool-call ingestion below)
                     // - empty remainder but incoming was present (thinking consumed it or partial-tag
-                    //   buffering) → remove the key so reasoning-only / role-only deltas are clean
-                    // - no incoming content at all → leave delta untouched (don't fabricate "")
+                    //   buffering) Ã¢â€ â€™ remove the key so reasoning-only / role-only deltas are clean
+                    // - no incoming content at all Ã¢â€ â€™ leave delta untouched (don't fabricate "")
                     if (content.Length > 0)
                         delta["content"] = JsonValue.Create(content);
                     else if (incoming.Length > 0)
                         delta.Remove("content");
                 }
 
-                // Mirror reasoning_content → content (when content is empty/null). Only in
+                // Mirror reasoning_content Ã¢â€ â€™ content (when content is empty/null). Only in
                 // LeaveInline mode; in Move/Strip modes we deliberately keep reasoning separate
                 // from (or absent from) the visible answer.
                 if (_thinkingMode == ThinkingMode.LeaveInline
@@ -2196,6 +2316,46 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     delta["content"] = rcStr;
                 }
 
+                // Structured tool calls naming functions the client did not declare must be
+                // dropped: OpenAI clients such as Copilot render them as function parts they
+                // cannot bind (the VS Copilot UI crashes on those).
+                if (delta is not null && delta["tool_calls"] is JsonArray nativeCalls)
+                {
+                    List<JsonNode?> drop = [];
+                    foreach (JsonNode? callNode in nativeCalls)
+                    {
+                        if (callNode is not JsonObject call)
+                            continue;
+
+                        int callIndex = call["index"] is JsonValue cix && cix.TryGetValue(out int idx) ? idx : 0;
+                        bool valid;
+                        if (call["function"] is JsonObject fnNode
+                            && fnNode["name"] is JsonValue nameVal
+                            && nameVal.TryGetValue(out string? callName)
+                            && !string.IsNullOrEmpty(callName))
+                        {
+                            valid = IsToolNameAllowed(_declaredToolNames, callName);
+                        }
+                        else
+                        {
+                            // Argument fragment of an already-evaluated call Ã¢â‚¬â€ inherit its verdict.
+                            valid = !cs.NativeCallValidity.TryGetValue(callIndex, out bool previous) || previous;
+                        }
+
+                        cs.NativeCallValidity[callIndex] = valid;
+                        if (valid)
+                            cs.HadValidToolCall = true;
+                        else
+                            drop.Add(callNode);
+                    }
+
+                    foreach (JsonNode? dropped in drop)
+                        nativeCalls.Remove(dropped);
+
+                    if (nativeCalls.Count == 0)
+                        delta.Remove("tool_calls");
+                }
+
                 // Strip / capture XML tool_call from delta.content.
                 if (delta?["content"] is JsonValue contentVal
                     && contentVal.TryGetValue(out string? token)
@@ -2208,13 +2368,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         delta["content"] = visible;
                 }
 
-                // If the model finished and we emitted tool calls, override finish_reason.
+                // Finish-reason bookkeeping: keep "tool_calls" while calls were emitted; when
+                // every call was filtered out, report "stop" so the client ends the turn
+                // instead of waiting for tool results that will never arrive.
                 if (choice["finish_reason"] is JsonValue fr
                     && fr.TryGetValue(out string? frStr)
-                    && !string.IsNullOrEmpty(frStr)
-                    && cs.EmittedToolCallCount > 0)
+                    && !string.IsNullOrEmpty(frStr))
                 {
-                    choice["finish_reason"] = "tool_calls";
+                    if (cs.EmittedToolCallCount > 0)
+                        choice["finish_reason"] = "tool_calls";
+                    else if (frStr == "tool_calls" && !cs.HadValidToolCall)
+                        choice["finish_reason"] = "stop";
                 }
             }
 
@@ -2224,11 +2388,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 yield return $"data: {extra.ToJsonString(_jsonOptions)}";
         }
 
-        private sealed class ChoiceState
+        private sealed class ChoiceState(IReadOnlySet<string>? declaredToolNames)
         {
+            private readonly IReadOnlySet<string>? _declaredToolNames = declaredToolNames;
             private readonly StringBuilder _toolBuffer = new();
             private bool _inToolCall;
             public int EmittedToolCallCount { get; private set; }
+
+            /// <summary>Filter verdict per native (upstream-sent) tool-call stream index.</summary>
+            public Dictionary<int, bool> NativeCallValidity { get; } = [];
+
+            /// <summary>True when at least one upstream tool-call delta survived filtering.</summary>
+            public bool HadValidToolCall { get; set; }
 
             /// <summary>
             /// Consumes the next content token, returns the substring that should remain
@@ -2285,18 +2456,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             private void EmitToolCallFromBuffer(JsonObject root, JsonObject choice, int choiceIndex, List<JsonObject> extraFrames)
             {
                 string xml = _toolBuffer.ToString();
-                Match m = Regex.Match(
-                    xml,
-                    @"<tool_call>\s*<function=(?<name>[^>\s]+)>\s*(?<body>.*?)\s*</function>\s*</tool_call>",
-                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                Match m = XmlToolCallRegex.Match(xml);
                 if (!m.Success) return;
 
                 string name = m.Groups["name"].Value.Trim();
+
+                // Tool-less or differently-declared clients cannot execute this call: hand the
+                // raw block back as visible content instead of a tool-call delta.
+                if (!IsToolNameAllowed(_declaredToolNames, name))
+                {
+                    extraFrames.Add(BuildChoiceFrame(root, choiceIndex, new JsonObject { ["content"] = xml.Trim() }));
+                    return;
+                }
+
                 Dictionary<string, object?> args = new(StringComparer.OrdinalIgnoreCase);
-                foreach (Match pm in Regex.Matches(
-                    m.Groups["body"].Value,
-                    @"<parameter=(?<n>[^>\s]+)>\s*(?<v>.*?)\s*</parameter>",
-                    RegexOptions.IgnoreCase | RegexOptions.Singleline))
+                foreach (Match pm in XmlParameterRegex.Matches(m.Groups["body"].Value))
                 {
                     args[pm.Groups["n"].Value.Trim()] = ParseXmlToolParameterValue(pm.Groups["v"].Value.Trim());
                 }
@@ -2324,24 +2498,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     },
                 };
 
-                JsonObject newChoice = new()
+                extraFrames.Add(BuildChoiceFrame(root, choiceIndex, toolDelta));
+            }
+
+            /// <summary>
+            /// Builds a synthesised chunk envelope (mirroring the original frame's metadata)
+            /// carrying one choice delta.
+            /// </summary>
+            private static JsonObject BuildChoiceFrame(JsonObject root, int choiceIndex, JsonObject deltaObject) => new()
+            {
+                ["id"] = root["id"]?.DeepClone(),
+                ["object"] = root["object"]?.DeepClone(),
+                ["created"] = root["created"]?.DeepClone(),
+                ["model"] = root["model"]?.DeepClone(),
+                ["choices"] = new JsonArray(new JsonObject
                 {
                     ["index"] = choiceIndex,
-                    ["delta"] = toolDelta,
+                    ["delta"] = deltaObject,
                     ["finish_reason"] = null,
-                };
-
-                JsonObject frame = new()
-                {
-                    ["id"] = root["id"]?.DeepClone(),
-                    ["object"] = root["object"]?.DeepClone(),
-                    ["created"] = root["created"]?.DeepClone(),
-                    ["model"] = root["model"]?.DeepClone(),
-                    ["choices"] = new JsonArray(newChoice),
-                };
-
-                extraFrames.Add(frame);
-            }
+                }),
+            };
         }
     }
 
@@ -2378,7 +2554,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             // Context-summarize (/compact) redirect: when this mapping has a smaller/faster
             // compact model configured and the request is a Copilot /compact summary request,
-            // route the whole request to the compact model — its upstream, sampling, and
+            // route the whole request to the compact model Ã¢â‚¬â€ its upstream, sampling, and
             // instruction-set settings all apply.
             string? firstContent = GetFirstMessageContent(root);
             string effectiveModel = ResolveEffectiveModel(settings, original, firstContent);
@@ -2448,7 +2624,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     && IsAssistantResponsePrefill(messages[^1]);
             }
 
-            // Nothing to rewrite — return original text unchanged.
+            // Nothing to rewrite Ã¢â‚¬â€ return original text unchanged.
             if (string.Equals(original, resolved, StringComparison.Ordinal)
                 && !hasConsecutiveSystemMessages
                 && !hasTrailingAssistantPrefill
@@ -2678,7 +2854,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         catch
         {
-            // Non-JSON or malformed body — forward as-is.
+            // Non-JSON or malformed body Ã¢â‚¬â€ forward as-is.
             return json;
         }
     }
@@ -2844,8 +3020,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Replaces the values of sensitive JSON properties with a redaction marker without
-    /// re-serializing the document. Everything that is not a sensitive value — whitespace,
-    /// key order, string escaping — is preserved byte-for-byte, so a clean body is returned
+    /// re-serializing the document. Everything that is not a sensitive value Ã¢â‚¬â€ whitespace,
+    /// key order, string escaping Ã¢â‚¬â€ is preserved byte-for-byte, so a clean body is returned
     /// as the exact same string. This keeps logged request bodies identical to what the
     /// client actually sent. Returns the body unchanged when it is not valid JSON.
     /// </summary>
@@ -3078,7 +3254,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return body.Length;
         }
 
-        // Scalar: number, true, false, null — read until whitespace, comma, close, or end.
+        // Scalar: number, true, false, null Ã¢â‚¬â€ read until whitespace, comma, close, or end.
         while (i < body.Length)
         {
             char ch = body[i];
@@ -3092,7 +3268,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static bool IsSensitiveJsonProperty(string propertyName)
     {
         // Credentials and secrets only. Prompt/message content fields are intentionally
-        // left intact — when body capture is enabled the content is exactly what the
+        // left intact Ã¢â‚¬â€ when body capture is enabled the content is exactly what the
         // user opted to inspect, and redacting it would make the logs useless.
         return propertyName.Equals("authorization", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("api_key", StringComparison.OrdinalIgnoreCase)
@@ -3108,7 +3284,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         && (message.ToolCalls is null || message.ToolCalls.Count == 0)
         && string.IsNullOrWhiteSpace(message.ToolCallId);
 
-    // ── /api/tags → configured proxy model names ───────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/tags Ã¢â€ â€™ configured proxy model names Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandleTagsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3129,7 +3305,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, tagsJson, ct);
     }
 
-    // ── /v1/models → OpenAI-format model list with context_length ───────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /v1/models Ã¢â€ â€™ OpenAI-format model list with context_length Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandleV1ModelsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3160,13 +3336,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, json, ct);
     }
 
-    // ── GET /v1/models/{model} → single-model lookup from local mappings ─────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ GET /v1/models/{model} Ã¢â€ â€™ single-model lookup from local mappings Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
     /// Answers <c>GET /v1/models/{model}</c> entirely from the local mapping table, mirroring
     /// <c>/api/show</c>. Upstreams vary wildly in whether/how they support a single-model lookup
     /// (some return 404, some 400, some nothing at all), and only the proxy knows its exposed
-    /// names — building the response locally keeps model availability consistent with what
+    /// names Ã¢â‚¬â€ building the response locally keeps model availability consistent with what
     /// <c>/v1/models</c> reports.
     /// </summary>
     private async Task HandleV1ModelAsync(string path, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -3213,10 +3389,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, modelJson, ct);
     }
 
-    // ── POST /v1/responses/compact → OpenAI-compatible conversation compaction ──
+    // Ã¢â€â‚¬Ã¢â€â‚¬ POST /v1/responses/compact Ã¢â€ â€™ OpenAI-compatible conversation compaction Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
-    /// Handles <c>POST /v1/responses/compact</c> — forwards the compaction request to the
+    /// Handles <c>POST /v1/responses/compact</c> Ã¢â‚¬â€ forwards the compaction request to the
     /// upstream OpenAI-compatible endpoint, applying the compact model redirect when the
     /// mapping has a smaller/faster model configured for context summarization.
     /// </summary>
@@ -3301,7 +3477,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 doc.RootElement.WriteTo(writer);
             }
-            // Simple string replacement for the model field — safe because model names are
+            // Simple string replacement for the model field Ã¢â‚¬â€ safe because model names are
             // always quoted strings and we control the replacement value.
             upstreamBody = bodyText.Replace(
                 $"\"model\":\"{originalModel}\"",
@@ -3342,7 +3518,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
             // Summarization requests are sent straight to the upstream, which knows the model
-            // by its ModelName (e.g. the .gguf path) — not the proxy display name.
+            // by its ModelName (e.g. the .gguf path) Ã¢â‚¬â€ not the proxy display name.
             string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
 
             // Detect if this is a Copilot request to determine the appropriate format
@@ -3403,10 +3579,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
-    // ── POST /v1/chat/completions/compact ─────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ POST /v1/chat/completions/compact Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
-    /// Handles <c>POST /v1/chat/completions/compact</c> — manual context compaction endpoint.
+    /// Handles <c>POST /v1/chat/completions/compact</c> Ã¢â‚¬â€ manual context compaction endpoint.
     /// Accepts a chat completion request body, compacts the conversation history using the
     /// configured compact model, and returns the compacted messages. This endpoint is disabled
     /// by default and must be enabled via <c>EnableManualCompactionEndpoint</c> in settings.
@@ -3522,7 +3698,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
             // Summarization requests are sent straight to the upstream, which knows the model
-            // by its ModelName (e.g. the .gguf path) — not the proxy display name.
+            // by its ModelName (e.g. the .gguf path) Ã¢â‚¬â€ not the proxy display name.
             string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
 
             // Detect if this is a Copilot request to determine the appropriate format
@@ -3583,13 +3759,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
-    // ── /api/ps → running model stub ──────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/ps Ã¢â€ â€™ running model stub Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandlePsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
         // Report configured enabled mappings as "running" so clients see the proxy-facing names
         // rather than whatever ID the upstream happens to advertise. The expires_at field is a
-        // stub — llama.cpp keeps the model permanently loaded.
+        // stub Ã¢â‚¬â€ llama.cpp keeps the model permanently loaded.
         var running = _settings.ModelMappings
             .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
             .Select(m =>
@@ -3618,7 +3794,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, psJson, ct);
     }
 
-    // /api/show → answered entirely from local mapping config, no upstream call
+    // /api/show Ã¢â€ â€™ answered entirely from local mapping config, no upstream call
 
     private async Task HandleShowAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3638,7 +3814,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, requestedModel);
 
-        // /api/show asks the proxy what it has configured for a model — it isn't a
+        // /api/show asks the proxy what it has configured for a model Ã¢â‚¬â€ it isn't a
         // request the upstream needs to answer, and upstreams vary wildly in whether/how
         // they support a single-model lookup (some return 404, some 400, some nothing at
         // all). Building the response purely from the mapping avoids depending on any of
@@ -3729,7 +3905,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static List<string>? BuildCapabilities(ModelMapping? mapping)
     {
         List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
-        return normalized.Count > 0 ? normalized : null; // Omit when empty — matches omitempty.
+        return normalized.Count > 0 ? normalized : null; // Omit when empty Ã¢â‚¬â€ matches omitempty.
     }
 
     /// <summary>
@@ -3744,7 +3920,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
         if (normalized.Count == 0)
-            return null; // Omit from JSON entirely — matches Ollama's Go omitempty behavior
+            return null; // Omit from JSON entirely Ã¢â‚¬â€ matches Ollama's Go omitempty behavior
 
         HashSet<string> ollamaTokens = new(StringComparer.OrdinalIgnoreCase);
 
@@ -3851,7 +4027,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return match.Success ? match.Groups["quant"].Value.ToUpperInvariant() : string.Empty;
     }
 
-    // ── /api/generate → POST /v1/completions ───────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/generate Ã¢â€ â€™ POST /v1/completions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandleGenerateAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4015,7 +4191,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
-    // ── /api/chat → POST /v1/chat/completions ──────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/chat Ã¢â€ â€™ POST /v1/chat/completions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandleChatAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4054,7 +4230,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Map messages, preserving / synthesising tool_call IDs so OpenAI-compatible
         // upstreams can correlate assistant tool_calls with the following role:"tool" replies.
-        List<LlamaCppMessage> messages = MapMessagesWithToolCorrelation(ollamaReq.Messages);
+        // Phase B: the IR-routed request translation (Plans/20260914-proxy-meai-phase-b-design.md)
+        // behind a default-off flag; golden structural-parity tests pin it to the legacy mapper.
+        List<LlamaCppMessage> messages = _settings.UseIrTranslation
+            ? OllamaRequestTranslation.ToLlamaCppMessages(ollamaReq.Messages)
+            : MapMessagesWithToolCorrelation(ollamaReq.Messages);
         bool removedAssistantPrefill = messages.Count > 0
             && ShouldApplyThinkingCompatibility(_settings, effectiveModel)
             && IsAssistantResponsePrefill(messages[^1]);
@@ -4295,7 +4475,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return;
     }
 
-    // ── /api/embeddings → POST /v1/embeddings ──────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/embeddings Ã¢â€ â€™ POST /v1/embeddings Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     private async Task HandleEmbeddingsAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4359,9 +4539,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonAsync(resp, ollamaResp, ct);
     }
 
-    // ── Streaming helpers ───────────────────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Streaming helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-    /// <summary>Elapsed stopwatch time in nanoseconds — Ollama's duration unit.</summary>
+    /// <summary>Elapsed stopwatch time in nanoseconds Ã¢â‚¬â€ Ollama's duration unit.</summary>
     private static long ElapsedNanos(Stopwatch sw) => (long)(sw.Elapsed.TotalSeconds * 1_000_000_000);
 
     private static async Task StreamCompletionToOllamaAsync(
@@ -4709,14 +4889,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return await readTask;
     }
 
-    // ── Mapping helpers ──────────────────────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Mapping helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
     /// Converts Ollama's <c>format</c> field to an OpenAI <c>response_format</c> object.
     /// Ollama accepts:
-    ///   • the literal string "json"  → OpenAI {"type":"json_object"}
-    ///   • a full JSON Schema object  → OpenAI {"type":"json_schema","json_schema":{...}}
-    ///   • an OpenAI-style object     → forwarded as-is
+    ///   Ã¢â‚¬Â¢ the literal string "json"  Ã¢â€ â€™ OpenAI {"type":"json_object"}
+    ///   Ã¢â‚¬Â¢ a full JSON Schema object  Ã¢â€ â€™ OpenAI {"type":"json_schema","json_schema":{...}}
+    ///   Ã¢â‚¬Â¢ an OpenAI-style object     Ã¢â€ â€™ forwarded as-is
     /// </summary>
     private static LlamaCppResponseFormat? ResolveResponseFormat(object? format)
     {
@@ -4804,12 +4984,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Maps Ollama messages to OpenAI/llama.cpp messages and rewrites tool_call IDs so that:
-    ///   • each assistant tool_call gets a stable id (preserved if supplied, generated otherwise),
-    ///   • each following role:"tool" reply that lacks an id is correlated to the most recent
+    ///   Ã¢â‚¬Â¢ each assistant tool_call gets a stable id (preserved if supplied, generated otherwise),
+    ///   Ã¢â‚¬Â¢ each following role:"tool" reply that lacks an id is correlated to the most recent
     ///     unfulfilled assistant tool_call (by order, or by function name when available).
     /// OpenAI-compatible upstreams reject tool replies whose tool_call_id doesn't match.
     /// </summary>
-    private static List<LlamaCppMessage> MapMessagesWithToolCorrelation(List<OllamaMessage> source)
+    internal static List<LlamaCppMessage> MapMessagesWithToolCorrelation(List<OllamaMessage> source)
     {
         List<LlamaCppMessage> mapped = [.. source.Select(MapMessage)];
         // Queue of (id, function name) per pending assistant tool_call.
@@ -5034,7 +5214,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return req.Prompt ?? string.Empty;
     }
 
-    // ── Utility ──────────────────────────────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Utility Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     /// <summary>
     /// Reads the request body as a string, enforcing the configured
@@ -5132,7 +5312,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         resp.Close();
     }
 
-    // ── API Explorer (Scalar) / OpenAPI ─────────────────────────────────────
+    // Ã¢â€â‚¬Ã¢â€â‚¬ API Explorer (Scalar) / OpenAPI Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     // Short-lived client used only to fetch OpenAPI documents reported by loaded modules when
     // rendering the explorer page. Only module-reported URLs are ever fetched (never user input).
@@ -5143,7 +5323,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         <html lang="en">
         <head>
             <meta charset="UTF-8">
-            <title>Kaeo LLM Proxy — API Explorer</title>
+            <title>Kaeo LLM Proxy Ã¢â‚¬â€ API Explorer</title>
             <style>
                 body { margin: 0; padding: 0; }
                 #kaeo-doc-selector {
@@ -5310,10 +5490,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             { "url": "/", "description": "This proxy" }
           ],
           "tags": [
-            { "name": "Ollama Discovery", "description": "Ollama-compatible endpoints for model and version discovery. Answered locally from the mapping table — no upstream call." },
+            { "name": "Ollama Discovery", "description": "Ollama-compatible endpoints for model and version discovery. Answered locally from the mapping table Ã¢â‚¬â€ no upstream call." },
             { "name": "Ollama Generation", "description": "Ollama-compatible generation endpoints. The proxy translates these to OpenAI-compatible upstream calls." },
             { "name": "OpenAI Passthrough", "description": "Transparent passthrough to the upstream OpenAI-compatible /v1/* surface. No translation is performed." },
-            { "name": "OpenAI Discovery", "description": "OpenAI-compatible endpoints for model discovery. Answered locally from the mapping table — no upstream call." }
+            { "name": "OpenAI Discovery", "description": "OpenAI-compatible endpoints for model discovery. Answered locally from the mapping table Ã¢â‚¬â€ no upstream call." }
           ],
           "paths": {
             "/api/version": {

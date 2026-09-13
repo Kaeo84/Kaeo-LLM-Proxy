@@ -1,0 +1,15 @@
+; Merged into the VSSDK-generated pkgdef (see <VsixPkgDefFile> in the .csproj).
+;
+; GeneratePkgDefFile auto-registers only assemblies marked ForceIncludeInVSIX (the
+; Community.VisualStudio.Toolkit package). The Core project ships via IncludeInVSIX on the
+; ProjectReference, so VSSDK does NOT emit a codeBase entry for it. Without this entry the
+; net48 host (devenv.exe) resolves "Kaeo LLM Proxy VS Extension.Core" only by happenstance
+; of the extension folder being on the probing path; a partial deployment then fails with
+; "Could not load file or assembly" at the first send (MeaiAdapter's first type load).
+; Pinning the codeBase makes that resolution deterministic.
+[$RootKey$\RuntimeConfiguration\dependentAssembly\codeBase\{KAEoCorePkgDefSection-0000-0000-0000-000000000001}]
+"name"="Kaeo LLM Proxy VS Extension.Core"
+"publicKeyToken"=""
+"culture"="neutral"
+"version"="0.1.0.0"
+"codeBase"="$PackageFolder$\Kaeo LLM Proxy VS Extension.Core.dll"

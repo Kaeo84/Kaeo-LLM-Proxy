@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!-- Shared wire-format <-> Microsoft.Extensions.AI adapter (MeaiAdapter). Multi-consumer:
+			 the net48 VSIX references it for chat streaming; Services (net10) will reference it
+			 for the Phase-B proxy IR translation (Plans\20260914-proxy-meai-phase-b-design.md);
+			 the net10 test project references it directly (no source Compile-Link duplication).
+			 netstandard2.0 because MEAI Abstractions ships netstandard2.0 assets, so one binary
+			 serves net48 and net10 consumers. -->
+	<PropertyGroup>
+		<TargetFramework>netstandard2.0</TargetFramework>
+		<!-- Directory.Build.props applies a global win-x64 RID for native-asset trimming;
+				 a plain library has no native assets and must not be RID-scoped. -->
+		<RuntimeIdentifier></RuntimeIdentifier>
+		<LangVersion>latest</LangVersion>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<RootNamespace>Kaeo.LlmProxy.VSExtension.Core</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy VS Extension.Core</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- ChatMessage / ChatResponseUpdate / content parts -->
+		<PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.0" />
+		<!-- netstandard2.0 lacks System.Text.Json; the extension already pins the same version
+				 into the VSIX payload, so keep the shared library on the identical pin. -->
+		<PackageReference Include="System.Text.Json" Version="10.0.12" />
+	</ItemGroup>
+
+</Project>

@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -34,7 +32,7 @@ internal sealed class OllamaApiClient : IUpstreamClient
     {
         try
         {
-            var resp = await _http.GetAsync(new Uri(new Uri(_baseUrl), "/health"), ct).ConfigureAwait(false);
+            var resp = await _http.GetAsync(BuildEndpointUri("/health"), ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
         }
         catch
@@ -43,11 +41,19 @@ internal sealed class OllamaApiClient : IUpstreamClient
         }
     }
 
+    /// <summary>
+    /// Builds an endpoint URI without discarding a path in the base URL (the previous
+    /// <c>new Uri(base, "/path")</c> replaced any base path, so <c>https://host/kaeo</c>
+    /// silently became <c>https://host/path</c>).
+    /// </summary>
+    private Uri BuildEndpointUri(string endpointPath)
+        => new Uri(new Uri(_baseUrl.TrimEnd('/') + "/"), endpointPath.TrimStart('/'));
+
     public async Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
     {
         // Ollama-standard GET /api/tags:
         // { "models": [ { "name", "model", "details": { "parameter_size", "context_length", ... }, "capabilities": ["completion","tools","vision"] } ] }
-        var resp = await _http.GetAsync(new Uri(new Uri(_baseUrl), "/api/tags"), ct).ConfigureAwait(false);
+        var resp = await _http.GetAsync(BuildEndpointUri("/api/tags"), ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         // net48 exposes only the parameterless ReadAsStreamAsync and lacks
         // JsonDocument.ParseAsync (net7+). Read the (small) body to a string and parse
@@ -90,52 +96,7 @@ internal sealed class OllamaApiClient : IUpstreamClient
         }
     }
 
-    public IAsyncEnumerable<ChatChunk> StreamChatAsync(object payload, CancellationToken ct = default)
-    {
-        return StreamChatCoreAsync(payload, ct);
     }
-
-    private async IAsyncEnumerable<ChatChunk> StreamChatCoreAsync(object payload, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
-    {
-        using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(new Uri(_baseUrl), "/api/chat"));
-        req.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-
-        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-
-        // net48 has only the parameterless ReadAsStreamAsync, and StreamReader.ReadLineAsync
-        // is net7+. This method is an async IAsyncEnumerable that already runs on a
-        // background thread, so a synchronous ReadLine() here does not block the UI thread.
-        using var reader = new StreamReader(await resp.Content.ReadAsStreamAsync().ConfigureAwait(false));
-        string? line;
-        while ((line = reader.ReadLine()) is not null)
-        {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-
-            JsonElement? message = null;
-            if (root.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object)
-                message = msg;
-
-            var text = message is not null && message.Value.TryGetProperty("content", out var c)
-                ? c.GetString()
-                : null;
-
-            // Ollama returns structured tool calls on the assistant message (typically the
-            // final chunk). Keep them verbatim so the runtime can replay them to the model.
-            JsonNode? toolCalls = null;
-            if (message is not null && message.Value.TryGetProperty("tool_calls", out var tc)
-                && tc.ValueKind == JsonValueKind.Array && tc.GetArrayLength() > 0)
-            {
-                toolCalls = JsonNode.Parse(tc.GetRawText());
-            }
-
-            var done = root.TryGetProperty("done", out var d) && d.ValueKind == JsonValueKind.True;
-            yield return new ChatChunk(text, done, toolCalls);
-        }
-    }
-}
 
 /// <summary>
 /// A model entry from the proxy's Ollama-standard /api/tags endpoint.
@@ -143,10 +104,3 @@ internal sealed class OllamaApiClient : IUpstreamClient
 /// which is the standard signal that the model supports tool/function calling.
 /// </summary>
 internal sealed record ModelInfo(string Name, long ContextLength, IReadOnlyList<string> Capabilities, bool SupportsTools);
-
-/// <summary>
-/// A single streamed chat token chunk from the proxy's /api/chat NDJSON stream.
-/// <see cref="ToolCalls"/> carries the raw Ollama <c>message.tool_calls</c> array when the
-/// model requests tool execution; otherwise it is null.
-/// </summary>
-internal sealed record ChatChunk(string? Text, bool Done, JsonNode? ToolCalls = null);

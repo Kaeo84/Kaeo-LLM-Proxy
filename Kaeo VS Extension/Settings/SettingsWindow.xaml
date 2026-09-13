@@ -250,6 +250,9 @@
                                                 <DataGridTextColumn Header="Model ID" Binding="{Binding ModelId}" Width="*" IsReadOnly="True" />
                                                 <DataGridTextColumn Header="Capabilities" Binding="{Binding Capabilities}" Width="*" IsReadOnly="True" />
                                                 <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="Auto" />
+                                                <DataGridComboBoxColumn Header="Reasoning" Width="Auto"
+                                                                          ItemsSource="{x:Static local:ModelViewModel.ReasoningSourceOptions}"
+                                                                          SelectedItemBinding="{Binding ReasoningSource}" />
                                                 <!--
                                                      The "Default" cell cannot be a DataGridCheckBoxColumn: that column type
                                                      never binds the visible checkbox to the row, it routes the toggle through
@@ -628,6 +631,20 @@
                         <TextBox x:Name="TempBox" Width="80" TextAlignment="Right" />
                     </StackPanel>
                     <CheckBox x:Name="AutoAttachCheck" Content="Auto-attach current file context" Margin="0,0,0,12" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Model reasoning (thinking):" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ReasoningDisplayBox" Width="120" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Reasoning text color (#RRGGBB):" Width="220" VerticalAlignment="Center" />
+                        <TextBox x:Name="ReasoningFgBox" Width="120" VerticalAlignment="Center"
+                                 ToolTip="Optional override; leave empty to follow the VS theme." />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="Reasoning background (#RRGGBB):" Width="220" VerticalAlignment="Center" />
+                        <TextBox x:Name="ReasoningBgBox" Width="120" VerticalAlignment="Center"
+                                 ToolTip="Optional override; leave empty for the default transparent background." />
+                    </StackPanel>
                     <Button Content="Save" Click="SavePreferences_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
                 </StackPanel>
             </TabItem>

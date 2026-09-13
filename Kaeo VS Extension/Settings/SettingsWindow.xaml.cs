@@ -99,6 +99,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                             Capabilities = m.Capabilities != null ? string.Join(", ", m.Capabilities) : string.Empty,
                             Enabled = m.Enabled,
                             IsPinned = m.Pinned,
+                            ReasoningSource = string.IsNullOrWhiteSpace(m.ReasoningSource) ? "Auto" : m.ReasoningSource!,
                         });
                     }
                     WireForSave(vm);
@@ -212,6 +213,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 MaxIterBox.Text = d.MaxToolIterations.ToString();
                 TempBox.Text = d.DefaultTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 AutoAttachCheck.IsChecked = d.AutoAttachContext;
+                ReasoningDisplayBox.ItemsSource = ReasoningDisplayKinds.DisplayNames;
+                ReasoningDisplayBox.SelectedItem = ReasoningDisplayKinds.Parse(d.ReasoningDisplay);
+                ReasoningFgBox.Text = d.ReasoningForeground ?? string.Empty;
+                ReasoningBgBox.Text = d.ReasoningBackground ?? string.Empty;
 
                 _loaded = true;
             }
@@ -263,6 +268,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     Capabilities = m.Capabilities,
                     Enabled = m.Enabled,
                     IsPinned = false,
+                    ReasoningSource = m.ReasoningSource,
                 });
             }
             WireForSave(copy);
@@ -876,10 +882,39 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (double.TryParse(TempBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var temp) && temp >= 0 && temp <= 2)
                 d.DefaultTemperature = temp;
             d.AutoAttachContext = AutoAttachCheck.IsChecked == true;
+            d.ReasoningDisplay = ReasoningDisplayKinds.Parse(ReasoningDisplayBox.SelectedItem as string);
+            d.ReasoningForeground = NormalizeHexColor(ReasoningFgBox.Text);
+            d.ReasoningBackground = NormalizeHexColor(ReasoningBgBox.Text);
 
             _saveTimer?.Stop();
             SaveNow();
             RaiseModelsChanged();
+        }
+
+        /// <summary>
+        /// Trims a color input to "#RRGGBB" or "#AARRGGBB"; anything else (including empty)
+        /// normalizes to null so the VS theme applies.
+        /// </summary>
+        private static string? NormalizeHexColor(string? text)
+        {
+            text = text?.Trim();
+            if (string.IsNullOrEmpty(text))
+                return null;
+            if ((text.Length == 7 || text.Length == 9) && text[0] == '#' && IsHexDigits(text, 1, text.Length - 1))
+                return text;
+            return null;
+        }
+
+        private static bool IsHexDigits(string s, int start, int count)
+        {
+            for (int i = start; i < start + count; i++)
+            {
+                char c = s[i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+                    return false;
+            }
+
+            return true;
         }
 
         /// <summary>Persists the agent list (structural changes and explicit Save clicks).</summary>
@@ -980,6 +1015,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         .ToArray(),
                     Pinned = m.IsPinned,
                     Enabled = m.Enabled,
+                    ReasoningSource = string.Equals(m.ReasoningSource, "Auto", StringComparison.Ordinal) ? null : m.ReasoningSource,
                 }).ToArray(),
             };
         }

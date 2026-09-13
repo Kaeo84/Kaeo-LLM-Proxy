@@ -21,6 +21,14 @@ internal sealed class ExtensionSettingsStore
     /// </summary>
     private static readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
+    /// <summary>
+    /// Set when the last <see cref="LoadAsync"/> could not read the file and fell back to
+    /// defaults. A subsequent <see cref="SaveAsync"/> must not overwrite the on-disk file in
+    /// that case: saving a defaults-only object would wipe real settings that merely failed
+    /// to parse. Cleared by a successful load.
+    /// </summary>
+    private bool _loadFailed;
+
     public ExtensionSettingsStore(string? path = null)
     {
         _path = path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "KaeoVsExtension", "settings.jsonc");
@@ -44,7 +52,10 @@ internal sealed class ExtensionSettingsStore
                 var text = await Task.Run(() => ReadShared(_path)).ConfigureAwait(false);
                 var loaded = JsonSerializer.Deserialize<ExtensionSettings>(text);
                 if (loaded is not null)
+                {
+                    _loadFailed = false;
                     return loaded;
+                }
             }
             catch (Exception ex) when (attempt < maxAttempts && (ex is IOException || ex is JsonException))
             {
@@ -56,6 +67,9 @@ internal sealed class ExtensionSettingsStore
                 // Fall through to defaults below.
             }
 
+            // The on-disk file exists but could not be read/parsed. Mark the load as failed
+            // so a later save does not overwrite the (unreadable) real settings with defaults.
+            _loadFailed = true;
             return new ExtensionSettings();
         }
     }
@@ -67,6 +81,16 @@ internal sealed class ExtensionSettingsStore
         await _writeLock.WaitAsync().ConfigureAwait(false);
         try
         {
+            // If the last load fell back to defaults, the in-memory object is not a faithful
+            // representation of the on-disk file. Back it up before overwriting so real
+            // settings are recoverable rather than silently wiped.
+            if (_loadFailed && File.Exists(_path))
+            {
+                var backup = $"{_path}.bak-{DateTime.Now:yyyyMMddHHmmss}";
+                try { File.Copy(_path, backup, overwrite: true); }
+                catch (Exception ex) { DebugLog.Warn($"Could not back up settings before save: {ex.Message}"); }
+            }
+
             await Task.Run(() => WriteWithRetry(_path, text)).ConfigureAwait(false);
         }
         finally
@@ -139,6 +163,16 @@ internal sealed class Defaults
 
     /// <summary>Maximum tool-call iterations before a turn is forced to conclude.</summary>
     public int MaxToolIterations { get; set; } = 10;
+
+    /// <summary>How model reasoning (thinking) shows in the transcript: "Collapsed" (an
+    /// expandable section, the default), "Inline" (always visible), or "Hidden".</summary>
+    public string? ReasoningDisplay { get; set; } = "Collapsed";
+
+    /// <summary>Optional #RRGGBB overrides for reasoning text/background. Null = follow the theme.</summary>
+    public string? ReasoningForeground { get; set; }
+
+    /// <summary>Optional #RRGGBB background behind reasoning content. Null = follow the theme.</summary>
+    public string? ReasoningBackground { get; set; }
 }
 
 internal sealed class Connection
@@ -160,6 +194,8 @@ internal sealed class ModelEntry
     public bool Pinned { get; set; }
     /// <summary>Whether this model is available in the tool window dropdown. Defaults to true so existing settings keep working.</summary>
     public bool Enabled { get; set; } = true;
+    /// <summary>Where this model's reasoning arrives on the wire: "Auto" (default), "ThinkingField", "InlineTags", or "Disabled".</summary>
+    public string? ReasoningSource { get; set; }
 }
 
 internal sealed class Agent

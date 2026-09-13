@@ -25,7 +25,6 @@
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
     <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101</NoWarn>
   </PropertyGroup>
-
   <ItemGroup>
     <ProjectCapability Include="CreateVsixContainer" />
   </ItemGroup>
@@ -41,13 +40,13 @@
          pins, so the extension's JSON/async save path throws FileNotFound at runtime. Force the
          whole set in (resolved from the extension folder by VS's AppDomain assembly probing).
          Versions match the net48 restore graph (obj/project.assets.json). -->
-    <PackageReference Include="System.Text.Json" Version="10.0.11">
+    <PackageReference Include="System.Text.Json" Version="10.0.12">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.11">
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
-    <PackageReference Include="System.IO.Pipelines" Version="10.0.11">
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
     <PackageReference Include="System.Memory" Version="4.6.3">
@@ -64,10 +63,30 @@
     </PackageReference>
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
     <PackageReference Include="MessagePack" Version="3.1.8" />
+    <!-- Microsoft.Extensions.AI (IChatClient, ChatMessage, ChatResponseUpdate, content types
+         incl. TextReasoningContent) ships net462/netstandard2.0 assets, so it loads in the
+         net48 VS host. Like System.Text.Json above, VSSDK treats Microsoft.Extensions.* as
+         shell-provided and strips version-mismatched copies from the payload; force the
+         MEAI assemblies in so the agent's streaming path resolves from the extension folder. -->
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.0">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+  </ItemGroup>
+
+  <!-- Shared wire-format <-> MEAI adapter (netstandard2.0, net48-compatible). IncludeInVSIX
+       ships its dll in the extension payload so it resolves from the extension folder like
+       the forced-in BCL packages above. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj">
+      <IncludeInVSIX>true</IncludeInVSIX>
+    </ProjectReference>
   </ItemGroup>
 
   <!-- Allow tests to access internal types in the VS Extension assembly -->
@@ -84,4 +103,25 @@
     </VSCTCompile>
   </ItemGroup>
 
-</Project>
+  <!-- Append a codeBase entry for the Core project assembly to the generated pkgdef.
+       GeneratePkgDefFile only auto-registers ForceIncludeInVSIX packages (the Toolkit),
+       so the IncludeInVSIX project reference (Kaeo LLM Proxy VS Extension.Core) would
+       otherwise have no codeBase entry and the net48 host could fail to resolve it at the
+       first send. Appended after CopyPkgDef (which writes the output pkgdef) and before the
+       VSIX is created, so the entry ships in the container. Idempotent: skipped when the
+       marker is already present (e.g. an incremental build that reuses the output pkgdef).
+       Runs as a project target (not a post-build event) so it lands before VSIX creation. -->
+  <Target Name="AppendCorePkgDef" AfterTargets="GeneratePkgDef" Condition="'$(GeneratePkgDefFile)'=='true'">
+    <PropertyGroup>
+      <_CorePkgdefFragment>$(MSBuildProjectDirectory)\KaeoCore.pkgdef</_CorePkgdefFragment>
+      <!-- The VSIX ships the INTERMEDIATE pkgdef (see VSIXSourceItem above), so append
+           there, not the OutDir copy. -->
+      <_CorePkgdefOutput>$(IntermediateOutputPath)$(TargetName).pkgdef</_CorePkgdefOutput>
+    </PropertyGroup>
+    <!-- Append the fragment once; the section name in KaeoCore.pkgdef carries a marker so
+         the check is idempotent across incremental builds. -->
+    <Exec Condition="Exists('$(_CorePkgdefFragment)') AND Exists('$(_CorePkgdefOutput)')" ConsoleToMSBuild="true"
+          Command="powershell -NoProfile -Command &quot;$pkgdef='$(_CorePkgdefOutput)'; $frag='$(_CorePkgdefFragment)'; if (-not (Get-Content -Raw $pkgdef).Contains('KAEoCorePkgDefSection')) { Add-Content -Path $pkgdef -Value (Get-Content -Raw $frag) }&quot;" />
+  </Target>
+
+</Project> 

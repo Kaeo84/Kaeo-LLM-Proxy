@@ -8,8 +8,11 @@
              mc:Ignorable="d"
              d:DesignHeight="400" d:DesignWidth="600"
              Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
-             Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
-    <Grid>
+                       Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
+             <UserControl.Resources>
+                 <BooleanToVisibilityConverter x:Key="BoolToVis" />
+             </UserControl.Resources>
+             <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -88,15 +91,37 @@
                 <DataTemplate>
                     <StackPanel Margin="8,4">
                         <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
+                        <!-- Model reasoning (thinking). Visibility/expansion come from the
+                             ReasoningDisplay preference snapshotted onto the line/VM; the
+                             brushes fall back to the VS theme when no override is set. -->
+                        <Border Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
+                                Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}}">
+                            <Expander IsExpanded="{Binding DataContext.ReasoningInline, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
+                                      Header="thinking" FontSize="11" FontStyle="Italic" Margin="0,0,0,2"
+                                      Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
+                                <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
+                                           FontStyle="Italic" FontSize="12"
+                                           Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, TargetNullValue={x:Null}}"
+                                           TextOptions.TextFormattingMode="Ideal" />
+                            </Expander>
+                        </Border>
                         <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
                                    FontFamily="Consolas" FontSize="13">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
                                     <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Kind}" Value="redirect">
+                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                        </DataTrigger>
                                         <DataTrigger Binding="{Binding Kind}" Value="warning">
                                             <Setter Property="Foreground" Value="#FFFF8C00" />
                                             <Setter Property="FontWeight" Value="SemiBold" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding Kind}" Value="permission">
+                                            <Setter Property="Foreground" Value="#FFFF8C00" />
+                                            <Setter Property="FontStyle" Value="Italic" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding Kind}" Value="error">
                                             <Setter Property="Foreground" Value="#FFFF4500" />
@@ -106,6 +131,13 @@
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
+                        <!-- Inline permission card actions: live until answered, then collapse. -->
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                    Visibility="{Binding ShowsApprovalButtons, Converter={StaticResource BoolToVis}}">
+                            <Button Content="Allow" Padding="10,2" Margin="0,0,6,0" Click="AllowPermission_Click" />
+                            <Button Content="Always allow" Padding="10,2" Margin="0,0,6,0" Click="AlwaysPermission_Click" />
+                            <Button Content="Deny" Padding="10,2" Click="DenyPermission_Click" />
+                        </StackPanel>
                     </StackPanel>
                 </DataTemplate>
             </ListView.ItemTemplate>
@@ -121,7 +153,21 @@
             <TextBox x:Name="PromptBox" Grid.Column="0" Margin="4" VerticalAlignment="Center"
                      TextWrapping="Wrap" AcceptsReturn="True" MinHeight="30" MaxHeight="80"
                      VerticalScrollBarVisibility="Auto" />
-            <Button x:Name="SendButton" Grid.Column="1" Content="Send" Width="60" Margin="4" Click="SendButton_Click" />
+            <!-- One button, two states: Send when idle, Stop while a turn streams (IsBusy). -->
+            <Button x:Name="SendButton" Grid.Column="1" Width="60" Margin="4" Click="SendButton_Click">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                        <Setter Property="Content" Value="Send" />
+                        <Setter Property="ToolTip" Value="Send the message (Enter)" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                                <Setter Property="Content" Value="Stop" />
+                                <Setter Property="ToolTip" Value="Stop the current turn" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
             <!-- Icon-only to keep the input row narrow; the click handler is wired in code-behind. -->
             <Button x:Name="GearButton" Grid.Column="2" Width="28" Height="24" Margin="4" Padding="0"
                     ToolTip="Settings"

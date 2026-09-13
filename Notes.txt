@@ -4,3 +4,4 @@ A web crawler, so for sites that are registered to it, it crawls them and indexe
 A proxying abilit so I can register a proxy and if needed credentials in the proxy and then I can use the MCP centrally
 Ability to run/use stdio MCPs
 
+for MCP add a file search, and read file the pulls the embedded version of a file instead of reading text.

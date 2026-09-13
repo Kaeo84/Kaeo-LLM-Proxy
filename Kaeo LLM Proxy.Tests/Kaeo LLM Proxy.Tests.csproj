@@ -16,6 +16,13 @@
 		<PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
 		<!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
 		<PackageReference Include="MessagePack" Version="3.1.8" />
+		<PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0" />
+	</ItemGroup>
+
+	<!-- The adapter is a real assembly now (Kaeo LLM Proxy VS Extension.Core, netstandard2.0),
+			 so tests reference it directly instead of Compile-Linking the source. -->
+	<ItemGroup>
+		<ProjectReference Include="..\Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

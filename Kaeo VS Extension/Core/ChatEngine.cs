@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.AI;
 
 namespace Kaeo.LlmProxy.VSExtension.Core;
 
 /// <summary>
 /// High-level facade the UI calls into. Wraps the AgentRuntime (for Agent/Plan modes with tools)
-/// and the OllamaApiClient (for Ask mode — plain chat, no tools).
+/// and the OllamaChatClient (for Ask mode — plain chat, no tools).
 /// </summary>
 internal sealed class ChatEngine
 {
@@ -23,15 +24,15 @@ internal sealed class ChatEngine
     /// Ask mode = no tools (plain chat); Agent/Plan = tool loop via the proxy.
     /// </summary>
     public Task<AgentTurnResult> RunAsync(
-        IUpstreamClient upstream,
+        IChatClient client,
         AgentConfig agent,
         string model,
         AgentMode mode,
-        List<AgentMessage> history,
+        List<ChatMessage> history,
         string prompt,
         AgentEvents events,
         CancellationToken ct = default)
     {
-        return _runtime.RunTurnAsync(upstream, agent, model, mode, history, prompt, events, ct);
+        return _runtime.RunTurnAsync(client, agent, model, mode, history, prompt, events, ct);
     }
 }

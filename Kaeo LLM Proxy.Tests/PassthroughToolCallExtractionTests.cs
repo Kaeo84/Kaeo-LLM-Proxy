@@ -20,9 +20,16 @@ public class PassthroughToolCallExtractionTests
         "\u003cparameter=days\u003e3\u003c/parameter\u003e" +
         "\u003c/function\u003e\u003c/tool_call\u003e";
 
-    private static JsonElement Transform(string json, ThinkingMode mode, bool extractToolCalls)
+    // A second well-formed block with a different function name, used to verify
+    // declared-tool filtering keeps only the blocks the client can actually execute.
+    private const string OtherToolCall =
+        "\u003ctool_call\u003e\u003cfunction=lookup_time\u003e" +
+        "\u003cparameter=tz\u003eUTC\u003c/parameter\u003e" +
+        "\u003c/function\u003e\u003c/tool_call\u003e";
+
+    private static JsonElement Transform(string json, ThinkingMode mode, bool extractToolCalls, IReadOnlySet<string>? declaredToolNames = null)
     {
-        string result = OllamaProxyHandler.TransformNonStreamingChatBody(json, mode, extractToolCalls);
+        string result = OllamaProxyHandler.TransformNonStreamingChatBody(json, mode, extractToolCalls, declaredToolNames);
         return JsonDocument.Parse(result).RootElement.Clone();
     }
 
@@ -136,5 +143,111 @@ public class PassthroughToolCallExtractionTests
         Assert.False(choice.GetProperty("message").TryGetProperty("tool_calls", out _));
         Assert.Equal(content, choice.GetProperty("message").GetProperty("content").GetString());
         Assert.Equal("stop", choice.GetProperty("finish_reason").GetString());
+    }
+
+    [Fact]
+    public void EmptyDeclaredToolSetStripsStructuredToolCalls()
+    {
+        string body =
+            "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"test-model\"," +
+            "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"I will check.\"," +
+            "\"tool_calls\":[{\"id\":\"call_abc\",\"type\":\"function\"," +
+            "\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
+
+        JsonElement root = Transform(body, ThinkingMode.LeaveInline, extractToolCalls: true,
+            declaredToolNames: new HashSet<string>(StringComparer.Ordinal));
+
+        JsonElement choice = root.GetProperty("choices")[0];
+        Assert.False(choice.GetProperty("message").TryGetProperty("tool_calls", out _));
+        Assert.Equal("stop", choice.GetProperty("finish_reason").GetString());
+        Assert.Equal("I will check.", choice.GetProperty("message").GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public void OnlyDeclaredStructuredToolCallsSurvive()
+    {
+        string body =
+            "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"test-model\"," +
+            "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"two calls\"," +
+            "\"tool_calls\":[" +
+            "{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}}," +
+            "{\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"delete_repo\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
+
+        HashSet<string> declared = new(StringComparer.Ordinal) { "get_weather" };
+        JsonElement root = Transform(body, ThinkingMode.LeaveInline, extractToolCalls: true, declaredToolNames: declared);
+
+        JsonElement choice = root.GetProperty("choices")[0];
+        JsonElement toolCalls = choice.GetProperty("message").GetProperty("tool_calls");
+        Assert.Equal(1, toolCalls.GetArrayLength());
+        Assert.Equal("get_weather", toolCalls[0].GetProperty("function").GetProperty("name").GetString());
+        // A declared call survived, so the turn still ends as a tool-call turn.
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+    }
+
+    [Fact]
+    public void UndeclaredXmlToolCallBlocksStayInlineAsText()
+    {
+        string content = "ok " + WeatherToolCall + OtherToolCall;
+        HashSet<string> declared = new(StringComparer.Ordinal) { "get_weather" };
+
+        JsonElement root = Transform(ChatBody(content), ThinkingMode.LeaveInline, extractToolCalls: true, declaredToolNames: declared);
+
+        JsonElement choice = root.GetProperty("choices")[0];
+        JsonElement message = choice.GetProperty("message");
+
+        Assert.Equal(1, message.GetProperty("tool_calls").GetArrayLength());
+        Assert.Equal("get_weather", message.GetProperty("tool_calls")[0].GetProperty("function").GetProperty("name").GetString());
+
+        string resultContent = message.GetProperty("content").GetString() ?? string.Empty;
+        Assert.DoesNotContain("get_weather", resultContent);
+        Assert.Contains("lookup_time", resultContent);
+        Assert.Equal("tool_calls", choice.GetProperty("finish_reason").GetString());
+    }
+
+    [Fact]
+    public void NoDeclaredToolsKeepsXmlBlocksAsText()
+    {
+        string content = "answer " + WeatherToolCall;
+
+        JsonElement root = Transform(ChatBody(content), ThinkingMode.LeaveInline, extractToolCalls: true,
+            declaredToolNames: new HashSet<string>(StringComparer.Ordinal));
+
+        JsonElement choice = root.GetProperty("choices")[0];
+        Assert.False(choice.GetProperty("message").TryGetProperty("tool_calls", out _));
+        Assert.Equal(content, choice.GetProperty("message").GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public void ExtractDeclaredToolNamesReadsRequestToolFunctions()
+    {
+        string request =
+            "{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"tools\":[" +
+            "{\"type\":\"function\",\"function\":{\"name\":\"alpha\",\"parameters\":{}}}," +
+            "{\"type\":\"function\",\"function\":{\"name\":\"beta\",\"parameters\":{}}}]}";
+
+        IReadOnlySet<string>? names = OllamaProxyHandler.ExtractDeclaredToolNames(request);
+
+        Assert.NotNull(names);
+        Assert.Equal(2, names!.Count);
+        Assert.Contains("alpha", names);
+        Assert.Contains("beta", names);
+    }
+
+    [Fact]
+    public void ExtractDeclaredToolNamesReturnsEmptySetWhenNoToolsDeclared()
+    {
+        IReadOnlySet<string>? names = OllamaProxyHandler.ExtractDeclaredToolNames(
+            """{"model":"m","messages":[{"role":"user","content":"hi"}]}""");
+
+        Assert.NotNull(names);
+        Assert.Empty(names!);
+    }
+
+    [Fact]
+    public void ExtractDeclaredToolNamesReturnsNullForUnparseableBody()
+    {
+        Assert.Null(OllamaProxyHandler.ExtractDeclaredToolNames("{ not json"));
     }
 }

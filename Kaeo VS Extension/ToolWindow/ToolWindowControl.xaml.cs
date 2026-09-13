@@ -26,6 +26,10 @@ public partial class ToolWindowControl : UserControl
         var mcp = new McpServerManager(_settings);
         var engine = new ChatEngine(new AgentRuntime(mcp, _settings));
         _vm = new ToolWindowViewModel(engine, _settings, mcp);
+        // The transcript DataTemplate binds {Binding DataContext.Reasoning*} via RelativeSource,
+        // and the Send/Stop trigger binds IsBusy - both need the view model as the visual root's
+        // DataContext. Item templates still get ChatLine as their own DataContext.
+        DataContext = _vm;
 
         // Bind the transcript and pills.
         MessageList.ItemsSource = _vm.Lines;
@@ -107,26 +111,33 @@ public partial class ToolWindowControl : UserControl
         });
     }
 
+    /// <summary>
+    /// One button, two states. A direct click while a turn streams acts as Stop; the Enter
+    /// shortcut routes through here with the control as sender so typed text is submitted -
+    /// while busy the view model turns it into a redirect instead of a second concurrent turn.
+    /// </summary>
     private async void SendButton_Click(object? sender, RoutedEventArgs e)
     {
-        // A disabled Send button means a turn is already streaming. The button swallows its
-        // own clicks in that state, but the Enter shortcut calls this handler directly, so
-        // guard here to keep two turns from interleaving into the transcript.
-        if (!SendButton.IsEnabled)
+        if (_vm is null)
+            return;
+
+        if (ReferenceEquals(sender, SendButton) && _vm.IsBusy)
+        {
+            _vm.Cancel();
+            return;
+        }
+
+        var prompt = PromptBox.Text;
+        PromptBox.Clear();
+        if (string.IsNullOrWhiteSpace(prompt))
             return;
 
         try
         {
-            var prompt = PromptBox.Text;
-            PromptBox.Clear();
-            if (string.IsNullOrWhiteSpace(prompt) || _vm is null) return;
-            SendButton.IsEnabled = false;
             await _vm.SendAsync(prompt);
-            SendButton.IsEnabled = true;
         }
         catch (Exception ex)
         {
-            SendButton.IsEnabled = true;
             DebugLog.Error("Sending the message failed.", ex);
 
             VS.MessageBox.ShowError(
@@ -134,6 +145,20 @@ public partial class ToolWindowControl : UserControl
                 $"Error sending message: {ex.Message}"
             );
         }
+    }
+
+    // Permission card buttons (transcript DataTemplate): resolving the line's Approval
+    // releases the awaited runtime loop - the GUI was never blocked in the first place.
+    private void AllowPermission_Click(object sender, RoutedEventArgs e) => AnswerPermissionCard(sender, allow: true, always: false);
+
+    private void AlwaysPermission_Click(object sender, RoutedEventArgs e) => AnswerPermissionCard(sender, allow: true, always: true);
+
+    private void DenyPermission_Click(object sender, RoutedEventArgs e) => AnswerPermissionCard(sender, allow: false, always: false);
+
+    private void AnswerPermissionCard(object sender, bool allow, bool always)
+    {
+        if (sender is FrameworkElement { DataContext: ChatLine line })
+            _vm?.AnswerPermission(line, allow, always);
     }
 
     private void GearButton_Click(object? sender, RoutedEventArgs e)

@@ -87,6 +87,9 @@
     <None Remove="Kaeo LLM Proxy VS Extension.Core\**" />
     <None Remove="Kaeo LLM Proxy VS Extension\**" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Kaeo LLM Proxy VS Extension.Core\Kaeo LLM Proxy VS Extension.Core.csproj" />
+  </ItemGroup>
 
   <Import Project="ModuleBuild.targets" />
 
