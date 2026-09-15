@@ -461,21 +461,23 @@ internal sealed class AutoCompactionService
             {
                 // Keep the assistant text but strip the raw tool_calls array: their matching
                 // role:"tool" replies were flattened away, and an unpaired tool_calls field can
-                // be rejected by strict upstream chat templates.
+                // be rejected by strict upstream chat templates. Also drop image content — the
+                // compaction model is text-only and rejects image input.
                 JsonObject stripped = [];
                 foreach (JsonProperty prop in msg.EnumerateObject())
                 {
-                    if (prop.NameEquals("tool_calls"u8))
+                    if (prop.NameEquals("tool_calls"u8) || prop.NameEquals("images"u8))
                         continue;
                     stripped[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
                 }
 
-                if (stripped["content"] is JsonValue contentValue && contentValue.TryGetValue(out string? contentText))
-                {
-                    int maxChars = maxTokensPerMessage * 4;
-                    if (contentText?.Length > maxChars)
-                        stripped["content"] = contentText[..maxChars] + "\n... [truncated]";
-                }
+                // Replace content with a text-only form (array content is reduced to its text
+                // parts) so image_url parts never reach the compaction model.
+                string? toolContentText = ExtractTextOnlyContent(msg);
+                int maxChars = maxTokensPerMessage * 4;
+                if (!string.IsNullOrEmpty(toolContentText) && toolContentText.Length > maxChars)
+                    toolContentText = toolContentText[..maxChars] + "\n... [truncated]";
+                stripped["content"] = toolContentText ?? string.Empty;
 
                 transcript.Add(stripped);
             }
@@ -503,6 +505,35 @@ internal sealed class AutoCompactionService
             return "";
 
         return content.ValueKind == JsonValueKind.String ? content.GetString() ?? "" : content.GetRawText();
+    }
+
+    /// <summary>
+    /// Extracts a text-only representation of a message's content, dropping any image parts.
+    /// For OpenAI-style content arrays (parts with a "type" field) only the "text" parts are
+    /// kept and joined; for string content the text is returned as-is; for any other JSON
+    /// content the raw text is returned. The compaction model is text-only, so image data
+    /// (image_url / input_image parts, or Ollama's separate "images" field) must never reach it.
+    /// </summary>
+    private static string? ExtractTextOnlyContent(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out JsonElement content))
+            return null;
+
+        if (content.ValueKind == JsonValueKind.Array)
+        {
+            var textParts = new List<string>();
+            foreach (JsonElement part in content.EnumerateArray())
+            {
+                if (part.ValueKind != JsonValueKind.Object)
+                    continue;
+                string? type = part.TryGetProperty("type", out JsonElement t) ? t.GetString() : null;
+                if (type == "text" && part.TryGetProperty("text", out JsonElement txt))
+                    textParts.Add(txt.GetString() ?? string.Empty);
+            }
+            return string.Join("\n", textParts);
+        }
+
+        return content.ValueKind == JsonValueKind.String ? content.GetString() : content.GetRawText();
     }
 
     private static string ShrinkForSummary(string text, int maxTokens)
@@ -791,37 +822,34 @@ internal sealed class AutoCompactionService
     {
         int maxChars = maxTokens * 4;
 
-        if (message.TryGetProperty("content", out JsonElement content))
+        // The compaction model is text-only, so image data must never reach it. Rebuild the
+        // message when it carries an Ollama "images" field or OpenAI-style array content.
+        bool hasImages = message.TryGetProperty("images", out _);
+        bool contentIsArray = message.TryGetProperty("content", out JsonElement c) && c.ValueKind == JsonValueKind.Array;
+
+        string? contentText = ExtractTextOnlyContent(message);
+        bool truncated = false;
+        if (contentText is not null && contentText.Length > maxChars)
         {
-            string? text = content.ValueKind == JsonValueKind.String
-                ? content.GetString()
-                : content.GetRawText();
-
-            if (!string.IsNullOrEmpty(text) && text.Length > maxChars)
-            {
-                // Truncate and add ellipsis
-                text = text[..maxChars] + "\n... [truncated]";
-
-                // Rebuild the message with truncated content, preserving the JSON type of every
-                // other property (tool_calls arrays must stay arrays, not become strings).
-                JsonObject result = [];
-                foreach (var prop in message.EnumerateObject())
-                {
-                    if (prop.Name == "content")
-                    {
-                        result[prop.Name] = text;
-                    }
-                    else
-                    {
-                        result[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
-                    }
-                }
-                return result;
-            }
+            contentText = contentText[..maxChars] + "\n... [truncated]";
+            truncated = true;
         }
 
-        // Return message as-is if no truncation needed
-        return message;
+        if (!hasImages && !contentIsArray && !truncated)
+            return message;
+
+        // Rebuild the message with cleaned/truncated content, dropping image data.
+        JsonObject result = [];
+        foreach (var prop in message.EnumerateObject())
+        {
+            if (prop.Name == "images")
+                continue; // Drop Ollama base64 images entirely.
+            if (prop.Name == "content" && contentText is not null)
+                result[prop.Name] = contentText;
+            else
+                result[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
+        }
+        return result;
     }
 
     /// <summary>

@@ -182,6 +182,43 @@ public class CompactBehaviorTests
     }
 
     [Fact]
+    public async Task CompactAsync_StripsImageContentFromSummarizationRequests()
+    {
+        StubChatHandler stub = new();
+        using HttpClient http = new(stub);
+        AutoCompactionService service = new(http);
+
+        // OpenAI-style content array with an image part, plus an Ollama-style "images" field.
+        string body = """
+        {
+          "model": "upstream.gguf",
+          "messages": [
+            { "role": "user", "content": [
+                { "type": "text", "text": "what is in this picture?" },
+                { "type": "image_url", "image_url": { "url": "http://example.com/pic.png" } }
+            ] },
+            { "role": "assistant", "content": "a cat", "images": ["aGVsbG8="] }
+          ]
+        }
+        """;
+
+        string? compacted = await CompactAsync(service, NewMapping(), body, CompactionFormat.Proxy);
+
+        Assert.NotNull(compacted);
+        Assert.NotEmpty(stub.RequestBodies);
+
+        foreach (string request in stub.RequestBodies)
+        {
+            Assert.DoesNotContain("image_url", request);
+            Assert.DoesNotContain("example.com/pic.png", request);
+            Assert.DoesNotContain("aGVsbG8=", request);
+            Assert.DoesNotContain("\"images\"", request);
+            // The text part must survive the strip.
+            Assert.Contains("what is in this picture?", request);
+        }
+    }
+
+    [Fact]
     public async Task CompactAsync_SummaryNotSmallerThanOriginal_ReturnsNull()
     {
         StubChatHandler stub = new("""{"choices":[{"message":{"content":"xx"}}]}""".Replace("xx", new string('z', 300_000)));
