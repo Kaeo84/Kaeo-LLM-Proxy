@@ -595,14 +595,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
-            // Resolve the compaction target first: global CompactModelProxyName, then the
-            // per-mapping ContextSummarizeModelId. Auto-compaction requires a resolved target
-            // — with none configured (dropdown = None) it does nothing and lets upstream
-            // decide (no fallback to the original model).
+            // Resolve the compaction target from the per-mapping ContextSummarizeModelId.
+            // Auto-compaction requires a resolved target — with none configured (dropdown =
+            // None) it does nothing and lets upstream decide (no fallback to the original model).
             ModelMapping? compactMapping = null;
-            if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
-                compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
-            if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+            if (mapping.ContextSummarizeModelId.HasValue)
                 compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
@@ -745,13 +742,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         try
         {
-            // Resolve the compaction target exactly like the proactive path: global setting
-            // first, then the per-mapping id. Reactive compaction requires a resolved target —
-            // with none configured it does nothing and surfaces the upstream overflow error.
+            // Resolve the compaction target from the per-mapping ContextSummarizeModelId.
+            // Reactive compaction requires a resolved target — with none configured it does
+            // nothing and surfaces the upstream overflow error.
             ModelMapping? compactMapping = null;
-            if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
-                compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
-            if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+            if (mapping.ContextSummarizeModelId.HasValue)
                 compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
@@ -3446,16 +3441,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Manual compaction is only redirected when the mapping opts in via
         // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
-        // "Compaction Model" dropdown, or the global CompactModelProxyName override).
-        // Otherwise the request passes through unchanged.
+        // "Compaction Model" dropdown). Otherwise the request passes through unchanged.
         ModelMapping? compactMapping = null;
-        if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
-        {
-            ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
-            if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
-                compactMapping = globalCompactMapping;
-        }
-        if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+        if (mapping.ContextSummarizeModelId.HasValue)
         {
             ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
             if (perMapping is not null && perMapping.IsEnabled)
@@ -3603,17 +3591,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Manual compaction is only redirected when the mapping opts in via
         // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
-        // "Compaction Model" dropdown, or the global CompactModelProxyName override).
-        // Otherwise the request passes through unchanged — these endpoints never forward to
-        // upstream, so "doing nothing" means returning the original body untouched.
+        // "Compaction Model" dropdown). Otherwise the request passes through unchanged —
+        // these endpoints never forward to upstream, so "doing nothing" means returning the
+        // original body untouched.
         ModelMapping? compactMapping = null;
-        if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
-        {
-            ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
-            if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
-                compactMapping = globalCompactMapping;
-        }
-        if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+        if (mapping.ContextSummarizeModelId.HasValue)
         {
             ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
             if (perMapping is not null && perMapping.IsEnabled)

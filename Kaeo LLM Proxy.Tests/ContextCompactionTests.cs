@@ -11,35 +11,6 @@ namespace Kaeo.LlmProxy.Tests;
 /// </summary>
 public class ContextCompactionTests
 {
-    // ── CompactModelProxyName Global Setting ──────────────────────────────
-
-    [Fact]
-    public void CompactModelProxyName_DefaultsToNull()
-    {
-        AppSettings settings = new();
-        Assert.Null(settings.CompactModelProxyName);
-    }
-
-    [Fact]
-    public void CompactModelProxyName_CanBeSet()
-    {
-        AppSettings settings = new()
-        {
-            CompactModelProxyName = "compact-model"
-        };
-        Assert.Equal("compact-model", settings.CompactModelProxyName);
-    }
-
-    [Fact]
-    public void CompactModelProxyName_CanBeEmpty()
-    {
-        AppSettings settings = new()
-        {
-            CompactModelProxyName = ""
-        };
-        Assert.Equal("", settings.CompactModelProxyName);
-    }
-
     // ── EnableCopilotNativeCompaction Setting ─────────────────────────────
 
     [Fact]
@@ -172,21 +143,9 @@ public class ContextCompactionTests
     // ── Compact Model Routing Logic ───────────────────────────────────────
 
     [Fact]
-    public void CompactModelRouting_GlobalSettingOverridesPerMapping()
+    public void CompactModelRouting_ResolvesPerMappingTarget()
     {
-        // Setup: Create settings with both global and per-mapping compact models
-        AppSettings settings = new()
-        {
-            CompactModelProxyName = "global-compact"
-        };
-
-        ModelMapping globalCompact = new()
-        {
-            ProxyName = "global-compact",
-            ModelName = "global-compact-upstream",
-            UpstreamUrl = "http://localhost:8081"
-        };
-        globalCompact.EnsureId();
+        AppSettings settings = new();
 
         ModelMapping perMappingCompact = new()
         {
@@ -205,91 +164,32 @@ public class ContextCompactionTests
         };
         mainMapping.EnsureId();
 
-        settings.ModelMappings.Add(globalCompact);
         settings.ModelMappings.Add(perMappingCompact);
         settings.ModelMappings.Add(mainMapping);
 
-        // Verify: Global setting should be found
-        ModelMapping? foundGlobal = settings.FindModelMapping(settings.CompactModelProxyName!);
-        Assert.NotNull(foundGlobal);
-        Assert.Equal("global-compact", foundGlobal.ProxyName);
-
-        // Verify: Per-mapping setting should also be found
-        ModelMapping? foundPerMapping = settings.FindModelMappingById(mainMapping.ContextSummarizeModelId!.Value);
-        Assert.NotNull(foundPerMapping);
-        Assert.Equal("per-mapping-compact", foundPerMapping.ProxyName);
+        // The per-mapping compaction target resolves to the configured model.
+        ModelMapping? found = settings.FindModelMappingById(mainMapping.ContextSummarizeModelId!.Value);
+        Assert.NotNull(found);
+        Assert.Equal("per-mapping-compact", found.ProxyName);
     }
 
     [Fact]
-    public void CompactModelRouting_FallsBackToPerMappingWhenGlobalNotSet()
+    public void CompactModelRouting_NoTargetWhenNoneConfigured()
     {
-        AppSettings settings = new(); // CompactModelProxyName is null by default
-
-        ModelMapping perMappingCompact = new()
-        {
-            ProxyName = "per-mapping-compact",
-            ModelName = "per-mapping-compact-upstream",
-            UpstreamUrl = "http://localhost:8082"
-        };
-        perMappingCompact.EnsureId();
+        AppSettings settings = new();
 
         ModelMapping mainMapping = new()
         {
             ProxyName = "main-model",
             ModelName = "main-upstream",
-            UpstreamUrl = "http://localhost:8080",
-            ContextSummarizeModelId = perMappingCompact.Id
+            UpstreamUrl = "http://localhost:8080"
         };
         mainMapping.EnsureId();
 
-        settings.ModelMappings.Add(perMappingCompact);
         settings.ModelMappings.Add(mainMapping);
 
-        // Verify: Global setting is null
-        Assert.Null(settings.CompactModelProxyName);
-
-        // Verify: Per-mapping setting should be found
-        ModelMapping? foundPerMapping = settings.FindModelMappingById(mainMapping.ContextSummarizeModelId!.Value);
-        Assert.NotNull(foundPerMapping);
-        Assert.Equal("per-mapping-compact", foundPerMapping.ProxyName);
-    }
-
-    [Fact]
-    public void CompactModelRouting_GlobalSettingNotFoundFallsBackToPerMapping()
-    {
-        AppSettings settings = new()
-        {
-            CompactModelProxyName = "nonexistent-compact"
-        };
-
-        ModelMapping perMappingCompact = new()
-        {
-            ProxyName = "per-mapping-compact",
-            ModelName = "per-mapping-compact-upstream",
-            UpstreamUrl = "http://localhost:8082"
-        };
-        perMappingCompact.EnsureId();
-
-        ModelMapping mainMapping = new()
-        {
-            ProxyName = "main-model",
-            ModelName = "main-upstream",
-            UpstreamUrl = "http://localhost:8080",
-            ContextSummarizeModelId = perMappingCompact.Id
-        };
-        mainMapping.EnsureId();
-
-        settings.ModelMappings.Add(perMappingCompact);
-        settings.ModelMappings.Add(mainMapping);
-
-        // Verify: Global setting is not found
-        ModelMapping? foundGlobal = settings.FindModelMapping(settings.CompactModelProxyName!);
-        Assert.Null(foundGlobal);
-
-        // Verify: Per-mapping setting should still be found
-        ModelMapping? foundPerMapping = settings.FindModelMappingById(mainMapping.ContextSummarizeModelId!.Value);
-        Assert.NotNull(foundPerMapping);
-        Assert.Equal("per-mapping-compact", foundPerMapping.ProxyName);
+        // With no compaction target configured, there is nothing to resolve.
+        Assert.Null(mainMapping.ContextSummarizeModelId);
     }
 
     // ── Copilot Detection Integration ─────────────────────────────────────
@@ -333,8 +233,7 @@ public class ContextCompactionTests
         {
             EnableCopilotNativeCompaction = true,
             EnableAutoCompaction = false,
-            EnableManualCompactionEndpoint = true,
-            CompactModelProxyName = "test-compact"
+            EnableManualCompactionEndpoint = true
         };
 
         // Verify settings can be serialized and deserialized
@@ -347,21 +246,5 @@ public class ContextCompactionTests
         Assert.True(deserialized.EnableCopilotNativeCompaction); // Default is true
         Assert.True(deserialized.EnableAutoCompaction); // Default is true, [JsonIgnore] prevents serialization
         Assert.False(deserialized.EnableManualCompactionEndpoint); // Default is false, [JsonIgnore] prevents serialization
-        Assert.Equal("test-compact", deserialized.CompactModelProxyName);
-    }
-
-    [Fact]
-    public void Configuration_NullCompactModelProxyNameSerializesCorrectly()
-    {
-        AppSettings settings = new()
-        {
-            CompactModelProxyName = null
-        };
-
-        string json = JsonSerializer.Serialize(settings);
-        AppSettings? deserialized = JsonSerializer.Deserialize<AppSettings>(json);
-
-        Assert.NotNull(deserialized);
-        Assert.Null(deserialized.CompactModelProxyName);
     }
 }
