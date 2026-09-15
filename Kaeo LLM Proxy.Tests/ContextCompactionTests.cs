@@ -124,6 +124,51 @@ public class ContextCompactionTests
         Assert.Equal(42, mapping.ContextSummarizeModelId);
     }
 
+    // ── RedirectManualCompaction Per-Mapping Setting ──────────────────────
+
+    [Fact]
+    public void RedirectManualCompaction_DefaultsToFalse()
+    {
+        ModelMapping mapping = new()
+        {
+            ProxyName = "test-model",
+            ModelName = "test-upstream",
+            UpstreamUrl = "http://localhost:8080"
+        };
+        Assert.False(mapping.RedirectManualCompaction);
+    }
+
+    [Fact]
+    public void RedirectManualCompaction_CanBeSet()
+    {
+        ModelMapping mapping = new()
+        {
+            ProxyName = "test-model",
+            ModelName = "test-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            RedirectManualCompaction = true
+        };
+        Assert.True(mapping.RedirectManualCompaction);
+    }
+
+    [Fact]
+    public void RedirectManualCompaction_IsPreservedOnClone()
+    {
+        ModelMapping mapping = new()
+        {
+            ProxyName = "test-model",
+            ModelName = "test-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            RedirectManualCompaction = true
+        };
+        mapping.EnsureId();
+
+        ModelMapping clone = mapping.Clone();
+
+        Assert.True(clone.RedirectManualCompaction);
+        Assert.Equal(mapping.Id, clone.Id);
+    }
+
     // ── Compact Model Routing Logic ───────────────────────────────────────
 
     [Fact]

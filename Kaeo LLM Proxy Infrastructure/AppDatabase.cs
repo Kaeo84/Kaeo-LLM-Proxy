@@ -112,7 +112,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n,
                     draft_n_accepted,
                     debug_summary,
-                    upstream_response_body
+                    upstream_response_body,
+                    stop_reason
                 )
                 VALUES (
                     $timestampUtc,
@@ -140,7 +141,8 @@ internal sealed class AppDatabase : IDisposable
                     $draftN,
                     $draftNAccepted,
                     $debugSummary,
-                    $upstreamResponseBody
+                    $upstreamResponseBody,
+                    $stopReason
                 );
                 """;
 
@@ -188,7 +190,8 @@ internal sealed class AppDatabase : IDisposable
                     proactive_overflow_percent,
                     proactive_overflow_tokens,
                     context_summarize_model_id,
-                    auto_compact_paths
+                    auto_compact_paths,
+                    redirect_manual_compaction
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -262,7 +265,8 @@ internal sealed class AppDatabase : IDisposable
                         proactive_overflow_percent,
                         proactive_overflow_tokens,
                         context_summarize_model_id,
-                        auto_compact_paths
+                        auto_compact_paths,
+                        redirect_manual_compaction
                     )
                     VALUES (
                         $id,
@@ -293,7 +297,8 @@ internal sealed class AppDatabase : IDisposable
                         $proactiveOverflowPercent,
                         $proactiveOverflowTokens,
                         $contextSummarizeModelId,
-                        $autoCompactPaths
+                        $autoCompactPaths,
+                        $redirectManualCompaction
                     );
                     """;
 
@@ -826,7 +831,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n,
                     draft_n_accepted,
                     debug_summary,
-                    upstream_response_body
+                    upstream_response_body,
+                    stop_reason
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1091,7 +1097,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n INTEGER NOT NULL DEFAULT 0,
                     draft_n_accepted INTEGER NOT NULL DEFAULT 0,
                     debug_summary TEXT NULL,
-                    upstream_response_body TEXT NULL
+                    upstream_response_body TEXT NULL,
+                    stop_reason TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1125,7 +1132,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n INTEGER NOT NULL DEFAULT 0,
                     draft_n_accepted INTEGER NOT NULL DEFAULT 0,
                     debug_summary TEXT NULL,
-                    upstream_response_body TEXT NULL
+                    upstream_response_body TEXT NULL,
+                    stop_reason TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1160,7 +1168,8 @@ internal sealed class AppDatabase : IDisposable
                     proactive_overflow_percent INTEGER NOT NULL DEFAULT 0,
                     proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0,
                     context_summarize_model_name TEXT NULL,
-                    auto_compact_paths INTEGER NOT NULL DEFAULT 0
+                    auto_compact_paths INTEGER NOT NULL DEFAULT 0,
+                    redirect_manual_compaction INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1297,6 +1306,10 @@ internal sealed class AppDatabase : IDisposable
                 "ALTER TABLE mcp_requests ADD COLUMN debug_summary TEXT NULL;");
             AddColumnIfMissing(connection, "mcp_requests", "upstream_response_body",
                 "ALTER TABLE mcp_requests ADD COLUMN upstream_response_body TEXT NULL;");
+            AddColumnIfMissing(connection, "requests", "stop_reason",
+                "ALTER TABLE requests ADD COLUMN stop_reason TEXT NULL;");
+            AddColumnIfMissing(connection, "mcp_requests", "stop_reason",
+                "ALTER TABLE mcp_requests ADD COLUMN stop_reason TEXT NULL;");
         }
 
     /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
@@ -1569,6 +1582,15 @@ internal sealed class AppDatabase : IDisposable
             Log.Information("Migrated model_mappings table: added auto_compact_paths column.");
         }
 
+        if (!ColumnExists(connection, "model_mappings", "redirect_manual_compaction"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN redirect_manual_compaction INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added redirect_manual_compaction column.");
+        }
+
         // Post-migration: assign IDs to any mappings that don't have one yet, and convert
         // legacy string-based context_summarize_model_name references to integer IDs.
         MigrateMappingIds(connection);
@@ -1821,6 +1843,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$draftNAccepted", entry.DraftNAccepted);
             command.Parameters.AddWithValue("$debugSummary", DbValue(entry.DebugSummary));
             command.Parameters.AddWithValue("$upstreamResponseBody", DbValue(entry.UpstreamResponseBody));
+            command.Parameters.AddWithValue("$stopReason", DbValue(entry.StopReason));
         }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -1858,6 +1881,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
         command.Parameters.AddWithValue("$contextSummarizeModelId", mapping.ContextSummarizeModelId.HasValue ? (object)mapping.ContextSummarizeModelId.Value : DBNull.Value);
         command.Parameters.AddWithValue("$autoCompactPaths", (int)mapping.AutoCompactPaths);
+        command.Parameters.AddWithValue("$redirectManualCompaction", ToSqliteBoolean(mapping.RedirectManualCompaction));
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -1907,6 +1931,7 @@ internal sealed class AppDatabase : IDisposable
         AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(28))
             ? (AutoCompactPaths)reader.GetInt32(28)
             : AutoCompactPaths.None,
+        RedirectManualCompaction = ReadBoolean(reader, 29),
     };
 
     /// <summary>
@@ -1955,6 +1980,7 @@ internal sealed class AppDatabase : IDisposable
         DraftNAccepted = reader.GetInt32(23),
         DebugSummary = reader.IsDBNull(24) ? null : reader.GetString(24),
         UpstreamResponseBody = reader.IsDBNull(25) ? null : reader.GetString(25),
+        StopReason = reader.IsDBNull(26) ? null : reader.GetString(26),
     };
 
     /// <summary>

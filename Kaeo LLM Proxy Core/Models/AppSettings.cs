@@ -503,6 +503,16 @@ internal sealed class ModelMapping
     public AutoCompactPaths AutoCompactPaths { get; set; } = AutoCompactPaths.None;
 
     /// <summary>
+    /// When true, manual compaction requests (POST /v1/chat/completions/compact and
+    /// POST /v1/responses/compact) for this model are routed to the configured compaction
+    /// target (<see cref="ContextSummarizeModelId"/>). When false (default), manual
+    /// compaction requests pass through the body unchanged. A manual compaction request can
+    /// only be redirected when this is true AND a valid compaction target is selected; with
+    /// the target set to (None) the request is always passed through untouched.
+    /// </summary>
+    public bool RedirectManualCompaction { get; set; }
+
+    /// <summary>
     /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
     /// Absolute token count takes precedence over percentage.
     /// </summary>
@@ -555,6 +565,7 @@ internal sealed class ModelMapping
             ProactiveOverflowPercent = ProactiveOverflowPercent,
             ProactiveOverflowTokens = ProactiveOverflowTokens,
             AutoCompactPaths = AutoCompactPaths,
+            RedirectManualCompaction = RedirectManualCompaction,
         };
         clone.EnsureId();
         return clone;

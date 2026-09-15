@@ -53,6 +53,8 @@ internal sealed class ModelMappingDialog : Form
     private readonly TableLayoutPanel _tlpCompaction = new();
     private readonly Label _lblAutoCompactPaths = new();
     private readonly ComboBox _cmbAutoCompactPaths = new();
+    private readonly CheckBox _chkRedirectManualCompaction = new();
+    private readonly Label _lblCompactionStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
     private readonly Label _lblTemperature = new();
     private readonly NumericUpDown _nudTemperature = new();
     private readonly Label _lblRepeatPenalty = new();
@@ -114,11 +116,28 @@ internal sealed class ModelMappingDialog : Form
     {
         InitializeUi();
         _cmbUpstreamUrl.TextChanged += (_, _) => _upstreamUrl = _cmbUpstreamUrl.Text.Trim();
+        _cmbContextSummarizeModel.SelectedIndexChanged += (_, _) => UpdateCompactionStatus();
+        _chkRedirectManualCompaction.CheckedChanged += (_, _) => UpdateCompactionStatus();
         _toolTip.SetToolTip(
             _cmbUpstreamUrl,
             "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
             + "https://provider.example/compatible-mode/v1. A trailing \"/v1\" is handled\n"
             + "automatically and won't be duplicated in requests.");
+    }
+
+    /// <summary>
+    /// Updates the inline help under the compaction controls so the user always sees whether the
+    /// current selection actually enables compaction. When the Compaction Model is (None), neither
+    /// automatic nor manual compaction can redirect anywhere, so the proxy does nothing.
+    /// </summary>
+    private void UpdateCompactionStatus()
+    {
+        bool hasTarget = !string.Equals(_cmbContextSummarizeModel.SelectedItem?.ToString(), NoneLabel, StringComparison.OrdinalIgnoreCase)
+            && _cmbContextSummarizeModel.SelectedItem is not null;
+
+        _lblCompactionStatus.Text = hasTarget
+            ? $"Compaction target: {_cmbContextSummarizeModel.SelectedItem}. Automatic compaction uses this model; manual compaction redirects only when 'Redirect manual compaction' is checked."
+            : "No compaction model selected — the proxy will NOT compact or redirect this model's context. Automatic compaction does nothing and manual compaction passes requests through untouched. Select a target model to enable compaction.";
     }
 
     protected override void OnShown(EventArgs e)
@@ -402,6 +421,13 @@ internal sealed class ModelMappingDialog : Form
             }
             _cmbAutoCompactPaths.SelectedIndex = 0;
         }
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool RedirectManualCompaction
+    {
+        get => _chkRedirectManualCompaction.Checked;
+        set => _chkRedirectManualCompaction.Checked = value;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -836,9 +862,12 @@ internal sealed class ModelMappingDialog : Form
         _cmbContextSummarizeModel.Margin = new Padding(0, 4, 0, 4);
         _toolTip.SetToolTip(
             _cmbContextSummarizeModel,
-            "Optional smaller/faster model to handle context-summarize (/compact) requests for this model.\n"
-            + "When a request is detected as a Copilot /compact session-summary request, it is\n"
-            + "transparently routed to the selected model instead. Leave (None) to use this model itself.");
+            "The model used as the compaction target for BOTH automatic and manual compaction of this model.\n"
+            + "Automatic compaction summarizes this model's context with the selected model when the\n"
+            + "threshold is exceeded; manual compaction (/compact) requests redirect here when\n"
+            + "'Redirect manual compaction' is checked.\n"
+            + "Leave (None) to disable compaction entirely — the proxy will not compact or redirect\n"
+            + "this model's context.");
 
         _lblUpstreamTimeout.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblUpstreamTimeout.AutoSize = true;
@@ -874,9 +903,11 @@ internal sealed class ModelMappingDialog : Form
         _tlpCompaction.AutoSizeMode = AutoSizeMode.GrowOnly;
         _tlpCompaction.Dock = DockStyle.Fill;
         _tlpCompaction.ColumnCount = 2;
-        _tlpCompaction.RowCount = 4;
+        _tlpCompaction.RowCount = 6;
         _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -933,9 +964,19 @@ internal sealed class ModelMappingDialog : Form
             + "exceeds the proactive overflow threshold. 'Both' applies to both Ollama\n"
             + "and OpenAI endpoints.");
 
+        _chkRedirectManualCompaction.AutoSize = true;
+        _chkRedirectManualCompaction.Margin = new Padding(0, 4, 0, 4);
+        _chkRedirectManualCompaction.Text = "Redirect manual compaction to the selected model";
+        _toolTip.SetToolTip(
+            _chkRedirectManualCompaction,
+            "When checked, manual compaction requests (/compact) for this model are routed to the\n"
+            + "selected Compaction Model. When unchecked, manual compaction passes the request\n"
+            + "through unchanged. Has no effect unless a Compaction Model is selected.");
+
         // Add the compaction-related controls into the compaction table so they
         // are visually grouped inside the _grpCompaction GroupBox.
-        // Order: Auto-Compact Paths first, then the two proactive overflow thresholds.
+        // Order: Auto-Compact Paths, the two proactive overflow thresholds, the
+        // compaction model target, the manual-redirect checkbox, then the status label.
         _tlpCompaction.Controls.Add(_lblAutoCompactPaths, 0, 0);
         _tlpCompaction.Controls.Add(_cmbAutoCompactPaths, 1, 0);
         _tlpCompaction.Controls.Add(_lblProactiveOverflowPercent, 0, 1);
@@ -944,6 +985,10 @@ internal sealed class ModelMappingDialog : Form
         _tlpCompaction.Controls.Add(_nudProactiveOverflowTokens, 1, 2);
         _tlpCompaction.Controls.Add(_lblContextSummarizeModel, 0, 3);
         _tlpCompaction.Controls.Add(_cmbContextSummarizeModel, 1, 3);
+        _tlpCompaction.Controls.Add(_chkRedirectManualCompaction, 0, 4);
+        _tlpCompaction.SetColumnSpan(_chkRedirectManualCompaction, 2);
+        _tlpCompaction.Controls.Add(_lblCompactionStatus, 0, 5);
+        _tlpCompaction.SetColumnSpan(_lblCompactionStatus, 2);
 
         _grpCompaction.Controls.Add(_tlpCompaction);
 
@@ -1311,6 +1356,7 @@ internal sealed class ModelMappingDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         Text = "Configure Model";
 
+        UpdateCompactionStatus();
         ResumeLayout(false);
     }
 
@@ -1852,6 +1898,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ProactiveOverflowPercent = mapping.ProactiveOverflowPercent;
         dlg.ProactiveOverflowTokens = mapping.ProactiveOverflowTokens;
         dlg.AutoCompactPaths = mapping.AutoCompactPaths;
+        dlg.RedirectManualCompaction = mapping.RedirectManualCompaction;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
         dlg.ReasoningEffortPriority = mapping.ReasoningEffortPriority;
@@ -1867,6 +1914,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
         dlg.RedactResponseBodies = mapping.RedactResponseBodies;
         dlg.RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields;
+        dlg.UpdateCompactionStatus();
 
         DialogResult result = dlg.ShowDialog(owner);
 
@@ -1895,6 +1943,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.ProactiveOverflowPercent = dlg.ProactiveOverflowPercent;
         mapping.ProactiveOverflowTokens = dlg.ProactiveOverflowTokens;
         mapping.AutoCompactPaths = dlg.AutoCompactPaths;
+        mapping.RedirectManualCompaction = dlg.RedirectManualCompaction;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
         mapping.ReasoningEffortPriority = dlg.ReasoningEffortPriority;

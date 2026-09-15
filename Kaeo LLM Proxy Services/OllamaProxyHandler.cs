@@ -595,6 +595,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
+            // Resolve the compaction target first: global CompactModelProxyName, then the
+            // per-mapping ContextSummarizeModelId. Auto-compaction requires a resolved target
+            // — with none configured (dropdown = None) it does nothing and lets upstream
+            // decide (no fallback to the original model).
+            ModelMapping? compactMapping = null;
+            if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
+                compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
+            if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
+                compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
+                compactMapping = null;
+
+            if (compactMapping is null)
+            {
+                Log.Debug("Auto-compaction for model {Model} skipped: no compaction target configured", model);
+                return (false, null);
+            }
+
             // Stream notification: compaction needed
             if (outputStream is not null)
             {
@@ -606,27 +624,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             try
             {
-                // Resolve the compact model: global CompactModelProxyName first, then the
-                // per-mapping ContextSummarizeModelId. Summarization requests go directly to
-                // this model's upstream, so BOTH the base URL and the upstream model name
-                // (not the proxy display name) must come from the resolved mapping.
-                ModelMapping? compactMapping = null;
-                if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
-                    compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
-                if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
-                    compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-                if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
-                    compactMapping = null;
-
-                if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
-                {
-                    Log.Warning("Auto-compaction: compact model mapping {CompactModelId} not found or disabled, falling back to original model {Model}",
-                        mapping.ContextSummarizeModelId.Value, model);
-                }
-
-                var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping?.ProxyName ?? model);
-                string compactModelName = (compactMapping ?? mapping).ModelName ?? model;
-                int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+                // Summarization requests go directly to the target's upstream, so BOTH the
+                // base URL and the upstream model name (not the proxy display name) must come
+                // from the resolved target mapping.
+                var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping.ProxyName);
+                string compactModelName = compactMapping.ModelName ?? model;
+                int compactModelContext = compactMapping.GetEffectiveContextWindow();
                 int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
@@ -742,16 +745,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         try
         {
-            if (streamAlreadyOpen)
-            {
-                byte[] note = Encoding.UTF8.GetBytes(
-                    ": <ignorethis>kaeo-compaction-needed: Upstream reported context overflow. Compacting conversation...</ignorethis>\n\n");
-                await resp.OutputStream.WriteAsync(note, ct);
-                await resp.OutputStream.FlushAsync(ct);
-            }
-
-            // Resolve the compact model exactly like the proactive path: global setting first,
-            // then the per-mapping id; summarize requests must carry the upstream model name.
+            // Resolve the compaction target exactly like the proactive path: global setting
+            // first, then the per-mapping id. Reactive compaction requires a resolved target —
+            // with none configured it does nothing and surfaces the upstream overflow error.
             ModelMapping? compactMapping = null;
             if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
                 compactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
@@ -760,9 +756,23 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
 
-            var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping?.ProxyName ?? model);
-            string compactModelName = (compactMapping ?? mapping).ModelName ?? model;
-            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            if (compactMapping is null)
+            {
+                Log.Debug("Reactive auto-compaction for model {Model} skipped: no compaction target configured", model);
+                return null;
+            }
+
+            if (streamAlreadyOpen)
+            {
+                byte[] note = Encoding.UTF8.GetBytes(
+                    ": <ignorethis>kaeo-compaction-needed: Upstream reported context overflow. Compacting conversation...</ignorethis>\n\n");
+                await resp.OutputStream.WriteAsync(note, ct);
+                await resp.OutputStream.FlushAsync(ct);
+            }
+
+            var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping.ProxyName);
+            string compactModelName = compactMapping.ModelName ?? model;
+            int compactModelContext = compactMapping.GetEffectiveContextWindow();
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
 
             Log.Information("Reactive auto-compaction triggered for model {Model} after upstream context overflow", model);
@@ -3426,60 +3436,45 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes",
             originalModel, log.RequestBytes);
 
-        // Apply compact model redirect: first check global CompactModelProxyName, then per-mapping ContextSummarizeModelId
+        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+        if (mapping is null)
+        {
+            resp.StatusCode = 404;
+            await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
+            return;
+        }
+
+        // Manual compaction is only redirected when the mapping opts in via
+        // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
+        // "Compaction Model" dropdown, or the global CompactModelProxyName override).
+        // Otherwise the request passes through unchanged.
+        ModelMapping? compactMapping = null;
         if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
         {
-            // Use global compact model if configured
             ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
             if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
-            {
-                effectiveModel = globalCompactMapping.ProxyName;
-                Log.Debug("Using global compact model {CompactModel} for request model {OriginalModel}",
-                    effectiveModel, originalModel);
-                if (_settings.DebugMode && log.DebugSummary is not null)
-                    log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
-                        originalModel, effectiveModel);
-            }
+                compactMapping = globalCompactMapping;
         }
-
-        // Fall back to per-mapping ContextSummarizeModelId if global not set or not found
-        if (string.IsNullOrEmpty(effectiveModel))
+        if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
         {
-            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-            if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
-            {
-                ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-                if (compactMapping is not null && compactMapping.IsEnabled)
-                {
-                    effectiveModel = compactMapping.ProxyName;
-                    Log.Debug("Using per-mapping compact model {CompactModel} for request model {OriginalModel}",
-                        effectiveModel, originalModel);
-                    if (_settings.DebugMode && log.DebugSummary is not null)
-                        log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
-                            originalModel, effectiveModel);
-                }
-            }
+            ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (perMapping is not null && perMapping.IsEnabled)
+                compactMapping = perMapping;
         }
 
-        if (string.IsNullOrEmpty(effectiveModel))
-            effectiveModel = originalModel;
-
-        // Rewrite the model name in the request body if redirecting.
-        string upstreamBody = bodyText;
-        if (!string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+        if (!mapping.RedirectManualCompaction || compactMapping is null)
         {
-            using JsonDocument doc = JsonDocument.Parse(bodyText);
-            using var stream = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(stream))
-            {
-                doc.RootElement.WriteTo(writer);
-            }
-            // Simple string replacement for the model field Ã¢â‚¬â€ safe because model names are
-            // always quoted strings and we control the replacement value.
-            upstreamBody = bodyText.Replace(
-                $"\"model\":\"{originalModel}\"",
-                $"\"model\":\"{effectiveModel}\"");
+            Log.Debug("Compact request for model {Model} passes through unchanged (redirect enabled: {Redirect}, target: {Target})",
+                originalModel, mapping.RedirectManualCompaction, compactMapping?.ProxyName ?? "(none)");
+            await WriteManualCompactPassThrough(resp, bodyText, log, ct);
+            return;
         }
+
+        effectiveModel = compactMapping.ProxyName;
+        Log.Debug("Using compact model {CompactModel} for compact request model {OriginalModel}",
+            effectiveModel, originalModel);
+        if (_settings.DebugMode && log.DebugSummary is not null)
+            log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(originalModel, effectiveModel);
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
 
@@ -3493,24 +3488,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
         try
         {
-            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-            if (mapping is null)
-            {
-                resp.StatusCode = 404;
-                await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
-                return;
-            }
-
             // Build a session key for circuit breaker tracking
             string sessionKey = $"compact:{originalModel}:{bodyText.GetHashCode():X8}";
 
-            // Get the compact model's context window for chunk sizing
-            ModelMapping? compactMapping = null;
-            if (!string.IsNullOrEmpty(effectiveModel) && !string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
-            {
-                compactMapping = _settings.FindModelMapping(effectiveModel);
-            }
-            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            // The resolved compaction target is guaranteed non-null past the gate above.
+            int compactModelContext = compactMapping.GetEffectiveContextWindow();
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
@@ -3611,52 +3593,46 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         log.Model = originalModel;
 
-        // Apply compact model redirect: first check global CompactModelProxyName, then per-mapping ContextSummarizeModelId
+        ModelMapping? mapping = _settings.FindModelMapping(originalModel);
+        if (mapping is null)
+        {
+            resp.StatusCode = 404;
+            await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
+            return;
+        }
+
+        // Manual compaction is only redirected when the mapping opts in via
+        // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
+        // "Compaction Model" dropdown, or the global CompactModelProxyName override).
+        // Otherwise the request passes through unchanged — these endpoints never forward to
+        // upstream, so "doing nothing" means returning the original body untouched.
+        ModelMapping? compactMapping = null;
         if (!string.IsNullOrWhiteSpace(_settings.CompactModelProxyName))
         {
-            // Use global compact model if configured
             ModelMapping? globalCompactMapping = _settings.FindModelMapping(_settings.CompactModelProxyName);
             if (globalCompactMapping is not null && globalCompactMapping.IsEnabled)
-            {
-                effectiveModel = globalCompactMapping.ProxyName;
-                Log.Debug("Using global compact model {CompactModel} for manual compact request model {OriginalModel}",
-                    effectiveModel, originalModel);
-                if (_settings.DebugMode && log.DebugSummary is not null)
-                    log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
-                        originalModel, effectiveModel);
-            }
+                compactMapping = globalCompactMapping;
         }
-
-        // Fall back to per-mapping ContextSummarizeModelId if global not set or not found
-        if (string.IsNullOrEmpty(effectiveModel))
+        if (compactMapping is null && mapping.ContextSummarizeModelId.HasValue)
         {
-            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-            if (mapping is not null && mapping.ContextSummarizeModelId.HasValue)
-            {
-                ModelMapping? compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-                if (compactMapping is not null && compactMapping.IsEnabled)
-                {
-                    effectiveModel = compactMapping.ProxyName;
-                    Log.Debug("Using per-mapping compact model {CompactModel} for manual compact request model {OriginalModel}",
-                        effectiveModel, originalModel);
-                    if (_settings.DebugMode && log.DebugSummary is not null)
-                        log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(
-                            originalModel, effectiveModel);
-                }
-            }
+            ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            if (perMapping is not null && perMapping.IsEnabled)
+                compactMapping = perMapping;
         }
 
-        if (string.IsNullOrEmpty(effectiveModel))
-            effectiveModel = originalModel;
-
-        // Rewrite the model name in the request body if redirecting.
-        string upstreamBody = bodyText;
-        if (!string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
+        if (!mapping.RedirectManualCompaction || compactMapping is null)
         {
-            upstreamBody = bodyText.Replace(
-                $"\"model\":\"{originalModel}\"",
-                $"\"model\":\"{effectiveModel}\"");
+            Log.Debug("Manual compaction for model {Model} passes through unchanged (redirect enabled: {Redirect}, target: {Target})",
+                originalModel, mapping.RedirectManualCompaction, compactMapping?.ProxyName ?? "(none)");
+            await WriteManualCompactPassThrough(resp, bodyText, log, ct);
+            return;
         }
+
+        effectiveModel = compactMapping.ProxyName;
+        Log.Debug("Using compact model {CompactModel} for manual compact request model {OriginalModel}",
+            effectiveModel, originalModel);
+        if (_settings.DebugMode && log.DebugSummary is not null)
+            log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(originalModel, effectiveModel);
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
 
@@ -3673,24 +3649,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
         try
         {
-            ModelMapping? mapping = _settings.FindModelMapping(originalModel);
-            if (mapping is null)
-            {
-                resp.StatusCode = 404;
-                await WriteJsonAsync(resp, new { error = $"Model '{originalModel}' not found." }, ct);
-                return;
-            }
-
             // Build a session key for circuit breaker tracking
             string sessionKey = $"manual-compact:{originalModel}:{bodyText.GetHashCode():X8}";
 
-            // Get the compact model's context window for chunk sizing
-            ModelMapping? compactMapping = null;
-            if (!string.IsNullOrEmpty(effectiveModel) && !string.Equals(effectiveModel, originalModel, StringComparison.Ordinal))
-            {
-                compactMapping = _settings.FindModelMapping(effectiveModel);
-            }
-            int compactModelContext = (compactMapping ?? mapping).GetEffectiveContextWindow();
+            // The resolved compaction target is guaranteed non-null past the gate above.
+            int compactModelContext = compactMapping.GetEffectiveContextWindow();
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
             int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
@@ -3754,6 +3717,30 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 error = "Internal error during manual compaction. Please retry.",
             }, ct);
         }
+    }
+
+    /// <summary>
+    /// Returns the original request body unchanged (HTTP 200) when manual compaction is not
+    /// redirected for a mapping — i.e. the mapping did not opt in via RedirectManualCompaction
+    /// or no compaction target is configured. These /compact endpoints never forward to
+    /// upstream, so "passing through" means echoing the untouched body back to the caller.
+    /// </summary>
+    private async Task WriteManualCompactPassThrough(
+        HttpListenerResponse resp, string bodyText, RequestLog log, CancellationToken ct)
+    {
+        if (_settings.CollectResponseDetails)
+            log.ResponseBody = bodyText;
+
+        resp.StatusCode = 200;
+        resp.ContentType = "application/json";
+        byte[] bytes = Encoding.UTF8.GetBytes(bodyText);
+        resp.ContentLength64 = bytes.Length;
+        await resp.OutputStream.WriteAsync(bytes, ct);
+        resp.Close();
+
+        log.ResponseBytes = bytes.Length;
+        log.StatusCode = 200;
+        log.Status = RequestStatus.Success;
     }
 
     // Ã¢â€â‚¬Ã¢â€â‚¬ /api/ps Ã¢â€ â€™ running model stub Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
