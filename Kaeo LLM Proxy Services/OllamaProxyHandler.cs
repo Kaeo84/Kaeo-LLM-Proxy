@@ -570,19 +570,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Stream? outputStream,
         CancellationToken ct)
     {
-        int threshold = mapping?.GetProactiveOverflowThreshold() ?? 0;
-        int estimated = EstimateTokenCount(body);
+        // Fast path: skip token estimation entirely if this path isn't enabled or no threshold is set.
+        if (mapping is null || (mapping.AutoCompactPaths & requestPath) == 0)
+            return (false, null);
+
+        int threshold = mapping.GetProactiveOverflowThreshold();
 
         if (threshold <= 0)
         {
-            // Warn once per mapping when threshold is disabled but context is large
-            if (estimated > 50000 && mapping is not null)
+            int estTokens = EstimateTokenCount(body);
+            if (estTokens > 50000)
             {
                 Log.Warning("Auto-compaction disabled for model {Model} (threshold=0), but request has ~{EstimatedTokens} tokens. Consider setting ProactiveOverflowPercent or ProactiveOverflowTokens.",
-                    model, estimated);
+                    model, estTokens);
             }
             return (false, null);
         }
+
+        int estimated = EstimateTokenCount(body);
 
         if (estimated <= threshold)
             return (false, null);
@@ -942,14 +947,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 resp.Close();
             }
 
-            if (_settings.CollectAllTraffic)
-            {
-                log.Status = RequestStatus.Success;
-                log.StatusCode = 200;
-                sw.Stop();
-                log.DurationMs = sw.Elapsed.TotalMilliseconds;
-                _stats.AddLog(log);
-            }
             return;
         }
 
@@ -4165,12 +4162,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             LlamaCppStreamChunk? chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(respBody, _jsonOptions);
             string text = chunk?.Choices?.FirstOrDefault()?.Text ?? string.Empty;
             LlamaCppUsage? usage = chunk?.Usage;
+            log.StopReason = chunk?.Choices?.FirstOrDefault()?.FinishReason ?? "stop";
 
             FillTokenStats(log, usage);
             log.ResponseBytes = Encoding.UTF8.GetByteCount(respBody);
-
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = RedactResponseBodyForLog(text, ollamaReq.Model);
 
             long elapsedNs = ElapsedNanos(sw);
             var ollamaResp = new OllamaGenerateResponse
@@ -4186,7 +4181,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 EvalDuration = elapsedNs,
             };
 
-            await WriteJsonAsync(resp, ollamaResp, ct);
+            // Serialize the Ollama response once so the log captures exactly what the client
+            // receives (the "after" of the OpenAI→Ollama response translation).
+            string ollamaJson = JsonSerializer.Serialize(ollamaResp, _jsonOptions);
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = RedactResponseBodyForLog(ollamaJson, ollamaReq.Model);
+
+            await WriteJsonRawAsync(resp, ollamaJson, ct);
             log.Status = RequestStatus.Success;
         }
     }
@@ -4413,6 +4414,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             LlamaCppChoice? firstChoice = chunk?.Choices?.FirstOrDefault();
             LlamaCppDelta? delta = firstChoice?.Message ?? firstChoice?.Delta;
             string? upstreamFinishReason = firstChoice?.FinishReason;
+            log.StopReason = upstreamFinishReason;
             FillTokenStats(log, chunk);
             log.ResponseBytes = Encoding.UTF8.GetByteCount(respBody);
 
@@ -4451,9 +4453,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             content = toolCallExtraction.Content;
 
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = RedactResponseBodyForLog(content ?? string.Empty, ollamaReq.Model);
-
             long elapsedNs = ElapsedNanos(sw);
             var ollamaResp = new OllamaChatResponse
             {
@@ -4468,7 +4467,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 EvalDuration = elapsedNs,
             };
 
-            await WriteJsonAsync(resp, ollamaResp, ct);
+            // Serialize the Ollama response once so the log captures exactly what the client
+            // receives (the "after" of the OpenAI→Ollama response translation).
+            string ollamaJson = JsonSerializer.Serialize(ollamaResp, _jsonOptions);
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = RedactResponseBodyForLog(ollamaJson, ollamaReq.Model);
+
+            await WriteJsonRawAsync(resp, ollamaJson, ct);
             log.Status = RequestStatus.Success;
         }
 
@@ -4544,6 +4549,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>Elapsed stopwatch time in nanoseconds Ã¢â‚¬â€ Ollama's duration unit.</summary>
     private static long ElapsedNanos(Stopwatch sw) => (long)(sw.Elapsed.TotalSeconds * 1_000_000_000);
 
+    /// <summary>
+    /// Maps an upstream failure to a short, client-facing message for the terminal error chunk
+    /// emitted on the SSE/NDJSON stream before the connection is closed. Timeouts and network
+    /// drops are the common cases; everything else falls back to a generic message so internal
+    /// details (hostnames, URIs) are never leaked to the client.
+    /// </summary>
+    private static string DescribeUpstreamStreamError(Exception ex)
+    {
+        if (ex is TaskCanceledException || ex is OperationCanceledException)
+            return "Upstream request timed out or was canceled before the response completed.";
+
+        if (ex is HttpRequestException)
+            return "Upstream connection error: the upstream server closed the connection or became unreachable.";
+
+        if (ex is IOException)
+            return "Upstream I/O error: the upstream connection was interrupted.";
+
+        return "Upstream error: the response was interrupted before it completed.";
+    }
+
     private static async Task StreamCompletionToOllamaAsync(
         HttpResponseMessage upstreamResp,
         HttpListenerResponse resp,
@@ -4558,14 +4583,55 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(stream, Encoding.UTF8);
         await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
-        using PooledCharBuffer? responseAccumulator = collectResponse ? new PooledCharBuffer() : null;
+        // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
+        // the "after" of the OpenAI→Ollama response translation (not just the content text).
+        using PooledCharBuffer? ollamaJsonAccumulator = collectResponse ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
+        bool upstreamFailed = false;
         long responseBytes = 0;
+        string? stopReason = null;
 
         while (!ct.IsCancellationRequested)
         {
-            string? line = await reader.ReadLineAsync(ct);
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // The upstream stream failed mid-response. Push a terminal error chunk so the
+                // client learns the stream was interrupted before the connection is closed.
+                // A client-side cancellation (ct cancelled) is excluded so we never write to a
+                // client that is already gone.
+                upstreamFailed = true;
+                stopReason = "error";
+                log.ErrorMessage = DescribeUpstreamStreamError(ex);
+                Log.Warning(ex, "Upstream stream failed mid-response for model {Model}", modelName);
+                try
+                {
+                    var errorChunk = new OllamaGenerateResponse
+                    {
+                        Model = modelName,
+                        Response = string.Empty,
+                        Done = true,
+                        DoneReason = "error",
+                        Error = DescribeUpstreamStreamError(ex),
+                    };
+                    string errorJson = JsonSerializer.Serialize(errorChunk, _jsonOptions);
+                    responseBytes += Encoding.UTF8.GetByteCount(errorJson);
+                    ollamaJsonAccumulator?.Append(errorJson);
+                    ollamaJsonAccumulator?.Append('\n');
+                    await writer.WriteLineAsync(errorJson);
+                    await writer.FlushAsync(CancellationToken.None);
+                }
+                catch
+                {
+                    // Client already disconnected; the error chunk could not be delivered.
+                }
+                break;
+            }
             if (line is null) break;          // end of stream
             if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -4593,6 +4659,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 };
                 string doneJson = JsonSerializer.Serialize(doneChunk, _jsonOptions);
                 responseBytes += Encoding.UTF8.GetByteCount(doneJson);
+                ollamaJsonAccumulator?.Append(doneJson);
+                ollamaJsonAccumulator?.Append('\n');
+                stopReason ??= "stop";
                 await writer.WriteLineAsync(doneJson);
                 await writer.FlushAsync(ct);
                 break;
@@ -4614,7 +4683,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string token = choice?.Text ?? string.Empty;
             bool done = choice?.FinishReason != null;
 
-            responseAccumulator?.Append(token);
+            if (done && choice?.FinishReason is not null)
+                stopReason = choice.FinishReason;
 
             var ollamaChunk = new OllamaGenerateResponse
             {
@@ -4630,18 +4700,23 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             string chunkJson = JsonSerializer.Serialize(ollamaChunk, _jsonOptions);
             responseBytes += Encoding.UTF8.GetByteCount(chunkJson);
+            ollamaJsonAccumulator?.Append(chunkJson);
+            ollamaJsonAccumulator?.Append('\n');
             await writer.WriteLineAsync(chunkJson);
             await writer.FlushAsync(ct);
         }
 
-        if (responseAccumulator is not null)
-            log.ResponseBody = redactResponse(responseAccumulator.ToString());
+        if (ollamaJsonAccumulator is not null)
+            log.ResponseBody = redactResponse(ollamaJsonAccumulator.ToString());
 
+        log.StopReason = stopReason;
         log.ResponseBytes = responseBytes;
         resp.Close();
-        log.Status = ct.IsCancellationRequested && !reachedDone
-            ? RequestStatus.Cancelled
-            : RequestStatus.Success;
+        log.Status = upstreamFailed
+            ? RequestStatus.Error
+            : ct.IsCancellationRequested && !reachedDone
+                ? RequestStatus.Cancelled
+                : RequestStatus.Success;
     }
 
     private static async Task StreamChatToOllamaAsync(
@@ -4663,12 +4738,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         using StreamReader reader = new(stream, Encoding.UTF8);
         await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
-        using PooledCharBuffer? responseAccumulator = collectResponse ? new PooledCharBuffer() : null;
+        // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
+        // the "after" of the OpenAI→Ollama response translation (not just the content text).
+        using PooledCharBuffer? ollamaJsonAccumulator = collectResponse ? new PooledCharBuffer() : null;
         // When debug capture is on, accumulate the raw upstream (OpenAI) SSE data lines so the
         // "before" of the response translation is visible alongside the Ollama "after".
         using PooledCharBuffer? rawUpstreamAccumulator = collectRawUpstream ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
+        bool upstreamFailed = false;
+        string? stopReason = null;
         long responseBytes = 0;
         TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
         Dictionary<int, StreamingToolCallBuilder> toolCallBuilders = [];
@@ -4689,14 +4768,52 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         while (!ct.IsCancellationRequested)
         {
-            string? line = await ReadLineWithOllamaChatHeartbeatsAsync(
-                reader,
-                writer,
-                modelName,
-                enableHeartbeats,
-                heartbeatInterval,
-                ct,
-                onHeartbeatSent);
+            string? line;
+            try
+            {
+                line = await ReadLineWithOllamaChatHeartbeatsAsync(
+                    reader,
+                    writer,
+                    modelName,
+                    enableHeartbeats,
+                    heartbeatInterval,
+                    ct,
+                    onHeartbeatSent);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                // The upstream stream failed mid-response (network drop, timeout, etc.).
+                // Push a terminal error chunk so the client learns the stream was interrupted
+                // before the connection is closed, rather than seeing a silently truncated
+                // response. A client-side cancellation (ct cancelled) is excluded so we never
+                // write to a client that is already gone.
+                upstreamFailed = true;
+                stopReason = "error";
+                log.ErrorMessage = DescribeUpstreamStreamError(ex);
+                Log.Warning(ex, "Upstream stream failed mid-response for model {Model}", modelName);
+                try
+                {
+                    var errorChunk = new OllamaChatResponse
+                    {
+                        Model = modelName,
+                        Message = new OllamaMessage("assistant", string.Empty),
+                        Done = true,
+                        DoneReason = "error",
+                        Error = DescribeUpstreamStreamError(ex),
+                    };
+                    string errorJson = JsonSerializer.Serialize(errorChunk, _jsonOptions);
+                    responseBytes += Encoding.UTF8.GetByteCount(errorJson);
+                    ollamaJsonAccumulator?.Append(errorJson);
+                    ollamaJsonAccumulator?.Append('\n');
+                    await writer.WriteLineAsync(errorJson);
+                    await writer.FlushAsync(CancellationToken.None);
+                }
+                catch
+                {
+                    // Client already disconnected; the error chunk could not be delivered.
+                }
+                break;
+            }
             if (line is null) break;          // end of stream
             if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -4728,6 +4845,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 };
                 string doneJson = JsonSerializer.Serialize(doneChunk, _jsonOptions);
                 responseBytes += Encoding.UTF8.GetByteCount(doneJson);
+                ollamaJsonAccumulator?.Append(doneJson);
+                ollamaJsonAccumulator?.Append('\n');
+                stopReason ??= "stop";
                 await writer.WriteLineAsync(doneJson);
                 await writer.FlushAsync(ct);
                 break;
@@ -4786,7 +4906,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (done && toolCalls is not null)
                 token = string.Empty;
 
-            responseAccumulator?.Append(token);
+            string? doneReason = done ? (toolCalls is not null ? "tool_calls" : choice?.FinishReason ?? "stop") : null;
+            if (done && doneReason is not null)
+                stopReason = doneReason;
 
             long? terminalNs = done ? ElapsedNanos(sw) : null;
             var ollamaChunk = new OllamaChatResponse
@@ -4794,7 +4916,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Model = modelName,
                 Message = new OllamaMessage("assistant", token) { ToolCalls = toolCalls, Thinking = thinking },
                 Done = done,
-                DoneReason = done ? (toolCalls is not null ? "tool_calls" : choice?.FinishReason ?? "stop") : null,
+                DoneReason = doneReason,
                 TotalDuration = terminalNs,
                 LoadDuration = done ? 0L : null,
                 PromptEvalCount = done && log.PromptTokens > 0 ? log.PromptTokens : null,
@@ -4807,6 +4929,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             string chunkJson = JsonSerializer.Serialize(ollamaChunk, _jsonOptions);
             responseBytes += Encoding.UTF8.GetByteCount(chunkJson);
+            ollamaJsonAccumulator?.Append(chunkJson);
+            ollamaJsonAccumulator?.Append('\n');
             await writer.WriteLineAsync(chunkJson);
             await writer.FlushAsync(ct);
         }
@@ -4822,7 +4946,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string tailToken = tailAnswer.Length > 0 ? tailAnswer : string.Empty;
             if (tailThinking is not null || tailToken.Length > 0)
             {
-                responseAccumulator?.Append(tailToken);
                 long tailNs = ElapsedNanos(sw);
                 var tailChunk = new OllamaChatResponse
                 {
@@ -4838,22 +4961,28 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 };
                 string tailJson = JsonSerializer.Serialize(tailChunk, _jsonOptions);
                 responseBytes += Encoding.UTF8.GetByteCount(tailJson);
+                ollamaJsonAccumulator?.Append(tailJson);
+                ollamaJsonAccumulator?.Append('\n');
+                stopReason ??= "stop";
                 await writer.WriteLineAsync(tailJson);
                 await writer.FlushAsync(ct);
             }
         }
 
-        if (responseAccumulator is not null)
-            log.ResponseBody = redactResponse(responseAccumulator.ToString());
+        if (ollamaJsonAccumulator is not null)
+            log.ResponseBody = redactResponse(ollamaJsonAccumulator.ToString());
 
         if (rawUpstreamAccumulator is not null && rawUpstreamAccumulator.Length > 0)
             log.UpstreamResponseBody = redactResponse(rawUpstreamAccumulator.ToString());
 
+        log.StopReason = stopReason;
         log.ResponseBytes = responseBytes;
         resp.Close();
-        log.Status = ct.IsCancellationRequested && !reachedDone
-            ? RequestStatus.Cancelled
-            : RequestStatus.Success;
+        log.Status = upstreamFailed
+            ? RequestStatus.Error
+            : ct.IsCancellationRequested && !reachedDone
+                ? RequestStatus.Cancelled
+                : RequestStatus.Success;
     }
 
     private static async Task<string?> ReadLineWithOllamaChatHeartbeatsAsync(
