@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
+using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Infrastructure;
@@ -87,10 +88,16 @@ internal sealed class ModelMappingDialog : Form
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
     private readonly CheckBox _chkRedactSensitiveJsonFields = new();
+    private readonly GroupBox _grpRedaction = new();
+    private readonly TableLayoutPanel _tlpRedaction = new();
     private readonly FlowLayoutPanel _flpButtons = new();
     private readonly Button _btnOk = new();
     private readonly Button _btnCancel = new();
     private readonly ToolTip _toolTip = new();
+
+    // Registered on the UI thread while the dialog is open so mouse-wheel notches scroll the
+    // content panel instead of changing a focused ComboBox/NumericUpDown value.
+    private WheelScrollFilter? _wheelFilter;
 
     private string _upstreamUrl = string.Empty;
     private List<StoredCredential> _credentials = [];
@@ -112,6 +119,80 @@ internal sealed class ModelMappingDialog : Form
             "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
             + "https://provider.example/compatible-mode/v1. A trailing \"/v1\" is handled\n"
             + "automatically and won't be duplicated in requests.");
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        _wheelFilter = new WheelScrollFilter(this);
+        Application.AddMessageFilter(_wheelFilter);
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        if (_wheelFilter is not null)
+        {
+            Application.RemoveMessageFilter(_wheelFilter);
+            _wheelFilter = null;
+        }
+        base.OnFormClosed(e);
+    }
+
+    /// <summary>
+    /// Routes mouse-wheel notches to the scrollable content panel instead of the focused
+    /// control. A ComboBox or NumericUpDown with focus would otherwise change its own value
+    /// as the user scrolls, making it easy to corrupt several settings at once. The wheel is
+    /// a WM_MOUSEWHEEL message handled by the focused control's native window (not a key
+    /// event), so it is intercepted here via an <see cref="IMessageFilter"/> scoped to this
+    /// form's controls.
+    /// </summary>
+    private sealed class WheelScrollFilter : IMessageFilter
+    {
+        private const int WmMouseWheel = 0x020A;
+
+        private readonly Form _form;
+
+        public WheelScrollFilter(Form form)
+        {
+            _form = form;
+        }
+
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.Msg != WmMouseWheel)
+                return false;
+
+            // Only act when the wheel is over one of this form's controls (the form itself or
+            // any descendant). Control.FromHandle returns the control whose window received
+            // the message; for a ComboBox/NumericUpDown that is the control itself.
+            Control? control = Control.FromHandle(m.HWnd);
+            if (control is null || !IsWithinForm(control))
+                return false;
+
+            // Only ComboBox and NumericUpDown change their value in response to the wheel.
+            // Swallow the notch when it lands on one of those so scrolling the dialog can no
+            // longer change a setting. For every other control (labels, group boxes, the panel
+            // background) return false so the panel's native auto-scroll still works.
+            return control is ComboBox or NumericUpDown;
+        }
+
+        /// <summary>
+        /// Walks the parent chain to determine whether <paramref name="control"/> is the form
+        /// itself or a descendant of it. <see cref="Control.Contains"/> only checks direct
+        /// children, but the wheel target is typically nested (e.g. a ComboBox inside the
+        /// layout panel), so the full ancestor chain must be examined.
+        /// </summary>
+        private bool IsWithinForm(Control? control)
+        {
+            Control? current = control;
+            while (current is not null)
+            {
+                if (ReferenceEquals(current, _form))
+                    return true;
+                current = current.Parent;
+            }
+            return false;
+        }
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -461,11 +542,26 @@ internal sealed class ModelMappingDialog : Form
 
     private void UpdateReasoningEffortControlStates()
     {
-        bool enabled = ReasoningEffortPriority != SamplingPriority.Provider;
+        // Reasoning effort values and selection should only be editable when the
+        // priority is set to Proxy Priority. Under other priorities the proxy
+        // either omits the field (Provider) or passes through the client value
+        // (ClientApp) so editing here is not applicable.
+        bool enabled = ReasoningEffortPriority == SamplingPriority.Proxy;
         _txtReasoningEffortValues.Enabled = enabled;
         _cmbReasoningEffort.Enabled = enabled;
         // The payload formats only matter under Proxy Priority, the only mode that injects.
         _lstReasoningEffortFormats.Enabled = ReasoningEffortPriority == SamplingPriority.Proxy;
+    }
+
+    /// <summary>
+    /// Enables or disables sampling-related value controls (temperature / repeat penalty)
+    /// based on their configured priority. Values are only editable when the priority
+    /// is set to Proxy so the proxy can override the client.
+    /// </summary>
+    private void UpdateSamplingControlStates()
+    {
+        _nudTemperature.Enabled = TemperaturePriority == SamplingPriority.Proxy;
+        _nudRepeatPenalty.Enabled = RepeatPenaltyPriority == SamplingPriority.Proxy;
     }
 
     /// <summary>
@@ -571,7 +667,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 24;
+        _tlpMain.RowCount = 19;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -607,61 +703,52 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_cmbInstructionSet, 2);
         _tlpMain.Controls.Add(_cmbInstructionSet, 1, 5);
 
-        _tlpMain.Controls.Add(_lblContextSummarizeModel, 0, 6);
-        _tlpMain.SetColumnSpan(_cmbContextSummarizeModel, 2);
-        _tlpMain.Controls.Add(_cmbContextSummarizeModel, 1, 6);
-
-        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 7);
+        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 6);
         _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
-        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 7);
+        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 6);
 
-        _tlpMain.Controls.Add(_lblContextWindow, 0, 8);
+        _tlpMain.Controls.Add(_lblContextWindow, 0, 7);
         _tlpMain.SetColumnSpan(_txtContextWindow, 2);
-        _tlpMain.Controls.Add(_txtContextWindow, 1, 8);
+        _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
 
-        _tlpMain.Controls.Add(_lblProactiveOverflowPercent, 0, 9);
-        _tlpMain.SetColumnSpan(_nudProactiveOverflowPercent, 2);
-        _tlpMain.Controls.Add(_nudProactiveOverflowPercent, 1, 9);
+        // Group the compaction / context-threshold controls together inside a GroupBox
+        _tlpMain.SetColumnSpan(_grpCompaction, 3);
+        _tlpMain.Controls.Add(_grpCompaction, 0, 8);
 
-        _tlpMain.Controls.Add(_lblProactiveOverflowTokens, 0, 10);
-        _tlpMain.SetColumnSpan(_nudProactiveOverflowTokens, 2);
-        _tlpMain.Controls.Add(_nudProactiveOverflowTokens, 1, 10);
-
-        _tlpMain.Controls.Add(_lblAutoCompactPaths, 0, 11);
-        _tlpMain.SetColumnSpan(_cmbAutoCompactPaths, 2);
-        _tlpMain.Controls.Add(_cmbAutoCompactPaths, 1, 11);
-
-        _tlpMain.Controls.Add(_lblTempPriority, 0, 12);
+        _tlpMain.Controls.Add(_lblTempPriority, 0, 9);
         _tlpMain.SetColumnSpan(_cmbTempPriority, 2);
-        _tlpMain.Controls.Add(_cmbTempPriority, 1, 12);
+        _tlpMain.Controls.Add(_cmbTempPriority, 1, 9);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 13);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 10);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 13);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 10);
 
-        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 14);
+        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 11);
         _tlpMain.SetColumnSpan(_cmbRepeatPenaltyPriority, 2);
-        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 14);
+        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 11);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 15);
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 12);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 15);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 12);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 16);
-        _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 17);
-        _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 18);
-        _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 19);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 13);
+
+        // Move per-model streaming heartbeat option up near the top (right after enable)
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 20);
-        _tlpMain.SetColumnSpan(_chkRedactRequestBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactRequestBodies, 0, 21);
-        _tlpMain.SetColumnSpan(_chkRedactResponseBodies, 3);
-        _tlpMain.Controls.Add(_chkRedactResponseBodies, 0, 22);
-        _tlpMain.SetColumnSpan(_chkRedactSensitiveJsonFields, 3);
-        _tlpMain.Controls.Add(_chkRedactSensitiveJsonFields, 0, 23);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 14);
+
+        _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 15);
+
+        _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 16);
+
+        _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 17);
+
+        // Group redaction-related checkboxes together
+        _tlpMain.SetColumnSpan(_grpRedaction, 3);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 18);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -742,7 +829,7 @@ internal sealed class ModelMappingDialog : Form
         _lblContextSummarizeModel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblContextSummarizeModel.AutoSize = true;
         _lblContextSummarizeModel.Margin = new Padding(0, 8, 8, 4);
-        _lblContextSummarizeModel.Text = "Compact Model:";
+        _lblContextSummarizeModel.Text = "Compaction Model:";
 
         _cmbContextSummarizeModel.Dock = DockStyle.Fill;
         _cmbContextSummarizeModel.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -774,19 +861,26 @@ internal sealed class ModelMappingDialog : Form
             $"Model context window size in tokens. Leave empty to use the default ({ModelMapping.DefaultContextWindowTokens:N0}).\n"
             + "Override per-model if the auto-default is incorrect (e.g., qwen-max is 32K, qwen-long is 10M).");
 
-        // Compaction/grouping: replace legacy "Proactive 413" wording with
-        // compaction/context-threshold terminology and group the three related
-        // controls inside a titled GroupBox for clarity.
+        // Compaction/grouping: group the related controls inside a titled
+        // GroupBox for clarity. AutoSize ensures the group grows with its content.
+        _grpCompaction.AutoSize = true;
+        _grpCompaction.AutoSizeMode = AutoSizeMode.GrowOnly;
         _grpCompaction.Dock = DockStyle.Fill;
         _grpCompaction.Margin = new Padding(0, 6, 0, 6);
         _grpCompaction.Padding = new Padding(8);
         _grpCompaction.Text = "Compaction / Context thresholds";
 
+        _tlpCompaction.AutoSize = true;
+        _tlpCompaction.AutoSizeMode = AutoSizeMode.GrowOnly;
         _tlpCompaction.Dock = DockStyle.Fill;
         _tlpCompaction.ColumnCount = 2;
-        _tlpCompaction.RowCount = 3;
+        _tlpCompaction.RowCount = 4;
         _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         _tlpCompaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCompaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _lblProactiveOverflowPercent.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProactiveOverflowPercent.AutoSize = true;
@@ -838,6 +932,44 @@ internal sealed class ModelMappingDialog : Form
             "Select which API paths should trigger automatic compaction when context\n"
             + "exceeds the proactive overflow threshold. 'Both' applies to both Ollama\n"
             + "and OpenAI endpoints.");
+
+        // Add the compaction-related controls into the compaction table so they
+        // are visually grouped inside the _grpCompaction GroupBox.
+        // Order: Auto-Compact Paths first, then the two proactive overflow thresholds.
+        _tlpCompaction.Controls.Add(_lblAutoCompactPaths, 0, 0);
+        _tlpCompaction.Controls.Add(_cmbAutoCompactPaths, 1, 0);
+        _tlpCompaction.Controls.Add(_lblProactiveOverflowPercent, 0, 1);
+        _tlpCompaction.Controls.Add(_nudProactiveOverflowPercent, 1, 1);
+        _tlpCompaction.Controls.Add(_lblProactiveOverflowTokens, 0, 2);
+        _tlpCompaction.Controls.Add(_nudProactiveOverflowTokens, 1, 2);
+        _tlpCompaction.Controls.Add(_lblContextSummarizeModel, 0, 3);
+        _tlpCompaction.Controls.Add(_cmbContextSummarizeModel, 1, 3);
+
+        _grpCompaction.Controls.Add(_tlpCompaction);
+
+        // Redaction group: group the three related checkboxes for clarity
+        _grpRedaction.AutoSize = true;
+        _grpRedaction.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpRedaction.Dock = DockStyle.Fill;
+        _grpRedaction.Margin = new Padding(0, 6, 0, 6);
+        _grpRedaction.Padding = new Padding(8);
+        _grpRedaction.Text = "Redaction / Privacy";
+
+        _tlpRedaction.AutoSize = true;
+        _tlpRedaction.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpRedaction.Dock = DockStyle.Fill;
+        _tlpRedaction.ColumnCount = 1;
+        _tlpRedaction.RowCount = 3;
+        _tlpRedaction.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _tlpRedaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpRedaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpRedaction.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _tlpRedaction.Controls.Add(_chkRedactRequestBodies, 0, 0);
+        _tlpRedaction.Controls.Add(_chkRedactResponseBodies, 0, 1);
+        _tlpRedaction.Controls.Add(_chkRedactSensitiveJsonFields, 0, 2);
+
+        _grpRedaction.Controls.Add(_tlpRedaction);
 
         _lblTemperature.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTemperature.AutoSize = true;
@@ -940,8 +1072,7 @@ internal sealed class ModelMappingDialog : Form
         _cmbTempPriority.Margin = new Padding(0, 4, 0, 4);
         _cmbTempPriority.Items.AddRange([.. SamplingPriorityOptions()]);
         _cmbTempPriority.SelectedIndex = 0;
-        _cmbTempPriority.SelectedIndexChanged += (_, _) =>
-            _nudTemperature.Enabled = TemperaturePriority != SamplingPriority.Provider;
+        _cmbTempPriority.SelectedIndexChanged += (_, _) => UpdateSamplingControlStates();
         _toolTip.SetToolTip(
             _cmbTempPriority,
             "Client App Priority passes the client's temperature through; Proxy Priority always\n"
@@ -958,8 +1089,7 @@ internal sealed class ModelMappingDialog : Form
         _cmbRepeatPenaltyPriority.Margin = new Padding(0, 4, 0, 4);
         _cmbRepeatPenaltyPriority.Items.AddRange([.. SamplingPriorityOptions()]);
         _cmbRepeatPenaltyPriority.SelectedIndex = 0;
-        _cmbRepeatPenaltyPriority.SelectedIndexChanged += (_, _) =>
-            _nudRepeatPenalty.Enabled = RepeatPenaltyPriority != SamplingPriority.Provider;
+        _cmbRepeatPenaltyPriority.SelectedIndexChanged += (_, _) => UpdateSamplingControlStates();
         _toolTip.SetToolTip(
             _cmbRepeatPenaltyPriority,
             "Client App Priority passes the client's repeat penalty through; Proxy Priority always\n"
@@ -1729,6 +1859,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ReasoningEffortFormat = mapping.ReasoningEffortFormat;
         if (!string.IsNullOrWhiteSpace(mapping.ReasoningEffort))
             dlg.ReasoningEffort = mapping.ReasoningEffort;
+        dlg.UpdateSamplingControlStates();
         dlg.UpdateReasoningEffortControlStates();
         dlg.UpdateThinkingReasoningGroupState();
         dlg._suppressReasoningPrefill = false;
