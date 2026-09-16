@@ -167,6 +167,9 @@ public class DebugNotesTests
             ProxyName = "main",
             ModelName = "main-upstream",
             UpstreamUrl = "http://localhost:8080",
+            // A configured compaction model alone no longer redirects; the mapping must also opt
+            // in. Without this the summary note this test asserts is never produced.
+            RedirectManualCompaction = true,
         };
         mainMapping.EnsureId();
         settings.ModelMappings.Add(mainMapping);

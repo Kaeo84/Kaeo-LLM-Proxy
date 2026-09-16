@@ -49,6 +49,28 @@ public class CompactBehaviorTests
         }
     }
 
+    /// <summary>
+    /// Concatenates every message's decoded text content from a serialized chat-completions request
+    /// body, so assertions verify what the upstream model actually receives rather than the
+    /// JSON-escaped wire form.
+    /// </summary>
+    private static string ExtractAllMessageContent(string requestBody)
+    {
+        using JsonDocument doc = JsonDocument.Parse(requestBody);
+        StringBuilder sb = new();
+
+        foreach (JsonElement msg in doc.RootElement.GetProperty("messages").EnumerateArray())
+        {
+            if (msg.TryGetProperty("content", out JsonElement content)
+                && content.ValueKind == JsonValueKind.String)
+            {
+                sb.AppendLine(content.GetString());
+            }
+        }
+
+        return sb.ToString();
+    }
+
     private static ModelMapping NewMapping() => new()
     {
         ProxyName = "big-model",
@@ -315,10 +337,24 @@ public class CompactBehaviorTests
 
         Assert.NotNull(compacted);
         Assert.NotEmpty(stub.RequestBodies);
+
         string summaryRequest = stub.RequestBodies[0];
-        Assert.Contains("<toolcalls>", summaryRequest);
-        Assert.Contains("view", summaryRequest);
+
+        // Structural assertion on the raw body. JSON property names are plain ASCII identifiers, so
+        // unlike string values they are never escaped by the encoder and can be matched literally.
+        // The flattening must remove the correlation fields entirely, otherwise a chunk that splits
+        // an assistant tool_calls from its role:"tool" reply leaves an orphaned tool_call_id that
+        // strict chat templates reject.
         Assert.DoesNotContain("tool_call_id", summaryRequest);
+        Assert.DoesNotContain("tool_calls", summaryRequest);
+
+        // Marker assertion on the decoded text. System.Text.Json's default encoder escapes '<' and
+        // '>' as \u003C / \u003E, so the literal marker only reappears once the upstream parses the
+        // JSON. Matching the raw body would pass or fail purely on encoder settings rather than on
+        // whether the flattening actually happened.
+        string transcript = ExtractAllMessageContent(summaryRequest);
+        Assert.Contains("<toolcalls>", transcript);
+        Assert.Contains("view", transcript);
     }
 
     [Fact]

@@ -118,6 +118,17 @@ internal static class DebugNotes
     public static string ContextSummarizeRedirectPassthrough(string originalModel, string compactModel) =>
         $"compact redirect: \"{originalModel}\" → \"{compactModel}\" (context-summarize signature detected)";
 
+    /// <summary>
+    /// Describes where a manual compaction request was forwarded. When <paramref name="redirected"/>
+    /// is true the mapping opted in via "Redirect manual compaction" and the request went to its
+    /// configured compaction model; otherwise it went to the model the client asked for so that
+    /// model produces its own summary.
+    /// </summary>
+    public static string ManualCompactionTarget(string originalModel, string upstreamModel, bool redirected) =>
+        redirected
+            ? $"compaction: \"{originalModel}\" → \"{upstreamModel}\" (redirected to the configured compaction model)"
+            : $"compaction: \"{originalModel}\" → \"{upstreamModel}\" (no redirect — the requested model summarizes itself)";
+
     private static string DescribeFormats(ReasoningEffortFormat format)
     {
         List<string> parts = [];

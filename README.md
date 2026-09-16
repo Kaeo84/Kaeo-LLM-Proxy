@@ -95,44 +95,75 @@ To allow connections from other machines on your network:
 
 ## Context Compaction
 
-The proxy supports context compaction to manage large conversation histories and prevent context overflow errors.
+Compaction is configured **per model mapping** — there is deliberately no global compaction
+setting. A mapping that is left alone does nothing: requests are handed to the model untouched
+and the model handles its own context.
 
-### Automatic Compaction
+### Manual Compaction
 
-When enabled, the proxy automatically compacts conversation history before it exceeds the model's context window:
-
-- **For non-Copilot clients**: Proactive auto-compaction summarizes conversation history when it approaches the context limit
-- **For GitHub Copilot**: The proxy detects Copilot requests and skips auto-compaction, allowing Copilot's native `/compact` flow to manage context
-
-This prevents the proxy from interfering with Copilot's internal state management while still providing compaction for other clients.
-
-### Manual Compaction Endpoint
-
-A manual compaction endpoint is available for explicit context management:
+Both endpoints are always live and behave identically. Each forwards the conversation to a
+model so that model produces the summary, and returns its response unchanged:
 
 ```
 POST /v1/chat/completions/compact
+POST /v1/responses/compact
 ```
 
-This endpoint accepts a chat completion request and returns a compacted version. It must be enabled in settings (`EnableManualCompactionEndpoint`).
+Which model handles it depends on the mapping:
+
+| Redirect manual compaction | Compaction Model | Result |
+| --- | --- | --- |
+| unchecked (default) | *(any)* | forwarded to the model named in the request |
+| checked | *(None)* | forwarded to the model named in the request |
+| checked | selected | forwarded to the selected compaction model |
+
+The proxy never synthesizes a summary for these endpoints — a model always produces it. If a
+redirect is configured but the target is missing, disabled, or has no upstream URL, the request
+falls back to the model the client asked for and a warning is logged.
+
+The same routing applies to a client's own `/compact` request sent as a normal chat request
+(e.g. GitHub Copilot), which the proxy detects from its distinctive session-summary prompt.
+
+### Automatic Compaction
+
+When the estimated request size exceeds a mapping's compaction threshold, the proxy summarizes
+the conversation with the mapping's compaction model and forwards the compacted request
+upstream. Auto-compaction requires **all three** of:
+
+1. **Auto-Compact Paths** — not `Disabled`
+2. **A compaction threshold** — non-zero (`% of context` or absolute `tokens`; absolute wins)
+3. **A Compaction Model** — selected, enabled, with an upstream URL
+
+If any is missing the proxy does nothing and the request goes to the model untouched. A
+successful compaction sets `X-Context-Compacted`, `X-Context-Original-Tokens` and
+`X-Context-Compacted-Tokens` on the response.
+
+`Auto-Compact Paths` accepts a single selection:
+
+| Value | Paths auto-compacted |
+| --- | --- |
+| `Disabled` | none (default) |
+| `Ollama /api/chat` | Ollama chat only |
+| `OpenAI /v1/chat/completions` | OpenAI chat only |
+| `Both` | the two above |
+| `Proxy only (all paths)` | every path the proxy handles |
+
+Reactive compaction — summarizing and retrying once after an upstream context-overflow error —
+is governed by the same `Auto-Compact Paths` setting and the same compaction model requirement.
+
+At most one compaction ever acts on a request: a request already routed for compaction is never
+auto-compacted again.
 
 ### Configuration
 
-Three settings control context compaction behavior:
+Per mapping (Settings → Configure Model → *Compaction / Context thresholds*):
 
-- **`EnableCopilotNativeCompaction`** (default: `true`): Detects GitHub Copilot requests and skips proactive auto-compaction
-- **`EnableAutoCompaction`** (default: `true`): Enables proactive auto-compaction for non-Copilot clients
-- **`EnableManualCompactionEndpoint`** (default: `false`): Exposes the manual `/v1/chat/completions/compact` endpoint
+- **Auto-Compact Paths** — which paths may auto-compact (`Disabled` by default)
+- **Compaction threshold (% of context)** and **Compaction threshold (tokens)** — `0` disables
+- **Compaction Model** — the summarization target for both automatic and manual compaction
+- **Redirect manual compaction** — send `/compact` requests to the compaction model
 
-### Compact Model Configuration
-
-To use compaction, configure a compact model in your model mapping:
-
-1. Add a model mapping for a smaller/faster model (e.g., `gpt-3.5-turbo` or a local small model)
-2. In your main model mapping, set `ContextSummarizeModelId` to reference the compact model
-3. The proxy will automatically redirect compaction requests to the compact model
-
-This allows you to use a large model for regular requests while using a smaller, faster model for compaction tasks.
+The dialog shows a live status line summarizing what the current selection will actually do.
 
 ## Visual Studio Extension
 

@@ -22,8 +22,13 @@ public class ContextSummarizeRedirectTests
     /// Pass <c>compactModelId: null</c> for "no compact model configured", or an invalid ID
     /// (e.g. 999) for "compact model ID doesn't match any mapping". The default (-1) links
     /// to the actual compact mapping's auto-assigned ID.
+    /// <para>
+    /// <c>redirectEnabled</c> maps to <see cref="ModelMapping.RedirectManualCompaction"/>. It
+    /// defaults to true because most tests here assert that a configured redirect fires; pass
+    /// false to verify the mapping's own model handles the request instead.
+    /// </para>
     /// </remarks>
-    private static AppSettings CreateSettings(int? compactModelId = -1)
+    private static AppSettings CreateSettings(int? compactModelId = -1, bool redirectEnabled = true)
     {
         AppSettings settings = new();
 
@@ -41,6 +46,7 @@ public class ContextSummarizeRedirectTests
             ModelName = "main-upstream",
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = compactModelId == -1 ? compactMapping.Id : compactModelId,
+            RedirectManualCompaction = redirectEnabled,
         };
         mainMapping.EnsureId();
 
@@ -95,6 +101,30 @@ public class ContextSummarizeRedirectTests
     {
         AppSettings settings = CreateSettings();
         Assert.Equal("compact", OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactPrompt));
+    }
+
+    [Fact]
+    public void DoesNotRedirectWhenRedirectManualCompactionIsOff()
+    {
+        // A configured compaction model alone no longer redirects: the mapping must also opt in
+        // via RedirectManualCompaction, otherwise the model handles its own compaction.
+        AppSettings settings = CreateSettings(redirectEnabled: false);
+        Assert.Equal("main", OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactPrompt));
+    }
+
+    [Fact]
+    public void DoesNotRewriteModelOnCompactRequestWhenRedirectIsOff()
+    {
+        AppSettings settings = CreateSettings(redirectEnabled: false);
+        RequestLog log = new();
+
+        string json = $$"""{"model":"main","messages":[{"role":"system","content":"{{CompactPrompt}}"},{"role":"user","content":"# context"}]}""";
+        string result = OllamaProxyHandler.NormalizeRequestBody(json, settings, log);
+
+        JsonElement root = JsonDocument.Parse(result).RootElement;
+        Assert.Equal("main-upstream", root.GetProperty("model").GetString());
+        Assert.Equal("main", log.Model);
+        Assert.Equal(string.Empty, log.OriginalModel);
     }
 
     [Fact]

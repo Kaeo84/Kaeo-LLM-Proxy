@@ -90,6 +90,13 @@ internal sealed class OllamaGenerateResponse
 
     /// <summary>Time spent generating the response, in nanoseconds.</summary>
     [JsonPropertyName("eval_duration")] public long? EvalDuration { get; set; }
+
+    /// <summary>
+    /// Present only on terminal error chunks: a human-readable description of the upstream
+    /// failure (timeout, network error, etc.) that caused the stream to terminate early.
+    /// Mirrors Ollama's native <c>error</c> field on error responses.
+    /// </summary>
+    [JsonPropertyName("error")] public string? Error { get; set; }
 }
 
 // ─────────────────────────── /api/chat ────────────────────────────────────
@@ -132,6 +139,13 @@ internal sealed class OllamaChatResponse
 
     /// <summary>Time spent generating the response, in nanoseconds.</summary>
     [JsonPropertyName("eval_duration")] public long? EvalDuration { get; set; }
+
+    /// <summary>
+    /// Present only on terminal error chunks: a human-readable description of the upstream
+    /// failure (timeout, network error, etc.) that caused the stream to terminate early.
+    /// Mirrors Ollama's native <c>error</c> field on error responses.
+    /// </summary>
+    [JsonPropertyName("error")] public string? Error { get; set; }
 }
 
 // ─────────────────────────── /api/tags ────────────────────────

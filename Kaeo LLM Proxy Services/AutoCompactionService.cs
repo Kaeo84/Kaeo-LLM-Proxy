@@ -90,6 +90,13 @@ internal sealed class AutoCompactionService
     /// Returns false when the feature is disabled for this path, the threshold is not exceeded,
     /// or the circuit breaker is open for this session.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="requestPath"/> must be a single named path
+    /// (<see cref="AutoCompactPaths.Ollama"/> or <see cref="AutoCompactPaths.OpenAI"/>). Path
+    /// eligibility is delegated to <see cref="ModelMapping.IsAutoCompactActiveFor"/> so the
+    /// <see cref="AutoCompactPaths.ProxyOnly"/> wildcard is honored identically here and at
+    /// every other compaction call site.
+    /// </remarks>
     public bool ShouldCompact(
         ModelMapping mapping,
         AutoCompactPaths requestPath,
@@ -102,15 +109,17 @@ internal sealed class AutoCompactionService
             return false;
 
         // Check if auto-compaction is enabled for this request path.
-        if ((mapping.AutoCompactPaths & requestPath) == 0)
+        if (!mapping.IsAutoCompactActiveFor(requestPath))
             return false;
 
         int threshold = mapping.GetProactiveOverflowThreshold();
         if (threshold <= 0)
             return false;
 
-        // Estimate request size in tokens (rough: 1 token ≈ 4 chars).
-        int estimatedTokens = Encoding.UTF8.GetByteCount(requestBody) / 4;
+        // Estimate request size in tokens using the same char-based estimator the callers use,
+        // so a body that clears the caller's threshold check also clears this one. A byte-based
+        // estimate here would disagree on non-ASCII bodies and silently skip compaction.
+        int estimatedTokens = EstimateTokenCount(requestBody);
         if (estimatedTokens < threshold)
             return false;
 
@@ -127,6 +136,14 @@ internal sealed class AutoCompactionService
 
         return true;
     }
+
+    /// <summary>
+    /// Estimates the token count of a serialized request body using a rough 4-characters-per-token
+    /// ratio. Shared by the gating logic and the compaction callers so every compaction decision
+    /// measures the body the same way.
+    /// </summary>
+    internal static int EstimateTokenCount(string body) =>
+        string.IsNullOrEmpty(body) ? 0 : body.Length / 4;
 
     /// <summary>
     /// Performs the compaction by calling the compact endpoint internally.
@@ -182,6 +199,22 @@ internal sealed class AutoCompactionService
             // This prevents the compact model itself from overflowing on very large conversations.
             var messages = ExtractMessagesAsArray(requestBody);
 
+            if (messages.Count == 0)
+            {
+                Log.Warning("Auto-compaction: no chat messages found in request body for session {SessionKey}; cannot compact", sessionKey);
+                return null;
+            }
+
+            // Measure the baseline BEFORE truncating anything. This figure is later compared against
+            // the size of the compacted body to confirm compaction actually helped, so it must reflect
+            // the request as the client sent it. Measuring after the truncation loop below instead
+            // compares the result against an artificially shrunken baseline: a conversation with one
+            // oversized message would see its baseline collapse to the per-message cap while the
+            // compacted body still carries the trailing turn at its own (larger) suffix budget, and the
+            // guard would then discard a perfectly good compaction and return null. That silently left
+            // the caller forwarding the original oversized body to a context overflow.
+            int totalEstimatedTokens = messages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
+
             // Pre-process: truncate any messages that exceed the compact model's capacity.
             // This ensures we can always make progress even with oversized individual messages.
             int maxTokensPerMessage = (int)(maxTokensPerChunk * 0.5); // Leave room for system prompt + response
@@ -199,16 +232,8 @@ internal sealed class AutoCompactionService
                 }
             }
 
-            // Check if total estimated tokens fit in a single pass (with safety margin).
-            int totalEstimatedTokens = messages.Sum(m => (int)(EstimateMessageTokens(m) * TokenEstimationSafetyFactor));
             Log.Information("Auto-compaction: extracted {MessageCount} messages, estimated {TotalTokens} tokens",
                 messages.Count, totalEstimatedTokens);
-
-            if (messages.Count == 0)
-            {
-                Log.Warning("Auto-compaction: no chat messages found in request body for session {SessionKey}; cannot compact", sessionKey);
-                return null;
-            }
 
             // Every request goes through the chunked map-reduce path. (The former single-pass
             // shortcut posted to /v1/responses/compact, which llama.cpp does not implement —

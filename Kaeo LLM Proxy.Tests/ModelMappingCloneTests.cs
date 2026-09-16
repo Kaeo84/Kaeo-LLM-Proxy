@@ -23,6 +23,34 @@ public class ModelMappingCloneTests
     }
 
     [Fact]
+    public void ClonePreservesCompactionConfiguration()
+    {
+        // A clone that dropped any compaction field would silently change behavior when the
+        // settings grid commits, so pin the whole compaction surface (including ProxyOnly).
+        ModelMapping original = new()
+        {
+            ProxyName = "main",
+            ContextSummarizeModelId = 42,
+            AutoCompactPaths = AutoCompactPaths.ProxyOnly,
+            RedirectManualCompaction = true,
+            ProactiveOverflowPercent = 85,
+            ProactiveOverflowTokens = 12000,
+            ContextWindowTokens = 65536
+        };
+        original.EnsureId();
+
+        ModelMapping clone = original.Clone();
+
+        Assert.Equal(42, clone.ContextSummarizeModelId);
+        Assert.Equal(AutoCompactPaths.ProxyOnly, clone.AutoCompactPaths);
+        Assert.True(clone.RedirectManualCompaction);
+        Assert.Equal(85, clone.ProactiveOverflowPercent);
+        Assert.Equal(12000, clone.ProactiveOverflowTokens);
+        Assert.Equal(65536, clone.ContextWindowTokens);
+        Assert.True(clone.IsAutoCompactActiveFor(AutoCompactPaths.OpenAI));
+    }
+
+    [Fact]
     public void CloneOfUnidentifiedMappingGetsFreshId()
     {
         ModelMapping original = new() { ProxyName = "main" };

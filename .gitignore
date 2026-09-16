@@ -10,6 +10,7 @@ copilot-sdk/
 ollama-docs/
 openai-docs/
 vercel-ai-sdk*/
+API Specs/
 
 # Visual Studio
 .vs/
@@ -28,6 +29,8 @@ _gsdata*/
 *.gsl
 # Edit-tool temp backups
 *.tmp
+#Database Example
+*.db*
 
 # MSBuild preprocess diagnostics
 preprocessed.xml

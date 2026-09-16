@@ -100,9 +100,11 @@ internal sealed class RequestLog
     public string? UpstreamRequestBody { get; set; }
 
     /// <summary>
-    /// Assembled LLM response text captured when <c>CollectResponseDetails</c> is enabled in settings.
-    /// For streaming responses this is the full text accumulated across all chunks.
-    /// Null when capture is disabled.
+    /// The Ollama-formatted response body actually sent back to the client, captured when
+    /// <c>CollectResponseDetails</c> is enabled in settings. This is the "after" side of the
+    /// OpenAI→Ollama response translation: for non-streaming responses it is the serialized
+    /// <c>OllamaChatResponse</c>/<c>OllamaGenerateResponse</c> JSON; for streaming responses it is
+    /// the NDJSON stream of Ollama chunks. Null when capture is disabled.
     /// </summary>
     public string? ResponseBody { get; set; }
 
@@ -114,6 +116,13 @@ internal sealed class RequestLog
     /// raw upstream SSE <c>data:</c> lines. Null when <c>DebugMode</c> is disabled.
     /// </summary>
     public string? UpstreamResponseBody { get; set; }
+
+    /// <summary>
+    /// The finish/stop reason reported by the upstream for this response (e.g. "stop",
+    /// "length", "tool_calls", "content_filter"). Helps diagnose why the model stopped
+    /// mid-task. Null when the upstream did not report a finish reason.
+    /// </summary>
+    public string? StopReason { get; set; }
 
     /// <summary>
     /// Plain multi-line text listing every settings-driven override/transformation the proxy
