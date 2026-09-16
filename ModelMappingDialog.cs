@@ -54,7 +54,16 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblAutoCompactPaths = new();
     private readonly ComboBox _cmbAutoCompactPaths = new();
     private readonly CheckBox _chkRedirectManualCompaction = new();
-    private readonly Label _lblCompactionStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
+    // The status text describes the effective compaction behavior in a couple of sentences, so
+    // the label needs to wrap inside the dialog rather than grow sideways: AutoSize combined with
+    // a MaximumSize width is the WinForms pattern for a wrapping, self-sizing label.
+    private readonly Label _lblCompactionStatus = new()
+    {
+        AutoSize = true,
+        MaximumSize = new Size(460, 0),
+        ForeColor = SystemColors.GrayText,
+        Margin = new Padding(0, 2, 0, 2)
+    };
     private readonly Label _lblTemperature = new();
     private readonly NumericUpDown _nudTemperature = new();
     private readonly Label _lblRepeatPenalty = new();
@@ -86,7 +95,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly Button _btnCapRemove = new();
     private readonly Label _lblCapStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 4) };
     private readonly DataGridView _dgvCapabilities = new();
-    private readonly CheckBox _chkEnableHeartbeats = new();
+    private readonly CheckBox _chkEnableSseKeepAlive = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
     private readonly CheckBox _chkRedactSensitiveJsonFields = new();
@@ -116,8 +125,15 @@ internal sealed class ModelMappingDialog : Form
     {
         InitializeUi();
         _cmbUpstreamUrl.TextChanged += (_, _) => _upstreamUrl = _cmbUpstreamUrl.Text.Trim();
+        // The status label describes the effective compaction behavior, so every control that
+        // feeds a gate must refresh it: the compaction model, the redirect checkbox, the
+        // auto-compact path selection, and both threshold nudges.
         _cmbContextSummarizeModel.SelectedIndexChanged += (_, _) => UpdateCompactionStatus();
         _chkRedirectManualCompaction.CheckedChanged += (_, _) => UpdateCompactionStatus();
+        _cmbAutoCompactPaths.SelectedIndexChanged += (_, _) => UpdateCompactionStatus();
+        _nudProactiveOverflowPercent.ValueChanged += (_, _) => UpdateCompactionStatus();
+        _nudProactiveOverflowTokens.ValueChanged += (_, _) => UpdateCompactionStatus();
+        _txtContextWindow.TextChanged += (_, _) => UpdateCompactionStatus();
         _toolTip.SetToolTip(
             _cmbUpstreamUrl,
             "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
@@ -126,18 +142,69 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>
-    /// Updates the inline help under the compaction controls so the user always sees whether the
-    /// current selection actually enables compaction. When the Compaction Model is (None), neither
-    /// automatic nor manual compaction can redirect anywhere, so the proxy does nothing.
+    /// Updates the inline help under the compaction controls so the user always sees what the
+    /// current selection actually does. The text is derived from the same gates the proxy
+    /// enforces — the Auto-Compact Paths selection, the threshold, the Compaction Model and the
+    /// redirect checkbox — so it cannot claim compaction is active when the proxy would do nothing.
     /// </summary>
     private void UpdateCompactionStatus()
     {
-        bool hasTarget = !string.Equals(_cmbContextSummarizeModel.SelectedItem?.ToString(), NoneLabel, StringComparison.OrdinalIgnoreCase)
-            && _cmbContextSummarizeModel.SelectedItem is not null;
+        bool hasTarget = _cmbContextSummarizeModel.SelectedItem is not null
+            && !string.Equals(_cmbContextSummarizeModel.SelectedItem.ToString(), NoneLabel, StringComparison.OrdinalIgnoreCase);
+        AutoCompactPaths paths = AutoCompactPaths;
+        int threshold = EffectiveThresholdTokens();
 
-        _lblCompactionStatus.Text = hasTarget
-            ? $"Compaction target: {_cmbContextSummarizeModel.SelectedItem}. Automatic compaction uses this model; manual compaction redirects only when 'Redirect manual compaction' is checked."
-            : "No compaction model selected — the proxy will NOT compact or redirect this model's context. Automatic compaction does nothing and manual compaction passes requests through untouched. Select a target model to enable compaction.";
+        // Automatic compaction needs all three: a path selection, a non-zero threshold, and a
+        // compaction model. Report the first missing piece so the user knows what to fix.
+        string autoState = paths switch
+        {
+            Core.Models.AutoCompactPaths.None => "Automatic compaction: OFF (Auto-Compact Paths is Disabled).",
+            _ when threshold <= 0 => "Automatic compaction: will not run — set a compaction threshold above.",
+            _ when !hasTarget => "Automatic compaction: will not run — select a Compaction Model.",
+            _ => $"Automatic compaction: ON for {DescribePaths(paths)}, above ~{threshold:N0} tokens, using {_cmbContextSummarizeModel.SelectedItem}.",
+        };
+
+        // Manual compaction always reaches a model; the checkbox only decides which one.
+        string manualState = hasTarget && RedirectManualCompaction
+            ? $"Manual /compact: redirected to the compaction model ({_cmbContextSummarizeModel.SelectedItem})."
+            : hasTarget
+                ? "Manual /compact: forwarded to the model named in the request (redirect unchecked). Select 'Redirect manual compaction' to use the compaction model instead."
+                : "Manual /compact: forwarded to the model named in the request — no compaction model is selected.";
+
+        _lblCompactionStatus.Text = $"{autoState}{Environment.NewLine}{manualState}";
+    }
+
+    /// <summary>
+    /// Human-readable name for an <see cref="AutoCompactPaths"/> selection, for the status label.
+    /// </summary>
+    private static string DescribePaths(AutoCompactPaths paths) => paths switch
+    {
+        Core.Models.AutoCompactPaths.Ollama => "Ollama /api/chat",
+        Core.Models.AutoCompactPaths.OpenAI => "OpenAI /v1/chat/completions",
+        Core.Models.AutoCompactPaths.Both => "both Ollama and OpenAI paths",
+        Core.Models.AutoCompactPaths.ProxyOnly => "all proxy-handled paths",
+        _ => "no paths",
+    };
+
+    /// <summary>
+    /// Mirrors <see cref="ModelMapping.GetProactiveOverflowThreshold"/>: the absolute token value
+    /// wins over the percentage, and the percentage is resolved against the effective context
+    /// window. Returns 0 when no threshold is configured.
+    /// </summary>
+    private int EffectiveThresholdTokens()
+    {
+        int tokens = (int)_nudProactiveOverflowTokens.Value;
+        if (tokens > 0)
+            return tokens;
+
+        int percent = (int)_nudProactiveOverflowPercent.Value;
+        if (percent <= 0)
+            return 0;
+
+        int contextWindow = ContextWindowTokens > 0
+            ? ContextWindowTokens
+            : ModelMapping.DefaultContextWindowTokens;
+        return (int)(contextWindow * percent / 100.0);
     }
 
     protected override void OnShown(EventArgs e)
@@ -329,10 +396,10 @@ internal sealed class ModelMappingDialog : Form
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool EnableHeartbeats
+    private bool EnableSseKeepAlive
     {
-        get => _chkEnableHeartbeats.Checked;
-        set => _chkEnableHeartbeats.Checked = value;
+        get => _chkEnableSseKeepAlive.Checked;
+        set => _chkEnableSseKeepAlive.Checked = value;
     }
 
     /// <summary>
@@ -759,9 +826,9 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
         _tlpMain.Controls.Add(_chkIsEnabled, 0, 13);
 
-        // Move per-model streaming heartbeat option up near the top (right after enable)
-        _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 14);
+        // Move the per-model SSE keep-alive option up near the top (right after enable)
+        _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
+        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 14);
 
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
         _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 15);
@@ -864,10 +931,10 @@ internal sealed class ModelMappingDialog : Form
             _cmbContextSummarizeModel,
             "The model used as the compaction target for BOTH automatic and manual compaction of this model.\n"
             + "Automatic compaction summarizes this model's context with the selected model when the\n"
-            + "threshold is exceeded; manual compaction (/compact) requests redirect here when\n"
+            + "threshold is exceeded; manual compaction (/compact) requests are sent here when\n"
             + "'Redirect manual compaction' is checked.\n"
-            + "Leave (None) to disable compaction entirely — the proxy will not compact or redirect\n"
-            + "this model's context.");
+            + "Leave (None) to disable compaction entirely — the proxy never compacts or redirects this\n"
+            + "model's context, and /compact requests are forwarded to the model the client asked for.");
 
         _lblUpstreamTimeout.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblUpstreamTimeout.AutoSize = true;
@@ -925,8 +992,9 @@ internal sealed class ModelMappingDialog : Form
         _nudProactiveOverflowPercent.Size = new Size(90, 25);
         _nudProactiveOverflowPercent.Value = 0;
         _toolTip.SetToolTip(_nudProactiveOverflowPercent,
-            "When the estimated request size exceeds this percentage of the context window,\n"
-            + "attempt automatic compaction when applicable. 0 disables.");
+            "When the estimated request size exceeds this percentage of the context window, the proxy\n"
+            + "may automatically compact the conversation first. 0 disables automatic compaction.\n"
+            + "Ignored unless Auto-Compact Paths is not Disabled and a Compaction Model is selected.");
 
         _lblProactiveOverflowTokens.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProactiveOverflowTokens.AutoSize = true;
@@ -941,7 +1009,8 @@ internal sealed class ModelMappingDialog : Form
         _nudProactiveOverflowTokens.Value = 0;
         _toolTip.SetToolTip(_nudProactiveOverflowTokens,
             "Absolute token threshold. Takes precedence over the percentage above.\n"
-            + "0 disables. Estimated as ~4 chars/token of the serialized request.");
+            + "0 disables automatic compaction. Estimated as ~4 chars/token of the serialized request.\n"
+            + "Ignored unless Auto-Compact Paths is not Disabled and a Compaction Model is selected.");
 
         _lblAutoCompactPaths.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblAutoCompactPaths.AutoSize = true;
@@ -956,22 +1025,37 @@ internal sealed class ModelMappingDialog : Form
             new AutoCompactPathOption(AutoCompactPaths.None, "Disabled"),
             new AutoCompactPathOption(AutoCompactPaths.Ollama, "Ollama /api/chat"),
             new AutoCompactPathOption(AutoCompactPaths.OpenAI, "OpenAI /v1/chat/completions"),
-            new AutoCompactPathOption(AutoCompactPaths.Both, "Both")
+            new AutoCompactPathOption(AutoCompactPaths.Both, "Both"),
+            new AutoCompactPathOption(AutoCompactPaths.ProxyOnly, "Proxy only (all paths)")
         });
         _cmbAutoCompactPaths.SelectedIndex = 0;
         _toolTip.SetToolTip(_cmbAutoCompactPaths,
-            "Select which API paths should trigger automatic compaction when context\n"
-            + "exceeds the proactive overflow threshold. 'Both' applies to both Ollama\n"
-            + "and OpenAI endpoints.");
+            "Which API paths the proxy may automatically compact when the estimated request exceeds the\n"
+            + "compaction threshold below. The proxy summarizes the conversation with the selected\n"
+            + "Compaction Model, then forwards the compacted request upstream.\n\n"
+            + "Disabled (default) - never auto-compact. Requests are passed to the model untouched and\n"
+            + "the model handles its own context.\n"
+            + "Ollama /api/chat - only Ollama chat requests.\n"
+            + "OpenAI /v1/chat/completions - only OpenAI chat requests.\n"
+            + "Both - the two paths above.\n"
+            + "Proxy only (all paths) - every path the proxy handles, regardless of wire format.\n\n"
+            + "These choices are mutually exclusive; only one is ever stored. Auto-compaction also\n"
+            + "requires a non-zero threshold and a selected Compaction Model - without both it does\n"
+            + "nothing.");
 
         _chkRedirectManualCompaction.AutoSize = true;
         _chkRedirectManualCompaction.Margin = new Padding(0, 4, 0, 4);
         _chkRedirectManualCompaction.Text = "Redirect manual compaction to the selected model";
         _toolTip.SetToolTip(
             _chkRedirectManualCompaction,
-            "When checked, manual compaction requests (/compact) for this model are routed to the\n"
-            + "selected Compaction Model. When unchecked, manual compaction passes the request\n"
-            + "through unchanged. Has no effect unless a Compaction Model is selected.");
+            "Controls where a manual compaction request (POST /v1/chat/completions/compact and\n"
+            + "POST /v1/responses/compact) is sent. Either way the selected model produces the\n"
+            + "summary and its response is returned to the client unchanged.\n\n"
+            + "Checked - send the request to the Compaction Model selected above.\n"
+            + "Unchecked (default) - send the request to the model named in the request, so that\n"
+            + "model handles its own compaction.\n\n"
+            + "Has no effect unless a Compaction Model is selected: with (None) the request always\n"
+            + "goes to the model the client asked for.");
 
         // Add the compaction-related controls into the compaction table so they
         // are visually grouped inside the _grpCompaction GroupBox.
@@ -1150,6 +1234,12 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
         _chkEnableThinkingCompatibility.CheckedChanged += (_, _) => UpdateThinkingReasoningGroupState();
+        _toolTip.SetToolTip(
+            _chkEnableThinkingCompatibility,
+            "Removes a trailing assistant turn that the client sent only to prefill the model's\n"
+            + "reply, which some models mishandle. Also gates the Thinking && Reasoning options below.\n\n"
+            + "This affects only the request body sent upstream. It has nothing to do with the SSE\n"
+            + "keep-alive that prevents client timeouts — see 'Enable SSE keep-alive for this model'.");
 
         _lblThinkingHandling.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblThinkingHandling.AutoSize = true;
@@ -1301,10 +1391,17 @@ internal sealed class ModelMappingDialog : Form
         _grpClientCapabilities.Margin = new Padding(0, 4, 0, 8);
         _grpClientCapabilities.Text = "Model Capabilities";
 
-        _chkEnableHeartbeats.AutoSize = true;
-        _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
-        _chkEnableHeartbeats.Text = "Enable streaming heartbeats for this model (keep-alive frames while waiting)";
-        _chkEnableHeartbeats.Checked = true;
+        _chkEnableSseKeepAlive.AutoSize = true;
+        _chkEnableSseKeepAlive.Margin = new Padding(0, 2, 0, 2);
+        _chkEnableSseKeepAlive.Text = "Enable SSE keep-alive for this model (prevent client timeouts while waiting)";
+        _chkEnableSseKeepAlive.Checked = true;
+        _toolTip.SetToolTip(
+            _chkEnableSseKeepAlive,
+            "Keeps the client connection alive while the upstream is still working, so streaming\n"
+            + "clients do not time out during long prompt-processing or thinking phases.\n\n"
+            + "This is purely a connection keep-alive. It does not change what the model is asked\n"
+            + "or how its reasoning is returned — see 'Enable thinking compatibility' for that.\n"
+            + "The global switch and interval are configured on the Keep-Alive tab.");
 
         _chkRedactRequestBodies.AutoSize = true;
         _chkRedactRequestBodies.Margin = new Padding(0, 8, 0, 2);
@@ -1892,7 +1989,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ThinkingMode = mapping.ThinkingMode;
         dlg.Capabilities = mapping.Capabilities;
 
-        dlg.EnableHeartbeats = mapping.EnableHeartbeats;
+        dlg.EnableSseKeepAlive = mapping.EnableSseKeepAlive;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.ContextWindowTokens = mapping.ContextWindowTokens;
         dlg.ProactiveOverflowPercent = mapping.ProactiveOverflowPercent;
@@ -1937,7 +2034,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.ThinkingMode = dlg.ThinkingMode;
         mapping.Capabilities = dlg.Capabilities;
 
-        mapping.EnableHeartbeats = dlg.EnableHeartbeats;
+        mapping.EnableSseKeepAlive = dlg.EnableSseKeepAlive;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.ContextWindowTokens = dlg.ContextWindowTokens;
         mapping.ProactiveOverflowPercent = dlg.ProactiveOverflowPercent;

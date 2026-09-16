@@ -10,7 +10,7 @@ namespace Kaeo.LlmProxy.Infrastructure;
 
 /// <summary>
 /// Central SQLite application database. Stores application data in tables, including
-/// request logs, exceptions, model mappings, instruction sets, and heartbeat counters.
+/// request logs, exceptions, model mappings, instruction sets, and SSE keep-alive counters.
 /// </summary>
 internal sealed class AppDatabase : IDisposable
 {
@@ -168,7 +168,7 @@ internal sealed class AppDatabase : IDisposable
                     model_name,
                     enable_thinking_compatibility,
                     capabilities,
-                    enable_heartbeats,
+                    enable_sse_keep_alive,
                     upstream_type,
                     upstream_url,
                     upstream_timeout_seconds,
@@ -243,7 +243,7 @@ internal sealed class AppDatabase : IDisposable
                         model_name,
                         enable_thinking_compatibility,
                         capabilities,
-                        enable_heartbeats,
+                        enable_sse_keep_alive,
                         upstream_type,
                         upstream_url,
                         upstream_timeout_seconds,
@@ -275,7 +275,7 @@ internal sealed class AppDatabase : IDisposable
                         $modelName,
                         $enableThinkingCompatibility,
                         $capabilities,
-                        $enableHeartbeats,
+                        $enableSseKeepAlive,
                         $upstreamType,
                         $upstreamUrl,
                         $upstreamTimeoutSeconds,
@@ -454,7 +454,11 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    public IReadOnlyList<(string Model, long Count, DateTime LastSentUtc)> LoadHeartbeatStats()
+    /// <summary>
+    /// Loads the persisted per-model SSE keep-alive frame counters. Only the client-facing frame
+    /// count is persisted; upstream liveness probe results are in-memory only.
+    /// </summary>
+    public IReadOnlyList<(string Model, long Count, DateTime LastSentUtc)> LoadSseKeepAliveStats()
     {
         lock (_lock)
         {
@@ -463,7 +467,7 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 SELECT model, count, last_sent_utc
-                FROM heartbeats
+                FROM sse_keep_alive
                 ORDER BY model;
                 """;
 
@@ -482,10 +486,10 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    public void UpsertHeartbeat(string model, long count, DateTime lastSentUtc)
+    public void UpsertSseKeepAlive(string model, long count, DateTime lastSentUtc)
     {
         if (string.IsNullOrWhiteSpace(model))
-            throw new ArgumentException("Heartbeat model is required.", nameof(model));
+            throw new ArgumentException("SSE keep-alive model is required.", nameof(model));
 
         lock (_lock)
         {
@@ -493,7 +497,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                INSERT INTO heartbeats (model, count, last_sent_utc)
+                INSERT INTO sse_keep_alive (model, count, last_sent_utc)
                 VALUES ($model, $count, $lastSentUtc)
                 ON CONFLICT(model) DO UPDATE SET
                     count = excluded.count,
@@ -506,13 +510,13 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    public void ClearHeartbeats()
+    public void ClearSseKeepAlive()
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "DELETE FROM heartbeats;";
+            command.CommandText = "DELETE FROM sse_keep_alive;";
             command.ExecuteNonQuery();
         }
     }
@@ -533,8 +537,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details,
                     collect_response_details,
                     debug_mode,
-                    enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds,
+                    enable_sse_keep_alive,
+                    sse_keep_alive_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
                     run_as_administrator,
@@ -557,8 +561,8 @@ internal sealed class AppDatabase : IDisposable
                 CollectRequestDetails = ReadBoolean(reader, 4),
                 CollectResponseDetails = ReadBoolean(reader, 5),
                 DebugMode = ReadBoolean(reader, 6),
-                EnableStreamingHeartbeats = ReadBoolean(reader, 7),
-                StreamingHeartbeatIntervalSeconds = reader.GetInt32(8),
+                EnableSseKeepAlive = ReadBoolean(reader, 7),
+                SseKeepAliveIntervalSeconds = reader.GetInt32(8),
                 EnablePerformanceSampling = ReadBoolean(reader, 9),
                 EnableApiExplorer = ReadBoolean(reader, 10),
                 RunAsAdministrator = ReadBoolean(reader, 11),
@@ -586,8 +590,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details,
                     collect_response_details,
                     debug_mode,
-                    enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds,
+                    enable_sse_keep_alive,
+                    sse_keep_alive_interval_seconds,
                     enable_performance_sampling,
                     enable_api_explorer,
                     run_as_administrator,
@@ -602,8 +606,8 @@ internal sealed class AppDatabase : IDisposable
                     $collectRequestDetails,
                     $collectResponseDetails,
                     $debugMode,
-                    $enableStreamingHeartbeats,
-                    $streamingHeartbeatIntervalSeconds,
+                    $enableSseKeepAlive,
+                    $sseKeepAliveIntervalSeconds,
                     $enablePerformanceSampling,
                     $enableApiExplorer,
                     $runAsAdministrator,
@@ -617,8 +621,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details = excluded.collect_request_details,
                     collect_response_details = excluded.collect_response_details,
                     debug_mode = excluded.debug_mode,
-                    enable_streaming_heartbeats = excluded.enable_streaming_heartbeats,
-                    streaming_heartbeat_interval_seconds = excluded.streaming_heartbeat_interval_seconds,
+                    enable_sse_keep_alive = excluded.enable_sse_keep_alive,
+                    sse_keep_alive_interval_seconds = excluded.sse_keep_alive_interval_seconds,
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
                     run_as_administrator = excluded.run_as_administrator,
@@ -633,8 +637,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$collectRequestDetails", ToSqliteBoolean(settings.CollectRequestDetails));
             command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
             command.Parameters.AddWithValue("$debugMode", ToSqliteBoolean(settings.DebugMode));
-            command.Parameters.AddWithValue("$enableStreamingHeartbeats", ToSqliteBoolean(settings.EnableStreamingHeartbeats));
-            command.Parameters.AddWithValue("$streamingHeartbeatIntervalSeconds", settings.StreamingHeartbeatIntervalSeconds);
+            command.Parameters.AddWithValue("$enableSseKeepAlive", ToSqliteBoolean(settings.EnableSseKeepAlive));
+            command.Parameters.AddWithValue("$sseKeepAliveIntervalSeconds", settings.SseKeepAliveIntervalSeconds);
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
@@ -1139,6 +1143,7 @@ internal sealed class AppDatabase : IDisposable
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
 
                 CREATE TABLE IF NOT EXISTS model_mappings (
+                    id INTEGER NOT NULL DEFAULT 0,
                     proxy_name TEXT PRIMARY KEY,
                     is_enabled INTEGER NOT NULL,
                     model_name TEXT NOT NULL,
@@ -1146,7 +1151,7 @@ internal sealed class AppDatabase : IDisposable
                     capabilities TEXT NULL,
                     supports_reasoning_effort INTEGER NULL,
                     adaptive_thinking TEXT NULL,
-                    enable_heartbeats INTEGER NOT NULL,
+                    enable_sse_keep_alive INTEGER NOT NULL,
                     upstream_type INTEGER NOT NULL,
                     upstream_url TEXT NOT NULL,
                     upstream_timeout_seconds INTEGER NOT NULL,
@@ -1168,6 +1173,7 @@ internal sealed class AppDatabase : IDisposable
                     proactive_overflow_percent INTEGER NOT NULL DEFAULT 0,
                     proactive_overflow_tokens INTEGER NOT NULL DEFAULT 0,
                     context_summarize_model_name TEXT NULL,
+                    context_summarize_model_id INTEGER NULL,
                     auto_compact_paths INTEGER NOT NULL DEFAULT 0,
                     redirect_manual_compaction INTEGER NOT NULL DEFAULT 0
                 );
@@ -1189,7 +1195,7 @@ internal sealed class AppDatabase : IDisposable
                     certificate TEXT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS heartbeats (
+                CREATE TABLE IF NOT EXISTS sse_keep_alive (
                     model TEXT PRIMARY KEY,
                     count INTEGER NOT NULL,
                     last_sent_utc TEXT NOT NULL
@@ -1204,8 +1210,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_request_details INTEGER NOT NULL,
                     collect_response_details INTEGER NOT NULL,
                     debug_mode INTEGER NOT NULL DEFAULT 0,
-                    enable_streaming_heartbeats INTEGER NOT NULL,
-                    streaming_heartbeat_interval_seconds INTEGER NOT NULL,
+                    enable_sse_keep_alive INTEGER NOT NULL,
+                    sse_keep_alive_interval_seconds INTEGER NOT NULL,
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
@@ -1242,10 +1248,125 @@ internal sealed class AppDatabase : IDisposable
                 """;
             command.ExecuteNonQuery();
 
+            MigrateSseKeepAliveRename(connection);
             MigrateRuntimeSettingsTable(connection);
             MigrateModelMappingsTable(connection);
             MigrateRequestsTable(connection);
             MigrateCredentialsTable(connection);
+        }
+    }
+
+    /// <summary>
+    /// Renames the streaming-heartbeat schema onto the SSE keep-alive names, preserving data.
+    /// Runs before the other migrations so every later step sees a consistent column set.
+    /// </summary>
+    /// <remarks>
+    /// The renamed columns were declared <c>NOT NULL</c> with no default, so the rename cannot be a
+    /// plain <c>ALTER TABLE ... RENAME COLUMN</c> on every provider. Instead each column is added
+    /// with an explicit default, back-filled from the old column, and then the old column is
+    /// dropped. <c>ALTER TABLE ... DROP COLUMN</c> requires SQLite 3.35+, which the pinned
+    /// SQLitePCLRaw bundle provides.
+    /// <para>
+    /// Failures are logged and skipped rather than thrown: when multiple proxy instances run
+    /// concurrently (<c>AllowMultipleInstances</c>) another process may hold the file, and a
+    /// sharing violation here must degrade gracefully instead of preventing startup.
+    /// </para>
+    /// </remarks>
+    private static void MigrateSseKeepAliveRename(SqliteConnection connection)
+    {
+        RenameColumnIfPresent(connection, "runtime_settings",
+            "enable_streaming_heartbeats", "enable_sse_keep_alive",
+            "INTEGER NOT NULL DEFAULT 1");
+        RenameColumnIfPresent(connection, "runtime_settings",
+            "streaming_heartbeat_interval_seconds", "sse_keep_alive_interval_seconds",
+            "INTEGER NOT NULL DEFAULT 15");
+        RenameColumnIfPresent(connection, "model_mappings",
+            "enable_heartbeats", "enable_sse_keep_alive",
+            "INTEGER NOT NULL DEFAULT 1");
+
+        // The baseline DDL above has already created an empty sse_keep_alive table, so an existing
+        // heartbeats table must be copied across and then dropped rather than renamed in place.
+        if (!TableExists(connection, "heartbeats"))
+            return;
+
+        try
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT OR IGNORE INTO sse_keep_alive (model, count, last_sent_utc)
+                SELECT model, count, last_sent_utc FROM heartbeats;
+                """;
+            int copied = command.ExecuteNonQuery();
+
+            using SqliteCommand drop = connection.CreateCommand();
+            drop.CommandText = "DROP TABLE heartbeats;";
+            drop.ExecuteNonQuery();
+
+            Log.Information(
+                "Migrated heartbeats table into sse_keep_alive: {Count} row(s) preserved.", copied);
+        }
+        catch (SqliteException ex)
+        {
+            Log.Warning(ex, "Failed to migrate the heartbeats table to sse_keep_alive; leaving it in place.");
+        }
+        catch (IOException ex)
+        {
+            // Another proxy instance is holding the database file. Skip and retry on next start.
+            Log.Warning(ex, "Skipped heartbeats table migration: the database file is in use.");
+        }
+    }
+
+    /// <summary>
+    /// Renames <paramref name="oldColumn"/> to <paramref name="newColumn"/> on
+    /// <paramref name="table"/>, preserving existing values. Does nothing when the old column is
+    /// already absent, which makes the migration idempotent across restarts.
+    /// </summary>
+    private static void RenameColumnIfPresent(
+        SqliteConnection connection,
+        string table,
+        string oldColumn,
+        string newColumn,
+        string newColumnDeclaration)
+    {
+        if (!TableExists(connection, table) || !ColumnExists(connection, table, oldColumn))
+            return;
+
+        try
+        {
+            using (SqliteCommand add = connection.CreateCommand())
+            {
+                if (!ColumnExists(connection, table, newColumn))
+                {
+                    add.CommandText =
+                        $"ALTER TABLE {table} ADD COLUMN {newColumn} {newColumnDeclaration};";
+                    add.ExecuteNonQuery();
+                }
+            }
+
+            using (SqliteCommand copy = connection.CreateCommand())
+            {
+                copy.CommandText = $"UPDATE {table} SET {newColumn} = {oldColumn};";
+                copy.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand drop = connection.CreateCommand())
+            {
+                drop.CommandText = $"ALTER TABLE {table} DROP COLUMN {oldColumn};";
+                drop.ExecuteNonQuery();
+            }
+
+            Log.Information(
+                "Migrated {Table} table: renamed {OldColumn} to {NewColumn}.",
+                table, oldColumn, newColumn);
+        }
+        catch (SqliteException ex)
+        {
+            Log.Warning(ex, "Failed to rename {Table}.{OldColumn} to {NewColumn}.", table, oldColumn, newColumn);
+        }
+        catch (IOException ex)
+        {
+            Log.Warning(ex, "Skipped {Table}.{OldColumn} rename: the database file is in use.", table, oldColumn);
         }
     }
 
@@ -1856,7 +1977,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$capabilities", mapping.Capabilities.Count > 0
             ? DbValue(string.Join(",", mapping.Capabilities))
             : DBNull.Value);
-        command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
+        command.Parameters.AddWithValue("$enableSseKeepAlive", ToSqliteBoolean(mapping.EnableSseKeepAlive));
         command.Parameters.AddWithValue("$upstreamType", (int)mapping.UpstreamType);
         command.Parameters.AddWithValue("$upstreamUrl", mapping.UpstreamUrl);
         command.Parameters.AddWithValue("$upstreamTimeoutSeconds", mapping.UpstreamTimeoutSeconds);
@@ -1894,7 +2015,7 @@ internal sealed class AppDatabase : IDisposable
         Capabilities = reader.IsDBNull(5)
             ? []
             : [.. reader.GetString(5).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        EnableHeartbeats = ReadBoolean(reader, 6),
+        EnableSseKeepAlive = ReadBoolean(reader, 6),
         UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(7))
             ? (UpstreamType)reader.GetInt32(7)
             : UpstreamType.OpenAI,

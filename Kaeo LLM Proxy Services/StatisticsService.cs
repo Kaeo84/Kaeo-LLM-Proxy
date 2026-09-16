@@ -51,11 +51,14 @@ internal sealed class StatisticsService : IDisposable
     // allocating a redundant snapshot array.
     private int _snapshotDirty = 1;
 
-    // Per-model heartbeat counters. Key: resolved model name. Updated lock-free via Interlocked.
-    private readonly ConcurrentDictionary<string, HeartbeatStat> _heartbeats = new(StringComparer.OrdinalIgnoreCase);
+    // Per-model connection-health counters, covering BOTH client-facing SSE keep-alive frames and
+    // upstream liveness probe results. Key: resolved model name. Updated lock-free via Interlocked.
+    private readonly ConcurrentDictionary<string, ConnectionHealthStat> _connectionHealth = new(StringComparer.OrdinalIgnoreCase);
 
     public event EventHandler? StatsChanged;
-    public event EventHandler? HeartbeatsChanged;
+
+    /// <summary>Raised when any connection-health counter changes (keep-alive frame or probe).</summary>
+    public event EventHandler? ConnectionHealthChanged;
 
     public StatisticsService(int maxEntries = 500, AppDatabase? store = null, int retentionHours = 72,
         LogSource source = LogSource.Proxy)
@@ -77,11 +80,11 @@ internal sealed class StatisticsService : IDisposable
                 Interlocked.Add(ref _totalCompletionTokens, entry.CompletionTokens);
             }
 
-            // Heartbeat tracking is a proxy concern; the MCP store has no heartbeat rows.
+            // Keep-alive tracking is a proxy concern; the MCP store has no keep-alive rows.
             if (_source == LogSource.Proxy)
             {
-                foreach ((string model, long count, DateTime lastSentUtc) in store.LoadHeartbeatStats())
-                    SetHeartbeatStat(model, count, lastSentUtc);
+                foreach ((string model, long count, DateTime lastSentUtc) in store.LoadSseKeepAliveStats())
+                    SetSseKeepAliveCount(model, count, lastSentUtc);
             }
         }
 
@@ -308,69 +311,91 @@ internal sealed class StatisticsService : IDisposable
     }
 
     /// <summary>
-    /// Records one heartbeat frame emitted for the given model. Thread-safe; non-blocking.
-    /// Safe to call from the streaming pipeline.
+    /// Records one SSE keep-alive frame emitted to a client for the given model. Thread-safe;
+    /// non-blocking, so it is safe to call from the streaming pipeline on every frame.
     /// </summary>
-    public void IncrementHeartbeat(string? modelName)
+    /// <remarks>
+    /// This deliberately does NOT touch the upstream probe fields (<see cref="ConnectionHealthStat.Attempts"/>,
+    /// <see cref="ConnectionHealthStat.LastStatus"/>, <see cref="ConnectionHealthStat.LastError"/>).
+    /// Emitting a keep-alive to the client says nothing about whether the upstream is reachable, and
+    /// mixing the two made the Keep-Alive tab report "Success" for a model whose upstream was down —
+    /// which hid exactly the failure mode (silent streaming timeouts) this view exists to surface.
+    /// </remarks>
+    public void IncrementSseKeepAlive(string? modelName)
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
-        HeartbeatStat stat = _heartbeats.GetOrAdd(key, _ => new HeartbeatStat());
-        Interlocked.Increment(ref stat.Attempts);
-        Interlocked.Increment(ref stat.Count);
+        ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
+        long count = Interlocked.Increment(ref stat.Count);
         long nowTicks = DateTime.UtcNow.Ticks;
-        Interlocked.Exchange(ref stat.LastAttemptUtcTicks, nowTicks);
         Interlocked.Exchange(ref stat.LastSentUtcTicks, nowTicks);
-        Volatile.Write(ref stat.LastStatus, "Success");
-        Volatile.Write(ref stat.LastError, string.Empty);
-        long count = Interlocked.Read(ref stat.Count);
         DateTime lastSentUtc = new(nowTicks, DateTimeKind.Utc);
 
         if (_store is not null)
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                try { _store.UpsertHeartbeat(key, count, lastSentUtc); }
-                catch (Exception storeEx) { Log.Warning(storeEx, "Failed to persist heartbeat stat"); }
+                try { _store.UpsertSseKeepAlive(key, count, lastSentUtc); }
+                catch (Exception storeEx) { Log.Warning(storeEx, "Failed to persist SSE keep-alive stat"); }
             });
         }
 
-        HeartbeatsChanged?.Invoke(this, EventArgs.Empty);
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Records one successful upstream liveness probe for the given model. The counterpart to
+    /// <see cref="RecordHeartbeatFailure"/>; both describe the periodic <c>/v1/models</c> probe and
+    /// neither counts client-facing SSE keep-alive frames.
+    /// </summary>
+    public void RecordHeartbeatProbeSuccess(string? modelName)
+    {
+        string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
+        ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
+        Interlocked.Increment(ref stat.Attempts);
+        Interlocked.Exchange(ref stat.LastAttemptUtcTicks, DateTime.UtcNow.Ticks);
+        Volatile.Write(ref stat.LastStatus, "Success");
+        Volatile.Write(ref stat.LastError, string.Empty);
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void RecordHeartbeatFailure(string? modelName, string errorMessage)
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
-        HeartbeatStat stat = _heartbeats.GetOrAdd(key, _ => new HeartbeatStat());
+        ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
         Interlocked.Increment(ref stat.Attempts);
         Interlocked.Increment(ref stat.Failures);
         Interlocked.Exchange(ref stat.LastAttemptUtcTicks, DateTime.UtcNow.Ticks);
         Volatile.Write(ref stat.LastStatus, "Failed");
         Volatile.Write(ref stat.LastError, string.IsNullOrWhiteSpace(errorMessage) ? "Unknown failure" : errorMessage.Trim());
-        HeartbeatsChanged?.Invoke(this, EventArgs.Empty);
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void RegisterHeartbeatModel(string? modelName)
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
-        _heartbeats.GetOrAdd(key, _ => new HeartbeatStat());
-        HeartbeatsChanged?.Invoke(this, EventArgs.Empty);
+        _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public void SetHeartbeatStat(string? modelName, long count, DateTime lastSentUtc)
+    /// <summary>Restores the persisted SSE keep-alive frame count for a model at startup.</summary>
+    public void SetSseKeepAliveCount(string? modelName, long count, DateTime lastSentUtc)
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
-        HeartbeatStat stat = _heartbeats.GetOrAdd(key, _ => new HeartbeatStat());
+        ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
         Interlocked.Exchange(ref stat.Count, count);
         stat.LastSentUtcTicks = lastSentUtc.Kind == DateTimeKind.Utc
             ? lastSentUtc.Ticks
             : lastSentUtc.ToUniversalTime().Ticks;
-        HeartbeatsChanged?.Invoke(this, EventArgs.Empty);
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Returns a thread-safe snapshot of heartbeat counters keyed by model name.</summary>
-    public IReadOnlyList<HeartbeatSnapshot> GetHeartbeatStats()
+    /// <summary>
+    /// Returns a thread-safe snapshot of connection-health counters keyed by model name, covering
+    /// both SSE keep-alive frames and upstream liveness probe results.
+    /// </summary>
+    public IReadOnlyList<ConnectionHealthSnapshot> GetConnectionHealthStats()
     {
-        return [.. _heartbeats.Select(kvp => new HeartbeatSnapshot(
+        return [.. _connectionHealth.Select(kvp => new ConnectionHealthSnapshot(
             kvp.Key,
             Interlocked.Read(ref kvp.Value.Attempts),
             Interlocked.Read(ref kvp.Value.Count),
@@ -381,12 +406,15 @@ internal sealed class StatisticsService : IDisposable
             Volatile.Read(ref kvp.Value.LastError)))];
     }
 
-    /// <summary>Clears all heartbeat counters.</summary>
-    public void ResetHeartbeats()
+    /// <summary>
+    /// Clears all in-memory connection-health counters and the persisted SSE keep-alive rows.
+    /// Probe results are in-memory only, so clearing the dictionary resets those as well.
+    /// </summary>
+    public void ResetConnectionHealth()
     {
-        _heartbeats.Clear();
-        _store?.ClearHeartbeats();
-        HeartbeatsChanged?.Invoke(this, EventArgs.Empty);
+        _connectionHealth.Clear();
+        _store?.ClearSseKeepAlive();
+        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
@@ -449,8 +477,18 @@ internal sealed record PersistEntry(RequestLog? Entry, Exception? Exception)
     public static PersistEntry ClearLogs { get; } = new(null, null);
 }
 
-/// <summary>Mutable counter holder used internally by <see cref="StatisticsService"/>.</summary>
-internal sealed class HeartbeatStat
+/// <summary>
+/// Mutable counter holder used internally by <see cref="StatisticsService"/>. Holds two unrelated
+/// groups of fields that must not be updated by each other's code paths:
+/// <list type="bullet">
+/// <item><see cref="Count"/> and <see cref="LastSentUtcTicks"/> count client-facing SSE keep-alive
+/// frames, and are the only fields persisted to the store.</item>
+/// <item><see cref="Attempts"/>, <see cref="Failures"/>, <see cref="LastAttemptUtcTicks"/>,
+/// <see cref="LastStatus"/> and <see cref="LastError"/> describe the periodic upstream liveness
+/// probe and are in-memory only.</item>
+/// </list>
+/// </summary>
+internal sealed class ConnectionHealthStat
 {
     public long Attempts;
     public long Count;
@@ -461,8 +499,8 @@ internal sealed class HeartbeatStat
     public string LastError = string.Empty;
 }
 
-/// <summary>Immutable snapshot of heartbeat activity for a single model.</summary>
-internal sealed record HeartbeatSnapshot(
+/// <summary>Immutable snapshot of connection-health activity for a single model.</summary>
+internal sealed record ConnectionHealthSnapshot(
     string Model,
     long Attempts,
     long Count,

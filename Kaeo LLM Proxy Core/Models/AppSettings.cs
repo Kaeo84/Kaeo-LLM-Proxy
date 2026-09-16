@@ -101,12 +101,20 @@ internal enum ThinkingMode
 /// <summary>
 /// Specifies which API paths participate in automatic context compaction.
 /// When the proxy detects that context usage exceeds the configured threshold,
-/// it can automatically compact the conversation before forwarding to upstream.
+/// it summarizes the conversation with the mapping's compaction target before
+/// forwarding to upstream.
 /// </summary>
+/// <remarks>
+/// The values are mutually exclusive selections even though the underlying storage is a
+/// bitmask: the settings dialog exposes them as a single-choice list and only one value is
+/// ever persisted. Combining bits (for example <c>Ollama | ProxyOnly</c>) is not a supported
+/// configuration. Use <see cref="ModelMapping.IsAutoCompactActiveFor"/> rather than testing
+/// the bits directly so the <see cref="ProxyOnly"/> wildcard is handled consistently.
+/// </remarks>
 [Flags]
 internal enum AutoCompactPaths
 {
-    /// <summary>No automatic compaction.</summary>
+    /// <summary>No automatic compaction. Requests are passed to the model untouched.</summary>
     None = 0,
 
     /// <summary>Enable automatic compaction for Ollama /api/chat requests.</summary>
@@ -117,6 +125,12 @@ internal enum AutoCompactPaths
 
     /// <summary>Enable automatic compaction for both Ollama and OpenAI paths.</summary>
     Both = Ollama | OpenAI,
+
+    /// <summary>
+    /// Enable automatic compaction on every proxy-handled path regardless of wire format.
+    /// The proxy performs the summarization itself using the mapping's compaction target.
+    /// </summary>
+    ProxyOnly = 4,
 }
 
 internal static class UpstreamTypeExtensions
@@ -240,9 +254,9 @@ internal sealed class RuntimeSettings
     /// </summary>
     public bool CollectAllTraffic { get; set; } = false;
 
-    public bool EnableStreamingHeartbeats { get; set; } = true;
+    public bool EnableSseKeepAlive { get; set; } = true;
 
-    public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
+    public int SseKeepAliveIntervalSeconds { get; set; } = 15;
 
     public bool EnablePerformanceSampling { get; set; } = true;
 
@@ -318,10 +332,17 @@ internal sealed class ModelMapping
     public List<string> Capabilities { get; set; } = [];
 
     /// <summary>
-    /// When true, this mapping participates in streaming heartbeat emission while waiting for upstream tokens.
-    /// The global <see cref="AppSettings.EnableStreamingHeartbeats"/> must also be enabled. Default: true.
+    /// When true, this mapping participates in emitting SSE keep-alive frames to the client while
+    /// waiting for upstream tokens. The global <see cref="AppSettings.EnableSseKeepAlive"/> must
+    /// also be enabled. Default: true.
     /// </summary>
-    public bool EnableHeartbeats { get; set; } = true;
+    /// <remarks>
+    /// This is the client-facing keep-alive that prevents streaming clients from timing out during
+    /// long prompt-processing or thinking phases. It is unrelated to
+    /// <see cref="EnableThinkingCompatibility"/>, which only strips assistant response-prefill turns
+    /// from the request body, and to the periodic upstream liveness probe.
+    /// </remarks>
+    public bool EnableSseKeepAlive { get; set; } = true;
 
     /// <summary>Upstream API compatibility for this mapping. Defaults to OpenAI-compatible /v1.</summary>
     public UpstreamType UpstreamType { get; set; } = UpstreamType.OpenAI;
@@ -494,21 +515,21 @@ internal sealed class ModelMapping
     public int ProactiveOverflowTokens { get; set; }
 
     /// <summary>
-    /// Which API paths (Ollama /api/chat, OpenAI /v1/chat/completions, or both) participate
-    /// in automatic context compaction. When the proxy estimates that the incoming request
-    /// exceeds the proactive overflow threshold, it automatically calls the compact endpoint
-    /// to reduce context size before forwarding. <see cref="AutoCompactPaths.None"/> disables
-    /// automatic compaction (default).
+    /// Which API paths participate in automatic context compaction. When the proxy estimates
+    /// that the incoming request exceeds the proactive overflow threshold it summarizes the
+    /// conversation with the compaction target before forwarding. <see cref="AutoCompactPaths.None"/>
+    /// (default) disables automatic compaction entirely, and no threshold or compaction target
+    /// also disables it, so the default behavior is to let the model handle context itself.
     /// </summary>
     public AutoCompactPaths AutoCompactPaths { get; set; } = AutoCompactPaths.None;
 
     /// <summary>
     /// When true, manual compaction requests (POST /v1/chat/completions/compact and
     /// POST /v1/responses/compact) for this model are routed to the configured compaction
-    /// target (<see cref="ContextSummarizeModelId"/>). When false (default), manual
-    /// compaction requests pass through the body unchanged. A manual compaction request can
-    /// only be redirected when this is true AND a valid compaction target is selected; with
-    /// the target set to (None) the request is always passed through untouched.
+    /// target (<see cref="ContextSummarizeModelId"/>). When false (default), the request is
+    /// forwarded to this model's own upstream instead and the model produces the summary.
+    /// Redirection only applies when this is true AND a valid compaction target is selected;
+    /// with the target set to (None) the request always goes to the original model.
     /// </summary>
     public bool RedirectManualCompaction { get; set; }
 
@@ -523,6 +544,30 @@ internal sealed class ModelMapping
         if (ProactiveOverflowPercent > 0)
             return (int)(GetEffectiveContextWindow() * ProactiveOverflowPercent / 100.0);
         return 0;
+    }
+
+    /// <summary>
+    /// Returns whether automatic compaction is configured for <paramref name="requestPath"/>.
+    /// This is the single authority every compaction call site must consult so the path gates
+    /// cannot drift apart. <see cref="AutoCompactPaths.None"/> disables compaction; the
+    /// <see cref="AutoCompactPaths.ProxyOnly"/> wildcard matches every path; the named paths
+    /// match only themselves.
+    /// </summary>
+    /// <param name="requestPath">
+    /// The path the current request arrived on. Callers pass a single named flag
+    /// (<see cref="AutoCompactPaths.Ollama"/> or <see cref="AutoCompactPaths.OpenAI"/>), never a
+    /// combination.
+    /// </param>
+    public bool IsAutoCompactActiveFor(AutoCompactPaths requestPath)
+    {
+        if (AutoCompactPaths == AutoCompactPaths.None)
+            return false;
+
+        // ProxyOnly is a wildcard: the proxy summarizes on any path it handles.
+        if (AutoCompactPaths == AutoCompactPaths.ProxyOnly)
+            return true;
+
+        return (AutoCompactPaths & requestPath) != 0;
     }
 
     /// <summary>
@@ -542,7 +587,7 @@ internal sealed class ModelMapping
             ModelName = ModelName,
             EnableThinkingCompatibility = EnableThinkingCompatibility,
             Capabilities = [.. Capabilities],
-            EnableHeartbeats = EnableHeartbeats,
+            EnableSseKeepAlive = EnableSseKeepAlive,
             CredentialName = CredentialName,
             UpstreamType = UpstreamType,
             ThinkingMode = ThinkingMode,
@@ -773,11 +818,17 @@ internal sealed class AppSettings
     public bool CollectAllTraffic { get; set; } = false;
 
     /// <summary>
-    /// When true, streaming responses emit harmless heartbeat frames while waiting for long-thinking models.
-    /// Helps clients keep connections open when no model tokens are available yet. Default: true.
+    /// When true, streaming responses emit harmless SSE comment frames to the client while waiting
+    /// for long-thinking models, keeping the connection open when no model tokens are available yet.
+    /// Default: true.
     /// </summary>
+    /// <remarks>
+    /// These are the client-facing SSE keep-alive frames (the wire marker is
+    /// <c>: kaeo-keep-alive</c>). Do not confuse them with the periodic upstream liveness probe,
+    /// which is a separate concern reported on its own counters.
+    /// </remarks>
     [JsonIgnore]
-    public bool EnableStreamingHeartbeats { get; set; } = true;
+    public bool EnableSseKeepAlive { get; set; } = true;
 
     /// <summary>
     /// When true, /api/chat request translation runs through the Microsoft.Extensions.AI IR
@@ -789,10 +840,11 @@ internal sealed class AppSettings
     public bool UseIrTranslation { get; set; } = false;
 
     /// <summary>
-    /// Seconds between streaming heartbeat frames while waiting for upstream tokens. Min: 5, Max: 300. Default: 15.
+    /// Seconds between SSE keep-alive frames sent to the client while waiting for upstream tokens.
+    /// Min: 5, Max: 300. Default: 15.
     /// </summary>
     [JsonIgnore]
-    public int StreamingHeartbeatIntervalSeconds { get; set; } = 15;
+    public int SseKeepAliveIntervalSeconds { get; set; } = 15;
 
     /// <summary>
     /// When true, the dashboard periodically samples CPU and memory usage for display.
@@ -810,29 +862,12 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
-    /// <summary>
-    /// When true, the proxy detects GitHub Copilot requests (via User-Agent or /compact signature)
-    /// and skips proactive auto-compaction, allowing Copilot's native /compact flow to manage
-    /// context. This prevents the proxy from interfering with Copilot's internal state management.
-    /// Default: true.
-    /// </summary>
-    [JsonIgnore]
-    public bool EnableCopilotNativeCompaction { get; set; } = true;
-
-    /// <summary>
-    /// When true, the proxy performs proactive auto-compaction for non-Copilot clients when
-    /// context overflow is detected. This uses the configured compact model to summarize
-    /// conversation history. Default: true.
-    /// </summary>
-    [JsonIgnore]
-    public bool EnableAutoCompaction { get; set; } = true;
-
-    /// <summary>
-    /// When true, the proxy exposes a manual compaction endpoint at /v1/chat/completions/compact
-    /// that allows clients to explicitly request context compaction. Default: false.
-    /// </summary>
-    [JsonIgnore]
-    public bool EnableManualCompactionEndpoint { get; set; } = false;
+    // NOTE: There is deliberately no global compaction toggle. Compaction is configured
+    // per model mapping only, via ModelMapping.AutoCompactPaths, the proactive overflow
+    // thresholds, the compaction target (ModelMapping.ContextSummarizeModelId) and
+    // ModelMapping.RedirectManualCompaction. The default for a mapping is therefore
+    // "do nothing": requests are handed to the model untouched and the model handles its
+    // own context. A global default here would silently override that per-model intent.
 
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
@@ -905,7 +940,7 @@ internal sealed class AppSettings
         MaxConcurrentRequests = Math.Clamp(MaxConcurrentRequests, 1, 10000);
         MaxRequestBodyBytes = Math.Max(MaxRequestBodyBytes, 1024);
         MaxLogEntries = Math.Clamp(MaxLogEntries, 10, 100000);
-        StreamingHeartbeatIntervalSeconds = Math.Clamp(StreamingHeartbeatIntervalSeconds, 5, 300);
+        SseKeepAliveIntervalSeconds = Math.Clamp(SseKeepAliveIntervalSeconds, 5, 300);
 
         foreach (ModelMapping mapping in ModelMappings)
         {
@@ -938,8 +973,8 @@ internal sealed class AppSettings
         CollectResponseDetails = CollectResponseDetails,
         DebugMode = DebugMode,
         CollectAllTraffic = CollectAllTraffic,
-        EnableStreamingHeartbeats = EnableStreamingHeartbeats,
-        StreamingHeartbeatIntervalSeconds = StreamingHeartbeatIntervalSeconds,
+        EnableSseKeepAlive = EnableSseKeepAlive,
+        SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -957,8 +992,8 @@ internal sealed class AppSettings
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         DebugMode = runtimeSettings.DebugMode;
         CollectAllTraffic = runtimeSettings.CollectAllTraffic;
-        EnableStreamingHeartbeats = runtimeSettings.EnableStreamingHeartbeats;
-        StreamingHeartbeatIntervalSeconds = runtimeSettings.StreamingHeartbeatIntervalSeconds;
+        EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
+        SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }

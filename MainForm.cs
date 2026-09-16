@@ -61,7 +61,7 @@ internal partial class MainForm : Form
 
     internal event EventHandler? MinimizedToTray;
 
-    private const string TestConsoleHeartbeatMarker = "__kaeo_test_console_heartbeat__";
+    private const string TestConsoleKeepAliveMarker = "__kaeo_test_console_keep_alive__";
 
     private static readonly JsonSerializerOptions _indentedJsonOptions = new() { WriteIndented = true };
 
@@ -162,12 +162,12 @@ internal partial class MainForm : Form
         RefreshLogs();
         RefreshMcpLogs();
         RefreshSystemLogs();
-        RefreshHeartbeats();
+        RefreshKeepAlive();
         RefreshCredentials();
         RefreshModules();
         LoadMcpSettingsToForm();
         UpdateMcpStatusDisplays();
-        _stats.HeartbeatsChanged += OnHeartbeatsChanged;
+        _stats.ConnectionHealthChanged += OnConnectionHealthChanged;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
         _tabControl.SelectedIndexChanged += TabControl_SelectedIndexChanged;
@@ -191,7 +191,7 @@ internal partial class MainForm : Form
         _refreshTimer.Stop();
         _stats.StatsChanged -= OnStatsChanged;
         _mcpStats.StatsChanged -= OnMcpStatsChanged;
-        _stats.HeartbeatsChanged -= OnHeartbeatsChanged;
+        _stats.ConnectionHealthChanged -= OnConnectionHealthChanged;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
@@ -929,6 +929,8 @@ internal partial class MainForm : Form
         sb.AppendLine($"Status    : {log.Status} ({log.StatusCode})");
         if (source == LogSource.Proxy)
             sb.AppendLine($"Streaming : {log.Streaming}");
+        if (!string.IsNullOrEmpty(log.StopReason))
+            sb.AppendLine($"Stop Reason: {log.StopReason}");
         sb.AppendLine($"Duration  : {log.DurationMs:F1} ms");
         if (source == LogSource.Proxy)
         {
@@ -1224,24 +1226,24 @@ internal partial class MainForm : Form
     private void LogSubTabs_SelectionChanged(object? sender, EventArgs e) =>
         RefreshActiveLogTab();
 
-    // ── Heartbeats tab ──────────────────────────────────────────────────────
+    // ── SSE Keep-Alive tab ──────────────────────────────────────────────────
 
-    private void OnHeartbeatsChanged(object? sender, EventArgs e)
+    private void OnConnectionHealthChanged(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshHeartbeats);
+            BeginInvoke(RefreshKeepAlive);
             return;
         }
-        RefreshHeartbeats();
+        RefreshKeepAlive();
     }
 
-    private void RefreshHeartbeats()
+    private void RefreshKeepAlive()
     {
-        Dictionary<string, HeartbeatSnapshot> snapshots = _stats.GetHeartbeatStats()
+        Dictionary<string, ConnectionHealthSnapshot> snapshots = _stats.GetConnectionHealthStats()
             .ToDictionary(s => s.Model, StringComparer.OrdinalIgnoreCase);
-        List<HeartbeatDisplayRow> rows = [];
+        List<KeepAliveDisplayRow> rows = [];
 
         foreach (ModelMapping mapping in _settings.ModelMappings)
         {
@@ -1252,9 +1254,9 @@ internal partial class MainForm : Form
             if (string.IsNullOrWhiteSpace(modelName))
                 continue;
 
-            snapshots.TryGetValue(mapping.ProxyName, out HeartbeatSnapshot? proxySnapshot);
-            snapshots.TryGetValue(mapping.ModelName, out HeartbeatSnapshot? modelSnapshot);
-            HeartbeatSnapshot? snapshot = (proxySnapshot?.Count ?? 0) >= (modelSnapshot?.Count ?? 0)
+            snapshots.TryGetValue(mapping.ProxyName, out ConnectionHealthSnapshot? proxySnapshot);
+            snapshots.TryGetValue(mapping.ModelName, out ConnectionHealthSnapshot? modelSnapshot);
+            ConnectionHealthSnapshot? snapshot = (proxySnapshot?.Count ?? 0) >= (modelSnapshot?.Count ?? 0)
                 ? proxySnapshot
                 : modelSnapshot;
 
@@ -1263,9 +1265,9 @@ internal partial class MainForm : Form
             if (!string.IsNullOrWhiteSpace(mapping.ModelName))
                 snapshots.Remove(mapping.ModelName);
 
-            rows.Add(new HeartbeatDisplayRow(
+            rows.Add(new KeepAliveDisplayRow(
                 modelName,
-                mapping.IsEnabled && mapping.EnableHeartbeats && _settings.EnableStreamingHeartbeats,
+                mapping.IsEnabled && mapping.EnableSseKeepAlive && _settings.EnableSseKeepAlive,
                 snapshot?.Attempts ?? 0,
                 snapshot?.Count ?? 0,
                 snapshot?.Failures ?? 0,
@@ -1275,7 +1277,7 @@ internal partial class MainForm : Form
                 snapshot?.LastError ?? string.Empty));
         }
 
-        rows.AddRange(snapshots.Values.Select(s => new HeartbeatDisplayRow(
+        rows.AddRange(snapshots.Values.Select(s => new KeepAliveDisplayRow(
             s.Model,
             true,
             s.Attempts,
@@ -1286,10 +1288,10 @@ internal partial class MainForm : Form
             s.LastStatus,
             s.LastError)));
 
-        _lstHeartbeats.BeginUpdate();
-        _lstHeartbeats.Items.Clear();
+        _lstKeepAlive.BeginUpdate();
+        _lstKeepAlive.Items.Clear();
 
-        foreach (HeartbeatDisplayRow row in rows
+        foreach (KeepAliveDisplayRow row in rows
             .OrderByDescending(r => r.LastSentUtc)
             .ThenBy(r => r.Model, StringComparer.OrdinalIgnoreCase))
         {
@@ -1312,44 +1314,44 @@ internal partial class MainForm : Form
                 item.ForeColor = Color.Firebrick;
             else
                 item.ForeColor = SystemColors.WindowText;
-            _lstHeartbeats.Items.Add(item);
+            _lstKeepAlive.Items.Add(item);
         }
 
-        _lstHeartbeats.EndUpdate();
+        _lstKeepAlive.EndUpdate();
     }
 
-    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e) =>
-        RunOnceWhileDisabled(_btnSaveHeartbeats, () =>
+    private void BtnSaveKeepAlive_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveKeepAlive, () =>
         {
-            if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
-                || heartbeatIntervalSeconds < 5
-                || heartbeatIntervalSeconds > 300)
+            if (!int.TryParse(_txtKeepAliveInterval.Text, out int keepAliveIntervalSeconds)
+                || keepAliveIntervalSeconds < 5
+                || keepAliveIntervalSeconds > 300)
             {
-                MessageBox.Show("Heartbeat interval must be a number between 5 and 300 seconds.", "Validation",
+                MessageBox.Show("Keep-alive interval must be a number between 5 and 300 seconds.", "Validation",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            _settings.EnableStreamingHeartbeats = _chkStreamingHeartbeats.Checked;
-            _settings.StreamingHeartbeatIntervalSeconds = heartbeatIntervalSeconds;
+            _settings.EnableSseKeepAlive = _chkSseKeepAlive.Checked;
+            _settings.SseKeepAliveIntervalSeconds = keepAliveIntervalSeconds;
             _settings.Save();
             _handler.UpdateSettings(_settings);
-            RefreshHeartbeats();
+            RefreshKeepAlive();
 
-            MessageBox.Show("Heartbeat settings saved.", "Saved",
+            MessageBox.Show("Keep-alive settings saved.", "Saved",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
 
-    private void BtnResetHeartbeats_Click(object? sender, EventArgs e) =>
-        RunOnceWhileDisabled(_btnResetHeartbeats, () =>
+    private void BtnResetKeepAlive_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetKeepAlive, () =>
         {
-            _stats.ResetHeartbeats();
-            RefreshHeartbeats();
+            _stats.ResetConnectionHealth();
+            RefreshKeepAlive();
         });
 
-    private readonly struct HeartbeatDisplayRow
+    private readonly struct KeepAliveDisplayRow
     {
-        public HeartbeatDisplayRow(
+        public KeepAliveDisplayRow(
             string model,
             bool enabled,
             long attempts,
@@ -1373,9 +1375,9 @@ internal partial class MainForm : Form
 
         public readonly string Model;
         /// <summary>
-        /// Effective heartbeat-enabled state: the model is enabled in settings, heartbeats are
-        /// enabled for that model, and the global streaming-heartbeat switch is on. Any of
-        /// these being false makes this model not send heartbeats.
+        /// Effective keep-alive-enabled state: the model is enabled in settings, keep-alive is
+        /// enabled for that model, and the global SSE keep-alive switch is on. Any of these being
+        /// false means this model sends no keep-alive frames to clients.
         /// </summary>
         public readonly bool Enabled;
         public readonly long Attempts;
@@ -1475,8 +1477,8 @@ internal partial class MainForm : Form
         _chkCollectAllTraffic.Checked = _settings.CollectAllTraffic;
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
-        _chkStreamingHeartbeats.Checked = _settings.EnableStreamingHeartbeats;
-        _txtHeartbeatInterval.Text = _settings.StreamingHeartbeatIntervalSeconds.ToString();
+        _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
+        _txtKeepAliveInterval.Text = _settings.SseKeepAliveIntervalSeconds.ToString();
 
         _dgvMappings.Rows.Clear();
         foreach (ModelMapping mapping in _settings.ModelMappings)
@@ -2549,7 +2551,7 @@ internal partial class MainForm : Form
         _helpTabs.TabPages.Add(mcpPage);
 
         _helpTabs.TabPages.Add(HelpPages.TextPage("Test", HelpPages.Test));
-        _helpTabs.TabPages.Add(HelpPages.TextPage("Heartbeats", HelpPages.Heartbeats));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("SSE Keep-Alive", HelpPages.SseKeepAlive));
 
         _helpModulesPlaceholder = HelpPages.TextPage("Modules", HelpPages.ModulesPlaceholder);
         _helpModulesTabs = new TabControl { Dock = DockStyle.Fill };
@@ -2766,17 +2768,17 @@ internal partial class MainForm : Form
         Exception? capturedException = null;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         int tokenCount = 0;
-        int heartbeatCount = 0;
+        int keepAliveCount = 0;
         var streamDiagnostics = new TestConsoleStreamDiagnostics();
 
         try
         {
             await foreach (TestConsoleToken token in StreamChatAsync(upstreamModel, upstreamUrl, mapping, requestBody, streamDiagnostics, ct))
             {
-                if (token.Text == TestConsoleHeartbeatMarker)
+                if (token.Text == TestConsoleKeepAliveMarker)
                 {
-                    heartbeatCount++;
-                    _stats.IncrementHeartbeat(mapping.ProxyName);
+                    keepAliveCount++;
+                    _stats.IncrementSseKeepAlive(mapping.ProxyName);
                     continue;
                 }
 
@@ -2787,7 +2789,7 @@ internal partial class MainForm : Form
             sw.Stop();
             if (tokenCount == 0 && streamDiagnostics.HasDiagnostics)
             {
-                string diagnosticText = streamDiagnostics.BuildEmptyResponseMessage(heartbeatCount);
+                string diagnosticText = streamDiagnostics.BuildEmptyResponseMessage(keepAliveCount);
                 _txtTestResponse.AppendText(diagnosticText);
                 responseBuilder.Append(diagnosticText);
             }
@@ -3042,8 +3044,8 @@ internal partial class MainForm : Form
 
             // Per-read inactivity timeout: if no bytes arrive for this long, fail.
             TimeSpan inactivityTimeout = TimeSpan.FromSeconds(Math.Max(30, timeout / 4));
-            bool enableHeartbeats = _settings.EnableStreamingHeartbeats && (mapping?.EnableHeartbeats ?? true);
-            TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(_settings.StreamingHeartbeatIntervalSeconds, 5, 300));
+            bool enableKeepAlive = _settings.EnableSseKeepAlive && (mapping?.EnableSseKeepAlive ?? true);
+            TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(_settings.SseKeepAliveIntervalSeconds, 5, 300));
 
             while (true)
             {
@@ -3051,7 +3053,7 @@ internal partial class MainForm : Form
 
                 Task<string?> readTask = reader.ReadLineAsync(requestCts.Token).AsTask();
                 DateTime readStartedUtc = DateTime.UtcNow;
-                DateTime nextHeartbeatUtc = readStartedUtc.Add(heartbeatInterval);
+                DateTime nextKeepAliveUtc = readStartedUtc.Add(keepAliveInterval);
 
                 while (!readTask.IsCompleted)
                 {
@@ -3064,23 +3066,23 @@ internal partial class MainForm : Form
                     }
 
                     TimeSpan delay = untilTimeout;
-                    if (enableHeartbeats)
+                    if (enableKeepAlive)
                     {
-                        TimeSpan untilHeartbeat = nextHeartbeatUtc - DateTime.UtcNow;
-                        if (untilHeartbeat < TimeSpan.Zero)
-                            untilHeartbeat = TimeSpan.Zero;
+                        TimeSpan untilKeepAlive = nextKeepAliveUtc - DateTime.UtcNow;
+                        if (untilKeepAlive < TimeSpan.Zero)
+                            untilKeepAlive = TimeSpan.Zero;
 
-                        delay = untilHeartbeat < delay ? untilHeartbeat : delay;
+                        delay = untilKeepAlive < delay ? untilKeepAlive : delay;
                     }
 
                     Task completed = await Task.WhenAny(readTask, Task.Delay(delay, requestCts.Token));
                     if (completed == readTask)
                         break;
 
-                    if (enableHeartbeats && DateTime.UtcNow >= nextHeartbeatUtc)
+                    if (enableKeepAlive && DateTime.UtcNow >= nextKeepAliveUtc)
                     {
-                        yield return new TestConsoleToken(TestConsoleHeartbeatMarker, IsThinking: false);
-                        nextHeartbeatUtc = DateTime.UtcNow.Add(heartbeatInterval);
+                        yield return new TestConsoleToken(TestConsoleKeepAliveMarker, IsThinking: false);
+                        nextKeepAliveUtc = DateTime.UtcNow.Add(keepAliveInterval);
                     }
                 }
 
@@ -3430,11 +3432,11 @@ internal partial class MainForm : Form
 
         public void RecordIgnoredChunk(string data) => _firstIgnoredChunk ??= TrimSample(data);
 
-        public string BuildEmptyResponseMessage(int heartbeatCount)
+        public string BuildEmptyResponseMessage(int keepAliveCount)
         {
             var sb = new StringBuilder();
             sb.AppendLine("[No visible assistant text was extracted from the upstream stream.]");
-            sb.AppendLine($"SSE data lines: {DataLineCount:N0}; heartbeats while waiting: {heartbeatCount:N0}; saw [DONE]: {SawDone}");
+            sb.AppendLine($"SSE data lines: {DataLineCount:N0}; keep-alives while waiting: {keepAliveCount:N0}; saw [DONE]: {SawDone}");
 
             if (_firstParseFailure is not null)
                 sb.AppendLine($"First unparsable data line: {_firstParseFailure}");

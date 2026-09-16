@@ -33,7 +33,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private volatile AppSettings _settings = settings;
 
-    // Shared pooled HttpClient Ã¢â‚¬â€ avoids socket exhaustion under load.
+    // Shared pooled HttpClient — avoids socket exhaustion under load.
     private HttpClient _httpClient = BuildHttpClient();
 
     // Number of requests currently being processed by HandleAsync. Used to defer disposal of a
@@ -103,7 +103,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string key = modelName.Trim();
             activeKeys.Add(key);
 
-            if (!mapping.IsEnabled || !_settings.EnableStreamingHeartbeats || !mapping.EnableHeartbeats)
+            // The probe is deliberately gated on the same SSE keep-alive settings: it exists to
+            // explain why a client would be timing out, so it only runs where keep-alives are active.
+            if (!mapping.IsEnabled || !_settings.EnableSseKeepAlive || !mapping.EnableSseKeepAlive)
             {
                 if (_periodicHeartbeats.TryRemove(key, out PeriodicHeartbeatState? removed))
                     removed.Dispose();
@@ -112,13 +114,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (_periodicHeartbeats.TryGetValue(key, out PeriodicHeartbeatState? existing))
             {
-                existing.Update(mapping, _settings.StreamingHeartbeatIntervalSeconds);
+                existing.Update(mapping, _settings.SseKeepAliveIntervalSeconds);
                 continue;
             }
 
             PeriodicHeartbeatState created = new(
                 mapping,
-                _settings.StreamingHeartbeatIntervalSeconds,
+                _settings.SseKeepAliveIntervalSeconds,
                 SendPeriodicHeartbeatAsync,
                 RecordPeriodicHeartbeatFailure);
             if (!_periodicHeartbeats.TryAdd(key, created))
@@ -156,7 +158,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         if (response.IsSuccessStatusCode)
         {
-            _stats.IncrementHeartbeat(modelName);
+            // This is the periodic upstream liveness probe, not a client-facing SSE keep-alive,
+            // so it records probe state rather than bumping the keep-alive frame counter.
+            _stats.RecordHeartbeatProbeSuccess(modelName);
             return;
         }
 
@@ -277,49 +281,29 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Overload that extracts the User-Agent from an HttpListenerRequest.
-    /// </summary>
-    private static bool IsCopilotRequest(HttpListenerRequest? req, string? firstMessageContent = null)
-    {
-        string? userAgent = null;
-        try
-        {
-            if (req is not null)
-            {
-                userAgent = req.Headers["User-Agent"];
-            }
-        }
-        catch
-        {
-            // Best-effort only; do not throw on detection errors.
-        }
-
-        return IsCopilotRequest(userAgent, firstMessageContent);
-    }
-
-    /// <summary>
     /// Returns the effective proxy model name for a request, applying the context-summarize
-    /// (/compact) redirect when the mapping has a smaller/faster compact model configured
-    /// (<see cref="ModelMapping.ContextSummarizeModelId"/>) and the request is detected as a
-    /// Copilot /compact summary request. Returns the original model name unchanged when no
-    /// redirect applies (not a summarize request, no compact model configured, or the compact
-    /// model is not a valid enabled proxy model).
+    /// (/compact) redirect when the request is detected as a Copilot /compact summary request
+    /// and the mapping has opted into redirection via
+    /// <see cref="ModelMapping.RedirectManualCompaction"/> with a usable compaction target.
+    /// Returns the original model name unchanged when no redirect applies, so the request is
+    /// handled by the model the client asked for.
     /// </summary>
+    /// <remarks>
+    /// Target resolution is delegated to <see cref="ResolveManualCompactTarget(AppSettings, ModelMapping)"/>
+    /// so the signature-based redirect on the chat paths and the explicit <c>/compact</c>
+    /// endpoints always agree on where a compaction request goes.
+    /// </remarks>
     internal static string ResolveEffectiveModel(AppSettings settings, string originalModel, string? firstMessageContent)
     {
         if (!IsContextSummarizeRequest(firstMessageContent))
             return originalModel;
 
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
-        if (mapping is null || !mapping.ContextSummarizeModelId.HasValue)
+        if (mapping is null)
             return originalModel;
 
-        ModelMapping? compactMapping = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-        // Only redirect when the compact model is itself a valid enabled proxy model.
-        if (compactMapping is null || !compactMapping.IsEnabled)
-            return originalModel;
-
-        return compactMapping.ProxyName;
+        (ModelMapping target, bool redirected) = ResolveManualCompactTarget(settings, mapping);
+        return redirected ? target.ProxyName : originalModel;
     }
 
     /// <summary>
@@ -367,8 +351,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>
     /// Explains why the context-summarize (/compact) redirect did not apply for a request, for
     /// diagnostic logging. Reports which gate in <see cref="ResolveEffectiveModel"/> stopped the
-    /// redirect: signature not detected, no mapping found, no compact model configured, or the
-    /// compact model not being a valid enabled proxy. Returns a generic fallback if every gate
+    /// redirect: signature not detected, no mapping found, redirection not enabled, no compaction
+    /// target configured, or the target not being usable. Returns a generic fallback if every gate
     /// passed (which would mean a redirect was expected but did not occur).
     /// </summary>
     private static string DescribeCompactSkipReason(AppSettings settings, string originalModel, string? firstMessageContent)
@@ -379,14 +363,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
         if (mapping is null)
             return $"no mapping found for model '{originalModel}'";
+        if (!mapping.RedirectManualCompaction)
+            return "'Redirect manual compaction' is not enabled on the mapping, so the model handles its own compaction";
         if (!mapping.ContextSummarizeModelId.HasValue)
-            return "no ContextSummarizeModelId configured on the mapping";
+            return "no compaction model is selected on the mapping";
 
         ModelMapping? compactMapping = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
         if (compactMapping is null)
-            return $"compact model with ID {mapping.ContextSummarizeModelId.Value} not found";
+            return $"compaction model with ID {mapping.ContextSummarizeModelId.Value} not found";
         if (!compactMapping.IsEnabled)
-            return $"compact model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) is not enabled";
+            return $"compaction model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) is not enabled";
+        if (string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl))
+            return $"compaction model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) has no upstream URL";
+        if (compactMapping.Id == mapping.Id)
+            return "the compaction model is the same mapping, so no redirect applies";
 
         return "unknown (redirect should have fired)";
     }
@@ -441,8 +431,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         };
 
     /// <summary>
-    /// Applies the resolved reasoning effort Ã¢â‚¬â€ the mapping's configured value under Proxy
-    /// priority, the client's <c>think</c> field under Client App priority Ã¢â‚¬â€ to a translated
+    /// Applies the resolved reasoning effort — the mapping's configured value under Proxy
+    /// priority, the client's <c>think</c> field under Client App priority — to a translated
     /// chat request, emitting every wire shape selected in the mapping's
     /// <see cref="ReasoningEffortFormat"/> flags: legacy top-level field, modern nested
     /// object, the Qwen Cloud <c>extra_body</c> wrapper, and/or <c>chat_template_kwargs</c>.
@@ -480,14 +470,28 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         };
 
     /// <summary>
-    /// Returns whether heartbeats should be emitted for the given model, combining the
-    /// global toggle with the per-mapping <see cref="ModelMapping.EnableHeartbeats"/> flag.
+    /// The SSE comment frame used as a client-side keep-alive. Leading colon makes it an SSE
+    /// comment line, so conformant clients ignore it and it never reaches the model's output.
     /// </summary>
-    private bool ShouldEmitHeartbeats(string modelName)
+    private const string SseKeepAliveFrame = ": kaeo-keep-alive\n\n";
+
+    private static readonly byte[] SseKeepAliveFrameBytes = Encoding.UTF8.GetBytes(SseKeepAliveFrame);
+
+    /// <summary>
+    /// Returns whether SSE keep-alive frames should be emitted to the client for the given model,
+    /// combining the global toggle with the per-mapping
+    /// <see cref="ModelMapping.EnableSseKeepAlive"/> flag.
+    /// </summary>
+    /// <remarks>
+    /// This is the client-facing keep-alive that prevents streaming clients from timing out while
+    /// the upstream is still processing the prompt. It is unrelated to the periodic upstream
+    /// liveness probe (<see cref="PeriodicHeartbeatState"/>), which is reported separately.
+    /// </remarks>
+    private bool ShouldEmitSseKeepAlive(string modelName)
     {
-        if (!_settings.EnableStreamingHeartbeats) return false;
+        if (!_settings.EnableSseKeepAlive) return false;
         ModelMapping? mapping = _settings.FindModelMapping(modelName);
-        return mapping?.EnableHeartbeats ?? true;
+        return mapping?.EnableSseKeepAlive ?? true;
     }
 
     /// <summary>
@@ -550,29 +554,39 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>
     /// Estimates the token count of a serialized request body using a ~4 chars/token heuristic.
     /// Intentionally conservative (overestimates) so compaction thresholds favor compacting
-    /// early rather than missing an overflow.
+    /// early rather than missing an overflow. Delegates to the shared estimator so the gate in
+    /// <see cref="AutoCompactionService.ShouldCompact"/> and the callers here always measure a
+    /// body identically — a divergence made the two disagree on non-ASCII bodies.
     /// </summary>
-    private static int EstimateTokenCount(string body) => body.Length / 4;
+    private static int EstimateTokenCount(string body) => AutoCompactionService.EstimateTokenCount(body);
 
     /// <summary>
-    /// When the mapping's compaction threshold is exceeded, attempt to produce a compacted
-    /// request body and return it. This method no longer short-circuits with a 413; if
-    /// compaction is not possible we allow the request to proceed to upstream so the
-    /// upstream provider can return an authoritative error (413/400/etc.).
+    /// When the mapping's compaction threshold is exceeded, summarizes the conversation with the
+    /// mapping's compaction target and returns the compacted request body so the caller can forward
+    /// it upstream. Returns null when compaction is disabled for the path, no threshold or compaction
+    /// target is configured, the request is already under the threshold, or compaction failed — in
+    /// every one of those cases the caller proceeds with the original body and the upstream returns
+    /// its own authoritative error if it really does overflow.
     /// </summary>
-    private async Task<(bool overflow, string? compactedBody)> TryProactiveOverflowAsync(
+    /// <remarks>
+    /// This deliberately never short-circuits the request with a 413. The previous behavior
+    /// summarized the conversation (paying for a compaction model call), discarded the summary, and
+    /// told the client to retry with reduced context — so the client had to send the whole
+    /// conversation again. The compacted body is now forwarded, which is the only way the
+    /// summarization work is useful.
+    /// </remarks>
+    private async Task<string?> TryProactiveOverflowAsync(
         ModelMapping? mapping,
         string body,
         string model,
         HttpListenerResponse resp,
-        RequestLog log,
         AutoCompactPaths requestPath,
         Stream? outputStream,
         CancellationToken ct)
     {
         // Fast path: skip token estimation entirely if this path isn't enabled or no threshold is set.
-        if (mapping is null || (mapping.AutoCompactPaths & requestPath) == 0)
-            return (false, null);
+        if (mapping is null || !mapping.IsAutoCompactActiveFor(requestPath))
+            return null;
 
         int threshold = mapping.GetProactiveOverflowThreshold();
 
@@ -581,19 +595,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             int estTokens = EstimateTokenCount(body);
             if (estTokens > 50000)
             {
-                Log.Warning("Auto-compaction disabled for model {Model} (threshold=0), but request has ~{EstimatedTokens} tokens. Consider setting ProactiveOverflowPercent or ProactiveOverflowTokens.",
+                Log.Warning(
+                    "Auto-compaction is not configured for model {Model} (no threshold set) but the request has ~{EstimatedTokens} tokens. Set a Compaction threshold (% of context or tokens) and select a Compaction Model to enable it, or leave both empty to let the model handle its own context.",
                     model, estTokens);
             }
-            return (false, null);
+
+            return null;
         }
 
         int estimated = EstimateTokenCount(body);
 
         if (estimated <= threshold)
-            return (false, null);
+            return null;
 
         // Check if auto-compaction should be attempted for this request.
-        if (mapping is not null && _autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
+        if (_autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
             // Resolve the compaction target from the per-mapping ContextSummarizeModelId.
             // Auto-compaction requires a resolved target — with none configured (dropdown =
@@ -606,8 +622,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (compactMapping is null)
             {
-                Log.Debug("Auto-compaction for model {Model} skipped: no compaction target configured", model);
-                return (false, null);
+                Log.Debug("Auto-compaction for model {Model} skipped: no compaction model selected", model);
+                return null;
             }
 
             // Stream notification: compaction needed
@@ -656,82 +672,64 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 {
                     _autoCompactionService.RecordSuccess(sessionKey);
 
-                    // Add headers to signal compaction happened
+                    int compactedTokens = EstimateTokenCount(compactedBody);
+
+                    // Add headers to signal compaction happened. These survive on the eventual
+                    // upstream response, so the client learns the proxy compacted its context.
                     resp.Headers["X-Context-Compacted"] = "true";
                     resp.Headers["X-Context-Original-Tokens"] = estimated.ToString();
-                    resp.Headers["X-Context-Compacted-Tokens"] = (compactedBody.Length / 4).ToString();
+                    resp.Headers["X-Context-Compacted-Tokens"] = compactedTokens.ToString();
 
-                    Log.Information("Auto-compaction succeeded: {OriginalTokens} Ã¢â€ â€™ {CompactedTokens} tokens",
-                        estimated, compactedBody.Length / 4);
+                    Log.Information(
+                        "Auto-compaction succeeded for model {Model} using {CompactModel}: {OriginalTokens} -> {CompactedTokens} est. tokens; forwarding the compacted request upstream",
+                        model, compactMapping.ProxyName, estimated, compactedTokens);
 
                     // Stream notification: compaction finished
                     if (outputStream is not null)
                     {
-                        int compactedTokens = compactedBody.Length / 4;
-                        string notification = $": <ignorethis>kaeo-compaction-complete: Context compacted successfully. {estimated} tokens Ã¢â€ â€™ {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)</ignorethis>\n\n";
+                        string notification = $": <ignorethis>kaeo-compaction-complete: Context compacted successfully. {estimated} tokens -> {compactedTokens} tokens ({100 - (compactedTokens * 100 / estimated)}% reduction)</ignorethis>\n\n";
                         byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
                         await outputStream.WriteAsync(notificationBytes, ct);
                         await outputStream.FlushAsync(ct);
                     }
 
-                    // For streaming requests, forward the compacted body so the response streams back
-                    bool isStreaming = IsStreamingJsonBody(body);
-                    if (isStreaming)
-                    {
-                        return (false, compactedBody);
-                    }
-
-                    // For non-streaming requests, return 413 to signal to Copilot that context
-                    // was too large and has been compacted. Copilot will retry with reduced context.
-                    log.Status = RequestStatus.Error;
-                    log.StatusCode = 413;
-                    log.ErrorMessage = $"Context compacted: {estimated} tokens reduced to {compactedBody.Length / 4} tokens";
-                    resp.StatusCode = 413;
-                    resp.ContentType = "application/json";
-
-                    await WriteJsonAsync(resp, new
-                    {
-                        error = new
-                        {
-                            code = 413,
-                            message = $"Context size ({estimated} tokens) exceeded threshold. Conversation has been summarized. Please retry with reduced context.",
-                            type = "context_compacted",
-                            compacted = true,
-                            original_tokens = estimated,
-                            compacted_tokens = compactedBody.Length / 4
-                        }
-                    }, ct);
-
-                    return (true, null); // Signal overflow to stop processing
+                    // Return the compacted body for both streaming and non-streaming requests so
+                    // the caller forwards it upstream and streams the answer back to the client.
+                    return compactedBody;
                 }
-                else
-                {
-                    Log.Warning("Auto-compaction returned null for session {SessionKey}", sessionKey);
-                }
+
+                Log.Warning("Auto-compaction for model {Model} produced no compacted body (session {SessionKey}); forwarding the original request",
+                    model, sessionKey);
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "Auto-compaction failed for model {Model}", model);
-                // Fall through Ã¢â‚¬â€ but do not send a proactive 413; allow upstream to decide.
+                Log.Warning(ex, "Auto-compaction failed for model {Model}; forwarding the original request so upstream can decide", model);
+                // Fall through — do not send a proactive 413; allow upstream to decide.
             }
         }
 
-        // No compaction produced. Do not short-circuit with 413 here Ã¢â‚¬â€ let upstream
-        // return the authoritative error if it overflows. Return (false, null) so
-        // the caller proceeds with the original body.
-        return (false, null);
+        // No compaction produced. Do not short-circuit with 413 here — let upstream
+        // return the authoritative error if it overflows.
+        return null;
     }
 
     /// <summary>
     /// Attempts local context compaction after the upstream rejected the prompt with a
     /// context-size overflow error. The caller retries the original request once with the
-    /// returned compacted body. Unlike the proactive path this only requires
-    /// <see cref="AppSettings.EnableAutoCompaction"/>, so oversized prompts self-heal even
-    /// when no threshold was configured for the mapping.
+    /// returned compacted body. This self-heals oversized prompts even when no proactive
+    /// threshold was configured for the mapping, but it is still governed by the same
+    /// per-mapping <see cref="ModelMapping.AutoCompactPaths"/> setting and the same compaction
+    /// target requirement as the proactive path, so a mapping left on "Disabled" never
+    /// compacts and simply surfaces the upstream error.
     /// </summary>
+    /// <param name="requestPath">
+    /// The path the request arrived on, used to consult
+    /// <see cref="ModelMapping.IsAutoCompactActiveFor"/>.
+    /// </param>
     private async Task<string?> TryReactiveCompactionAsync(
         string body,
         string model,
+        AutoCompactPaths requestPath,
         HttpListenerResponse resp,
         bool streamAlreadyOpen,
         CancellationToken ct)
@@ -739,6 +737,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         ModelMapping? mapping = _settings.FindModelMapping(model);
         if (mapping is null)
             return null;
+
+        if (!mapping.IsAutoCompactActiveFor(requestPath))
+        {
+            Log.Debug(
+                "Reactive auto-compaction for model {Model} skipped: auto-compaction is disabled for this path (AutoCompactPaths={Paths})",
+                model, mapping.AutoCompactPaths);
+            return null;
+        }
 
         try
         {
@@ -753,7 +759,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (compactMapping is null)
             {
-                Log.Debug("Reactive auto-compaction for model {Model} skipped: no compaction target configured", model);
+                Log.Debug("Reactive auto-compaction for model {Model} skipped: no compaction model selected", model);
                 return null;
             }
 
@@ -788,7 +794,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (compacted is not null && streamAlreadyOpen)
             {
                 byte[] done = Encoding.UTF8.GetBytes(
-                    $": <ignorethis>kaeo-compaction-complete: Conversation compacted ({body.Length / 4} Ã¢â€ â€™ {compacted.Length / 4} est. tokens). Retrying upstream...</ignorethis>\n\n");
+                    $": <ignorethis>kaeo-compaction-complete: Conversation compacted ({EstimateTokenCount(body)} → {EstimateTokenCount(compacted)} est. tokens). Retrying upstream...</ignorethis>\n\n");
                 await resp.OutputStream.WriteAsync(done, ct);
                 await resp.OutputStream.FlushAsync(ct);
             }
@@ -931,7 +937,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
 
         // Load balancer / uptime health checks commonly probe "/" with GET or HEAD. Answer
-        // directly without logging. HEAD must never write body bytes Ã¢â‚¬â€ HttpListener treats the
+        // directly without logging. HEAD must never write body bytes — HttpListener treats the
         // response as having a 0-byte entity body for HEAD requests, and writing anything to the
         // output stream (even via WriteJsonAsync's normal JSON payload) throws
         // ProtocolViolationException ("Bytes to be written to the stream exceed the Content-Length
@@ -955,7 +961,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Static version probe answered without logging Ã¢â‚¬â€ infrastructure noise that would inflate
+        // Static version probe answered without logging — infrastructure noise that would inflate
         // the request log on every client connection.
         if (method == "GET" && path == "/api/version")
         {
@@ -972,7 +978,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Scalar API explorer Ã¢â‚¬â€ served only when explicitly enabled in settings.
+        // Scalar API explorer — served only when explicitly enabled in settings.
         if (_settings.EnableApiExplorer && method == "GET")
         {
             if (path is "/scalar" or "/scalar/")
@@ -1020,7 +1026,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "POST" && path == "/api/show")
             {
-                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
+                log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleShowAsync(req, resp, log, ct);
             }
             else if (method == "POST" && path == "/api/generate")
@@ -1047,12 +1053,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "GET" && path == "/v1/models")
             {
-                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
+                log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleV1ModelsAsync(resp, log, ct);
             }
             else if (method == "GET" && path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase))
             {
-                log.UpstreamPath = "(local mapping Ã¢â‚¬â€ no upstream call)";
+                log.UpstreamPath = "(local mapping — no upstream call)";
                 await HandleV1ModelAsync(path, resp, log, ct);
             }
             else if (method == "POST" && path.Equals("/v1/responses/compact", StringComparison.OrdinalIgnoreCase))
@@ -1062,19 +1068,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (method == "POST" && path.Equals("/v1/chat/completions/compact", StringComparison.OrdinalIgnoreCase))
             {
-                if (!_settings.EnableManualCompactionEndpoint)
-                {
-                    resp.StatusCode = 404;
-                    await WriteJsonAsync(resp, new { error = "Manual compaction endpoint is disabled. Enable EnableManualCompactionEndpoint in settings." }, ct);
-                    return;
-                }
+                // Both /compact endpoints are always live and behave identically: they forward to
+                // the resolved target's upstream and relay the model's summary. There is no global
+                // endpoint toggle — per-mapping RedirectManualCompaction + the compaction target
+                // decide whether the request is redirected or goes to the client's own model.
                 log.UpstreamPath = "/v1/chat/completions/compact";
                 await HandleManualCompactAsync(req, resp, log, ct);
             }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))
             {
-                // Transparent passthrough Ã¢â‚¬â€ forward OpenAI-native requests (e.g. from VS Copilot,
+                // Transparent passthrough — forward OpenAI-native requests (e.g. from VS Copilot,
                 // OpenAI SDKs) directly to the upstream llama.cpp /v1/* surface unchanged.
                 log.UpstreamPath = path;
                 await PassthroughAsync(req, resp, log, ct);
@@ -1092,7 +1096,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         catch (RequestBodyTooLargeException ex)
         {
-            // Oversized request body Ã¢â‚¬â€ reject before buffering to protect against memory exhaustion.
+            // Oversized request body — reject before buffering to protect against memory exhaustion.
             log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
             Log.Warning("Rejected oversized request body on {Path}: {Message}", path, ex.Message);
@@ -1128,7 +1132,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             catch { }
 
-            // Skip the finally AddLog Ã¢â‚¬â€ we already logged above with the exception.
+            // Skip the finally AddLog — we already logged above with the exception.
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
             return;
@@ -1160,7 +1164,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             || name.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /v1/* Ã¢â€ â€™ transparent passthrough Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /v1/* → transparent passthrough ────────────────────────────────────
 
     /// <summary>
     /// Forwards any OpenAI-native /v1/* request verbatim to the upstream llama.cpp server
@@ -1173,6 +1177,33 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         bool contextCompacted = false;
         bool headersPreCommitted = false;
+
+        // HttpListener only puts the response headers on the wire once at least one byte has been
+        // written. Setting StatusCode/ContentType alone therefore leaves the client staring at an
+        // empty socket, so every path that needs SSE must go through this single idempotent commit
+        // point, which also flushes one comment frame to force the headers out immediately.
+        // Without that flush a streaming client with a short network timeout gives up during the
+        // upstream's prompt-processing phase even though the request is progressing normally.
+        bool sseCommitted = false;
+        async Task CommitSseHeadersAsync()
+        {
+            if (sseCommitted)
+                return;
+
+            sseCommitted = true;
+            resp.StatusCode = 200;
+            resp.ContentType = "text/event-stream";
+            resp.SendChunked = true;
+            resp.KeepAlive = true;
+            headersPreCommitted = true;
+
+            // Written unconditionally, even when periodic keep-alive is disabled, because this flush
+            // is what commits the headers. It is a single SSE comment line, which conformant clients
+            // discard, so it never reaches the model's output.
+            await resp.OutputStream.WriteAsync(SseKeepAliveFrameBytes, ct);
+            await resp.OutputStream.FlushAsync(ct);
+        }
+
         using var upstreamReq = new HttpRequestMessage
         {
             Method = new HttpMethod(req.HttpMethod),
@@ -1206,6 +1237,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Captured upstream-bound JSON body so an overflow rejection can be compacted and retried.
         string? passthroughBody = null;
         string? consumedErrorBody = null;
+        // Set when the signature-based /compact redirect already retargeted this request, which
+        // means the request IS a compaction request. Neither the proactive nor the reactive
+        // auto-compaction may run on top of it (that would summarize a summary), so both gates
+        // read this single flag.
+        bool alreadyRedirectedForCompaction = false;
         // Function names the client declared in its "tools" array. Null = unknown/unrestricted;
         // an empty set means the client (e.g. the Copilot Help surface) cannot execute ANY tool
         // call, so the response paths must strip or inline every tool call.
@@ -1238,44 +1274,35 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 passthroughDeclaredTools = ExtractDeclaredToolNames(bodyText);
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
-                // Skip proactive auto-compaction for recognized Copilot requests when
-                // EnableCopilotNativeCompaction is enabled, so Copilot's native /compact
-                // flow manages session state.
-                bool shouldSkipAutoCompaction = false;
-                if (_settings.EnableCopilotNativeCompaction)
+                //
+                // Only ONE compaction may act on a request. NormalizeRequestBody already applies
+                // the signature-based /compact redirect, and it records that in log.OriginalModel,
+                // so a non-empty OriginalModel means this request is itself a compaction request.
+                // Running threshold-based auto-compaction on top of it would summarize a summary.
+                alreadyRedirectedForCompaction = !string.IsNullOrEmpty(log.OriginalModel);
+                if (alreadyRedirectedForCompaction)
                 {
-                    string? firstMsgForDetection = null;
-                    try
-                    {
-                        using JsonDocument _tmpDoc = JsonDocument.Parse(rewritten);
-                        firstMsgForDetection = GetFirstMessageContent(_tmpDoc.RootElement);
-                    }
-                    catch { }
-
-                    if (IsCopilotRequest(req, firstMsgForDetection))
-                    {
-                        shouldSkipAutoCompaction = true;
-                        Log.Debug("Skipping proactive auto-compaction for Copilot request (OpenAI passthrough)");
-                    }
+                    Log.Debug(
+                        "Skipping proactive auto-compaction for {Model}: the request is already a compaction request redirected from {OriginalModel} (OpenAI passthrough)",
+                        originalModel, log.OriginalModel);
                 }
-
-                if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
+                else
                 {
-                    // For streaming requests, pre-commit SSE headers before compaction so we can write progress comments
+                    // For streaming requests, commit SSE headers before compaction so progress
+                    // comments can be written. CommitSseHeadersAsync also flushes the initial
+                    // keep-alive frame, which is what actually puts the headers on the wire.
                     Stream? compactionOutputStream = null;
                     if (isStreamingRequest)
                     {
-                        resp.StatusCode = 200;
-                        resp.ContentType = "text/event-stream";
-                        resp.SendChunked = true;
-                        resp.KeepAlive = true;
-                        headersPreCommitted = true;
+                        await CommitSseHeadersAsync();
                         compactionOutputStream = resp.OutputStream;
                     }
 
-                    (bool overflow, string? compacted) = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, log, AutoCompactPaths.OpenAI, compactionOutputStream, ct);
-                    if (overflow)
-                        return;
+                    // Per-mapping AutoCompactPaths is the only gate: TryProactiveOverflowAsync
+                    // consults IsAutoCompactActiveFor, the threshold, and the compaction target.
+                    // There is deliberately no global toggle, so a mapping left on "Disabled"
+                    // never compacts and the model handles its own context.
+                    string? compacted = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, AutoCompactPaths.OpenAI, compactionOutputStream, ct);
                     if (compacted is not null)
                     {
                         rewritten = compacted;
@@ -1310,29 +1337,25 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
 
         // For streaming requests, pre-commit SSE headers to the client immediately and pump
-        // heartbeat comments while waiting for the upstream to send its first response header.
+        // keep-alive comments while waiting for the upstream to send its first response header.
         // llama.cpp does not send any HTTP headers until the first token is ready, so clients
         // with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s) would
         // otherwise time out silently during long prompt-processing / thinking phases.
+        //
+        // This deliberately does NOT test headersPreCommitted. The proactive-compaction path above
+        // already commits SSE headers for streaming requests without necessarily writing anything,
+        // so gating on that flag skipped the keep-alive pump for almost every streaming request and
+        // left the client with no bytes at all until the upstream answered.
         using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        Task preResponseHeartbeatTask = Task.CompletedTask;
+        Task preResponseKeepAliveTask = Task.CompletedTask;
 
-        if (isStreamingRequest && !headersPreCommitted && ShouldEmitHeartbeats(originalModel))
+        if (isStreamingRequest && ShouldEmitSseKeepAlive(originalModel))
         {
-            resp.StatusCode = 200;
-            resp.ContentType = "text/event-stream";
-            resp.SendChunked = true;
-            resp.KeepAlive = true;
-            headersPreCommitted = true;
+            await CommitSseHeadersAsync();
 
-            // Flush a single comment frame so the HTTP headers are actually sent on the wire.
-            byte[] initial = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
-            await resp.OutputStream.WriteAsync(initial, ct);
-            await resp.OutputStream.FlushAsync(ct);
-
-            preResponseHeartbeatTask = PumpPreResponseHeartbeatsAsync(
+            preResponseKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
                 resp.OutputStream,
-                _settings.StreamingHeartbeatIntervalSeconds,
+                _settings.SseKeepAliveIntervalSeconds,
                 preResponseCts.Token);
         }
 
@@ -1344,9 +1367,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         finally
         {
-            // Stop the pre-response heartbeat pump as soon as upstream headers arrive.
+            // Stop the pre-response keep-alive pump as soon as upstream headers arrive.
             await preResponseCts.CancelAsync();
-            await preResponseHeartbeatTask;
+            await preResponseKeepAliveTask;
         }
 
         // Reactive compaction: llama.cpp rejects prompts that exceed the loaded model's
@@ -1354,35 +1377,67 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // was not already compacted, run the chunked map-reduce summarizer locally and retry
         // the upstream call once. This covers mappings where the proactive threshold is not
         // configured as well as cases where the proxy's token estimate undershot.
+        //
+        // Gated on the same per-mapping AutoCompactPaths setting as the proactive path (inside
+        // TryReactiveCompactionAsync) and skipped when the request is itself a compaction request.
         if (!upstreamResp.IsSuccessStatusCode
             && passthroughBody is not null
             && !contextCompacted
-            && _settings.EnableAutoCompaction)
+            && !alreadyRedirectedForCompaction)
         {
             string probe = await upstreamResp.Content.ReadAsStringAsync(ct);
             if (IsContextOverflowBody(probe))
             {
-                string? reactive = await TryReactiveCompactionAsync(
-                    passthroughBody, originalModel, resp, headersPreCommitted, ct);
-                if (reactive is not null)
+                // The retry path is the longest silent window in the whole request: the proxy
+                // re-summarizes the conversation locally and then waits again for upstream headers,
+                // all while the client sees nothing. Headers may already be committed by this point
+                // (streaming requests commit early for compaction progress), so the client is
+                // sitting on an open SSE stream with no frames arriving. Pump keep-alives across
+                // both phases for the same reason the pre-response phase does.
+                using var retryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                Task retryKeepAliveTask = Task.CompletedTask;
+
+                if (isStreamingRequest && ShouldEmitSseKeepAlive(originalModel))
                 {
-                    contextCompacted = true;
-                    passthroughBody = reactive;
-                    upstreamResp.Dispose();
-
-                    using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
-                    {
-                        Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
-                    };
-                    retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-                    ApplyApiKey(retryReq, apiKey);
-
-                    upstreamResp = await SendUpstreamAsync(
-                        retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+                    await CommitSseHeadersAsync();
+                    retryKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
+                        resp.OutputStream,
+                        _settings.SseKeepAliveIntervalSeconds,
+                        retryCts.Token);
                 }
-                else
+
+                string? reactive;
+                try
                 {
-                    consumedErrorBody = probe;
+                    reactive = await TryReactiveCompactionAsync(
+                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, headersPreCommitted, ct);
+                    if (reactive is not null)
+                    {
+                        contextCompacted = true;
+                        passthroughBody = reactive;
+                        upstreamResp.Dispose();
+
+                        using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
+                        {
+                            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
+                        };
+                        retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                        ApplyApiKey(retryReq, apiKey);
+
+                        upstreamResp = await SendUpstreamAsync(
+                            retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+                    }
+                    else
+                    {
+                        consumedErrorBody = probe;
+                    }
+                }
+                finally
+                {
+                    // Stop pumping before any body is forwarded below; two writers on the same
+                    // OutputStream would interleave frames and corrupt the SSE stream.
+                    await retryCts.CancelAsync();
+                    await retryKeepAliveTask;
                 }
             }
             else
@@ -1439,7 +1494,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (headersPreCommitted)
             {
-                // Headers already sent as 200/SSE Ã¢â‚¬â€ emit the error as a data frame so the
+                // Headers already sent as 200/SSE — emit the error as a data frame so the
                 // client sees it rather than getting a silent stream close.
                 string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{clientStatusCode}}}}}\n\n";
                 byte[] errorFrameBytes = Encoding.UTF8.GetBytes(errorFrame);
@@ -1492,10 +1547,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     upstreamStream,
                     countingStream,
                     thinkingMode,
-                    ShouldEmitHeartbeats(originalModel),
-                    _settings.StreamingHeartbeatIntervalSeconds,
+                    ShouldEmitSseKeepAlive(originalModel),
+                    _settings.SseKeepAliveIntervalSeconds,
                     ct,
-                    () => _stats.IncrementHeartbeat(originalModel),
+                    () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage,
                     rawCapture,
                     declaredToolNames: passthroughDeclaredTools);
@@ -1513,13 +1568,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 // No rewriting happens on this path; capture what is forwarded as-is.
                 using ResponseCaptureStream captureStream = new(countingStream);
-                await CopyStreamWithSseHeartbeatsAsync(
+                await CopyStreamWithSseKeepAliveAsync(
                     upstreamStream,
                     captureStream,
-                    ShouldEmitHeartbeats(originalModel),
-                    _settings.StreamingHeartbeatIntervalSeconds,
+                    ShouldEmitSseKeepAlive(originalModel),
+                    _settings.SseKeepAliveIntervalSeconds,
                     ct,
-                    () => _stats.IncrementHeartbeat(originalModel),
+                    () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage);
 
                 string forwardedText = captureStream.GetCapturedText();
@@ -1530,13 +1585,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else
             {
-                await CopyStreamWithSseHeartbeatsAsync(
+                await CopyStreamWithSseKeepAliveAsync(
                     upstreamStream,
                     countingStream,
-                    ShouldEmitHeartbeats(originalModel),
-                    _settings.StreamingHeartbeatIntervalSeconds,
+                    ShouldEmitSseKeepAlive(originalModel),
+                    _settings.SseKeepAliveIntervalSeconds,
                     ct,
-                    () => _stats.IncrementHeartbeat(originalModel),
+                    () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage);
             }
         }
@@ -1628,7 +1683,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <paramref name="extractToolCalls"/> is set, inline XML tool-call blocks left in the
     /// content are converted into structured OpenAI <c>message.tool_calls</c> (skipping choices
     /// the upstream already answered with structured tool calls) and <c>finish_reason</c> is
-    /// forced to <c>"tool_calls"</c> Ã¢â‚¬â€ the non-streaming parity of the streaming
+    /// forced to <c>"tool_calls"</c> — the non-streaming parity of the streaming
     /// <see cref="OpenAiSseRewriter"/>. When <paramref name="declaredToolNames"/> is supplied,
     /// only calls naming a client-declared function are kept; the rest are stripped (structured)
     /// or left visible as text (inline XML). Returns the original text unchanged if parsing fails.
@@ -1675,7 +1730,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
 
                 // Structured tool calls from the upstream may name functions the client never
-                // declared Ã¢â‚¬â€ a function part the client cannot bind (Copilot UI crash). Strip
+                // declared — a function part the client cannot bind (Copilot UI crash). Strip
                 // those; when nothing survives, the turn ends as a plain answer.
                 if (extractToolCalls && message["tool_calls"] is JsonArray structured && structured.Count > 0)
                 {
@@ -1704,7 +1759,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     }
                 }
 
-                // XML tool-call extraction Ã¢â‚¬â€ only for choices the upstream did not already
+                // XML tool-call extraction — only for choices the upstream did not already
                 // answer with structured tool_calls (same guard as the /api/chat path).
                 if (extractToolCalls
                     && !string.IsNullOrEmpty(content)
@@ -1844,42 +1899,40 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
-    /// Pumps SSE comment heartbeat frames into <paramref name="output"/> at
+    /// Pumps SSE comment keep-alive frames into <paramref name="output"/> at
     /// <paramref name="intervalSeconds"/> intervals until <paramref name="ct"/> is cancelled.
     /// Used to keep the client connection alive while waiting for the upstream to send its
     /// first response header (i.e. before the first token is generated).
     /// </summary>
-    private static async Task PumpPreResponseHeartbeatsAsync(
+    private static async Task PumpPreResponseSseKeepAliveAsync(
         Stream output,
         int intervalSeconds,
         CancellationToken ct)
     {
-        byte[] heartbeat = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
         TimeSpan interval = TimeSpan.FromSeconds(Math.Clamp(intervalSeconds, 5, 300));
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(interval, ct).ConfigureAwait(false);
-                await output.WriteAsync(heartbeat, ct).ConfigureAwait(false);
+                await output.WriteAsync(SseKeepAliveFrameBytes, ct).ConfigureAwait(false);
                 await output.FlushAsync(ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { /* expected on cancel */ }
     }
 
-    private static async Task CopyStreamWithSseHeartbeatsAsync(
+    private static async Task CopyStreamWithSseKeepAliveAsync(
         Stream source,
         Stream destination,
-        bool enableHeartbeats,
-        int heartbeatIntervalSeconds,
+        bool enableKeepAlive,
+        int keepAliveIntervalSeconds,
         CancellationToken ct,
-        Action? onHeartbeatSent = null,
+        Action? onKeepAliveSent = null,
         Action<LlamaCppStreamChunk>? onUsage = null)
     {
         byte[] buffer = new byte[81920];
-        byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
-        TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
         while (!ct.IsCancellationRequested)
@@ -1887,16 +1940,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ValueTask<int> readValueTask = source.ReadAsync(buffer, ct);
             Task<int> readTask = readValueTask.AsTask();
 
-            while (enableHeartbeats && !readTask.IsCompleted)
+            while (enableKeepAlive && !readTask.IsCompleted)
             {
-                Task delayTask = Task.Delay(heartbeatInterval, ct);
+                Task delayTask = Task.Delay(keepAliveInterval, ct);
                 Task completed = await Task.WhenAny(readTask, delayTask);
                 if (completed == readTask)
                     break;
 
-                await destination.WriteAsync(heartbeatBytes, ct);
+                await destination.WriteAsync(SseKeepAliveFrameBytes, ct);
                 await destination.FlushAsync(ct);
-                onHeartbeatSent?.Invoke();
+                onKeepAliveSent?.Invoke();
             }
 
             int bytesRead = await readTask;
@@ -1916,17 +1969,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Stream source,
         Stream destination,
         ThinkingMode thinkingMode,
-        bool enableHeartbeats,
-        int heartbeatIntervalSeconds,
+        bool enableKeepAlive,
+        int keepAliveIntervalSeconds,
         CancellationToken ct,
-        Action? onHeartbeatSent = null,
+        Action? onKeepAliveSent = null,
         Action<LlamaCppStreamChunk>? onUsage = null,
         Stream? rawCapture = null,
         IReadOnlySet<string>? declaredToolNames = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-        byte[] heartbeatBytes = Encoding.UTF8.GetBytes(": kaeo-heartbeat\n\n");
-        TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
         OpenAiSseRewriter rewriter = new(thinkingMode, declaredToolNames);
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
@@ -1934,16 +1986,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             Task<string?> readTask = reader.ReadLineAsync(ct).AsTask();
 
-            while (enableHeartbeats && !readTask.IsCompleted)
+            while (enableKeepAlive && !readTask.IsCompleted)
             {
-                Task delayTask = Task.Delay(heartbeatInterval, ct);
+                Task delayTask = Task.Delay(keepAliveInterval, ct);
                 Task completed = await Task.WhenAny(readTask, delayTask);
                 if (completed == readTask)
                     break;
 
-                await destination.WriteAsync(heartbeatBytes, ct);
+                await destination.WriteAsync(SseKeepAliveFrameBytes, ct);
                 await destination.FlushAsync(ct);
-                onHeartbeatSent?.Invoke();
+                onKeepAliveSent?.Invoke();
             }
 
             string? line = await readTask;
@@ -1959,7 +2011,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // Because a single inbound "data:" line may expand into multiple outbound
             // "data:" frames (original + synthesised tool_call deltas), we must emit
             // each outbound line as its OWN complete SSE event ("\n\n") rather than
-            // relying on the upstream blank line Ã¢â‚¬â€ otherwise SSE parsers will join
+            // relying on the upstream blank line — otherwise SSE parsers will join
             // consecutive data: lines into one event payload and JSON parsing fails.
             if (line.Length == 0)
                 continue;
@@ -2190,13 +2242,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Rewrites an OpenAI-compatible SSE chat-completion stream on the fly:
-    ///   Ã¢â‚¬Â¢ mirrors <c>reasoning_content</c> into <c>content</c> when <c>content</c> is empty,
-    ///   Ã¢â‚¬Â¢ detects inline XML tool-call blocks (<c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=K&gt;V&lt;/parameter&gt;Ã¢â‚¬Â¦&lt;/function&gt;&lt;/tool_call&gt;</c>)
+    ///   • mirrors <c>reasoning_content</c> into <c>content</c> when <c>content</c> is empty,
+    ///   • detects inline XML tool-call blocks (<c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=K&gt;V&lt;/parameter&gt;…&lt;/function&gt;&lt;/tool_call&gt;</c>)
     ///     emitted by some llama.cpp templates and converts them into proper OpenAI streaming
     ///     <c>tool_calls</c> deltas so that downstream OpenAI SDK clients (e.g. VS Copilot agent mode)
     ///     execute the tool instead of receiving raw XML text,
-    ///   Ã¢â‚¬Â¢ forces <c>finish_reason</c> to <c>"tool_calls"</c> on the terminal chunk when tool calls were emitted,
-    ///   Ã¢â‚¬Â¢ keeps only tool calls (structured or synthesised) whose function name appears in
+    ///   • forces <c>finish_reason</c> to <c>"tool_calls"</c> on the terminal chunk when tool calls were emitted,
+    ///   • keeps only tool calls (structured or synthesised) whose function name appears in
     ///     <paramref name="declaredToolNames"/>; calls the client cannot bind are stripped or
     ///     returned as plain text.
     /// </summary>
@@ -2293,17 +2345,17 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     }
 
                     // Rewrite content based on what the extractor produced:
-                    // - non-empty remainder Ã¢â€ â€™ set it (will be post-processed by tool-call ingestion below)
+                    // - non-empty remainder → set it (will be post-processed by tool-call ingestion below)
                     // - empty remainder but incoming was present (thinking consumed it or partial-tag
-                    //   buffering) Ã¢â€ â€™ remove the key so reasoning-only / role-only deltas are clean
-                    // - no incoming content at all Ã¢â€ â€™ leave delta untouched (don't fabricate "")
+                    //   buffering) → remove the key so reasoning-only / role-only deltas are clean
+                    // - no incoming content at all → leave delta untouched (don't fabricate "")
                     if (content.Length > 0)
                         delta["content"] = JsonValue.Create(content);
                     else if (incoming.Length > 0)
                         delta.Remove("content");
                 }
 
-                // Mirror reasoning_content Ã¢â€ â€™ content (when content is empty/null). Only in
+                // Mirror reasoning_content → content (when content is empty/null). Only in
                 // LeaveInline mode; in Move/Strip modes we deliberately keep reasoning separate
                 // from (or absent from) the visible answer.
                 if (_thinkingMode == ThinkingMode.LeaveInline
@@ -2340,7 +2392,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         }
                         else
                         {
-                            // Argument fragment of an already-evaluated call Ã¢â‚¬â€ inherit its verdict.
+                            // Argument fragment of an already-evaluated call — inherit its verdict.
                             valid = !cs.NativeCallValidity.TryGetValue(callIndex, out bool previous) || previous;
                         }
 
@@ -2554,10 +2606,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 ? modelEl.GetString() ?? string.Empty
                 : string.Empty;
 
-            // Context-summarize (/compact) redirect: when this mapping has a smaller/faster
-            // compact model configured and the request is a Copilot /compact summary request,
-            // route the whole request to the compact model Ã¢â‚¬â€ its upstream, sampling, and
-            // instruction-set settings all apply.
+            // Context-summarize (/compact) redirect: when the request is detected as a Copilot
+            // /compact summary request and the mapping opted in via RedirectManualCompaction with
+            // a usable compaction target, route the whole request to that target — its upstream,
+            // sampling, and instruction-set settings all apply.
             string? firstContent = GetFirstMessageContent(root);
             string effectiveModel = ResolveEffectiveModel(settings, original, firstContent);
             bool compactRedirected = !string.Equals(effectiveModel, original, StringComparison.OrdinalIgnoreCase);
@@ -2568,13 +2620,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 log.OriginalModel = original;
                 Log.Debug(
-                    "Context-summarize (/compact) request for {OriginalModel} redirected to compact model {CompactModel}",
+                    "Context-summarize (/compact) request for {OriginalModel} redirected to compaction model {CompactModel}",
                     original, effectiveModel);
             }
-            else
+            else if (IsContextSummarizeRequest(firstContent))
             {
+                // Only explain a non-redirect when the request actually WAS a /compact request.
+                // Logging this for every ordinary chat request claimed a redirect had been
+                // "not applied" to requests that never asked for compaction.
                 Log.Debug(
-                    "Compact redirect not applied for {OriginalModel}: {Reason}",
+                    "Context-summarize (/compact) request for {OriginalModel} is not redirected: {Reason}",
                     original, DescribeCompactSkipReason(settings, original, firstContent));
             }
             bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(effectiveModel) ?? true;
@@ -2626,7 +2681,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     && IsAssistantResponsePrefill(messages[^1]);
             }
 
-            // Nothing to rewrite Ã¢â‚¬â€ return original text unchanged.
+            // Nothing to rewrite — return original text unchanged.
             if (string.Equals(original, resolved, StringComparison.Ordinal)
                 && !hasConsecutiveSystemMessages
                 && !hasTrailingAssistantPrefill
@@ -2856,7 +2911,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         catch
         {
-            // Non-JSON or malformed body Ã¢â‚¬â€ forward as-is.
+            // Non-JSON or malformed body — forward as-is.
             return json;
         }
     }
@@ -3022,8 +3077,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Replaces the values of sensitive JSON properties with a redaction marker without
-    /// re-serializing the document. Everything that is not a sensitive value Ã¢â‚¬â€ whitespace,
-    /// key order, string escaping Ã¢â‚¬â€ is preserved byte-for-byte, so a clean body is returned
+    /// re-serializing the document. Everything that is not a sensitive value — whitespace,
+    /// key order, string escaping — is preserved byte-for-byte, so a clean body is returned
     /// as the exact same string. This keeps logged request bodies identical to what the
     /// client actually sent. Returns the body unchanged when it is not valid JSON.
     /// </summary>
@@ -3256,7 +3311,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return body.Length;
         }
 
-        // Scalar: number, true, false, null Ã¢â‚¬â€ read until whitespace, comma, close, or end.
+        // Scalar: number, true, false, null — read until whitespace, comma, close, or end.
         while (i < body.Length)
         {
             char ch = body[i];
@@ -3270,7 +3325,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static bool IsSensitiveJsonProperty(string propertyName)
     {
         // Credentials and secrets only. Prompt/message content fields are intentionally
-        // left intact Ã¢â‚¬â€ when body capture is enabled the content is exactly what the
+        // left intact — when body capture is enabled the content is exactly what the
         // user opted to inspect, and redacting it would make the logs useless.
         return propertyName.Equals("authorization", StringComparison.OrdinalIgnoreCase)
             || propertyName.Equals("api_key", StringComparison.OrdinalIgnoreCase)
@@ -3286,7 +3341,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         && (message.ToolCalls is null || message.ToolCalls.Count == 0)
         && string.IsNullOrWhiteSpace(message.ToolCallId);
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/tags Ã¢â€ â€™ configured proxy model names Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /api/tags → configured proxy model names ───────────────────────────
 
     private async Task HandleTagsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3307,7 +3362,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, tagsJson, ct);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /v1/models Ã¢â€ â€™ OpenAI-format model list with context_length Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /v1/models → OpenAI-format model list with context_length ───────────
 
     private async Task HandleV1ModelsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3338,13 +3393,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, json, ct);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ GET /v1/models/{model} Ã¢â€ â€™ single-model lookup from local mappings Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── GET /v1/models/{model} → single-model lookup from local mappings ─────
 
     /// <summary>
     /// Answers <c>GET /v1/models/{model}</c> entirely from the local mapping table, mirroring
     /// <c>/api/show</c>. Upstreams vary wildly in whether/how they support a single-model lookup
     /// (some return 404, some 400, some nothing at all), and only the proxy knows its exposed
-    /// names Ã¢â‚¬â€ building the response locally keeps model availability consistent with what
+    /// names — building the response locally keeps model availability consistent with what
     /// <c>/v1/models</c> reports.
     /// </summary>
     private async Task HandleV1ModelAsync(string path, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -3391,12 +3446,387 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, modelJson, ct);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ POST /v1/responses/compact Ã¢â€ â€™ OpenAI-compatible conversation compaction Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Manual /compact forwarding ──
 
     /// <summary>
-    /// Handles <c>POST /v1/responses/compact</c> Ã¢â‚¬â€ forwards the compaction request to the
-    /// upstream OpenAI-compatible endpoint, applying the compact model redirect when the
-    /// mapping has a smaller/faster model configured for context summarization.
+    /// Rewrites the top-level <c>model</c> property of a manual compaction request body so it
+    /// names the model the target's upstream actually knows. Clients address the proxy by its
+    /// display name (e.g. <c>claude-fast</c>) while upstreams expect their own identifier
+    /// (e.g. a <c>.gguf</c> path), so the field must be swapped before forwarding. The rest of
+    /// the body is passed through untouched — compaction requests are already valid
+    /// chat-completion payloads and must not be reshaped. Returns the original text unchanged
+    /// when it is not valid JSON so the caller can surface the upstream's own error.
+    /// </summary>
+    /// <param name="bodyText">The original request body.</param>
+    /// <param name="upstreamModelName">The target mapping's upstream model identifier.</param>
+    internal static string RewriteCompactTargetModel(string bodyText, string upstreamModelName)
+    {
+        if (string.IsNullOrWhiteSpace(bodyText))
+            return bodyText;
+
+        try
+        {
+            if (JsonNode.Parse(bodyText) is not JsonObject root)
+                return bodyText;
+
+            root["model"] = upstreamModelName;
+            return root.ToJsonString(_jsonOptions);
+        }
+        catch (JsonException)
+        {
+            return bodyText;
+        }
+    }
+
+    /// <summary>
+    /// Resolves which model a manual compaction request should be sent to. This is the single
+    /// authority for the manual-compaction routing decision, shared by both <c>/compact</c>
+    /// endpoints and by the signature-based redirect on the chat paths so they cannot disagree.
+    /// </summary>
+    /// <remarks>
+    /// Redirection requires <b>both</b> <see cref="ModelMapping.RedirectManualCompaction"/> and a
+    /// compaction target that is itself a usable mapping (found, enabled, and has an upstream
+    /// URL). When either is missing the request goes to the model the client asked for, so the
+    /// model handles its own compaction — there is no global fallback target and the proxy never
+    /// invents one. A configured-but-unusable target is reported as a warning rather than being
+    /// silently ignored, because it means the user's redirect setting is not taking effect.
+    /// </remarks>
+    /// <param name="mapping">The mapping that matches the request's model.</param>
+    /// <returns>
+    /// The mapping to forward to, and whether it differs from the request's own mapping.
+    /// </returns>
+    private (ModelMapping Target, bool Redirected) ResolveManualCompactTarget(ModelMapping mapping) =>
+        ResolveManualCompactTarget(_settings, mapping);
+
+    /// <summary>
+    /// Static form of the manual-compaction target resolver so both the instance handlers and
+    /// the static signature-based redirect (<see cref="ResolveEffectiveModel"/>) share one set of
+    /// gates and cannot drift apart.
+    /// </summary>
+    internal static (ModelMapping Target, bool Redirected) ResolveManualCompactTarget(
+        AppSettings settings, ModelMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(mapping);
+
+        if (!mapping.RedirectManualCompaction || !mapping.ContextSummarizeModelId.HasValue)
+            return (mapping, false);
+
+        ModelMapping? candidate = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+
+        if (candidate is null)
+        {
+            Log.Warning(
+                "Manual compaction for {Model} is configured to redirect to compaction model ID {TargetId}, but no mapping with that ID exists. Forwarding to {Model} instead.",
+                mapping.ProxyName, mapping.ContextSummarizeModelId.Value, mapping.ProxyName);
+            return (mapping, false);
+        }
+
+        if (!candidate.IsEnabled)
+        {
+            Log.Warning(
+                "Manual compaction for {Model} is configured to redirect to {Target}, but that mapping is disabled. Forwarding to {Model} instead.",
+                mapping.ProxyName, candidate.ProxyName, mapping.ProxyName);
+            return (mapping, false);
+        }
+
+        if (string.IsNullOrWhiteSpace(candidate.UpstreamUrl))
+        {
+            Log.Warning(
+                "Manual compaction for {Model} is configured to redirect to {Target}, but that mapping has no upstream URL. Forwarding to {Model} instead.",
+                mapping.ProxyName, candidate.ProxyName, mapping.ProxyName);
+            return (mapping, false);
+        }
+
+        // A mapping that points its compaction target at itself would loop back to the same
+        // upstream; treat it as no redirect so the logging stays truthful.
+        if (candidate.Id == mapping.Id)
+            return (mapping, false);
+
+        Log.Debug(
+            "Manual compaction for {Model} redirected to compaction model {Target}",
+            mapping.ProxyName, candidate.ProxyName);
+
+        return (candidate, true);
+    }
+
+    /// <summary>
+    /// Forwards a manual compaction request to <paramref name="targetMapping"/>'s upstream
+    /// <c>/v1/chat/completions</c> and returns that model's response to the client unchanged.
+    /// The model produces the summary itself, which is what "proxy the compaction" means: the
+    /// proxy resolves the target and relays the conversation, it does not synthesize a summary.
+    /// Handles both streaming (SSE with keep-alive frames) and non-streaming responses, and mirrors
+    /// the passthrough path's error handling so a failed compaction surfaces as a real error
+    /// rather than a silently closed stream.
+    /// </summary>
+    /// <param name="targetMapping">
+    /// The mapping to forward to — the compaction target when the request is redirected,
+    /// otherwise the request's own mapping.
+    /// </param>
+    /// <param name="bodyText">The original request body.</param>
+    /// <param name="originalModel">The model name the client asked for, for logging.</param>
+    /// <param name="redirected">Whether the request was redirected to a separate compaction model.</param>
+    /// <remarks>
+    /// Handles its own failures. Whether a 500 can still be written depends on whether the SSE
+    /// headers were pre-committed for a streaming request, and that state only exists inside this
+    /// method — <see cref="HttpListenerResponse"/> exposes no "headers sent" flag — so the error
+    /// response is produced here rather than by the callers.
+    /// </remarks>
+    private async Task ForwardCompactToUpstreamAsync(
+        ModelMapping targetMapping,
+        string bodyText,
+        string originalModel,
+        bool redirected,
+        HttpListenerResponse resp,
+        RequestLog log,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(targetMapping);
+
+        bool headersPreCommitted = false;
+
+        try
+        {
+            // Upstreams identify models by ModelName, not by the proxy's display name.
+            string upstreamModel = string.IsNullOrWhiteSpace(targetMapping.ModelName)
+                ? targetMapping.ProxyName
+                : targetMapping.ModelName;
+
+            string forwardedBody = RewriteCompactTargetModel(bodyText, upstreamModel);
+
+            var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
+
+            Log.Information(
+                redirected
+                    ? "Manual compaction for {OriginalModel} redirected to compaction model {TargetModel} at {BaseUrl}"
+                    : "Manual compaction for {OriginalModel} forwarded to its own upstream {TargetModel} at {BaseUrl} (no redirect configured)",
+                originalModel, upstreamModel, baseUrl);
+
+            if (_settings.DebugMode && log.DebugSummary is not null)
+            {
+                log.DebugSummary += "\n" + DebugNotes.ManualCompactionTarget(originalModel, upstreamModel, redirected);
+                log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
+                    targetMapping.ProxyName, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
+            }
+
+            using HttpRequestMessage upstreamReq = new(HttpMethod.Post, "/v1/chat/completions")
+            {
+                Content = new ByteArrayContent(Encoding.UTF8.GetBytes(forwardedBody)),
+            };
+            upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+            ApplyApiKey(upstreamReq, apiKey);
+
+            // For streaming requests, pre-commit the SSE headers and pump keep-alive frames while
+            // the upstream summarizes. Compaction can take a long time and clients with a short
+            // network timeout would otherwise give up silently.
+            bool isStreamingRequest = IsStreamingJsonBody(forwardedBody);
+
+            using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Task preResponseKeepAliveTask = Task.CompletedTask;
+
+            if (isStreamingRequest && ShouldEmitSseKeepAlive(targetMapping.ProxyName))
+            {
+                resp.StatusCode = 200;
+                resp.ContentType = "text/event-stream";
+                resp.SendChunked = true;
+                resp.KeepAlive = true;
+                headersPreCommitted = true;
+
+                // Writing and flushing this frame is what actually puts the headers on the wire;
+                // setting StatusCode/ContentType alone leaves the client with nothing to read.
+                await resp.OutputStream.WriteAsync(SseKeepAliveFrameBytes, ct);
+                await resp.OutputStream.FlushAsync(ct);
+
+                preResponseKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
+                    resp.OutputStream,
+                    _settings.SseKeepAliveIntervalSeconds,
+                    preResponseCts.Token);
+            }
+
+            HttpResponseMessage upstreamResp;
+            try
+            {
+                upstreamResp = await SendUpstreamAsync(
+                    upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+            }
+            finally
+            {
+                await preResponseCts.CancelAsync();
+                await preResponseKeepAliveTask;
+            }
+
+            using HttpResponseMessage ownedUpstreamResponse = upstreamResp;
+
+            log.StatusCode = (int)upstreamResp.StatusCode;
+
+            if (!upstreamResp.IsSuccessStatusCode)
+            {
+                string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+
+                log.Status = RequestStatus.Error;
+                log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
+                if (_settings.CollectResponseDetails)
+                    log.ResponseBody = errorBody;
+                if (_settings.DebugMode)
+                    log.UpstreamResponseBody = RedactResponseBodyForLog(errorBody, originalModel);
+
+                Log.Warning(
+                    "Manual compaction failed for model {OriginalModel} at upstream {TargetModel}: {StatusCode}",
+                    originalModel, upstreamModel, (int)upstreamResp.StatusCode);
+
+                if (headersPreCommitted)
+                {
+                    // Headers already sent as 200/SSE — emit the error as a data frame so the
+                    // client sees it rather than getting a silent stream close.
+                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{(int)upstreamResp.StatusCode}}}}}\n\n";
+                    await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), ct);
+                }
+                else
+                {
+                    resp.StatusCode = (int)upstreamResp.StatusCode;
+                    await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorBody), ct);
+                }
+
+                resp.OutputStream.Close();
+                return;
+            }
+
+            if (!headersPreCommitted)
+            {
+                resp.StatusCode = (int)upstreamResp.StatusCode;
+
+                string? mediaType = upstreamResp.Content.Headers.ContentType?.MediaType;
+                if (!string.IsNullOrWhiteSpace(mediaType))
+                    resp.ContentType = mediaType;
+
+                foreach (var header in upstreamResp.Headers)
+                {
+                    if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
+                    resp.Headers[header.Key] = string.Join(",", header.Value);
+                }
+                foreach (var header in upstreamResp.Content.Headers)
+                {
+                    if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+                    resp.Headers[header.Key] = string.Join(",", header.Value);
+                }
+
+                resp.SendChunked = true;
+                resp.KeepAlive = true;
+            }
+
+            await using Stream upstreamStream = await upstreamResp.Content.ReadAsStreamAsync(ct);
+
+            bool collectResponse = _settings.CollectResponseDetails;
+            bool debugCapture = _settings.DebugMode;
+
+            using CountingStream countingStream = new(resp.OutputStream);
+
+            if (IsServerSentEventsResponse(upstreamResp))
+            {
+                Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
+
+                if (collectResponse || debugCapture)
+                {
+                    using ResponseCaptureStream captureStream = new(countingStream);
+                    await CopyStreamWithSseKeepAliveAsync(
+                        upstreamStream,
+                        captureStream,
+                        ShouldEmitSseKeepAlive(targetMapping.ProxyName),
+                        _settings.SseKeepAliveIntervalSeconds,
+                        ct,
+                        () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
+                        onUsage);
+
+                    string forwardedText = captureStream.GetCapturedText();
+                    if (collectResponse)
+                        log.ResponseBody = RedactResponseBodyForLog(forwardedText, originalModel);
+                    if (debugCapture)
+                        log.UpstreamResponseBody = RedactResponseBodyForLog(forwardedText, originalModel);
+                }
+                else
+                {
+                    await CopyStreamWithSseKeepAliveAsync(
+                        upstreamStream,
+                        countingStream,
+                        ShouldEmitSseKeepAlive(targetMapping.ProxyName),
+                        _settings.SseKeepAliveIntervalSeconds,
+                        ct,
+                        () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
+                        onUsage);
+                }
+            }
+            else
+            {
+                // Buffer once so token usage and the optional captures read from the same body
+                // that is forwarded to the client.
+                Action<string> onBody = body =>
+                {
+                    FillTokenStats(log, TryParseChunk(body));
+                    if (collectResponse)
+                        log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
+                    if (debugCapture)
+                        log.UpstreamResponseBody = RedactResponseBodyForLog(body, originalModel);
+                };
+
+                // ThinkingMode.LeaveInline with no tool extraction forwards the body byte-for-byte.
+                await CopyNonStreamingChatResponseAsync(
+                    upstreamStream,
+                    countingStream,
+                    ThinkingMode.LeaveInline,
+                    ct,
+                    onBody,
+                    extractToolCalls: false);
+            }
+
+            log.ResponseBytes = countingStream.BytesWritten;
+            resp.OutputStream.Close();
+            log.Status = RequestStatus.Success;
+
+            Log.Information(
+                "Manual compaction completed for {OriginalModel} using {TargetModel} ({ResponseBytes} bytes)",
+                originalModel, upstreamModel, log.ResponseBytes);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Manual compaction for model {Model} threw", originalModel);
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = ex.Message;
+
+            // Once the SSE headers are committed the status code is fixed at 200; report the
+            // failure inside the stream instead so the client is not left with a silent close.
+            if (headersPreCommitted)
+            {
+                try
+                {
+                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(ex.Message)},\"code\":500}}}}\n\n";
+                    await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), CancellationToken.None);
+                    resp.OutputStream.Close();
+                }
+                catch (Exception writeEx)
+                {
+                    Log.Debug(writeEx, "Could not write a compaction error frame for model {Model}", originalModel);
+                }
+
+                return;
+            }
+
+            resp.StatusCode = 500;
+            await WriteJsonAsync(resp, new
+            {
+                error = "Internal error during manual compaction. Please retry.",
+            }, ct);
+        }
+    }
+
+    // ── POST /v1/responses/compact → OpenAI-compatible conversation compaction ──
+
+    /// <summary>
+    /// Handles <c>POST /v1/responses/compact</c> — forwards the compaction request to a model's
+    /// upstream <c>/v1/chat/completions</c> and returns that model's response unchanged. The
+    /// target is the mapping's configured compaction model when the mapping opts in via
+    /// <see cref="ModelMapping.RedirectManualCompaction"/>, otherwise the request's own model.
+    /// The proxy never synthesizes a summary here: a model always produces it.
     /// </summary>
     private async Task HandleCompactAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -3407,9 +3837,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails || _settings.DebugMode)
             log.RequestBody = bodyText;
 
-        // Extract the model name from the request body and apply the compact model redirect.
+        // Extract the model name from the request body and resolve the compaction target.
         string originalModel = string.Empty;
-        string effectiveModel = string.Empty;
 
         try
         {
@@ -3439,120 +3868,19 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Manual compaction is only redirected when the mapping opts in via
-        // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
-        // "Compaction Model" dropdown). Otherwise the request passes through unchanged.
-        ModelMapping? compactMapping = null;
-        if (mapping.ContextSummarizeModelId.HasValue)
-        {
-            ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-            if (perMapping is not null && perMapping.IsEnabled)
-                compactMapping = perMapping;
-        }
+        (ModelMapping target, bool redirected) = ResolveManualCompactTarget(mapping);
 
-        if (!mapping.RedirectManualCompaction || compactMapping is null)
-        {
-            Log.Debug("Compact request for model {Model} passes through unchanged (redirect enabled: {Redirect}, target: {Target})",
-                originalModel, mapping.RedirectManualCompaction, compactMapping?.ProxyName ?? "(none)");
-            await WriteManualCompactPassThrough(resp, bodyText, log, ct);
-            return;
-        }
-
-        effectiveModel = compactMapping.ProxyName;
-        Log.Debug("Using compact model {CompactModel} for compact request model {OriginalModel}",
-            effectiveModel, originalModel);
-        if (_settings.DebugMode && log.DebugSummary is not null)
-            log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(originalModel, effectiveModel);
-
-        var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
-
-        if (_settings.DebugMode && log.DebugSummary is not null)
-        {
-            log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
-                effectiveModel, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
-        }
-
-        // Use the proxy's own AutoCompactionService to perform compaction locally
-        // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
-        try
-        {
-            // Build a session key for circuit breaker tracking
-            string sessionKey = $"compact:{originalModel}:{bodyText.GetHashCode():X8}";
-
-            // The resolved compaction target is guaranteed non-null past the gate above.
-            int compactModelContext = compactMapping.GetEffectiveContextWindow();
-            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
-            int targetModelContextWindow = mapping.GetEffectiveContextWindow();
-
-            // Summarization requests are sent straight to the upstream, which knows the model
-            // by its ModelName (e.g. the .gguf path) Ã¢â‚¬â€ not the proxy display name.
-            string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
-
-            // Detect if this is a Copilot request to determine the appropriate format
-            CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
-
-            string? compactedBody = await _autoCompactionService.CompactAsync(
-                mapping,
-                bodyText,
-                sessionKey,
-                baseUrl,
-                apiKey,
-                timeout,
-                maxTokensPerChunk,
-                compactUpstreamModel,
-                targetModelContextWindow,
-                compactModelContext,
-                ct,
-                format);
-
-            if (compactedBody is null)
-            {
-                Log.Warning("Compact request failed for model {Model}", originalModel);
-                resp.StatusCode = 500;
-                await WriteJsonAsync(resp, new
-                {
-                    error = "Compaction failed. The conversation may be too large or the compact model may be unavailable.",
-                }, ct);
-                return;
-            }
-
-            _autoCompactionService.RecordSuccess(sessionKey);
-            log.ResponseBytes = Encoding.UTF8.GetByteCount(compactedBody);
-
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = compactedBody;
-
-            resp.StatusCode = 200;
-            resp.ContentType = "application/json";
-            byte[] bytes = Encoding.UTF8.GetBytes(compactedBody);
-            resp.ContentLength64 = bytes.Length;
-            await resp.OutputStream.WriteAsync(bytes, ct);
-            resp.Close();
-
-            log.StatusCode = 200;
-            log.Status = RequestStatus.Success;
-            Log.Information("Compact request completed successfully for model {Model}", originalModel);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Compact request failed for model {Model}", originalModel);
-            log.Status = RequestStatus.Error;
-            log.ErrorMessage = ex.Message;
-            resp.StatusCode = 500;
-            await WriteJsonAsync(resp, new
-            {
-                error = "Internal error during compaction. Please retry.",
-            }, ct);
-        }
+        await ForwardCompactToUpstreamAsync(target, bodyText, originalModel, redirected, resp, log, ct);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ POST /v1/chat/completions/compact Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── POST /v1/chat/completions/compact ─────────────────────────────────
 
     /// <summary>
-    /// Handles <c>POST /v1/chat/completions/compact</c> Ã¢â‚¬â€ manual context compaction endpoint.
-    /// Accepts a chat completion request body, compacts the conversation history using the
-    /// configured compact model, and returns the compacted messages. This endpoint is disabled
-    /// by default and must be enabled via <c>EnableManualCompactionEndpoint</c> in settings.
+    /// Handles <c>POST /v1/chat/completions/compact</c> — manual context compaction endpoint.
+    /// Accepts a chat completion request body and forwards it to a model's upstream so that
+    /// model produces the summary, returning its response unchanged. The target is the
+    /// mapping's configured compaction model when the mapping opts in via
+    /// <see cref="ModelMapping.RedirectManualCompaction"/>, otherwise the request's own model.
     /// </summary>
     private async Task HandleManualCompactAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
@@ -3560,8 +3888,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         string bodyText = await ReadBodyAsync(req, ct);
         log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
 
+        if (_settings.CollectRequestDetails || _settings.DebugMode)
+            log.RequestBody = bodyText;
+
         string originalModel = string.Empty;
-        string effectiveModel = string.Empty;
 
         try
         {
@@ -3589,149 +3919,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
         }
 
-        // Manual compaction is only redirected when the mapping opts in via
-        // RedirectManualCompaction AND a compaction target is resolved (the per-mapping
-        // "Compaction Model" dropdown). Otherwise the request passes through unchanged —
-        // these endpoints never forward to upstream, so "doing nothing" means returning the
-        // original body untouched.
-        ModelMapping? compactMapping = null;
-        if (mapping.ContextSummarizeModelId.HasValue)
-        {
-            ModelMapping? perMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-            if (perMapping is not null && perMapping.IsEnabled)
-                compactMapping = perMapping;
-        }
+        (ModelMapping target, bool redirected) = ResolveManualCompactTarget(mapping);
 
-        if (!mapping.RedirectManualCompaction || compactMapping is null)
-        {
-            Log.Debug("Manual compaction for model {Model} passes through unchanged (redirect enabled: {Redirect}, target: {Target})",
-                originalModel, mapping.RedirectManualCompaction, compactMapping?.ProxyName ?? "(none)");
-            await WriteManualCompactPassThrough(resp, bodyText, log, ct);
-            return;
-        }
-
-        effectiveModel = compactMapping.ProxyName;
-        Log.Debug("Using compact model {CompactModel} for manual compact request model {OriginalModel}",
-            effectiveModel, originalModel);
-        if (_settings.DebugMode && log.DebugSummary is not null)
-            log.DebugSummary += "\n" + DebugNotes.ContextSummarizeRedirect(originalModel, effectiveModel);
-
-        var (baseUrl, timeout, apiKey) = ResolveUpstream(effectiveModel);
-
-        if (_settings.DebugMode && log.DebugSummary is not null)
-        {
-            log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
-                effectiveModel, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
-        }
-
-        Log.Information("Manual compaction requested for model {Model}, redirecting to {CompactModel}",
-            originalModel, effectiveModel);
-
-        // Use the proxy's own AutoCompactionService to perform compaction locally
-        // instead of forwarding to upstream (which doesn't implement /v1/responses/compact)
-        try
-        {
-            // Build a session key for circuit breaker tracking
-            string sessionKey = $"manual-compact:{originalModel}:{bodyText.GetHashCode():X8}";
-
-            // The resolved compaction target is guaranteed non-null past the gate above.
-            int compactModelContext = compactMapping.GetEffectiveContextWindow();
-            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
-            int targetModelContextWindow = mapping.GetEffectiveContextWindow();
-
-            // Summarization requests are sent straight to the upstream, which knows the model
-            // by its ModelName (e.g. the .gguf path) Ã¢â‚¬â€ not the proxy display name.
-            string compactUpstreamModel = (compactMapping ?? mapping).ModelName ?? effectiveModel;
-
-            // Detect if this is a Copilot request to determine the appropriate format
-            CompactionFormat format = IsCopilotRequest(req) ? CompactionFormat.Ollama : CompactionFormat.Proxy;
-
-            string? compactedBody = await _autoCompactionService.CompactAsync(
-                mapping,
-                bodyText,
-                sessionKey,
-                baseUrl,
-                apiKey,
-                timeout,
-                maxTokensPerChunk,
-                compactUpstreamModel,
-                targetModelContextWindow,
-                compactModelContext,
-                ct,
-                format);
-
-            if (compactedBody is null)
-            {
-                Log.Warning("Manual compact request failed for model {Model}", originalModel);
-                resp.StatusCode = 500;
-                await WriteJsonAsync(resp, new
-                {
-                    error = "Manual compaction failed. The conversation may be too large or the compact model may be unavailable.",
-                }, ct);
-                return;
-            }
-
-            _autoCompactionService.RecordSuccess(sessionKey);
-            log.ResponseBytes = Encoding.UTF8.GetByteCount(compactedBody);
-
-            if (_settings.CollectResponseDetails)
-                log.ResponseBody = compactedBody;
-
-            resp.StatusCode = 200;
-            resp.ContentType = "application/json";
-            byte[] bytes = Encoding.UTF8.GetBytes(compactedBody);
-            resp.ContentLength64 = bytes.Length;
-            await resp.OutputStream.WriteAsync(bytes, ct);
-            resp.Close();
-
-            log.StatusCode = 200;
-            log.Status = RequestStatus.Success;
-            Log.Information("Manual compaction completed successfully for model {Model}", originalModel);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Manual compact request failed for model {Model}", originalModel);
-            log.Status = RequestStatus.Error;
-            log.ErrorMessage = ex.Message;
-            resp.StatusCode = 500;
-            await WriteJsonAsync(resp, new
-            {
-                error = "Internal error during manual compaction. Please retry.",
-            }, ct);
-        }
+        await ForwardCompactToUpstreamAsync(target, bodyText, originalModel, redirected, resp, log, ct);
     }
 
-    /// <summary>
-    /// Returns the original request body unchanged (HTTP 200) when manual compaction is not
-    /// redirected for a mapping — i.e. the mapping did not opt in via RedirectManualCompaction
-    /// or no compaction target is configured. These /compact endpoints never forward to
-    /// upstream, so "passing through" means echoing the untouched body back to the caller.
-    /// </summary>
-    private async Task WriteManualCompactPassThrough(
-        HttpListenerResponse resp, string bodyText, RequestLog log, CancellationToken ct)
-    {
-        if (_settings.CollectResponseDetails)
-            log.ResponseBody = bodyText;
-
-        resp.StatusCode = 200;
-        resp.ContentType = "application/json";
-        byte[] bytes = Encoding.UTF8.GetBytes(bodyText);
-        resp.ContentLength64 = bytes.Length;
-        await resp.OutputStream.WriteAsync(bytes, ct);
-        resp.Close();
-
-        log.ResponseBytes = bytes.Length;
-        log.StatusCode = 200;
-        log.Status = RequestStatus.Success;
-    }
-
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/ps Ã¢â€ â€™ running model stub Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /api/ps → running model stub ──────────────────────────────────────
 
     private async Task HandlePsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
         // Report configured enabled mappings as "running" so clients see the proxy-facing names
         // rather than whatever ID the upstream happens to advertise. The expires_at field is a
-        // stub Ã¢â‚¬â€ llama.cpp keeps the model permanently loaded.
+        // stub — llama.cpp keeps the model permanently loaded.
         var running = _settings.ModelMappings
             .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
             .Select(m =>
@@ -3760,7 +3959,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonRawAsync(resp, psJson, ct);
     }
 
-    // /api/show Ã¢â€ â€™ answered entirely from local mapping config, no upstream call
+    // /api/show → answered entirely from local mapping config, no upstream call
 
     private async Task HandleShowAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -3780,7 +3979,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, requestedModel);
 
-        // /api/show asks the proxy what it has configured for a model Ã¢â‚¬â€ it isn't a
+        // /api/show asks the proxy what it has configured for a model — it isn't a
         // request the upstream needs to answer, and upstreams vary wildly in whether/how
         // they support a single-model lookup (some return 404, some 400, some nothing at
         // all). Building the response purely from the mapping avoids depending on any of
@@ -3871,7 +4070,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private static List<string>? BuildCapabilities(ModelMapping? mapping)
     {
         List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
-        return normalized.Count > 0 ? normalized : null; // Omit when empty Ã¢â‚¬â€ matches omitempty.
+        return normalized.Count > 0 ? normalized : null; // Omit when empty — matches omitempty.
     }
 
     /// <summary>
@@ -3886,7 +4085,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         List<string> normalized = ModelCapabilities.Normalize(mapping?.Capabilities);
         if (normalized.Count == 0)
-            return null; // Omit from JSON entirely Ã¢â‚¬â€ matches Ollama's Go omitempty behavior
+            return null; // Omit from JSON entirely — matches Ollama's Go omitempty behavior
 
         HashSet<string> ollamaTokens = new(StringComparer.OrdinalIgnoreCase);
 
@@ -3993,7 +4192,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return match.Success ? match.Groups["quant"].Value.ToUpperInvariant() : string.Empty;
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/generate Ã¢â€ â€™ POST /v1/completions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /api/generate → POST /v1/completions ───────────────────────────────
 
     private async Task HandleGenerateAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4005,22 +4204,32 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
 
         // Context-summarize (/compact) redirect: route the request to the mapping's configured
-        // compact model when the system/prompt is a Copilot session-summary prompt.
+        // compaction model when the system/prompt is a Copilot session-summary prompt and the
+        // mapping opted in via RedirectManualCompaction.
         string? firstContent = !string.IsNullOrEmpty(ollamaReq.System) ? ollamaReq.System : ollamaReq.Prompt;
         string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, firstContent);
-        if (!string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+        bool compactRedirected = !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase);
+
+        if (compactRedirected)
         {
             log.OriginalModel = ollamaReq.Model;
             Log.Debug(
-                "Context-summarize (/compact) generate request for {OriginalModel} redirected to compact model {CompactModel}",
+                "Context-summarize (/compact) generate request for {OriginalModel} redirected to compaction model {CompactModel}",
                 ollamaReq.Model, effectiveModel);
+        }
+        else if (IsContextSummarizeRequest(firstContent))
+        {
+            Log.Debug(
+                "Context-summarize (/compact) generate request for {OriginalModel} is not redirected: {Reason}",
+                ollamaReq.Model,
+                DescribeCompactSkipReason(_settings, ollamaReq.Model, firstContent));
         }
 
         string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
         bool genDebug = _settings.DebugMode;
         StringBuilder? genDebugNotes = genDebug ? new StringBuilder() : null;
-        if (genDebugNotes is not null && !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+        if (genDebugNotes is not null && compactRedirected)
             genDebugNotes.AppendLine(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
         bool genMapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
         if (genDebugNotes is not null)
@@ -4161,7 +4370,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/chat Ã¢â€ â€™ POST /v1/chat/completions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /api/chat → POST /v1/chat/completions ──────────────────────────────
 
     private async Task HandleChatAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4173,19 +4382,33 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return;
 
         // Context-summarize (/compact) redirect: route the request to the mapping's configured
-        // compact model when the first message is a Copilot session-summary prompt.
-        string effectiveModel = ResolveEffectiveModel(
-            _settings, ollamaReq.Model,
-            ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null);
+        // compaction model when the first message is a Copilot session-summary prompt and the
+        // mapping opted in via RedirectManualCompaction.
+        string chatFirstContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
+        string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, chatFirstContent);
 
-        if (!string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+        bool compactRedirected = !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase);
+
+        if (compactRedirected)
+        {
             log.OriginalModel = ollamaReq.Model;
+            Log.Debug(
+                "Context-summarize (/compact) chat request for {OriginalModel} redirected to compaction model {CompactModel}",
+                ollamaReq.Model, effectiveModel);
+        }
+        else if (IsContextSummarizeRequest(chatFirstContent))
+        {
+            Log.Debug(
+                "Context-summarize (/compact) chat request for {OriginalModel} is not redirected: {Reason}",
+                ollamaReq.Model,
+                DescribeCompactSkipReason(_settings, ollamaReq.Model, chatFirstContent));
+        }
 
         string resolvedModel = _settings.ResolveModelName(effectiveModel);
         log.Model = resolvedModel;
         bool debug = _settings.DebugMode;
         StringBuilder? debugNotes = debug ? new StringBuilder() : null;
-        if (debugNotes is not null && !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase))
+        if (debugNotes is not null && compactRedirected)
             debugNotes.Append(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
         bool mapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
         if (debugNotes is not null)
@@ -4295,25 +4518,27 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (_settings.CollectRequestDetails || debug)
             log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, upstreamBody, effectiveModel);
 
-        // Proactive context-overflow check: if the estimated token count exceeds the mapping's
-        // configured threshold, return 413 immediately so clients compact before we pay for an
-        // upstream round-trip that is guaranteed to overflow. Skip proactive auto-compaction for
-        // Copilot requests when EnableCopilotNativeCompaction is enabled, so Copilot's native
-        // /compact flow manages session state.
-        string? firstMsgContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
-        bool shouldSkipAutoCompaction = false;
-        if (_settings.EnableCopilotNativeCompaction && IsCopilotRequest(req, firstMsgContent))
+        // Proactive context-overflow check: when the estimated request exceeds the mapping's
+        // configured threshold, compact the conversation before forwarding so we do not pay for
+        // an upstream round-trip that is guaranteed to overflow.
+        //
+        // Only ONE compaction may act on a request. When the signature-based /compact redirect
+        // already fired this request IS a compaction request, so compacting it again would
+        // summarize a summary (and `mapping` is now the compaction target, not the client's model).
+        if (compactRedirected)
         {
-            shouldSkipAutoCompaction = true;
-            Log.Debug("Skipping proactive auto-compaction for Copilot request (Ollama path)");
+            Log.Debug(
+                "Skipping proactive auto-compaction for {Model}: the request is already a compaction request redirected from {OriginalModel} (Ollama path)",
+                effectiveModel, ollamaReq.Model);
         }
-
-        if (!shouldSkipAutoCompaction && _settings.EnableAutoCompaction)
+        else
         {
-            // For Ollama path, pass null for output stream (streaming notifications not yet implemented for this path)
-            var (overflow, compactedBody) = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, log, AutoCompactPaths.Ollama, null, ct);
-            if (overflow)
-                return;
+            // Per-mapping AutoCompactPaths is the only gate: TryProactiveOverflowAsync consults
+            // IsAutoCompactActiveFor, the threshold, and the compaction target. There is
+            // deliberately no global toggle, so a mapping left on "Disabled" never compacts.
+            // For the Ollama path, pass null for the output stream (streaming progress
+            // notifications are not implemented for this path).
+            string? compactedBody = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, AutoCompactPaths.Ollama, null, ct);
             if (compactedBody is not null)
                 upstreamBody = compactedBody;
         }
@@ -4353,7 +4578,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             resp.ContentType = "application/x-ndjson";
             resp.SendChunked = true;
-            resp.KeepAlive = true; // Keep connection alive during long thinking periods
+            // Keep the connection alive during long thinking periods. This path is NDJSON rather
+            // than SSE, so the keep-alive is an empty Ollama chunk rather than a comment frame.
+            resp.KeepAlive = true;
 
             await StreamChatToOllamaAsync(
                 upstreamResp,
@@ -4362,12 +4589,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 log,
                 _settings.CollectResponseDetails,
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
-                ShouldEmitHeartbeats(ollamaReq.Model),
-                _settings.StreamingHeartbeatIntervalSeconds,
+                ShouldEmitSseKeepAlive(ollamaReq.Model),
+                _settings.SseKeepAliveIntervalSeconds,
                 mapping?.ThinkingMode ?? ThinkingMode.LeaveInline,
                 sw,
                 ct,
-                () => _stats.IncrementHeartbeat(ollamaReq.Model),
+                () => _stats.IncrementSseKeepAlive(ollamaReq.Model),
                 collectRawUpstream: _settings.DebugMode);
         }
         else
@@ -4449,7 +4676,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return;
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ /api/embeddings Ã¢â€ â€™ POST /v1/embeddings Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── /api/embeddings → POST /v1/embeddings ──────────────────────────────
 
     private async Task HandleEmbeddingsAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
@@ -4513,9 +4740,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         await WriteJsonAsync(resp, ollamaResp, ct);
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Streaming helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Streaming helpers ───────────────────────────────────────────────────
 
-    /// <summary>Elapsed stopwatch time in nanoseconds Ã¢â‚¬â€ Ollama's duration unit.</summary>
+    /// <summary>Elapsed stopwatch time in nanoseconds — Ollama's duration unit.</summary>
     private static long ElapsedNanos(Stopwatch sw) => (long)(sw.Elapsed.TotalSeconds * 1_000_000_000);
 
     /// <summary>
@@ -4695,12 +4922,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         RequestLog log,
         bool collectResponse,
         Func<string, string> redactResponse,
-        bool enableHeartbeats,
-        int heartbeatIntervalSeconds,
+        bool enableKeepAlive,
+        int keepAliveIntervalSeconds,
         ThinkingMode thinkingMode,
         Stopwatch sw,
         CancellationToken ct,
-        Action? onHeartbeatSent = null,
+        Action? onKeepAliveSent = null,
         bool collectRawUpstream = false)
     {
         await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
@@ -4718,7 +4945,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool upstreamFailed = false;
         string? stopReason = null;
         long responseBytes = 0;
-        TimeSpan heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp(heartbeatIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
         Dictionary<int, StreamingToolCallBuilder> toolCallBuilders = [];
         StringBuilder xmlToolCallBuilder = new();
         bool capturingXmlToolCall = false;
@@ -4740,14 +4967,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string? line;
             try
             {
-                line = await ReadLineWithOllamaChatHeartbeatsAsync(
+                line = await ReadLineWithOllamaChatKeepAliveAsync(
                     reader,
                     writer,
                     modelName,
-                    enableHeartbeats,
-                    heartbeatInterval,
+                    enableKeepAlive,
+                    keepAliveInterval,
                     ct,
-                    onHeartbeatSent);
+                    onKeepAliveSent);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
             {
@@ -4954,47 +5181,56 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : RequestStatus.Success;
     }
 
-    private static async Task<string?> ReadLineWithOllamaChatHeartbeatsAsync(
+    /// <summary>
+    /// Reads one NDJSON line from the upstream, emitting an empty Ollama chat chunk as the
+    /// client-facing keep-alive whenever the upstream is silent for a full interval.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the SSE paths, the Ollama surface is NDJSON, so an SSE comment frame would be
+    /// invalid here. The keep-alive is therefore a well-formed empty chunk with
+    /// <c>done: false</c>, which Ollama clients already tolerate.
+    /// </remarks>
+    private static async Task<string?> ReadLineWithOllamaChatKeepAliveAsync(
         StreamReader reader,
         StreamWriter writer,
         string modelName,
-        bool enableHeartbeats,
-        TimeSpan heartbeatInterval,
+        bool enableKeepAlive,
+        TimeSpan keepAliveInterval,
         CancellationToken ct,
-        Action? onHeartbeatSent = null)
+        Action? onKeepAliveSent = null)
     {
         Task<string?> readTask = reader.ReadLineAsync(ct).AsTask();
 
-        while (enableHeartbeats && !readTask.IsCompleted)
+        while (enableKeepAlive && !readTask.IsCompleted)
         {
-            Task delayTask = Task.Delay(heartbeatInterval, ct);
+            Task delayTask = Task.Delay(keepAliveInterval, ct);
             Task completed = await Task.WhenAny(readTask, delayTask);
             if (completed == readTask)
                 break;
 
-            var heartbeatChunk = new OllamaChatResponse
+            var keepAliveChunk = new OllamaChatResponse
             {
                 Model = modelName,
                 Message = new OllamaMessage("assistant", string.Empty),
                 Done = false,
             };
 
-            await writer.WriteLineAsync(JsonSerializer.Serialize(heartbeatChunk, _jsonOptions));
+            await writer.WriteLineAsync(JsonSerializer.Serialize(keepAliveChunk, _jsonOptions));
             await writer.FlushAsync(ct);
-            onHeartbeatSent?.Invoke();
+            onKeepAliveSent?.Invoke();
         }
 
         return await readTask;
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Mapping helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Mapping helpers ──────────────────────────────────────────────────────
 
     /// <summary>
     /// Converts Ollama's <c>format</c> field to an OpenAI <c>response_format</c> object.
     /// Ollama accepts:
-    ///   Ã¢â‚¬Â¢ the literal string "json"  Ã¢â€ â€™ OpenAI {"type":"json_object"}
-    ///   Ã¢â‚¬Â¢ a full JSON Schema object  Ã¢â€ â€™ OpenAI {"type":"json_schema","json_schema":{...}}
-    ///   Ã¢â‚¬Â¢ an OpenAI-style object     Ã¢â€ â€™ forwarded as-is
+    ///   • the literal string "json"  → OpenAI {"type":"json_object"}
+    ///   • a full JSON Schema object  → OpenAI {"type":"json_schema","json_schema":{...}}
+    ///   • an OpenAI-style object     → forwarded as-is
     /// </summary>
     private static LlamaCppResponseFormat? ResolveResponseFormat(object? format)
     {
@@ -5082,8 +5318,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     /// <summary>
     /// Maps Ollama messages to OpenAI/llama.cpp messages and rewrites tool_call IDs so that:
-    ///   Ã¢â‚¬Â¢ each assistant tool_call gets a stable id (preserved if supplied, generated otherwise),
-    ///   Ã¢â‚¬Â¢ each following role:"tool" reply that lacks an id is correlated to the most recent
+    ///   • each assistant tool_call gets a stable id (preserved if supplied, generated otherwise),
+    ///   • each following role:"tool" reply that lacks an id is correlated to the most recent
     ///     unfulfilled assistant tool_call (by order, or by function name when available).
     /// OpenAI-compatible upstreams reject tool replies whose tool_call_id doesn't match.
     /// </summary>
@@ -5312,7 +5548,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return req.Prompt ?? string.Empty;
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ Utility Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── Utility ──────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Reads the request body as a string, enforcing the configured
@@ -5410,7 +5646,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         resp.Close();
     }
 
-    // Ã¢â€â‚¬Ã¢â€â‚¬ API Explorer (Scalar) / OpenAPI Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+    // ── API Explorer (Scalar) / OpenAPI ─────────────────────────────────────
 
     // Short-lived client used only to fetch OpenAPI documents reported by loaded modules when
     // rendering the explorer page. Only module-reported URLs are ever fetched (never user input).
@@ -5421,7 +5657,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         <html lang="en">
         <head>
             <meta charset="UTF-8">
-            <title>Kaeo LLM Proxy Ã¢â‚¬â€ API Explorer</title>
+            <title>Kaeo LLM Proxy — API Explorer</title>
             <style>
                 body { margin: 0; padding: 0; }
                 #kaeo-doc-selector {
@@ -5588,10 +5824,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             { "url": "/", "description": "This proxy" }
           ],
           "tags": [
-            { "name": "Ollama Discovery", "description": "Ollama-compatible endpoints for model and version discovery. Answered locally from the mapping table Ã¢â‚¬â€ no upstream call." },
+            { "name": "Ollama Discovery", "description": "Ollama-compatible endpoints for model and version discovery. Answered locally from the mapping table — no upstream call." },
             { "name": "Ollama Generation", "description": "Ollama-compatible generation endpoints. The proxy translates these to OpenAI-compatible upstream calls." },
             { "name": "OpenAI Passthrough", "description": "Transparent passthrough to the upstream OpenAI-compatible /v1/* surface. No translation is performed." },
-            { "name": "OpenAI Discovery", "description": "OpenAI-compatible endpoints for model discovery. Answered locally from the mapping table Ã¢â‚¬â€ no upstream call." }
+            { "name": "OpenAI Discovery", "description": "OpenAI-compatible endpoints for model discovery. Answered locally from the mapping table — no upstream call." }
           ],
           "paths": {
             "/api/version": {
@@ -5892,7 +6128,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             "/v1/responses/compact": {
               "post": {
                 "summary": "Compact conversation context",
-                "description": "Compacts the conversation history to reduce context size. Supports model redirect to a smaller/faster compact model when configured in the mapping.",
+                "description": "Forwards the conversation to a model so that model produces the summary, and returns its response unchanged. Uses the mapping's compaction model when 'Redirect manual compaction' is enabled and a compaction model is selected; otherwise uses the model named in the request.",
                 "operationId": "compactConversation",
                 "tags": ["OpenAI Passthrough"],
                 "requestBody": {
@@ -6212,7 +6448,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ProxyName = mapping.ProxyName,
             ModelName = mapping.ModelName,
             EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
-            EnableHeartbeats = mapping.EnableHeartbeats,
+            EnableSseKeepAlive = mapping.EnableSseKeepAlive,
             CredentialName = mapping.CredentialName,
             UpstreamType = mapping.UpstreamType,
             UpstreamUrl = mapping.UpstreamUrl,

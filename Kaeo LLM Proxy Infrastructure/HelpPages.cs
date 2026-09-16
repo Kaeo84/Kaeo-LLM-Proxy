@@ -72,8 +72,16 @@ internal static class HelpPages
         The Test console sends chat requests through the proxy using your configured model mappings, with temperature and repeat-penalty controls and streamed output. It is the quickest way to verify a mapping, upstream connectivity, and thinking behavior without an external client.
         """;
 
-    internal const string Heartbeats = """
-        Heartbeats shows per-model streaming heartbeat activity: while the proxy waits on a long-thinking upstream it emits harmless keep-alive frames so clients do not time out. Use this view to confirm a request is alive before the first tokens arrive, and to tune the heartbeat interval in Settings.
+    internal const string SseKeepAlive = """
+        SSE Keep-Alive shows per-model streaming keep-alive activity, alongside the upstream liveness probe results reported for the same models.
+
+        While the proxy waits on a long-thinking upstream it emits harmless keep-alive frames so clients do not time out. On the OpenAI /v1 endpoints these are SSE comment lines (": kaeo-keep-alive") that conformant clients ignore; on the Ollama endpoints they are empty chunks with done: false, because NDJSON has no comment syntax. Use this view to confirm a request is alive before the first tokens arrive, and to tune the interval in Settings.
+
+        The two counter groups answer different questions and are deliberately kept separate. "Keep-Alives Sent" and "Last Sent" count frames actually written to a waiting client. "Attempts", "Failures", "Last Status" and "Last Error" describe the periodic upstream liveness probe, which polls /v1/models on its own timer.
+
+        Keep-Alives Sent rising while Last Status is Failed means the proxy is holding the client open even though the upstream is unreachable, so the request will eventually fail rather than hang silently. Keep-Alives Sent staying at zero during a slow request is the signature of keep-alive being disabled, either globally in Settings or on that model's mapping.
+
+        Keep-alive is a connection concern only. It does not change what the model is asked or how its reasoning is returned. The unrelated "Enable thinking compatibility" option on a model mapping strips assistant response-prefill turns from the request body and has no effect on timeouts.
         """;
 
     internal const string ModulesPlaceholder = """
