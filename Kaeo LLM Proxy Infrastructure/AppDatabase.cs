@@ -49,6 +49,7 @@ internal sealed class AppDatabase : IDisposable
         _connectionString = builder.ToString();
 
         InitializeDatabase();
+        SeedDefaultsIfEmpty();
 
         Log.Debug("AppDatabase opened {Path}", _configuredDbPath);
     }
@@ -1253,6 +1254,69 @@ internal sealed class AppDatabase : IDisposable
             MigrateModelMappingsTable(connection);
             MigrateRequestsTable(connection);
             MigrateCredentialsTable(connection);
+        }
+    }
+
+    /// <summary>
+    /// Writes <see cref="SeedData"/>'s default model mappings and placeholder credential into a
+    /// brand-new database so a clean build does not open onto an empty Models list. Does nothing once
+    /// <c>model_mappings</c> holds any rows, and never replaces an existing credential, so a
+    /// configuration that has actually been edited is left alone.
+    /// </summary>
+    /// <remarks>
+    /// The placeholder secret is stored as plaintext deliberately: this runs while the database is
+    /// being opened, before the caller has resolved the passphrase that
+    /// <see cref="Core.Security.SecretProtector"/> needs to encrypt it. The load path only decrypts
+    /// values carrying an encryption envelope, so the plaintext placeholder passes through untouched
+    /// and becomes a genuinely encrypted secret the first time the user saves it from the Credentials
+    /// tab.
+    /// <para>
+    /// Failures are logged and skipped rather than thrown. A concurrent instance
+    /// (<c>AllowMultipleInstances</c>) may hold the file, and optional seed data must never be able to
+    /// prevent the application from starting.
+    /// </para>
+    /// </remarks>
+    private void SeedDefaultsIfEmpty()
+    {
+        try
+        {
+            long mappingCount;
+
+            using (SqliteConnection connection = OpenConnection())
+            using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT COUNT(*) FROM model_mappings;";
+                mappingCount = Convert.ToInt64(command.ExecuteScalar());
+            }
+
+            if (mappingCount > 0)
+                return;
+
+            List<ModelMapping> mappings = SeedData.CreateModelMappings();
+            SaveModelMappings(mappings);
+
+            // SaveCredentials is a full-table replace, so carry the existing credentials forward:
+            // a user's real secret is never overwritten by the placeholder, even when the mappings
+            // table was emptied out from under the seeder.
+            List<StoredCredential> credentials = [.. LoadCredentials()];
+            foreach (StoredCredential seed in SeedData.CreateCredentials())
+            {
+                bool exists = credentials.Any(c =>
+                    string.Equals(c.Name, seed.Name, StringComparison.OrdinalIgnoreCase));
+
+                if (!exists)
+                    credentials.Add(seed);
+            }
+
+            SaveCredentials(credentials);
+
+            Log.Information(
+                "Seeded {MappingCount} default model mappings into the new database at {Path}",
+                mappings.Count, _configuredDbPath);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            Log.Warning(ex, "Skipped seeding default model mappings for {Path}", _configuredDbPath);
         }
     }
 
