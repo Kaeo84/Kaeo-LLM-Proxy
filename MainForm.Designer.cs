@@ -42,7 +42,7 @@ partial class MainForm
         _flpMcpButtons = new FlowLayoutPanel();
         _btnMcpApply = new Button();
         _tabTest = new TabPage();
-        _tabKeepAlive = new TabPage();
+        _tabHeartbeats = new TabPage();
         _tabSysLogs = new TabPage();
         _tlpSysLogs = new TableLayoutPanel();
         _flpSysLogTop = new FlowLayoutPanel();
@@ -263,25 +263,35 @@ partial class MainForm
         _txtTestResponse = new TextBox();
         _lblTestStatus = new Label();
 
-        // Keep-Alive tab controls
-        _tlpKeepAlive = new TableLayoutPanel();
+        // Heartbeats tab controls
+        _tlpHeartbeats = new TableLayoutPanel();
+        _lblHeartbeatInterval = new Label();
+        _txtHeartbeatInterval = new TextBox();
+        _grpPings = new GroupBox();
+        _lstPings = new ListView();
+        _colPingModel = new ColumnHeader();
+        _colPingEnabled = new ColumnHeader();
+        _colPingStatus = new ColumnHeader();
+        _colPingAttempts = new ColumnHeader();
+        _colPingFailures = new ColumnHeader();
+        _colPingLast = new ColumnHeader();
+        _colPingError = new ColumnHeader();
+        _grpKeepAlives = new GroupBox();
+        _lstKeepAlives = new ListView();
+        _colKaModel = new ColumnHeader();
+        _colKaEnabled = new ColumnHeader();
+        _colKaSent = new ColumnHeader();
+        _colKaLastSent = new ColumnHeader();
+        _flpHeartbeatButtons = new FlowLayoutPanel();
+        _btnResetCounters = new Button();
+        _btnSaveHeartbeats = new Button();
+
+        // Streaming Keep-Alive group (Settings tab)
+        _grpSseKeepAlive = new GroupBox();
+        _tlpSseKeepAlive = new TableLayoutPanel();
         _chkSseKeepAlive = new CheckBox();
         _lblKeepAliveInterval = new Label();
         _txtKeepAliveInterval = new TextBox();
-        _lblKeepAliveStats = new Label();
-        _lstKeepAlive = new ListView();
-        _colKaModel = new ColumnHeader();
-        _colKaEnabled = new ColumnHeader();
-        _colKaStatus = new ColumnHeader();
-        _colKaAttempts = new ColumnHeader();
-        _colKaCount = new ColumnHeader();
-        _colKaFailures = new ColumnHeader();
-        _colKaLastAttempt = new ColumnHeader();
-        _colKaLast = new ColumnHeader();
-        _colKaLastError = new ColumnHeader();
-        _flpKeepAliveButtons = new FlowLayoutPanel();
-        _btnResetKeepAlive = new Button();
-        _btnSaveKeepAlive = new Button();
 
         _grpListener.SuspendLayout();
         _tlpListener.SuspendLayout();
@@ -316,14 +326,18 @@ partial class MainForm
         _tabTest.SuspendLayout();
         _tlpTestOuter.SuspendLayout();
         _tlpTestTop.SuspendLayout();
-        _tabKeepAlive.SuspendLayout();
+        _tabHeartbeats.SuspendLayout();
+        _grpPings.SuspendLayout();
+        _grpKeepAlives.SuspendLayout();
+        _grpSseKeepAlive.SuspendLayout();
+        _tlpSseKeepAlive.SuspendLayout();
         _tabSysLogs.SuspendLayout();
         _tlpSysLogs.SuspendLayout();
         _flpSysLogTop.SuspendLayout();
         _tabHelp.SuspendLayout();
         _helpTabs.SuspendLayout();
-        _tlpKeepAlive.SuspendLayout();
-        _flpKeepAliveButtons.SuspendLayout();
+        _tlpHeartbeats.SuspendLayout();
+        _flpHeartbeatButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).BeginInit();
         ((System.ComponentModel.ISupportInitialize)_nudTestRepeatPenalty).BeginInit();
         _grpStatus.SuspendLayout();
@@ -343,7 +357,7 @@ partial class MainForm
         _tabControl.Controls.Add(_tabCredentials);
         _tabControl.Controls.Add(_tabMcp);
         _tabControl.Controls.Add(_tabTest);
-        _tabControl.Controls.Add(_tabKeepAlive);
+        _tabControl.Controls.Add(_tabHeartbeats);
         _tabControl.Controls.Add(_tabHelp);
         _tabControl.Dock = DockStyle.Fill;
         _tabControl.Name = "_tabControl";
@@ -958,7 +972,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 18;
+        _tlpSettings.RowCount = 19;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -995,8 +1009,10 @@ partial class MainForm
         _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 15);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
         _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 16);
+        _tlpSettings.SetColumnSpan(_grpSseKeepAlive, 2);
+        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 17);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 17);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 18);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1865,13 +1881,13 @@ partial class MainForm
         _lblTestStatus.Name = "_lblTestStatus";
         _lblTestStatus.Text = "Ready";
 
-        // ── SSE Keep-Alive tab ────────────────────────────────────────────────
+        // ── Heartbeats tab ────────────────────────────────────────────────────
 
-        _tabKeepAlive.Controls.Add(_tlpKeepAlive);
-        _tabKeepAlive.Dock = DockStyle.Fill;
-        _tabKeepAlive.Name = "_tabKeepAlive";
-        _tabKeepAlive.Padding = new Padding(8);
-        _tabKeepAlive.Text = "SSE Keep-Alive";
+        _tabHeartbeats.Controls.Add(_tlpHeartbeats);
+        _tabHeartbeats.Dock = DockStyle.Fill;
+        _tabHeartbeats.Name = "_tabHeartbeats";
+        _tabHeartbeats.Padding = new Padding(8);
+        _tabHeartbeats.Text = "Heartbeats";
 
         // _tabSysLogs
         _tabSysLogs.Controls.Add(_tlpSysLogs);
@@ -1957,32 +1973,150 @@ partial class MainForm
         _helpTabs.Dock = DockStyle.Fill;
         _helpTabs.Name = "_helpTabs";
 
-        _tlpKeepAlive.ColumnCount = 2;
-        _tlpKeepAlive.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _tlpKeepAlive.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _tlpKeepAlive.Dock = DockStyle.Fill;
-        _tlpKeepAlive.Name = "_tlpKeepAlive";
-        _tlpKeepAlive.RowCount = 5;
-        _tlpKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpKeepAlive.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        _tlpKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _tlpKeepAlive.SetColumnSpan(_chkSseKeepAlive, 2);
-        _tlpKeepAlive.Controls.Add(_chkSseKeepAlive, 0, 0);
-        _tlpKeepAlive.Controls.Add(_lblKeepAliveInterval, 0, 1);
-        _tlpKeepAlive.Controls.Add(_txtKeepAliveInterval, 1, 1);
-        _tlpKeepAlive.SetColumnSpan(_lblKeepAliveStats, 2);
-        _tlpKeepAlive.Controls.Add(_lblKeepAliveStats, 0, 2);
-        _tlpKeepAlive.SetColumnSpan(_lstKeepAlive, 2);
-        _tlpKeepAlive.Controls.Add(_lstKeepAlive, 0, 3);
-        _tlpKeepAlive.SetColumnSpan(_flpKeepAliveButtons, 2);
-        _tlpKeepAlive.Controls.Add(_flpKeepAliveButtons, 0, 4);
+        _tlpHeartbeats.ColumnCount = 2;
+        _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpHeartbeats.Dock = DockStyle.Fill;
+        _tlpHeartbeats.Name = "_tlpHeartbeats";
+        _tlpHeartbeats.RowCount = 4;
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpHeartbeats.Controls.Add(_lblHeartbeatInterval, 0, 0);
+        _tlpHeartbeats.Controls.Add(_txtHeartbeatInterval, 1, 0);
+        _tlpHeartbeats.SetColumnSpan(_grpPings, 2);
+        _tlpHeartbeats.Controls.Add(_grpPings, 0, 1);
+        _tlpHeartbeats.SetColumnSpan(_grpKeepAlives, 2);
+        _tlpHeartbeats.Controls.Add(_grpKeepAlives, 0, 2);
+        _tlpHeartbeats.SetColumnSpan(_flpHeartbeatButtons, 2);
+        _tlpHeartbeats.Controls.Add(_flpHeartbeatButtons, 0, 3);
+
+        _lblHeartbeatInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblHeartbeatInterval.AutoSize = true;
+        _lblHeartbeatInterval.Margin = new Padding(4, 8, 8, 4);
+        _lblHeartbeatInterval.Name = "_lblHeartbeatInterval";
+        _lblHeartbeatInterval.Text = "Heartbeat Interval (seconds):";
+
+        _txtHeartbeatInterval.Dock = DockStyle.Fill;
+        _txtHeartbeatInterval.Margin = new Padding(4, 6, 4, 8);
+        _txtHeartbeatInterval.Name = "_txtHeartbeatInterval";
+
+        _grpPings.Controls.Add(_lstPings);
+        _grpPings.Dock = DockStyle.Fill;
+        _grpPings.Margin = new Padding(4, 4, 4, 4);
+        _grpPings.Name = "_grpPings";
+        _grpPings.Padding = new Padding(8);
+        _grpPings.Text = "Heartbeat Pings (is the model up?)";
+
+        _lstPings.Columns.Add(_colPingModel);
+        _lstPings.Columns.Add(_colPingEnabled);
+        _lstPings.Columns.Add(_colPingStatus);
+        _lstPings.Columns.Add(_colPingAttempts);
+        _lstPings.Columns.Add(_colPingFailures);
+        _lstPings.Columns.Add(_colPingLast);
+        _lstPings.Columns.Add(_colPingError);
+        _lstPings.Dock = DockStyle.Fill;
+        _lstPings.FullRowSelect = true;
+        _lstPings.GridLines = true;
+        _lstPings.Margin = new Padding(4, 4, 4, 4);
+        _lstPings.Name = "_lstPings";
+        _lstPings.View = View.Details;
+
+        _colPingModel.Text = "Model";
+        _colPingModel.Width = 200;
+        _colPingEnabled.Text = "Enabled";
+        _colPingEnabled.Width = 70;
+        _colPingStatus.Text = "Last Status";
+        _colPingStatus.Width = 100;
+        _colPingAttempts.Text = "Pings";
+        _colPingAttempts.Width = 70;
+        _colPingFailures.Text = "Failures";
+        _colPingFailures.Width = 70;
+        _colPingLast.Text = "Last Ping";
+        _colPingLast.Width = 150;
+        _colPingError.Text = "Last Error";
+        _colPingError.Width = 240;
+
+        _grpKeepAlives.Controls.Add(_lstKeepAlives);
+        _grpKeepAlives.Dock = DockStyle.Fill;
+        _grpKeepAlives.Margin = new Padding(4, 4, 4, 4);
+        _grpKeepAlives.Name = "_grpKeepAlives";
+        _grpKeepAlives.Padding = new Padding(8);
+        _grpKeepAlives.Text = "SSE Keep-Alives (streaming sessions held open)";
+
+        _lstKeepAlives.Columns.Add(_colKaModel);
+        _lstKeepAlives.Columns.Add(_colKaEnabled);
+        _lstKeepAlives.Columns.Add(_colKaSent);
+        _lstKeepAlives.Columns.Add(_colKaLastSent);
+        _lstKeepAlives.Dock = DockStyle.Fill;
+        _lstKeepAlives.FullRowSelect = true;
+        _lstKeepAlives.GridLines = true;
+        _lstKeepAlives.Margin = new Padding(4, 4, 4, 4);
+        _lstKeepAlives.Name = "_lstKeepAlives";
+        _lstKeepAlives.View = View.Details;
+
+        _colKaModel.Text = "Model";
+        _colKaModel.Width = 200;
+        _colKaEnabled.Text = "Enabled";
+        _colKaEnabled.Width = 70;
+        _colKaSent.Text = "Keep-Alives Sent";
+        _colKaSent.Width = 130;
+        _colKaLastSent.Text = "Last Sent";
+        _colKaLastSent.Width = 150;
+
+        _flpHeartbeatButtons.AutoSize = true;
+        _flpHeartbeatButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpHeartbeatButtons.Controls.Add(_btnSaveHeartbeats);
+        _flpHeartbeatButtons.Controls.Add(_btnResetCounters);
+        _flpHeartbeatButtons.Dock = DockStyle.Fill;
+        _flpHeartbeatButtons.FlowDirection = FlowDirection.LeftToRight;
+        _flpHeartbeatButtons.Margin = new Padding(0, 4, 0, 4);
+        _flpHeartbeatButtons.Name = "_flpHeartbeatButtons";
+        _flpHeartbeatButtons.WrapContents = false;
+
+        _btnSaveHeartbeats.AutoSize = true;
+        _btnSaveHeartbeats.Margin = new Padding(4, 4, 4, 4);
+        _btnSaveHeartbeats.Name = "_btnSaveHeartbeats";
+        _btnSaveHeartbeats.Text = "Save";
+        _btnSaveHeartbeats.Click += BtnSaveHeartbeats_Click;
+
+        _btnResetCounters.AutoSize = true;
+        _btnResetCounters.Margin = new Padding(4, 4, 4, 4);
+        _btnResetCounters.Name = "_btnResetCounters";
+        _btnResetCounters.Text = "Reset Counters";
+        _btnResetCounters.Click += BtnResetCounters_Click;
+
+        // ── Streaming Keep-Alive group (Settings tab) ─────────────────────────
+
+        _grpSseKeepAlive.AutoSize = true;
+        _grpSseKeepAlive.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpSseKeepAlive.Controls.Add(_tlpSseKeepAlive);
+        _grpSseKeepAlive.Dock = DockStyle.Fill;
+        _grpSseKeepAlive.Margin = new Padding(4, 8, 4, 8);
+        _grpSseKeepAlive.Name = "_grpSseKeepAlive";
+        _grpSseKeepAlive.Padding = new Padding(8);
+        _grpSseKeepAlive.Text = "Streaming Keep-Alive";
+
+        _tlpSseKeepAlive.AutoSize = true;
+        _tlpSseKeepAlive.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpSseKeepAlive.ColumnCount = 2;
+        _tlpSseKeepAlive.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpSseKeepAlive.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpSseKeepAlive.Dock = DockStyle.Fill;
+        _tlpSseKeepAlive.Name = "_tlpSseKeepAlive";
+        _tlpSseKeepAlive.RowCount = 2;
+        _tlpSseKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpSseKeepAlive.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpSseKeepAlive.SetColumnSpan(_chkSseKeepAlive, 2);
+        _tlpSseKeepAlive.Controls.Add(_chkSseKeepAlive, 0, 0);
+        _tlpSseKeepAlive.Controls.Add(_lblKeepAliveInterval, 0, 1);
+        _tlpSseKeepAlive.Controls.Add(_txtKeepAliveInterval, 1, 1);
 
         _chkSseKeepAlive.AutoSize = true;
         _chkSseKeepAlive.Margin = new Padding(4, 4, 4, 4);
         _chkSseKeepAlive.Name = "_chkSseKeepAlive";
-        _chkSseKeepAlive.Text = "Enable SSE keep-alive for streaming (global) — prevents client timeouts while waiting";
+        _chkSseKeepAlive.Text = "Keep streaming chat sessions alive while the model works (prevents client timeouts)";
 
         _lblKeepAliveInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblKeepAliveInterval.AutoSize = true;
@@ -1993,69 +2127,6 @@ partial class MainForm
         _txtKeepAliveInterval.Dock = DockStyle.Fill;
         _txtKeepAliveInterval.Margin = new Padding(4, 6, 4, 8);
         _txtKeepAliveInterval.Name = "_txtKeepAliveInterval";
-
-        _lblKeepAliveStats.AutoSize = true;
-        _lblKeepAliveStats.Margin = new Padding(4, 8, 4, 4);
-        _lblKeepAliveStats.Name = "_lblKeepAliveStats";
-        _lblKeepAliveStats.Text = "Keep-alive / probe activity by model:";
-
-        _lstKeepAlive.Columns.Add(_colKaModel);
-        _lstKeepAlive.Columns.Add(_colKaEnabled);
-        _lstKeepAlive.Columns.Add(_colKaStatus);
-        _lstKeepAlive.Columns.Add(_colKaAttempts);
-        _lstKeepAlive.Columns.Add(_colKaCount);
-        _lstKeepAlive.Columns.Add(_colKaFailures);
-        _lstKeepAlive.Columns.Add(_colKaLastAttempt);
-        _lstKeepAlive.Columns.Add(_colKaLast);
-        _lstKeepAlive.Columns.Add(_colKaLastError);
-        _lstKeepAlive.Dock = DockStyle.Fill;
-        _lstKeepAlive.FullRowSelect = true;
-        _lstKeepAlive.GridLines = true;
-        _lstKeepAlive.Margin = new Padding(4, 4, 4, 4);
-        _lstKeepAlive.MinimumSize = new Size(0, 160);
-        _lstKeepAlive.Name = "_lstKeepAlive";
-        _lstKeepAlive.View = View.Details;
-
-        _colKaModel.Text = "Model";
-        _colKaModel.Width = 220;
-        _colKaEnabled.Text = "Enabled";
-        _colKaEnabled.Width = 80;
-        _colKaStatus.Text = "Last Status";
-        _colKaStatus.Width = 100;
-        _colKaAttempts.Text = "Attempts";
-        _colKaAttempts.Width = 80;
-        _colKaCount.Text = "Keep-Alives Sent";
-        _colKaCount.Width = 130;
-        _colKaFailures.Text = "Failures";
-        _colKaFailures.Width = 80;
-        _colKaLastAttempt.Text = "Last Attempt";
-        _colKaLastAttempt.Width = 160;
-        _colKaLast.Text = "Last Sent";
-        _colKaLast.Width = 160;
-        _colKaLastError.Text = "Last Error";
-        _colKaLastError.Width = 260;
-
-        _flpKeepAliveButtons.AutoSize = true;
-        _flpKeepAliveButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _flpKeepAliveButtons.Controls.Add(_btnSaveKeepAlive);
-        _flpKeepAliveButtons.Controls.Add(_btnResetKeepAlive);
-        _flpKeepAliveButtons.Dock = DockStyle.Fill;
-        _flpKeepAliveButtons.FlowDirection = FlowDirection.LeftToRight;
-        _flpKeepAliveButtons.Margin = new Padding(0, 4, 0, 4);
-        _flpKeepAliveButtons.Name = "_flpKeepAliveButtons";
-        _flpKeepAliveButtons.WrapContents = false;
-
-        _btnSaveKeepAlive.AutoSize = true;
-        _btnSaveKeepAlive.Margin = new Padding(4, 4, 4, 4);
-        _btnSaveKeepAlive.Name = "_btnSaveKeepAlive";
-        _btnSaveKeepAlive.Text = "Save";
-        _btnSaveKeepAlive.Click += BtnSaveKeepAlive_Click;
-
-        _btnResetKeepAlive.AutoSize = true;
-        _btnResetKeepAlive.Margin = new Padding(4, 4, 4, 4);
-        _btnResetKeepAlive.Name = "_btnResetKeepAlive";
-        _btnResetKeepAlive.Text = "Reset Counters";
-        _btnResetKeepAlive.Click += BtnResetKeepAlive_Click;
 
         // MainForm
         AutoScaleDimensions = new SizeF(7F, 15F);
@@ -2131,7 +2202,7 @@ partial class MainForm
         _tlpTestOuter.PerformLayout();
         _tlpTestTop.ResumeLayout(false);
         _tlpTestTop.PerformLayout();
-        _tabKeepAlive.ResumeLayout(false);
+        _tabHeartbeats.ResumeLayout(false);
         _tabSysLogs.ResumeLayout(false);
         _tabSysLogs.PerformLayout();
         _tlpSysLogs.ResumeLayout(false);
@@ -2144,10 +2215,16 @@ partial class MainForm
         _grpListener.PerformLayout();
         _tlpListener.ResumeLayout(false);
         _tlpListener.PerformLayout();
-        _tlpKeepAlive.ResumeLayout(false);
-        _tlpKeepAlive.PerformLayout();
-        _flpKeepAliveButtons.ResumeLayout(false);
-        _flpKeepAliveButtons.PerformLayout();
+        _tlpHeartbeats.ResumeLayout(false);
+        _tlpHeartbeats.PerformLayout();
+        _grpPings.ResumeLayout(false);
+        _grpKeepAlives.ResumeLayout(false);
+        _flpHeartbeatButtons.ResumeLayout(false);
+        _flpHeartbeatButtons.PerformLayout();
+        _grpSseKeepAlive.ResumeLayout(false);
+        _grpSseKeepAlive.PerformLayout();
+        _tlpSseKeepAlive.ResumeLayout(false);
+        _tlpSseKeepAlive.PerformLayout();
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).EndInit();
         ((System.ComponentModel.ISupportInitialize)_nudTestRepeatPenalty).EndInit();
         ((System.ComponentModel.ISupportInitialize)_dgvMappings).EndInit();
@@ -2390,23 +2467,33 @@ partial class MainForm
     private ColumnHeader _colSysLogSrc;
     private Label _lblSysLogStatus;
 
-    // Keep-Alive tab
-    private TabPage _tabKeepAlive;
+    // Heartbeats tab
+    private TabPage _tabHeartbeats;
     private TabPage _tabHelp;
     private TabControl _helpTabs;
-    private TableLayoutPanel _tlpKeepAlive;
-    private Label _lblKeepAliveStats;
-    private ListView _lstKeepAlive;
+    private TableLayoutPanel _tlpHeartbeats;
+    private Label _lblHeartbeatInterval;
+    private TextBox _txtHeartbeatInterval;
+    private GroupBox _grpPings;
+    private ListView _lstPings;
+    private ColumnHeader _colPingModel;
+    private ColumnHeader _colPingEnabled;
+    private ColumnHeader _colPingStatus;
+    private ColumnHeader _colPingAttempts;
+    private ColumnHeader _colPingFailures;
+    private ColumnHeader _colPingLast;
+    private ColumnHeader _colPingError;
+    private GroupBox _grpKeepAlives;
+    private ListView _lstKeepAlives;
     private ColumnHeader _colKaModel;
     private ColumnHeader _colKaEnabled;
-    private ColumnHeader _colKaStatus;
-    private ColumnHeader _colKaAttempts;
-    private ColumnHeader _colKaCount;
-    private ColumnHeader _colKaFailures;
-    private ColumnHeader _colKaLastAttempt;
-    private ColumnHeader _colKaLast;
-    private ColumnHeader _colKaLastError;
-    private FlowLayoutPanel _flpKeepAliveButtons;
-    private Button _btnResetKeepAlive;
-    private Button _btnSaveKeepAlive;
+    private ColumnHeader _colKaSent;
+    private ColumnHeader _colKaLastSent;
+    private FlowLayoutPanel _flpHeartbeatButtons;
+    private Button _btnResetCounters;
+    private Button _btnSaveHeartbeats;
+
+    // Streaming Keep-Alive group (Settings tab)
+    private GroupBox _grpSseKeepAlive;
+    private TableLayoutPanel _tlpSseKeepAlive;
 }

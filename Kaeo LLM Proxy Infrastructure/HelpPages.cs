@@ -45,6 +45,8 @@ internal static class HelpPages
 
         Model mappings map an exposed proxy model name to a specific upstream server and model, with per-model sampling, timeout, credential, and thinking options. Credentials stores named API keys encrypted at rest that mappings and modules reference by name.
 
+        Streaming Keep-Alive controls the frames the proxy emits to hold a streaming chat session open while a slow or long-thinking model is still working, which is what stops clients timing out mid-conversation. Leave it enabled; per-model overrides are in each mapping's configuration. See the Heartbeats help page for how this differs from the liveness ping.
+
         "Run as administrator on launch" re-launches the app elevated at the next start (release builds only) so non-localhost listener bindings are permitted; debug builds never elevate and listen on localhost instead.
         """;
 
@@ -72,16 +74,18 @@ internal static class HelpPages
         The Test console sends chat requests through the proxy using your configured model mappings, with temperature and repeat-penalty controls and streamed output. It is the quickest way to verify a mapping, upstream connectivity, and thinking behavior without an external client.
         """;
 
-    internal const string SseKeepAlive = """
-        SSE Keep-Alive shows per-model streaming keep-alive activity, alongside the upstream liveness probe results reported for the same models.
+    internal const string Heartbeats = """
+        The Heartbeats tab reports two independent features that are easy to confuse, so they are shown in separate grids.
 
-        While the proxy waits on a long-thinking upstream it emits harmless keep-alive frames so clients do not time out. On the OpenAI /v1 endpoints these are SSE comment lines (": kaeo-keep-alive") that conformant clients ignore; on the Ollama endpoints they are empty chunks with done: false, because NDJSON has no comment syntax. Use this view to confirm a request is alive before the first tokens arrive, and to tune the interval in Settings.
+        Heartbeat Pings answer "is this model up?". The proxy periodically calls each enabled model's /v1/models endpoint and records the result. A ping makes no chat request and sends nothing to any client, so it is a pure availability check. It is switched on per model in the Model Mapping dialog ("Enable heartbeats for this model") and has no global on/off; only the interval is configured here, on this tab.
 
-        The two counter groups answer different questions and are deliberately kept separate. "Keep-Alives Sent" and "Last Sent" count frames actually written to a waiting client. "Attempts", "Failures", "Last Status" and "Last Error" describe the periodic upstream liveness probe, which polls /v1/models on its own timer.
+        SSE Keep-Alives answer "is a streaming session being held open?". While the proxy waits on a slow or long-thinking upstream it emits harmless keep-alive frames so the client's chat session does not time out. On the OpenAI /v1 endpoints these are SSE comment lines (": kaeo-keep-alive") that conformant clients ignore; on the Ollama endpoints they are empty chunks with done: false, because NDJSON has no comment syntax. Keep-alive is configured on the Settings tab under Streaming Keep-Alive and can be switched off per model. Leave it enabled: without it, long thinking phases and slow models tend to time out the client's chat session.
 
-        Keep-Alives Sent rising while Last Status is Failed means the proxy is holding the client open even though the upstream is unreachable, so the request will eventually fail rather than hang silently. Keep-Alives Sent staying at zero during a slow request is the signature of keep-alive being disabled, either globally in Settings or on that model's mapping.
+        The two never affect each other. Turning keep-alive off does not stop health monitoring, and turning a model's ping off does not affect any in-flight streaming session.
 
-        Keep-alive is a connection concern only. It does not change what the model is asked or how its reasoning is returned. The unrelated "Enable thinking compatibility" option on a model mapping strips assistant response-prefill turns from the request body and has no effect on timeouts.
+        Reading the grids together is what makes diagnosis useful. A ping Last Status of Failed with Keep-Alives Sent still rising means the proxy is holding the client open against an unreachable upstream, so that request will eventually fail rather than hang silently. Keep-Alives Sent staying at zero during a slow request means keep-alive is disabled, either globally on the Settings tab or on that model's mapping.
+
+        Keep-alive is a connection concern only. It does not change what the model is asked or how its reasoning is returned; the separate "Enable thinking compatibility" option on a model mapping strips assistant response-prefill turns from the request body and has no effect on timeouts.
         """;
 
     internal const string ModulesPlaceholder = """

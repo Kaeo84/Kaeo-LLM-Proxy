@@ -120,6 +120,12 @@ internal partial class MainForm : Form
         _chkCollectAllTraffic.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
+
+        // The global SSE keep-alive switch and interval live on the Settings tab with the other
+        // immediately-saved options, so they follow the same convention: the checkbox saves on
+        // toggle and the interval on validation (a half-typed value is never persisted).
+        _chkSseKeepAlive.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _txtKeepAliveInterval.Validated += (_, _) => SaveKeepAliveSettings();
         _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
         _cmbMinLevel.SelectedIndexChanged += (_, _) => SaveLoggingSettings();
         _txtAppLogSize.Validated += (_, _) => SaveLoggingSettings();
@@ -162,7 +168,7 @@ internal partial class MainForm : Form
         RefreshLogs();
         RefreshMcpLogs();
         RefreshSystemLogs();
-        RefreshKeepAlive();
+        RefreshHeartbeats();
         RefreshCredentials();
         RefreshModules();
         LoadMcpSettingsToForm();
@@ -1226,24 +1232,24 @@ internal partial class MainForm : Form
     private void LogSubTabs_SelectionChanged(object? sender, EventArgs e) =>
         RefreshActiveLogTab();
 
-    // ── SSE Keep-Alive tab ──────────────────────────────────────────────────
+    // ── Heartbeats tab ──────────────────────────────────────────────────────
 
     private void OnConnectionHealthChanged(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshKeepAlive);
+            BeginInvoke(RefreshHeartbeats);
             return;
         }
-        RefreshKeepAlive();
+        RefreshHeartbeats();
     }
 
-    private void RefreshKeepAlive()
+    private void RefreshHeartbeats()
     {
         Dictionary<string, ConnectionHealthSnapshot> snapshots = _stats.GetConnectionHealthStats()
             .ToDictionary(s => s.Model, StringComparer.OrdinalIgnoreCase);
-        List<KeepAliveDisplayRow> rows = [];
+        List<ConnectionHealthDisplayRow> rows = [];
 
         foreach (ModelMapping mapping in _settings.ModelMappings)
         {
@@ -1256,138 +1262,209 @@ internal partial class MainForm : Form
 
             snapshots.TryGetValue(mapping.ProxyName, out ConnectionHealthSnapshot? proxySnapshot);
             snapshots.TryGetValue(mapping.ModelName, out ConnectionHealthSnapshot? modelSnapshot);
-            ConnectionHealthSnapshot? snapshot = (proxySnapshot?.Count ?? 0) >= (modelSnapshot?.Count ?? 0)
-                ? proxySnapshot
-                : modelSnapshot;
+            ConnectionHealthSnapshot? snapshot = PickSnapshot(proxySnapshot, modelSnapshot);
 
             if (!string.IsNullOrWhiteSpace(mapping.ProxyName))
                 snapshots.Remove(mapping.ProxyName);
             if (!string.IsNullOrWhiteSpace(mapping.ModelName))
                 snapshots.Remove(mapping.ModelName);
 
-            rows.Add(new KeepAliveDisplayRow(
+            rows.Add(new ConnectionHealthDisplayRow(
                 modelName,
+                mapping.IsEnabled && mapping.EnableHeartbeats,
                 mapping.IsEnabled && mapping.EnableSseKeepAlive && _settings.EnableSseKeepAlive,
                 snapshot?.Attempts ?? 0,
-                snapshot?.Count ?? 0,
                 snapshot?.Failures ?? 0,
                 snapshot?.LastAttemptUtc ?? default,
-                snapshot?.LastSentUtc ?? default,
                 snapshot?.LastStatus ?? "Not checked",
-                snapshot?.LastError ?? string.Empty));
+                snapshot?.LastError ?? string.Empty,
+                snapshot?.Count ?? 0,
+                snapshot?.LastSentUtc ?? default));
         }
 
-        rows.AddRange(snapshots.Values.Select(s => new KeepAliveDisplayRow(
+        // Models that reported counters but are no longer mapped: neither feature's configuration is
+        // known, so treat both as active rather than hiding the activity.
+        rows.AddRange(snapshots.Values.Select(s => new ConnectionHealthDisplayRow(
             s.Model,
             true,
+            true,
             s.Attempts,
-            s.Count,
             s.Failures,
             s.LastAttemptUtc,
-            s.LastSentUtc,
             s.LastStatus,
-            s.LastError)));
+            s.LastError,
+            s.Count,
+            s.LastSentUtc)));
 
-        _lstKeepAlive.BeginUpdate();
-        _lstKeepAlive.Items.Clear();
+        PopulatePingGrid(rows);
+        PopulateKeepAliveGrid(rows);
+    }
 
-        foreach (KeepAliveDisplayRow row in rows
-            .OrderByDescending(r => r.LastSentUtc)
+    /// <summary>Fills the liveness-ping grid from the shared connection-health rows.</summary>
+    private void PopulatePingGrid(IReadOnlyList<ConnectionHealthDisplayRow> rows)
+    {
+        _lstPings.BeginUpdate();
+        _lstPings.Items.Clear();
+
+        foreach (ConnectionHealthDisplayRow row in rows
+            .OrderByDescending(r => r.LastPingUtc)
             .ThenBy(r => r.Model, StringComparer.OrdinalIgnoreCase))
         {
             ListViewItem item = new(row.Model);
-            item.SubItems.Add(row.Enabled ? "Yes" : "No");
+            item.SubItems.Add(row.PingEnabled ? "Yes" : "No");
             item.SubItems.Add(row.LastStatus);
-            item.SubItems.Add(row.Attempts.ToString("N0"));
-            item.SubItems.Add(row.Count.ToString("N0"));
-            item.SubItems.Add(row.Failures.ToString("N0"));
-            item.SubItems.Add(row.LastAttemptUtc == default
-                ? "—"
-                : row.LastAttemptUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
-            item.SubItems.Add(row.LastSentUtc == default
-                ? "—"
-                : row.LastSentUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
+            item.SubItems.Add(row.Pings.ToString("N0"));
+            item.SubItems.Add(row.PingFailures.ToString("N0"));
+            item.SubItems.Add(FormatTimestamp(row.LastPingUtc));
             item.SubItems.Add(string.IsNullOrWhiteSpace(row.LastError) ? "—" : row.LastError);
-            if (!row.Enabled)
+
+            if (!row.PingEnabled)
                 item.ForeColor = SystemColors.GrayText;
-            else if (row.Failures > 0 && row.Count == 0)
+            else if (row.PingFailures > 0 && row.Pings == 0)
                 item.ForeColor = Color.Firebrick;
             else
                 item.ForeColor = SystemColors.WindowText;
-            _lstKeepAlive.Items.Add(item);
+
+            _lstPings.Items.Add(item);
         }
 
-        _lstKeepAlive.EndUpdate();
+        _lstPings.EndUpdate();
     }
 
-    private void BtnSaveKeepAlive_Click(object? sender, EventArgs e) =>
-        RunOnceWhileDisabled(_btnSaveKeepAlive, () =>
+    /// <summary>Fills the SSE keep-alive grid from the shared connection-health rows.</summary>
+    private void PopulateKeepAliveGrid(IReadOnlyList<ConnectionHealthDisplayRow> rows)
+    {
+        _lstKeepAlives.BeginUpdate();
+        _lstKeepAlives.Items.Clear();
+
+        foreach (ConnectionHealthDisplayRow row in rows
+            .OrderByDescending(r => r.LastKeepAliveUtc)
+            .ThenBy(r => r.Model, StringComparer.OrdinalIgnoreCase))
         {
-            if (!int.TryParse(_txtKeepAliveInterval.Text, out int keepAliveIntervalSeconds)
-                || keepAliveIntervalSeconds < 5
-                || keepAliveIntervalSeconds > 300)
+            ListViewItem item = new(row.Model);
+            item.SubItems.Add(row.KeepAliveEnabled ? "Yes" : "No");
+            item.SubItems.Add(row.KeepAlivesSent.ToString("N0"));
+            item.SubItems.Add(FormatTimestamp(row.LastKeepAliveUtc));
+
+            item.ForeColor = row.KeepAliveEnabled ? SystemColors.WindowText : SystemColors.GrayText;
+
+            _lstKeepAlives.Items.Add(item);
+        }
+
+        _lstKeepAlives.EndUpdate();
+    }
+
+    private static string FormatTimestamp(DateTime utc) =>
+        utc == default ? "—" : utc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+    /// <summary>
+    /// Combines the snapshots recorded under a mapping's proxy name and upstream model name.
+    /// The ping registers under whichever name <c>GetHeartbeatModelName</c> resolves while keep-alive
+    /// frames are counted under the name the client requested, so the two can land on different keys;
+    /// choosing one snapshot instead of merging would silently hide the other feature's activity.
+    /// Returns null when neither name has reported anything yet.
+    /// </summary>
+    private static ConnectionHealthSnapshot? PickSnapshot(
+        ConnectionHealthSnapshot? proxySnapshot,
+        ConnectionHealthSnapshot? modelSnapshot)
+    {
+        if (proxySnapshot is null)
+            return modelSnapshot;
+        if (modelSnapshot is null)
+            return proxySnapshot;
+
+        // Same underlying entry reached through both names: merging would double every counter.
+        if (string.Equals(proxySnapshot.Model, modelSnapshot.Model, StringComparison.OrdinalIgnoreCase))
+            return proxySnapshot;
+
+        return new ConnectionHealthSnapshot(
+            proxySnapshot.Model,
+            proxySnapshot.Attempts + modelSnapshot.Attempts,
+            proxySnapshot.Count + modelSnapshot.Count,
+            proxySnapshot.Failures + modelSnapshot.Failures,
+            Later(proxySnapshot.LastAttemptUtc, modelSnapshot.LastAttemptUtc),
+            Later(proxySnapshot.LastSentUtc, modelSnapshot.LastSentUtc),
+            proxySnapshot.LastAttemptUtc >= modelSnapshot.LastAttemptUtc
+                ? proxySnapshot.LastStatus
+                : modelSnapshot.LastStatus,
+            proxySnapshot.LastAttemptUtc >= modelSnapshot.LastAttemptUtc
+                ? proxySnapshot.LastError
+                : modelSnapshot.LastError);
+    }
+
+    /// <summary>Returns the later of two UTC timestamps, treating the default value as oldest.</summary>
+    private static DateTime Later(DateTime a, DateTime b) => a > b ? a : b;
+
+    /// <summary>
+    /// Saves the heartbeat ping interval. The ping is enabled per model in the Model Mapping dialog,
+    /// so only the cadence is configured here.
+    /// </summary>
+    private void BtnSaveHeartbeats_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveHeartbeats, () =>
+        {
+            if (!int.TryParse(_txtHeartbeatInterval.Text, out int heartbeatIntervalSeconds)
+                || heartbeatIntervalSeconds < AppSettings.MinHeartbeatIntervalSeconds
+                || heartbeatIntervalSeconds > AppSettings.MaxHeartbeatIntervalSeconds)
             {
-                MessageBox.Show("Keep-alive interval must be a number between 5 and 300 seconds.", "Validation",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    $"Heartbeat interval must be a number between {AppSettings.MinHeartbeatIntervalSeconds} "
+                    + $"and {AppSettings.MaxHeartbeatIntervalSeconds} seconds.",
+                    "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            _settings.EnableSseKeepAlive = _chkSseKeepAlive.Checked;
-            _settings.SseKeepAliveIntervalSeconds = keepAliveIntervalSeconds;
+            _settings.HeartbeatIntervalSeconds = heartbeatIntervalSeconds;
             _settings.Save();
             _handler.UpdateSettings(_settings);
-            RefreshKeepAlive();
+            RefreshHeartbeats();
 
-            MessageBox.Show("Keep-alive settings saved.", "Saved",
+            MessageBox.Show("Heartbeat settings saved.", "Saved",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
 
-    private void BtnResetKeepAlive_Click(object? sender, EventArgs e) =>
-        RunOnceWhileDisabled(_btnResetKeepAlive, () =>
+    /// <summary>
+    /// Persists the SSE keep-alive interval from the Settings tab immediately when it changes.
+    /// Invalid or out-of-range input is ignored and left in the box so a partially typed value is
+    /// never persisted, matching the other Settings-tab text boxes.
+    /// </summary>
+    private void SaveKeepAliveSettings()
+    {
+        if (_loadingSettings)
+            return;
+
+        if (!int.TryParse(_txtKeepAliveInterval.Text, out int keepAliveIntervalSeconds)
+            || keepAliveIntervalSeconds < AppSettings.MinSseKeepAliveIntervalSeconds
+            || keepAliveIntervalSeconds > AppSettings.MaxSseKeepAliveIntervalSeconds)
+            return;
+
+        _settings.SseKeepAliveIntervalSeconds = keepAliveIntervalSeconds;
+        PersistSettingsCore();
+        RefreshHeartbeats();
+    }
+
+    private void BtnResetCounters_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnResetCounters, () =>
         {
             _stats.ResetConnectionHealth();
-            RefreshKeepAlive();
+            RefreshHeartbeats();
         });
 
-    private readonly struct KeepAliveDisplayRow
-    {
-        public KeepAliveDisplayRow(
-            string model,
-            bool enabled,
-            long attempts,
-            long count,
-            long failures,
-            DateTime lastAttemptUtc,
-            DateTime lastSentUtc,
-            string lastStatus,
-            string lastError)
-        {
-            Model = model;
-            Enabled = enabled;
-            Attempts = attempts;
-            Count = count;
-            Failures = failures;
-            LastAttemptUtc = lastAttemptUtc;
-            LastSentUtc = lastSentUtc;
-            LastStatus = lastStatus;
-            LastError = lastError;
-        }
-
-        public readonly string Model;
-        /// <summary>
-        /// Effective keep-alive-enabled state: the model is enabled in settings, keep-alive is
-        /// enabled for that model, and the global SSE keep-alive switch is on. Any of these being
-        /// false means this model sends no keep-alive frames to clients.
-        /// </summary>
-        public readonly bool Enabled;
-        public readonly long Attempts;
-        public readonly long Count;
-        public readonly long Failures;
-        public readonly DateTime LastAttemptUtc;
-        public readonly DateTime LastSentUtc;
-        public readonly string LastStatus;
-        public readonly string LastError;
-    }
+    /// <summary>
+    /// One model's connection-health state, covering both independent features. Ping fields describe
+    /// the periodic upstream liveness check; keep-alive fields describe frames sent to hold a
+    /// streaming chat session open.
+    /// </summary>
+    private readonly record struct ConnectionHealthDisplayRow(
+        string Model,
+        bool PingEnabled,
+        bool KeepAliveEnabled,
+        long Pings,
+        long PingFailures,
+        DateTime LastPingUtc,
+        string LastStatus,
+        string LastError,
+        long KeepAlivesSent,
+        DateTime LastKeepAliveUtc);
 
     private void CmbRefreshInterval_SelectedIndexChanged(object? sender, EventArgs e)
     {
@@ -1479,6 +1556,7 @@ internal partial class MainForm : Form
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
         _txtKeepAliveInterval.Text = _settings.SseKeepAliveIntervalSeconds.ToString();
+        _txtHeartbeatInterval.Text = _settings.HeartbeatIntervalSeconds.ToString();
 
         _dgvMappings.Rows.Clear();
         foreach (ModelMapping mapping in _settings.ModelMappings)
@@ -1577,6 +1655,7 @@ internal partial class MainForm : Form
         _settings.CollectAllTraffic = _chkCollectAllTraffic.Checked;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
+        _settings.EnableSseKeepAlive = _chkSseKeepAlive.Checked;
 
         _stats.UpdateMaxEntries(maxLogs);
         _mcpStats.UpdateMaxEntries(maxLogs);
@@ -2551,7 +2630,7 @@ internal partial class MainForm : Form
         _helpTabs.TabPages.Add(mcpPage);
 
         _helpTabs.TabPages.Add(HelpPages.TextPage("Test", HelpPages.Test));
-        _helpTabs.TabPages.Add(HelpPages.TextPage("SSE Keep-Alive", HelpPages.SseKeepAlive));
+        _helpTabs.TabPages.Add(HelpPages.TextPage("Heartbeats", HelpPages.Heartbeats));
 
         _helpModulesPlaceholder = HelpPages.TextPage("Modules", HelpPages.ModulesPlaceholder);
         _helpModulesTabs = new TabControl { Dock = DockStyle.Fill };
@@ -3045,7 +3124,7 @@ internal partial class MainForm : Form
             // Per-read inactivity timeout: if no bytes arrive for this long, fail.
             TimeSpan inactivityTimeout = TimeSpan.FromSeconds(Math.Max(30, timeout / 4));
             bool enableKeepAlive = _settings.EnableSseKeepAlive && (mapping?.EnableSseKeepAlive ?? true);
-            TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(_settings.SseKeepAliveIntervalSeconds, 5, 300));
+            TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(_settings.SseKeepAliveIntervalSeconds);
 
             while (true)
             {
