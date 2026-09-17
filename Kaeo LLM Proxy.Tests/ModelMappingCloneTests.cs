@@ -51,6 +51,19 @@ public class ModelMappingCloneTests
     }
 
     [Fact]
+    public void ClonePreservesCopilotCompatibility()
+    {
+        // The flag drives whether streaming responses are made well-formed for Microsoft.Extensions.AI
+        // clients; a clone that dropped it would silently re-enable the hang when the settings grid
+        // commits, so pin it explicitly (default is true, so flip it to false to catch a silent reset).
+        ModelMapping original = new() { ProxyName = "main", EnableCopilotCompatibility = false };
+
+        ModelMapping clone = original.Clone();
+
+        Assert.False(clone.EnableCopilotCompatibility);
+    }
+
+    [Fact]
     public void CloneOfUnidentifiedMappingGetsFreshId()
     {
         ModelMapping original = new() { ProxyName = "main" };

@@ -96,11 +96,25 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblCapStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 4) };
     private readonly DataGridView _dgvCapabilities = new();
     private readonly CheckBox _chkEnableSseKeepAlive = new();
+    private readonly CheckBox _chkEnableHeartbeats = new();
     private readonly CheckBox _chkRedactRequestBodies = new();
     private readonly CheckBox _chkRedactResponseBodies = new();
     private readonly CheckBox _chkRedactSensitiveJsonFields = new();
     private readonly GroupBox _grpRedaction = new();
     private readonly TableLayoutPanel _tlpRedaction = new();
+    private readonly GroupBox _grpCopilotCompat = new();
+    private readonly TableLayoutPanel _tlpCopilotCompat = new();
+    private readonly CheckBox _chkEnableCopilotCompatibility = new();
+    // The status text explains in prose what Copilot compatibility does, so the label needs to wrap
+    // inside the dialog rather than grow sideways: AutoSize combined with a MaximumSize width is the
+    // WinForms pattern for a wrapping, self-sizing label (same as _lblCompactionStatus).
+    private readonly Label _lblCopilotCompatStatus = new()
+    {
+        AutoSize = true,
+        MaximumSize = new Size(460, 0),
+        ForeColor = SystemColors.GrayText,
+        Margin = new Padding(0, 2, 0, 2)
+    };
     private readonly FlowLayoutPanel _flpButtons = new();
     private readonly Button _btnOk = new();
     private readonly Button _btnCancel = new();
@@ -134,6 +148,8 @@ internal sealed class ModelMappingDialog : Form
         _nudProactiveOverflowPercent.ValueChanged += (_, _) => UpdateCompactionStatus();
         _nudProactiveOverflowTokens.ValueChanged += (_, _) => UpdateCompactionStatus();
         _txtContextWindow.TextChanged += (_, _) => UpdateCompactionStatus();
+        // The Copilot compatibility status label describes what the toggle does, so refresh it live.
+        _chkEnableCopilotCompatibility.CheckedChanged += (_, _) => UpdateCopilotCompatStatus();
         _toolTip.SetToolTip(
             _cmbUpstreamUrl,
             "Base URL of the OpenAI-compatible upstream, e.g. http://localhost:11434 or\n"
@@ -172,6 +188,25 @@ internal sealed class ModelMappingDialog : Form
                 : "Manual /compact: forwarded to the model named in the request — no compaction model is selected.";
 
         _lblCompactionStatus.Text = $"{autoState}{Environment.NewLine}{manualState}";
+    }
+
+    /// <summary>
+    /// Updates the inline help under the Copilot Compatibility controls so the user sees what the
+    /// toggle does. When enabled the proxy guarantees a well-formed OpenAI SSE stream (terminal
+    /// <c>data: [DONE]</c>, a synthesized usage chunk when the client asked for one, and an error
+    /// frame rather than a silent close); when disabled the upstream's stream is relayed untouched.
+    /// </summary>
+    private void UpdateCopilotCompatStatus()
+    {
+        _lblCopilotCompatStatus.Text = EnableCopilotCompatibility
+            ? "Copilot compatibility: ON. The proxy strips stream_options from the upstream request, "
+              + "guarantees the SSE stream ends with data: [DONE], synthesizes the terminal usage "
+              + "chunk the client asked for, and reports post-header failures as an error frame "
+              + "instead of a silent close. Use for Microsoft.Extensions.AI clients such as Visual "
+              + "Studio Copilot, which otherwise hang awaiting a stream end that never arrives."
+            : "Copilot compatibility: OFF. The upstream's stream is relayed byte-for-byte. Turn this "
+              + "on if a Microsoft.Extensions.AI client (e.g. Visual Studio Copilot) hangs or never "
+              + "finishes a streamed response.";
     }
 
     /// <summary>
@@ -400,6 +435,24 @@ internal sealed class ModelMappingDialog : Form
     {
         get => _chkEnableSseKeepAlive.Checked;
         set => _chkEnableSseKeepAlive.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool EnableCopilotCompatibility
+    {
+        get => _chkEnableCopilotCompatibility.Checked;
+        set
+        {
+            _chkEnableCopilotCompatibility.Checked = value;
+            UpdateCopilotCompatStatus();
+        }
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool EnableHeartbeats
+    {
+        get => _chkEnableHeartbeats.Checked;
+        set => _chkEnableHeartbeats.Checked = value;
     }
 
     /// <summary>
@@ -760,7 +813,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 19;
+        _tlpMain.RowCount = 21;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -830,18 +883,27 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
         _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 14);
 
+        // Copilot Compatibility sits directly under the SSE keep-alive option: both govern how the
+        // proxy behaves toward a streaming client. The group box holds the toggle plus a wrapping
+        // status label, mirroring the Compaction group's layout.
+        _tlpMain.SetColumnSpan(_grpCopilotCompat, 3);
+        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 15);
+
+        _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
+
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 15);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 17);
 
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 16);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 18);
 
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 17);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 19);
 
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
-        _tlpMain.Controls.Add(_grpRedaction, 0, 18);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 20);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1099,6 +1161,46 @@ internal sealed class ModelMappingDialog : Form
         _tlpRedaction.Controls.Add(_chkRedactSensitiveJsonFields, 0, 2);
 
         _grpRedaction.Controls.Add(_tlpRedaction);
+
+        // Copilot Compatibility group: a single toggle plus a wrapping status label that explains
+        // what it does, mirroring the Compaction group's structure and theming.
+        _grpCopilotCompat.AutoSize = true;
+        _grpCopilotCompat.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpCopilotCompat.Dock = DockStyle.Fill;
+        _grpCopilotCompat.Margin = new Padding(0, 6, 0, 6);
+        _grpCopilotCompat.Padding = new Padding(8);
+        _grpCopilotCompat.Text = "Copilot Compatibility";
+
+        _tlpCopilotCompat.AutoSize = true;
+        _tlpCopilotCompat.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpCopilotCompat.Dock = DockStyle.Fill;
+        _tlpCopilotCompat.ColumnCount = 1;
+        _tlpCopilotCompat.RowCount = 2;
+        _tlpCopilotCompat.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _tlpCopilotCompat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpCopilotCompat.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _chkEnableCopilotCompatibility.AutoSize = true;
+        _chkEnableCopilotCompatibility.Checked = true;
+        _chkEnableCopilotCompatibility.Margin = new Padding(0, 2, 0, 2);
+        _chkEnableCopilotCompatibility.Text = "Enable Copilot-compatible streaming (well-formed SSE for Microsoft.Extensions.AI clients)";
+        _toolTip.SetToolTip(
+            _chkEnableCopilotCompatibility,
+            "Microsoft.Extensions.AI clients — including Visual Studio Copilot — await a terminal\n"
+            + "stream event and block indefinitely when it never arrives. Many OpenAI-compatible\n"
+            + "local servers do not reliably emit one, and reject or ignore the stream_options block.\n\n"
+            + "Checked (default) - the proxy strips stream_options from the upstream request,\n"
+            + "guarantees the stream ends with 'data: [DONE]', synthesizes the terminal usage chunk\n"
+            + "when the client asked for one via include_usage, and reports a post-header failure as\n"
+            + "an error frame instead of closing the connection silently.\n"
+            + "Unchecked - the upstream's stream is relayed byte-for-byte, with no added frames.\n\n"
+            + "Independent of 'Enable SSE keep-alive' above, which only holds the connection open\n"
+            + "while the upstream is still processing the prompt.");
+
+        _tlpCopilotCompat.Controls.Add(_chkEnableCopilotCompatibility, 0, 0);
+        _tlpCopilotCompat.Controls.Add(_lblCopilotCompatStatus, 0, 1);
+
+        _grpCopilotCompat.Controls.Add(_tlpCopilotCompat);
 
         _lblTemperature.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblTemperature.AutoSize = true;
@@ -1399,9 +1501,23 @@ internal sealed class ModelMappingDialog : Form
             _chkEnableSseKeepAlive,
             "Keeps the client connection alive while the upstream is still working, so streaming\n"
             + "clients do not time out during long prompt-processing or thinking phases.\n\n"
-            + "This is purely a connection keep-alive. It does not change what the model is asked\n"
-            + "or how its reasoning is returned — see 'Enable thinking compatibility' for that.\n"
-            + "The global switch and interval are configured on the Keep-Alive tab.");
+            + "Only used for streaming chat sessions passing through the proxy; leave it on unless\n"
+            + "a client chokes on the extra frames. It does not change what the model is asked or\n"
+            + "how its reasoning is returned — see 'Enable thinking compatibility' for that.\n"
+            + "The global switch and interval are configured on the Settings tab.");
+
+        _chkEnableHeartbeats.AutoSize = true;
+        _chkEnableHeartbeats.Margin = new Padding(0, 2, 0, 2);
+        _chkEnableHeartbeats.Text = "Enable heartbeats for this model (ping upstream to check it is up)";
+        _chkEnableHeartbeats.Checked = true;
+        _toolTip.SetToolTip(
+            _chkEnableHeartbeats,
+            "Periodically pings this model's upstream so the Heartbeats tab can report whether it is\n"
+            + "up and reachable. A ping is a cheap /v1/models call only — it makes no chat request\n"
+            + "and sends nothing to any client.\n\n"
+            + "This is not the SSE keep-alive above, which holds an in-flight streaming session open.\n"
+            + "The two are independent: turning one off never affects the other. The ping interval is\n"
+            + "configured on the Heartbeats tab.");
 
         _chkRedactRequestBodies.AutoSize = true;
         _chkRedactRequestBodies.Margin = new Padding(0, 8, 0, 2);
@@ -1454,6 +1570,7 @@ internal sealed class ModelMappingDialog : Form
         Text = "Configure Model";
 
         UpdateCompactionStatus();
+        UpdateCopilotCompatStatus();
         ResumeLayout(false);
     }
 
@@ -1990,6 +2107,8 @@ internal sealed class ModelMappingDialog : Form
         dlg.Capabilities = mapping.Capabilities;
 
         dlg.EnableSseKeepAlive = mapping.EnableSseKeepAlive;
+        dlg.EnableCopilotCompatibility = mapping.EnableCopilotCompatibility;
+        dlg.EnableHeartbeats = mapping.EnableHeartbeats;
         dlg.UpstreamTimeoutSeconds = mapping.UpstreamTimeoutSeconds;
         dlg.ContextWindowTokens = mapping.ContextWindowTokens;
         dlg.ProactiveOverflowPercent = mapping.ProactiveOverflowPercent;
@@ -2035,6 +2154,8 @@ internal sealed class ModelMappingDialog : Form
         mapping.Capabilities = dlg.Capabilities;
 
         mapping.EnableSseKeepAlive = dlg.EnableSseKeepAlive;
+        mapping.EnableCopilotCompatibility = dlg.EnableCopilotCompatibility;
+        mapping.EnableHeartbeats = dlg.EnableHeartbeats;
         mapping.UpstreamTimeoutSeconds = dlg.UpstreamTimeoutSeconds;
         mapping.ContextWindowTokens = dlg.ContextWindowTokens;
         mapping.ProactiveOverflowPercent = dlg.ProactiveOverflowPercent;

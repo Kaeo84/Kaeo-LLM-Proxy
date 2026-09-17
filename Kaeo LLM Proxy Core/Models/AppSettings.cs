@@ -256,7 +256,9 @@ internal sealed class RuntimeSettings
 
     public bool EnableSseKeepAlive { get; set; } = true;
 
-    public int SseKeepAliveIntervalSeconds { get; set; } = 15;
+    public int SseKeepAliveIntervalSeconds { get; set; } = 60;
+
+    public int HeartbeatIntervalSeconds { get; set; } = 300;
 
     public bool EnablePerformanceSampling { get; set; } = true;
 
@@ -340,9 +342,22 @@ internal sealed class ModelMapping
     /// This is the client-facing keep-alive that prevents streaming clients from timing out during
     /// long prompt-processing or thinking phases. It is unrelated to
     /// <see cref="EnableThinkingCompatibility"/>, which only strips assistant response-prefill turns
-    /// from the request body, and to the periodic upstream liveness probe.
+    /// from the request body, and to the periodic liveness ping in <see cref="EnableHeartbeats"/>.
     /// </remarks>
     public bool EnableSseKeepAlive { get; set; } = true;
+
+    /// <summary>
+    /// When true, the proxy periodically pings this model's upstream to record whether it is up and
+    /// reachable, at the global <see cref="AppSettings.HeartbeatIntervalSeconds"/> cadence.
+    /// Default: true.
+    /// </summary>
+    /// <remarks>
+    /// This is purely a health ping — it makes no chat request and emits nothing to any client. It is
+    /// independent of <see cref="EnableSseKeepAlive"/>: turning keep-alive off must not stop the ping,
+    /// and turning the ping off must not affect in-flight streaming sessions. There is deliberately no
+    /// global enable switch; the ping is configured per model.
+    /// </remarks>
+    public bool EnableHeartbeats { get; set; } = true;
 
     /// <summary>Upstream API compatibility for this mapping. Defaults to OpenAI-compatible /v1.</summary>
     public UpstreamType UpstreamType { get; set; } = UpstreamType.OpenAI;
@@ -534,6 +549,22 @@ internal sealed class ModelMapping
     public bool RedirectManualCompaction { get; set; }
 
     /// <summary>
+    /// When true, the proxy makes OpenAI-compatible streaming responses strictly well-formed for
+    /// clients built on Microsoft.Extensions.AI (e.g. Visual Studio Copilot): it strips the
+    /// <c>stream_options</c> block from the upstream-bound request, guarantees the stream ends with
+    /// a <c>data: [DONE]</c> terminator, synthesizes the terminal <c>usage</c> chunk when the client
+    /// asked for one, and reports post-header failures as an SSE error frame instead of a silent
+    /// close. Default: true.
+    /// </summary>
+    /// <remarks>
+    /// These clients await a terminal stream event and hang indefinitely when one never arrives.
+    /// The upstream <c>/v1</c> surface does not always emit <c>[DONE]</c>, and many local servers
+    /// reject or ignore <c>stream_options</c>, so the proxy takes responsibility for both ends of the
+    /// contract. Unrelated to <see cref="EnableSseKeepAlive"/>, which only holds the connection open.
+    /// </remarks>
+    public bool EnableCopilotCompatibility { get; set; } = true;
+
+    /// <summary>
     /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
     /// Absolute token count takes precedence over percentage.
     /// </summary>
@@ -588,6 +619,7 @@ internal sealed class ModelMapping
             EnableThinkingCompatibility = EnableThinkingCompatibility,
             Capabilities = [.. Capabilities],
             EnableSseKeepAlive = EnableSseKeepAlive,
+            EnableHeartbeats = EnableHeartbeats,
             CredentialName = CredentialName,
             UpstreamType = UpstreamType,
             ThinkingMode = ThinkingMode,
@@ -611,6 +643,7 @@ internal sealed class ModelMapping
             ProactiveOverflowTokens = ProactiveOverflowTokens,
             AutoCompactPaths = AutoCompactPaths,
             RedirectManualCompaction = RedirectManualCompaction,
+            EnableCopilotCompatibility = EnableCopilotCompatibility,
         };
         clone.EnsureId();
         return clone;
@@ -841,10 +874,63 @@ internal sealed class AppSettings
 
     /// <summary>
     /// Seconds between SSE keep-alive frames sent to the client while waiting for upstream tokens.
-    /// Min: 5, Max: 300. Default: 15.
+    /// Min: 5, Max: 300. Default: 60.
     /// </summary>
+    /// <remarks>
+    /// Deliberately generous: these frames exist to stop slow or long-thinking models from timing out
+    /// the chat session, so a short interval buys nothing and only adds wire noise.
+    /// </remarks>
     [JsonIgnore]
-    public int SseKeepAliveIntervalSeconds { get; set; } = 15;
+    public int SseKeepAliveIntervalSeconds { get; set; } = DefaultSseKeepAliveIntervalSeconds;
+
+    /// <summary>
+    /// Seconds between upstream liveness pings for models with
+    /// <see cref="ModelMapping.EnableHeartbeats"/> set. Min: 5, Max: 3600. Default: 300.
+    /// </summary>
+    /// <remarks>
+    /// Governs only the health ping, never the streaming keep-alive cadence. A ping costs one cheap
+    /// <c>/v1/models</c> call per model, so a long interval is the sensible default.
+    /// </remarks>
+    [JsonIgnore]
+    public int HeartbeatIntervalSeconds { get; set; } = DefaultHeartbeatIntervalSeconds;
+
+    /// <summary>Lower bound accepted for <see cref="SseKeepAliveIntervalSeconds"/>.</summary>
+    public const int MinSseKeepAliveIntervalSeconds = 5;
+
+    /// <summary>Upper bound accepted for <see cref="SseKeepAliveIntervalSeconds"/>.</summary>
+    public const int MaxSseKeepAliveIntervalSeconds = 300;
+
+    /// <summary>Lower bound accepted for <see cref="HeartbeatIntervalSeconds"/>.</summary>
+    public const int MinHeartbeatIntervalSeconds = 5;
+
+    /// <summary>
+    /// Upper bound accepted for <see cref="HeartbeatIntervalSeconds"/>. Much wider than the
+    /// keep-alive bound because a liveness ping is cheap and rarely needs to fire more than every
+    /// few minutes.
+    /// </summary>
+    public const int MaxHeartbeatIntervalSeconds = 3600;
+
+    /// <summary>Default SSE keep-alive cadence in seconds.</summary>
+    public const int DefaultSseKeepAliveIntervalSeconds = 60;
+
+    /// <summary>Default upstream liveness ping cadence in seconds.</summary>
+    public const int DefaultHeartbeatIntervalSeconds = 300;
+
+    /// <summary>
+    /// Converts a keep-alive interval in seconds to a <see cref="TimeSpan"/>, clamped to the
+    /// supported range. Shared by every emitter so no call site can fall outside the bounds
+    /// <see cref="Normalize"/> enforces.
+    /// </summary>
+    public static TimeSpan SseKeepAliveInterval(int seconds) => TimeSpan.FromSeconds(
+        Math.Clamp(seconds, MinSseKeepAliveIntervalSeconds, MaxSseKeepAliveIntervalSeconds));
+
+    /// <summary>
+    /// Converts a liveness ping interval in seconds to a <see cref="TimeSpan"/>, clamped to the
+    /// supported range. Separate from <see cref="SseKeepAliveInterval(int)"/> because a ping may
+    /// legitimately run far less often than a streaming keep-alive.
+    /// </summary>
+    public static TimeSpan HeartbeatInterval(int seconds) => TimeSpan.FromSeconds(
+        Math.Clamp(seconds, MinHeartbeatIntervalSeconds, MaxHeartbeatIntervalSeconds));
 
     /// <summary>
     /// When true, the dashboard periodically samples CPU and memory usage for display.
@@ -940,7 +1026,10 @@ internal sealed class AppSettings
         MaxConcurrentRequests = Math.Clamp(MaxConcurrentRequests, 1, 10000);
         MaxRequestBodyBytes = Math.Max(MaxRequestBodyBytes, 1024);
         MaxLogEntries = Math.Clamp(MaxLogEntries, 10, 100000);
-        SseKeepAliveIntervalSeconds = Math.Clamp(SseKeepAliveIntervalSeconds, 5, 300);
+        SseKeepAliveIntervalSeconds = Math.Clamp(
+            SseKeepAliveIntervalSeconds, MinSseKeepAliveIntervalSeconds, MaxSseKeepAliveIntervalSeconds);
+        HeartbeatIntervalSeconds = Math.Clamp(
+            HeartbeatIntervalSeconds, MinHeartbeatIntervalSeconds, MaxHeartbeatIntervalSeconds);
 
         foreach (ModelMapping mapping in ModelMappings)
         {
@@ -975,6 +1064,7 @@ internal sealed class AppSettings
         CollectAllTraffic = CollectAllTraffic,
         EnableSseKeepAlive = EnableSseKeepAlive,
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
+        HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -994,6 +1084,7 @@ internal sealed class AppSettings
         CollectAllTraffic = runtimeSettings.CollectAllTraffic;
         EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
+        HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }

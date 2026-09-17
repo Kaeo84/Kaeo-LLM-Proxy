@@ -192,7 +192,9 @@ internal sealed class AppDatabase : IDisposable
                     proactive_overflow_tokens,
                     context_summarize_model_id,
                     auto_compact_paths,
-                    redirect_manual_compaction
+                    redirect_manual_compaction,
+                    enable_heartbeats,
+                    enable_copilot_compatibility
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -267,7 +269,9 @@ internal sealed class AppDatabase : IDisposable
                         proactive_overflow_tokens,
                         context_summarize_model_id,
                         auto_compact_paths,
-                        redirect_manual_compaction
+                        redirect_manual_compaction,
+                        enable_heartbeats,
+                        enable_copilot_compatibility
                     )
                     VALUES (
                         $id,
@@ -299,7 +303,9 @@ internal sealed class AppDatabase : IDisposable
                         $proactiveOverflowTokens,
                         $contextSummarizeModelId,
                         $autoCompactPaths,
-                        $redirectManualCompaction
+                        $redirectManualCompaction,
+                        $enableHeartbeats,
+                        $enableCopilotCompatibility
                     );
                     """;
 
@@ -543,7 +549,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_performance_sampling,
                     enable_api_explorer,
                     run_as_administrator,
-                    collect_all_traffic
+                    collect_all_traffic,
+                    heartbeat_interval_seconds
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -568,6 +575,7 @@ internal sealed class AppDatabase : IDisposable
                 EnableApiExplorer = ReadBoolean(reader, 10),
                 RunAsAdministrator = ReadBoolean(reader, 11),
                 CollectAllTraffic = ReadBoolean(reader, 12),
+                HeartbeatIntervalSeconds = reader.GetInt32(13),
             };
         }
     }
@@ -596,7 +604,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_performance_sampling,
                     enable_api_explorer,
                     run_as_administrator,
-                    collect_all_traffic
+                    collect_all_traffic,
+                    heartbeat_interval_seconds
                 )
                 VALUES (
                     $id,
@@ -612,7 +621,8 @@ internal sealed class AppDatabase : IDisposable
                     $enablePerformanceSampling,
                     $enableApiExplorer,
                     $runAsAdministrator,
-                    $collectAllTraffic
+                    $collectAllTraffic,
+                    $heartbeatIntervalSeconds
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -627,7 +637,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_performance_sampling = excluded.enable_performance_sampling,
                     enable_api_explorer = excluded.enable_api_explorer,
                     run_as_administrator = excluded.run_as_administrator,
-                    collect_all_traffic = excluded.collect_all_traffic;
+                    collect_all_traffic = excluded.collect_all_traffic,
+                    heartbeat_interval_seconds = excluded.heartbeat_interval_seconds;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -644,6 +655,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
             command.Parameters.AddWithValue("$collectAllTraffic", ToSqliteBoolean(settings.CollectAllTraffic));
+            command.Parameters.AddWithValue("$heartbeatIntervalSeconds", settings.HeartbeatIntervalSeconds);
             command.ExecuteNonQuery();
         }
     }
@@ -1176,7 +1188,9 @@ internal sealed class AppDatabase : IDisposable
                     context_summarize_model_name TEXT NULL,
                     context_summarize_model_id INTEGER NULL,
                     auto_compact_paths INTEGER NOT NULL DEFAULT 0,
-                    redirect_manual_compaction INTEGER NOT NULL DEFAULT 0
+                    redirect_manual_compaction INTEGER NOT NULL DEFAULT 0,
+                    enable_heartbeats INTEGER NOT NULL DEFAULT 1,
+                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1216,7 +1230,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
-                    collect_all_traffic INTEGER NOT NULL DEFAULT 0
+                    collect_all_traffic INTEGER NOT NULL DEFAULT 0,
+                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1384,7 +1399,8 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Renames <paramref name="oldColumn"/> to <paramref name="newColumn"/> on
     /// <paramref name="table"/>, preserving existing values. Does nothing when the old column is
-    /// already absent, which makes the migration idempotent across restarts.
+    /// already absent, or when the new column already exists, which makes the migration idempotent
+    /// across restarts and safe when a column name is later recycled for a different purpose.
     /// </summary>
     private static void RenameColumnIfPresent(
         SqliteConnection connection,
@@ -1394,6 +1410,14 @@ internal sealed class AppDatabase : IDisposable
         string newColumnDeclaration)
     {
         if (!TableExists(connection, table) || !ColumnExists(connection, table, oldColumn))
+            return;
+
+        // The target already existing means this rename has been applied before, so the surviving
+        // <paramref name="oldColumn"/> is a *different* column that happens to reuse the name rather
+        // than the legacy one. Copying it across would overwrite migrated data with unrelated values
+        // on every launch — which is exactly what would happen for model_mappings.enable_heartbeats,
+        // retired by this rename and later re-introduced as the liveness-ping flag.
+        if (ColumnExists(connection, table, newColumn))
             return;
 
         try
@@ -1607,6 +1631,63 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated runtime_settings table: added collect_all_traffic column.");
         }
+
+        if (!ColumnExists(connection, "runtime_settings", "heartbeat_interval_seconds"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added heartbeat_interval_seconds column.");
+
+            RaiseLegacyKeepAliveInterval(connection);
+        }
+    }
+
+    /// <summary>
+    /// Raises a stored keep-alive interval that is still exactly the legacy 15-second default up to
+    /// the new 60-second default.
+    /// </summary>
+    /// <remarks>
+    /// Called only from the one-shot branch that adds <c>heartbeat_interval_seconds</c>, so it runs
+    /// once per database on the first launch after the ping and keep-alive were separated. Running it
+    /// on every launch would keep resetting a 15-second interval the user deliberately chose later.
+    /// Only the exact old default is touched, so any other customized value survives untouched.
+    /// </remarks>
+    private static void RaiseLegacyKeepAliveInterval(SqliteConnection connection)
+    {
+        const string column = "sse_keep_alive_interval_seconds";
+        const int legacyDefault = 15;
+        const int newDefault = 60;
+
+        // The rename migration normally creates this column first, but it logs and skips when the file
+        // is held by a concurrent instance, so guard rather than let the UPDATE abort startup.
+        if (!ColumnExists(connection, "runtime_settings", column))
+            return;
+
+        try
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                $"UPDATE runtime_settings SET {column} = $new WHERE {column} = $old;";
+            command.Parameters.AddWithValue("$new", newDefault);
+            command.Parameters.AddWithValue("$old", legacyDefault);
+            int raised = command.ExecuteNonQuery();
+
+            if (raised > 0)
+                Log.Information(
+                    "Migrated runtime_settings table: raised the keep-alive interval from the legacy {Old} second default to {New} seconds.",
+                    legacyDefault, newDefault);
+        }
+        catch (SqliteException ex)
+        {
+            Log.Warning(ex, "Failed to raise the legacy keep-alive interval default.");
+        }
+        catch (IOException ex)
+        {
+            Log.Warning(ex, "Skipped raising the legacy keep-alive interval: the database file is in use.");
+        }
     }
 
     /// <summary>
@@ -1615,8 +1696,8 @@ internal sealed class AppDatabase : IDisposable
     /// <c>context_window_tokens</c>,
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
     /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
-    /// <c>reasoning_effort_values</c>, <c>reasoning_effort_format</c>, and
-    /// <c>context_summarize_model_name</c>.
+    /// <c>reasoning_effort_values</c>, <c>reasoning_effort_format</c>,
+    /// <c>context_summarize_model_name</c>, and <c>enable_heartbeats</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1774,6 +1855,30 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added redirect_manual_compaction column.");
+        }
+
+        // Defaults to enabled so existing mappings keep being pinged. This must run after
+        // MigrateSseKeepAliveRename: that migration retires the older enable_heartbeats column (which
+        // used to mean the keep-alive) and this one re-introduces the name for the liveness ping.
+        if (!ColumnExists(connection, "model_mappings", "enable_heartbeats"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN enable_heartbeats INTEGER NOT NULL DEFAULT 1;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added enable_heartbeats column.");
+        }
+
+        // Defaults to enabled so existing mappings keep producing well-formed streams for
+        // Microsoft.Extensions.AI clients (e.g. Visual Studio Copilot), which hang indefinitely
+        // when an SSE response never reaches its terminal [DONE] event.
+        if (!ColumnExists(connection, "model_mappings", "enable_copilot_compatibility"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added enable_copilot_compatibility column.");
         }
 
         // Post-migration: assign IDs to any mappings that don't have one yet, and convert
@@ -2067,6 +2172,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$contextSummarizeModelId", mapping.ContextSummarizeModelId.HasValue ? (object)mapping.ContextSummarizeModelId.Value : DBNull.Value);
         command.Parameters.AddWithValue("$autoCompactPaths", (int)mapping.AutoCompactPaths);
         command.Parameters.AddWithValue("$redirectManualCompaction", ToSqliteBoolean(mapping.RedirectManualCompaction));
+        command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
+        command.Parameters.AddWithValue("$enableCopilotCompatibility", ToSqliteBoolean(mapping.EnableCopilotCompatibility));
     }
 
     private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
@@ -2117,6 +2224,8 @@ internal sealed class AppDatabase : IDisposable
             ? (AutoCompactPaths)reader.GetInt32(28)
             : AutoCompactPaths.None,
         RedirectManualCompaction = ReadBoolean(reader, 29),
+        EnableHeartbeats = ReadBoolean(reader, 30),
+        EnableCopilotCompatibility = ReadBoolean(reader, 31),
     };
 
     /// <summary>

@@ -103,9 +103,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string key = modelName.Trim();
             activeKeys.Add(key);
 
-            // The probe is deliberately gated on the same SSE keep-alive settings: it exists to
-            // explain why a client would be timing out, so it only runs where keep-alives are active.
-            if (!mapping.IsEnabled || !_settings.EnableSseKeepAlive || !mapping.EnableSseKeepAlive)
+            // Gated only on the mapping's own heartbeat flag. The SSE keep-alive settings must not
+            // appear here: they control holding a streaming chat session open for a client, which is
+            // unrelated to whether this model's upstream is reachable. Coupling them meant turning
+            // keep-alive off also silenced health monitoring.
+            if (!mapping.IsEnabled || !mapping.EnableHeartbeats)
             {
                 if (_periodicHeartbeats.TryRemove(key, out PeriodicHeartbeatState? removed))
                     removed.Dispose();
@@ -114,13 +116,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (_periodicHeartbeats.TryGetValue(key, out PeriodicHeartbeatState? existing))
             {
-                existing.Update(mapping, _settings.SseKeepAliveIntervalSeconds);
+                existing.Update(mapping, _settings.HeartbeatIntervalSeconds);
                 continue;
             }
 
             PeriodicHeartbeatState created = new(
                 mapping,
-                _settings.SseKeepAliveIntervalSeconds,
+                _settings.HeartbeatIntervalSeconds,
                 SendPeriodicHeartbeatAsync,
                 RecordPeriodicHeartbeatFailure);
             if (!_periodicHeartbeats.TryAdd(key, created))
@@ -349,6 +351,38 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Reports whether an OpenAI-style request body carries a top-level <c>stream_options</c> member and
+    /// whether it sets <c>include_usage</c>. Matching is case-insensitive to mirror the property loop in
+    /// <see cref="NormalizeRequestBody"/>, since <c>JsonElement.TryGetProperty</c> is case-sensitive and a
+    /// client capitalizing the member would otherwise slip through unstripped.
+    /// </summary>
+    private static (bool Present, bool IncludeUsage) ReadStreamOptions(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+            return (false, false);
+
+        foreach (JsonProperty prop in root.EnumerateObject())
+        {
+            if (!prop.Name.Equals("stream_options", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (prop.Value.ValueKind != JsonValueKind.Object)
+                return (true, false);
+
+            foreach (JsonProperty option in prop.Value.EnumerateObject())
+            {
+                if (option.Name.Equals("include_usage", StringComparison.OrdinalIgnoreCase)
+                    && option.Value.ValueKind == JsonValueKind.True)
+                    return (true, true);
+            }
+
+            return (true, false);
+        }
+
+        return (false, false);
+    }
+
+    /// <summary>
     /// Explains why the context-summarize (/compact) redirect did not apply for a request, for
     /// diagnostic logging. Reports which gate in <see cref="ResolveEffectiveModel"/> stopped the
     /// redirect: signature not detected, no mapping found, redirection not enabled, no compaction
@@ -492,6 +526,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (!_settings.EnableSseKeepAlive) return false;
         ModelMapping? mapping = _settings.FindModelMapping(modelName);
         return mapping?.EnableSseKeepAlive ?? true;
+    }
+
+    /// <summary>
+    /// Returns whether Copilot-compatible stream handling applies for the given model, from the
+    /// per-mapping <see cref="ModelMapping.EnableCopilotCompatibility"/> flag. Defaults to true for
+    /// an unmapped model, so a request the proxy cannot match to a mapping is still given a
+    /// well-formed stream rather than being allowed to hang the client.
+    /// </summary>
+    /// <remarks>
+    /// When enabled the proxy strips <c>stream_options</c> from the upstream-bound body, guarantees a
+    /// <c>data: [DONE]</c> terminator, synthesizes the terminal <c>usage</c> chunk the client asked
+    /// for, and reports post-header failures as an SSE error frame. Clients built on
+    /// Microsoft.Extensions.AI (e.g. Visual Studio Copilot) await that terminal event and block
+    /// indefinitely without it. Unrelated to <see cref="ShouldEmitSseKeepAlive"/>, which only holds
+    /// the connection open while the upstream is still processing the prompt.
+    /// </remarks>
+    private bool ShouldApplyCopilotCompatibility(string modelName)
+    {
+        ModelMapping? mapping = _settings.FindModelMapping(modelName);
+        return mapping?.EnableCopilotCompatibility ?? true;
     }
 
     /// <summary>
@@ -1092,7 +1146,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         catch (OperationCanceledException)
         {
             log.Status = RequestStatus.Cancelled;
-            try { resp.StatusCode = 499; resp.Close(); } catch { }
+
+            // The response may already have started (a streaming request commits its SSE headers
+            // before the upstream answers), in which case the 499 cannot be delivered. Record that
+            // rather than silently swallowing it, then always release the connection.
+            if (!await TryWriteErrorResponseAsync(resp, 499, new { error = "Request cancelled.", requestId }, CancellationToken.None))
+            {
+                RecordUndeliverableError(log, 499);
+                CloseResponseQuietly(resp);
+            }
         }
         catch (RequestBodyTooLargeException ex)
         {
@@ -1101,12 +1163,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             log.ErrorMessage = ex.Message;
             Log.Warning("Rejected oversized request body on {Path}: {Message}", path, ex.Message);
 
-            try
-            {
-                resp.StatusCode = 413;
-                await WriteJsonAsync(resp, new { error = "Request body too large.", requestId }, ct);
-            }
-            catch { }
+            // The body is rejected before anything is streamed, so this should always be deliverable.
+            if (!await TryWriteErrorResponseAsync(resp, 413, new { error = "Request body too large.", requestId }, CancellationToken.None))
+                RecordUndeliverableError(log, 413);
 
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
@@ -1121,16 +1180,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // message so internal details (paths, hostnames, connection strings) are never leaked.
             Log.Error(ex, "Unhandled error processing {Method} {Path}", method, path);
 
+            // A streaming request commits its SSE headers before the upstream answers, so this 500 is
+            // often undeliverable and the client is left with a truncated response. Say so in the log
+            // instead of swallowing the failure, which is what previously made these hangs invisible.
+            if (!await TryWriteErrorResponseAsync(resp, 500, new { error = "Internal proxy error.", requestId }, CancellationToken.None))
+            {
+                RecordUndeliverableError(log, 500);
+                CloseResponseQuietly(resp);
+            }
+
             // Persist the full exception detail (stack trace, inner exceptions) separately.
             _stats.AddLog(log, ex);
             exceptionLogged = true;
-
-            try
-            {
-                resp.StatusCode = 500;
-                await WriteJsonAsync(resp, new { error = "Internal proxy error.", requestId }, ct);
-            }
-            catch { }
 
             // Skip the finally AddLog — we already logged above with the exception.
             sw.Stop();
@@ -1172,11 +1233,105 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// For POST requests the "model" field in the JSON body is rewritten through the mapping
     /// table so that clients sending e.g. "gpt-4o" are transparently mapped to the loaded model.
     /// </summary>
+    /// <summary>
+    /// Tracks whether the SSE response headers have already been written to the client during a
+    /// passthrough request. <see cref="HttpListenerResponse"/> exposes no "headers sent" flag, so the
+    /// handler owns this state and uses it to decide how a failure can still be reported: with a real
+    /// status code while the headers are unwritten, or as a frame inside the already-open stream once
+    /// they are not.
+    /// </summary>
+    private sealed class PassthroughResponseState
+    {
+        /// <summary>True once <c>200 text/event-stream</c> has been flushed to the client.</summary>
+        public bool HeadersCommitted { get; set; }
+    }
+
+    /// <summary>
+    /// Forwards any OpenAI-native <c>/v1/*</c> request to the resolved upstream, containing every
+    /// failure so the client always receives a complete response. Once the SSE headers are committed
+    /// a status code can no longer be changed, so a late failure is reported as an error frame
+    /// followed by the <c>data: [DONE]</c> terminator instead of a bare connection close — without
+    /// which a client awaiting the terminal stream event blocks indefinitely.
+    /// </summary>
     private async Task PassthroughAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        PassthroughResponseState state = new();
+
+        try
+        {
+            await PassthroughCoreAsync(req, resp, log, state, ct).ConfigureAwait(false);
+            return;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The client went away or the server is stopping. Rethrow so HandleCoreAsync records the
+            // cancellation and closes the response; there is no client left to notify.
+            throw;
+        }
+        catch (Exception ex) when (state.HeadersCommitted)
+        {
+            // The status line is already on the wire as 200, so the only way to tell the client
+            // anything is inside the stream. Emit both frames and close deliberately.
+            string description = DescribePassthroughFailure(ex);
+
+            // StatusCode is left as-is: it already carries the upstream's status when the failure came
+            // after the upstream answered, matching the pre-committed error branch below. It stays 0
+            // when the failure preceded any upstream response.
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = description;
+            Log.Warning(ex, "Passthrough failed after the SSE headers were committed; terminating the stream with an error frame");
+
+            await WritePostCommitErrorFramesAsync(resp, description, 502, ct).ConfigureAwait(false);
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Writes an SSE error frame followed by the <c>data: [DONE]</c> terminator to a response whose
+    /// headers are already committed, then closes it. Every write is independently guarded because the
+    /// client may have disconnected at any point; a failure to deliver the frame is not itself an error
+    /// worth propagating.
+    /// </summary>
+    /// <param name="statusCode">Code reported inside the frame, since the real HTTP status is fixed at 200.</param>
+    private static async Task WritePostCommitErrorFramesAsync(
+        HttpListenerResponse resp, string message, int statusCode, CancellationToken ct)
+    {
+        string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(message ?? string.Empty)},\"code\":{statusCode}}}}}\n\ndata: [DONE]\n\n";
+
+        try
+        {
+            await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), ct).ConfigureAwait(false);
+            await resp.OutputStream.FlushAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or HttpListenerException or OperationCanceledException)
+        {
+            Log.Debug(ex, "Could not deliver the terminal error frame; the client has likely disconnected");
+        }
+
+        try { resp.OutputStream.Close(); }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or HttpListenerException)
+        {
+            Log.Debug(ex, "Response stream was already closed");
+        }
+    }
+
+    /// <summary>
+    /// Produces the client-facing description of a passthrough failure. Timeouts and upstream
+    /// unavailability are named explicitly because those are the two cases an operator can act on;
+    /// everything else falls back to the exception message.
+    /// </summary>
+    private static string DescribePassthroughFailure(Exception ex) => ex switch
+    {
+        TaskCanceledException or TimeoutException => "Upstream request timed out.",
+        HttpRequestException httpEx => $"Upstream request failed: {httpEx.Message}",
+        _ => ex.Message,
+    };
+
+    private async Task PassthroughCoreAsync(
+        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, PassthroughResponseState state, CancellationToken ct)
+    {
         bool contextCompacted = false;
-        bool headersPreCommitted = false;
 
         // HttpListener only puts the response headers on the wire once at least one byte has been
         // written. Setting StatusCode/ContentType alone therefore leaves the client staring at an
@@ -1195,7 +1350,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             resp.ContentType = "text/event-stream";
             resp.SendChunked = true;
             resp.KeepAlive = true;
-            headersPreCommitted = true;
+            state.HeadersCommitted = true;
 
             // Written unconditionally, even when periodic keep-alive is disabled, because this flush
             // is what commits the headers. It is a single SSE comment line, which conformant clients
@@ -1247,6 +1402,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // call, so the response paths must strip or inline every tool call.
         IReadOnlySet<string>? passthroughDeclaredTools = null;
 
+        // What the client asked for in its stream_options block. NormalizeRequestBody strips that
+        // block from the upstream-bound body, so the response path has to produce what it requested.
+        StreamOptionsInfo passthroughStreamOptions = StreamOptionsInfo.None;
+
         if (req.HasEntityBody)
         {
             bool isJsonPost = req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase)
@@ -1258,7 +1417,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 string bodyText = await ReadBodyAsync(req, ct);
                 log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
                 string rewritten = NormalizeRequestBody(
-                    bodyText, _settings, log, modelName => ShouldApplyThinkingCompatibility(_settings, modelName));
+                    bodyText,
+                    _settings,
+                    log,
+                    modelName => ShouldApplyThinkingCompatibility(_settings, modelName),
+                    out passthroughStreamOptions);
                 originalModel = log.Model; // set by NormalizeRequestBody
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
@@ -1323,6 +1486,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
         }
 
+        // Copilot compatibility: guarantee the stream reaches its terminal event. Clients built on
+        // Microsoft.Extensions.AI await `data: [DONE]` — and, when they asked for it via
+        // stream_options.include_usage, the terminal usage chunk the proxy stripped — and block
+        // indefinitely when either never arrives.
+        //
+        // Constructed before ResolveUpstream because that call can throw after the proactive-compaction
+        // path has already committed the SSE headers, and the error handling below needs the terminator
+        // to close that stream cleanly. It is only ever handed to SSE paths, so a non-streaming
+        // response can never receive these frames. Null when the mapping opted out, which leaves the
+        // forwarded stream byte-identical to what the upstream sent.
+        OpenAiStreamTerminator? streamTerminator = ShouldApplyCopilotCompatibility(originalModel)
+            ? new OpenAiStreamTerminator(originalModel, passthroughStreamOptions.MustSynthesizeUsage)
+            : null;
+
+        // Token totals for a synthesized usage chunk, read only after the usage sniffer has flushed so
+        // any counts the upstream did report are included.
+        Func<(int PromptTokens, int CompletionTokens)> tokenCounts = () => (log.PromptTokens, log.CompletionTokens);
+
         var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
         ApplyApiKey(upstreamReq, apiKey);
 
@@ -1342,7 +1523,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s) would
         // otherwise time out silently during long prompt-processing / thinking phases.
         //
-        // This deliberately does NOT test headersPreCommitted. The proactive-compaction path above
+        // This deliberately does NOT test state.HeadersCommitted. The proactive-compaction path above
         // already commits SSE headers for streaming requests without necessarily writing anything,
         // so gating on that flag skipped the keep-alive pump for almost every streaming request and
         // left the client with no bytes at all until the upstream answered.
@@ -1410,7 +1591,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 try
                 {
                     reactive = await TryReactiveCompactionAsync(
-                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, headersPreCommitted, ct);
+                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, state.HeadersCommitted, ct);
                     if (reactive is not null)
                     {
                         contextCompacted = true;
@@ -1453,7 +1634,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         log.StatusCode = (int)upstreamResp.StatusCode;
 
         // Only set status/headers if we haven't already pre-committed them to the client.
-        if (!headersPreCommitted)
+        if (!state.HeadersCommitted)
         {
             resp.StatusCode = (int)upstreamResp.StatusCode;
 
@@ -1492,11 +1673,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // (e.g. Copilot) that trigger compaction on that code.
             int clientStatusCode = IsContextOverflowBody(errorBody) ? 413 : (int)upstreamResp.StatusCode;
 
-            if (headersPreCommitted)
+            if (state.HeadersCommitted)
             {
                 // Headers already sent as 200/SSE — emit the error as a data frame so the
-                // client sees it rather than getting a silent stream close.
-                string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{clientStatusCode}}}}}\n\n";
+                // client sees it rather than getting a silent stream close. The terminator frame
+                // is required as well: a client awaiting `data: [DONE]` blocks indefinitely
+                // without it. Reaching this branch means the request was streaming, since
+                // CommitSseHeadersAsync is only ever called for streaming requests.
+                string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{clientStatusCode}}}}}\n\ndata: [DONE]\n\n";
                 byte[] errorFrameBytes = Encoding.UTF8.GetBytes(errorFrame);
                 await resp.OutputStream.WriteAsync(errorFrameBytes, ct);
             }
@@ -1553,7 +1737,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage,
                     rawCapture,
-                    declaredToolNames: passthroughDeclaredTools);
+                    declaredToolNames: passthroughDeclaredTools,
+                    terminator: streamTerminator,
+                    tokenCounts: tokenCounts);
 
                 if (rawCapture is not null)
                 {
@@ -1575,7 +1761,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     _settings.SseKeepAliveIntervalSeconds,
                     ct,
                     () => _stats.IncrementSseKeepAlive(originalModel),
-                    onUsage);
+                    onUsage,
+                    streamTerminator,
+                    tokenCounts);
 
                 string forwardedText = captureStream.GetCapturedText();
                 if (collectResponse)
@@ -1592,7 +1780,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     _settings.SseKeepAliveIntervalSeconds,
                     ct,
                     () => _stats.IncrementSseKeepAlive(originalModel),
-                    onUsage);
+                    onUsage,
+                    streamTerminator,
+                    tokenCounts);
             }
         }
         else
@@ -1909,7 +2099,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         int intervalSeconds,
         CancellationToken ct)
     {
-        TimeSpan interval = TimeSpan.FromSeconds(Math.Clamp(intervalSeconds, 5, 300));
+        TimeSpan interval = AppSettings.SseKeepAliveInterval(intervalSeconds);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -1922,6 +2112,19 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         catch (OperationCanceledException) { /* expected on cancel */ }
     }
 
+    /// <summary>
+    /// Copies an SSE response to the client verbatim, interleaving keep-alive comment frames while the
+    /// upstream is quiet. Used on passthrough paths that need no rewriting.
+    /// </summary>
+    /// <param name="terminator">
+    /// When supplied (Copilot-compatible stream), observes forwarded bytes and appends the terminal
+    /// frames the upstream omitted once the stream ends. Null leaves the stream exactly as the
+    /// upstream sent it.
+    /// </param>
+    /// <param name="tokenCounts">
+    /// Supplies the prompt/completion token totals for a synthesized usage chunk. Read only after the
+    /// usage sniffer has flushed, so counts captured from the upstream's own frames are included.
+    /// </param>
     private static async Task CopyStreamWithSseKeepAliveAsync(
         Stream source,
         Stream destination,
@@ -1929,10 +2132,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         int keepAliveIntervalSeconds,
         CancellationToken ct,
         Action? onKeepAliveSent = null,
-        Action<LlamaCppStreamChunk>? onUsage = null)
+        Action<LlamaCppStreamChunk>? onUsage = null,
+        OpenAiStreamTerminator? terminator = null,
+        Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null)
     {
         byte[] buffer = new byte[81920];
-        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
         while (!ct.IsCancellationRequested)
@@ -1956,15 +2161,39 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (bytesRead == 0)
                 break;
 
-            usageSniffer?.Feed(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+            // Decoded once and shared: this path forwards raw bytes rather than lines, so both the
+            // usage sniffer and the terminator need the text form of the same chunk.
+            if (usageSniffer is not null || terminator is not null)
+            {
+                string chunkText = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                usageSniffer?.Feed(chunkText);
+                terminator?.Feed(chunkText);
+            }
 
             await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
             await destination.FlushAsync(ct);
         }
 
+        // Flush the sniffer first so the token totals it captured from the upstream's own usage frame
+        // are available to a synthesized chunk, then emit whatever terminator the upstream omitted.
         usageSniffer?.Flush();
+        await EmitTerminalFramesAsync(destination, terminator, tokenCounts, ct);
     }
 
+    /// <summary>
+    /// Copies an OpenAI chat-completion SSE stream while rewriting it: thinking blocks are relocated or
+    /// stripped per <paramref name="thinkingMode"/> and inline XML tool calls become structured
+    /// <c>tool_calls</c> deltas. Keep-alive comment frames are interleaved while the upstream is quiet.
+    /// </summary>
+    /// <param name="terminator">
+    /// When supplied (Copilot-compatible stream), observes every forwarded line and appends the
+    /// terminal frames the upstream omitted once the stream ends. Null leaves the stream exactly as
+    /// the upstream sent it.
+    /// </param>
+    /// <param name="tokenCounts">
+    /// Supplies the prompt/completion token totals for a synthesized usage chunk. Read only after the
+    /// usage sniffer has flushed, so counts captured from the upstream's own frames are included.
+    /// </param>
     private static async Task CopyOpenAiChatCompletionSseStreamAsync(
         Stream source,
         Stream destination,
@@ -1975,10 +2204,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Action? onKeepAliveSent = null,
         Action<LlamaCppStreamChunk>? onUsage = null,
         Stream? rawCapture = null,
-        IReadOnlySet<string>? declaredToolNames = null)
+        IReadOnlySet<string>? declaredToolNames = null,
+        OpenAiStreamTerminator? terminator = null,
+        Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
-        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
         OpenAiSseRewriter rewriter = new(thinkingMode, declaredToolNames);
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
@@ -2003,6 +2234,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 break;
 
             usageSniffer?.Feed(line + "\n");
+            // The rewriter forwards [DONE] and usage frames verbatim, so observing the inbound line is
+            // equivalent to observing what the client received.
+            terminator?.ObserveLine(line);
             if (rawCapture is not null)
                 await rawCapture.WriteAsync(Encoding.UTF8.GetBytes(line + "\n"), ct);
 
@@ -2024,7 +2258,37 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             await destination.FlushAsync(ct);
         }
 
+        // Flush the sniffer first so the token totals it captured from the upstream's own usage frame
+        // are available to a synthesized chunk, then emit whatever terminator the upstream omitted.
         usageSniffer?.Flush();
+        await EmitTerminalFramesAsync(destination, terminator, tokenCounts, ct);
+    }
+
+    /// <summary>
+    /// Writes the terminal SSE frames a Copilot-compatible stream owes the client (an optional
+    /// synthesized <c>usage</c> chunk, then <c>data: [DONE]</c>) when the upstream did not send them.
+    /// No-op when there is no terminator, nothing is missing, or the client has already gone away.
+    /// </summary>
+    private static async Task EmitTerminalFramesAsync(
+        Stream destination,
+        OpenAiStreamTerminator? terminator,
+        Func<(int PromptTokens, int CompletionTokens)>? tokenCounts,
+        CancellationToken ct)
+    {
+        if (terminator is null || ct.IsCancellationRequested)
+            return;
+
+        terminator.Flush();
+
+        (int promptTokens, int completionTokens) = tokenCounts?.Invoke() ?? (0, 0);
+
+        foreach (string frame in terminator.BuildTerminalFrames(promptTokens, completionTokens))
+        {
+            byte[] frameBytes = Encoding.UTF8.GetBytes(frame);
+            await destination.WriteAsync(frameBytes, ct);
+        }
+
+        await destination.FlushAsync(ct);
     }
 
     /// <summary>
@@ -2576,6 +2840,15 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Normalises a JSON request body before forwarding to the upstream, discarding the
+    /// <c>stream_options</c> details captured along the way. Prefer the overload taking an
+    /// <see cref="StreamOptionsInfo"/> out-parameter on streaming paths, where the response side needs
+    /// to know what the client asked for.
+    /// </summary>
+    internal static string NormalizeRequestBody(string json, AppSettings settings, RequestLog log, Func<string, bool>? shouldApplyThinkingCompatibility = null)
+        => NormalizeRequestBody(json, settings, log, shouldApplyThinkingCompatibility, out _);
+
+    /// <summary>
     /// Normalises a JSON request body before forwarding to the upstream:
     /// <list type="bullet">
     ///   <item>Rewrites the "model" field through the mapping table.</item>
@@ -2591,11 +2864,27 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     ///         flags (legacy <c>reasoning_effort</c>, modern <c>reasoning.effort</c>, the Qwen
     ///         Cloud <c>extra_body</c> wrapper, and/or <c>chat_template_kwargs</c>), lowercasing
     ///         the value.</item>
+    ///   <item>Drops the <c>stream_options</c> block when
+    ///         <see cref="ModelMapping.EnableCopilotCompatibility"/> applies to the effective model,
+    ///         reporting it through <paramref name="streamOptions"/> so the response path can
+    ///         synthesize what the client asked for.</item>
     /// </list>
     /// Returns the original text unchanged if the body isn't valid JSON.
     /// </summary>
-    internal static string NormalizeRequestBody(string json, AppSettings settings, RequestLog log, Func<string, bool>? shouldApplyThinkingCompatibility = null)
+    /// <param name="streamOptions">
+    /// Receives whether the body carried <c>stream_options</c>, whether it set <c>include_usage</c>,
+    /// and whether the proxy stripped the block. <see cref="StreamOptionsInfo.None"/> when the body
+    /// was not valid JSON, since nothing could be inspected.
+    /// </param>
+    internal static string NormalizeRequestBody(
+        string json,
+        AppSettings settings,
+        RequestLog log,
+        Func<string, bool>? shouldApplyThinkingCompatibility,
+        out StreamOptionsInfo streamOptions)
     {
+        streamOptions = StreamOptionsInfo.None;
+
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
@@ -2655,6 +2944,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // (and Proxy without a configured value) leave the client's field untouched.
             bool rewriteReasoningEffort = reasoningPriority == SamplingPriority.Provider || proxyHasReasoningEffort;
 
+            // Copilot compatibility: many OpenAI-compatible local servers reject or silently ignore
+            // the stream_options block, and some open the stream and then never deliver the terminal
+            // usage chunk it asks for. Drop the block and take over producing what the client asked
+            // for. The response path reads the captured info to synthesize the missing frames.
+            // Unmapped models default to compatible, matching ShouldApplyCopilotCompatibility.
+            bool copilotCompatible = normalizeMapping?.EnableCopilotCompatibility ?? true;
+            (bool hadStreamOptions, bool includeUsage) = ReadStreamOptions(root);
+            bool stripStreamOptions = copilotCompatible && hadStreamOptions;
+
+            streamOptions = new StreamOptionsInfo(hadStreamOptions, includeUsage, stripStreamOptions);
+
+            if (stripStreamOptions)
+                Log.Debug(
+                    "Stripping stream_options from the upstream request for {Model} (include_usage={IncludeUsage}); the proxy will synthesize the terminal usage chunk",
+                    effectiveModel, includeUsage);
+
             // Check whether the messages array has consecutive leading system messages.
             bool hasConsecutiveSystemMessages = false;
             bool hasTrailingAssistantPrefill = false;
@@ -2688,7 +2993,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 && !shouldInjectInstructions
                 && tempPriority == SamplingPriority.ClientApp
                 && repeatPriority == SamplingPriority.ClientApp
-                && !rewriteReasoningEffort)
+                && !rewriteReasoningEffort
+                && !stripStreamOptions)
                 return json;
 
             using var ms = new System.IO.MemoryStream();
@@ -2796,6 +3102,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 else if (prop.Name.Equals("model", StringComparison.OrdinalIgnoreCase))
                 {
                     writer.WriteString("model", resolved);
+                }
+                else if (prop.Name.Equals("stream_options", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Copilot compatibility strips the block (see stripStreamOptions); the proxy then
+                    // synthesizes the terminal usage chunk the client asked for. When the mapping opted
+                    // out, forward it unchanged so the upstream stays responsible.
+                    if (!stripStreamOptions)
+                        prop.WriteTo(writer);
                 }
                 else if (prop.Name.Equals("messages", StringComparison.OrdinalIgnoreCase)
                       && prop.Value.ValueKind == JsonValueKind.Array
@@ -3479,6 +3793,47 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     }
 
     /// <summary>
+    /// Removes the top-level <c>stream_options</c> member from an OpenAI-style request body, reporting
+    /// what the client had asked for. Used on the manual compaction endpoints, whose bodies bypass
+    /// <see cref="NormalizeRequestBody"/> so that a compaction request is otherwise never reshaped.
+    /// Returns the body unchanged when it carries no such member or is not valid JSON.
+    /// </summary>
+    /// <param name="bodyText">The request body about to be forwarded upstream.</param>
+    /// <returns>The body to forward, plus what was stripped.</returns>
+    internal static (string Body, StreamOptionsInfo StreamOptions) StripStreamOptions(string bodyText)
+    {
+        if (string.IsNullOrWhiteSpace(bodyText))
+            return (bodyText, StreamOptionsInfo.None);
+
+        try
+        {
+            if (JsonNode.Parse(bodyText) is not JsonObject root)
+                return (bodyText, StreamOptionsInfo.None);
+
+            string? matchedKey = root
+                .Select(property => property.Key)
+                .FirstOrDefault(key => key.Equals("stream_options", StringComparison.OrdinalIgnoreCase));
+
+            if (matchedKey is null)
+                return (bodyText, StreamOptionsInfo.None);
+
+            bool includeUsage = root[matchedKey] is JsonObject options
+                && options.Any(property =>
+                    property.Key.Equals("include_usage", StringComparison.OrdinalIgnoreCase)
+                    && property.Value is JsonValue value
+                    && value.TryGetValue(out bool flag)
+                    && flag);
+
+            root.Remove(matchedKey);
+            return (root.ToJsonString(_jsonOptions), new StreamOptionsInfo(true, includeUsage, true));
+        }
+        catch (JsonException)
+        {
+            return (bodyText, StreamOptionsInfo.None);
+        }
+    }
+
+    /// <summary>
     /// Resolves which model a manual compaction request should be sent to. This is the single
     /// authority for the manual-compaction routing decision, shared by both <c>/compact</c>
     /// endpoints and by the signature-based redirect on the chat paths so they cannot disagree.
@@ -3594,6 +3949,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             string forwardedBody = RewriteCompactTargetModel(bodyText, upstreamModel);
 
+            // Compaction bodies bypass NormalizeRequestBody so they are never otherwise reshaped, so
+            // the stream_options block is stripped here instead. The client is still owed the terminal
+            // usage chunk it asked for, which the terminator below synthesizes.
+            StreamOptionsInfo compactStreamOptions = StreamOptionsInfo.None;
+            if (ShouldApplyCopilotCompatibility(targetMapping.ProxyName))
+                (forwardedBody, compactStreamOptions) = StripStreamOptions(forwardedBody);
+
             var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
 
             Log.Information(
@@ -3677,8 +4039,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (headersPreCommitted)
                 {
                     // Headers already sent as 200/SSE — emit the error as a data frame so the
-                    // client sees it rather than getting a silent stream close.
-                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{(int)upstreamResp.StatusCode}}}}}\n\n";
+                    // client sees it rather than getting a silent stream close, then terminate the
+                    // stream: a client awaiting the terminal event would otherwise block forever.
+                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(errorBody)},\"code\":{(int)upstreamResp.StatusCode}}}}}\n\ndata: [DONE]\n\n";
                     await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), ct);
                 }
                 else
@@ -3726,6 +4089,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
 
+                // Guarantee the compaction stream reaches its terminal event, for the same reason the
+                // passthrough path does: the client that asked for a summary awaits `data: [DONE]`.
+                OpenAiStreamTerminator? streamTerminator = ShouldApplyCopilotCompatibility(targetMapping.ProxyName)
+                    ? new OpenAiStreamTerminator(originalModel, compactStreamOptions.MustSynthesizeUsage)
+                    : null;
+                Func<(int PromptTokens, int CompletionTokens)> tokenCounts = () => (log.PromptTokens, log.CompletionTokens);
+
                 if (collectResponse || debugCapture)
                 {
                     using ResponseCaptureStream captureStream = new(countingStream);
@@ -3736,7 +4106,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         _settings.SseKeepAliveIntervalSeconds,
                         ct,
                         () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
-                        onUsage);
+                        onUsage,
+                        streamTerminator,
+                        tokenCounts);
 
                     string forwardedText = captureStream.GetCapturedText();
                     if (collectResponse)
@@ -3753,7 +4125,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         _settings.SseKeepAliveIntervalSeconds,
                         ct,
                         () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
-                        onUsage);
+                        onUsage,
+                        streamTerminator,
+                        tokenCounts);
                 }
             }
             else
@@ -3795,11 +4169,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             // Once the SSE headers are committed the status code is fixed at 200; report the
             // failure inside the stream instead so the client is not left with a silent close.
+            // The terminator frame is required as well: a client awaiting `data: [DONE]` blocks
+            // indefinitely without it.
             if (headersPreCommitted)
             {
                 try
                 {
-                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(ex.Message)},\"code\":500}}}}\n\n";
+                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(ex.Message)},\"code\":500}}}}\n\ndata: [DONE]\n\n";
                     await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), CancellationToken.None);
                     resp.OutputStream.Close();
                 }
@@ -4945,7 +5321,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         bool upstreamFailed = false;
         string? stopReason = null;
         long responseBytes = 0;
-        TimeSpan keepAliveInterval = TimeSpan.FromSeconds(Math.Clamp(keepAliveIntervalSeconds, 5, 300));
+        TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
         Dictionary<int, StreamingToolCallBuilder> toolCallBuilders = [];
         StringBuilder xmlToolCallBuilder = new();
         bool capturingXmlToolCall = false;
@@ -5626,6 +6002,63 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         resp.ContentLength64 = bytes.Length;
         await resp.OutputStream.WriteAsync(bytes, ct);
         resp.Close();
+    }
+
+    /// <summary>
+    /// Best-effort delivery of an error response from a catch block. Returns false when the error could
+    /// not be delivered, which happens when the response already started — <see cref="HttpListenerResponse"/>
+    /// exposes no "headers sent" flag, so the only way to learn this is that setting the status code or
+    /// content length throws. In that case the client is left holding a truncated response, and callers
+    /// must say so in the log rather than swallowing the failure silently.
+    /// </summary>
+    private static async Task<bool> TryWriteErrorResponseAsync(
+        HttpListenerResponse resp, int statusCode, object payload, CancellationToken ct)
+    {
+        try
+        {
+            resp.StatusCode = statusCode;
+            await WriteJsonAsync(resp, payload, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException
+            or System.Net.HttpListenerException
+            or IOException
+            or ObjectDisposedException
+            or OperationCanceledException)
+        {
+            Log.Debug(ex, "Could not deliver a {StatusCode} error response; the response had already started or the client disconnected", statusCode);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Closes a response that could not be answered properly, without throwing. Called after a failed
+    /// error delivery so the connection is released rather than left dangling until it times out.
+    /// </summary>
+    private static void CloseResponseQuietly(HttpListenerResponse resp)
+    {
+        try { resp.Close(); }
+        catch (Exception ex) when (ex is InvalidOperationException
+            or System.Net.HttpListenerException
+            or IOException
+            or ObjectDisposedException)
+        {
+            Log.Debug(ex, "Response stream was already closed");
+        }
+    }
+
+    /// <summary>
+    /// Records that the client received a truncated response because no error could be delivered after
+    /// the response had already started. Appended to <see cref="RequestLog.ErrorMessage"/> rather than
+    /// stored in its own column: it qualifies the existing message and needs no schema change.
+    /// </summary>
+    private static void RecordUndeliverableError(RequestLog log, int statusCode)
+    {
+        const string suffix = " The response had already started, so no error could be delivered and the client received a truncated response.";
+
+        log.ErrorMessage = string.IsNullOrEmpty(log.ErrorMessage)
+            ? $"Failed to deliver a {statusCode} error response.{suffix}"
+            : log.ErrorMessage + suffix;
     }
 
     private static async Task WriteJsonRawAsync(HttpListenerResponse resp, string json, CancellationToken ct)
@@ -6439,8 +6872,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             _cts.Dispose();
         }
 
+        // Clamped to the same bounds AppSettings.Normalize enforces, so a stale or hand-edited value
+        // can never produce a timer that fires faster than the UI allows.
         private static TimeSpan GetInterval(int intervalSeconds)
-            => TimeSpan.FromSeconds(Math.Clamp(intervalSeconds, 5, 300));
+            => AppSettings.HeartbeatInterval(intervalSeconds);
 
         private static ModelMapping CloneMapping(ModelMapping mapping) => new()
         {
@@ -6448,7 +6883,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             ProxyName = mapping.ProxyName,
             ModelName = mapping.ModelName,
             EnableThinkingCompatibility = mapping.EnableThinkingCompatibility,
-            EnableSseKeepAlive = mapping.EnableSseKeepAlive,
+            EnableHeartbeats = mapping.EnableHeartbeats,
             CredentialName = mapping.CredentialName,
             UpstreamType = mapping.UpstreamType,
             UpstreamUrl = mapping.UpstreamUrl,

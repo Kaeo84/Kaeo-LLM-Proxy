@@ -15,6 +15,8 @@ request to the right llama.cpp instance, doing all format translation transparen
 
 - Translates the Ollama API to llama.cpp's OpenAI-compatible format
 - Supports streaming (NDJSON) and non-streaming completions
+- Copilot-compatible streaming — well-formed SSE (`data: [DONE]`, synthesized usage chunk, in-band
+  errors) so `Microsoft.Extensions.AI` clients never hang awaiting a stream end
 - Model name mapping — map any Ollama model name to the actual model loaded in llama.cpp
 - Per-mapping upstream URL and timeout — route different models to different servers
 - Request logging with [LiteDB](https://www.litedb.org/) (auto-archived by size, auto-expired by age)
@@ -35,6 +37,9 @@ request to the right llama.cpp instance, doing all format translation transparen
 ## OpenAI-Compatible Endpoints
 
 The proxy also exposes an OpenAI-compatible `/v1/` API so clients such as Visual Studio Copilot, OpenAI SDKs, and other `/v1/` clients can use it directly.
+
+> Streaming responses to these clients are made well-formed by the per-mapping
+> [Copilot Compatibility](#copilot-compatibility) option (on by default).
 
 | OpenAI endpoint          | Method | Purpose                                                                      |
 |--------------------------|--------|------------------------------------------------------------------------------|
@@ -164,6 +169,31 @@ Per mapping (Settings → Configure Model → *Compaction / Context thresholds*)
 - **Redirect manual compaction** — send `/compact` requests to the compaction model
 
 The dialog shows a live status line summarizing what the current selection will actually do.
+
+### Copilot Compatibility
+
+Per mapping (Settings → Configure Model → *Copilot Compatibility*), **on by default**. Clients
+built on `Microsoft.Extensions.AI` — including Visual Studio Copilot — await a terminal stream
+event and block indefinitely when one never arrives. Many OpenAI-compatible local servers do not
+reliably emit one, and reject or ignore the `stream_options` block these clients send.
+
+When enabled the proxy takes over both ends of that contract on the `/v1/*` passthrough and
+manual-compaction paths:
+
+- **Strips `stream_options`** (including `include_usage`) from the upstream-bound request, so a
+  server that does not understand it is never asked to.
+- **Guarantees the terminator** — if the upstream closes without `data: [DONE]`, the proxy appends
+  it. A stream that already ended with `[DONE]` is left byte-for-byte untouched.
+- **Synthesizes the usage chunk** the client asked for: when `include_usage` was requested and the
+  upstream never reported usage, a terminal `chat.completion.chunk` carrying the captured token
+  totals is emitted *before* `[DONE]`.
+- **Reports late failures in-band** — once the SSE headers are on the wire the status code is fixed
+  at `200`, so a failure is delivered as a `data: {"error":…}` frame followed by `data: [DONE]`
+  rather than a silent connection close.
+
+Disabling it relays the upstream's stream unchanged, with no added frames. This is independent of
+the *Enable SSE keep-alive* option, which only holds the connection open while the upstream is still
+processing the prompt.
 
 ## Visual Studio Extension
 
