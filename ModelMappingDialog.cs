@@ -77,6 +77,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblReasoningEffortFormats = new();
     private readonly CheckedListBox _lstReasoningEffortFormats = new();
     private readonly CheckBox _chkIsEnabled = new();
+    private readonly CheckBox _chkHidden = new();
     private readonly Label _lblTempPriority = new();
     private readonly ComboBox _cmbTempPriority = new();
     private readonly Label _lblRepeatPenaltyPriority = new();
@@ -428,6 +429,13 @@ internal sealed class ModelMappingDialog : Form
     {
         get => _chkEnableThinkingCompatibility.Checked;
         set => _chkEnableThinkingCompatibility.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool Hidden
+    {
+        get => _chkHidden.Checked;
+        set => _chkHidden.Checked = value;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -813,7 +821,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 21;
+        _tlpMain.RowCount = 22;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -879,31 +887,37 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
         _tlpMain.Controls.Add(_chkIsEnabled, 0, 13);
 
-        // Move the per-model SSE keep-alive option up near the top (right after enable)
+        // Hidden sits directly under the Enabled checkbox: controls whether this mapping is
+        // omitted from the discovery list endpoints (/v1/models, /api/tags) while remaining
+        // fully usable for routing, heartbeats, keep-alive, and as a compaction target.
+        _tlpMain.SetColumnSpan(_chkHidden, 3);
+        _tlpMain.Controls.Add(_chkHidden, 0, 14);
+
+        // Move the per-model SSE keep-alive option up near the top (right after hidden)
         _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
-        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 14);
+        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 15);
 
         // Copilot Compatibility sits directly under the SSE keep-alive option: both govern how the
         // proxy behaves toward a streaming client. The group box holds the toggle plus a wrapping
         // status label, mirroring the Compaction group's layout.
         _tlpMain.SetColumnSpan(_grpCopilotCompat, 3);
-        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 15);
+        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 16);
 
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 17);
 
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 17);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 18);
 
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 18);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 19);
 
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 19);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 20);
 
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
-        _tlpMain.Controls.Add(_grpRedaction, 0, 20);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 21);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1332,6 +1346,20 @@ internal sealed class ModelMappingDialog : Form
         _chkIsEnabled.Text = "Enable this proxy model";
         _chkIsEnabled.Checked = true;
 
+        _chkHidden.AutoSize = true;
+        _chkHidden.Margin = new Padding(0, 2, 0, 2);
+        _chkHidden.Text = "Hide from model discovery (/v1/models, /api/tags)";
+        _chkHidden.Checked = false;
+        _toolTip.SetToolTip(
+            _chkHidden,
+            "When checked, this mapping is omitted from the discovery list endpoints so clients\n"
+            + "that auto-discover models (e.g. GitHub Copilot) do not pick it up. The mapping\n"
+            + "remains fully usable for everything else: request routing still resolves it by\n"
+            + "name, heartbeats and SSE keep-alive still run, and it is still eligible to be\n"
+            + "selected as another mapping's compaction target.\n\n"
+            + "Use this to keep an embeddings-only model available for explicit use without it\n"
+            + "being advertised to tools that should not be picking it for chat.");
+
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
@@ -1651,6 +1679,16 @@ internal sealed class ModelMappingDialog : Form
                 _cmbModelName.SelectedItem = current;
             else if (_cmbModelName.Items.Count > 0)
                 _cmbModelName.SelectedIndex = 0;
+
+            // Try to extract context window from the list response (some providers include it).
+            // Only auto-fill when the user hasn't already typed a value manually.
+            if (string.IsNullOrWhiteSpace(_txtContextWindow.Text)
+                && !string.IsNullOrWhiteSpace(result.ResponseBody)
+                && TryExtractContextWindow(result.ResponseBody, out int? listContextWindow)
+                && listContextWindow is > 0)
+            {
+                _txtContextWindow.Text = listContextWindow.Value.ToString();
+            }
         }
         catch (Exception ex)
         {
@@ -1915,7 +1953,13 @@ internal sealed class ModelMappingDialog : Form
             JsonElement root = doc.RootElement;
 
             // Search common field names for context window size.
-            string[] candidateNames = ["context_window", "context_length", "max_context_length", "max_context", "context", "num_ctx", "max_tokens"];
+            string[] candidateNames = [
+                "context_window", "context_length", "max_context_length", "max_context",
+                "context", "num_ctx", "max_tokens", "max_position_embeddings",
+                "sliding_window", "n_ctx_train"
+            ];
+
+            // 1. Root-level candidates first.
             foreach (string name in candidateNames)
             {
                 if (root.TryGetProperty(name, out var val) && val.ValueKind == JsonValueKind.Number
@@ -1926,8 +1970,8 @@ internal sealed class ModelMappingDialog : Form
                 }
             }
 
-            // Check nested "details" or "parameters" objects (Ollama /api/show style).
-            foreach (string nested in new[] { "details", "parameters", "config" })
+            // 2. Nested "details", "parameters", "config", or "architecture" objects.
+            foreach (string nested in new[] { "details", "parameters", "config", "architecture" })
             {
                 if (root.TryGetProperty(nested, out var nestedObj) && nestedObj.ValueKind == JsonValueKind.Object)
                 {
@@ -1940,6 +1984,33 @@ internal sealed class ModelMappingDialog : Form
                             return true;
                         }
                     }
+                }
+            }
+
+            // 3. Ollama /api/show style: "model_info" object with dotted keys like "llama.context_length".
+            if (root.TryGetProperty("model_info", out var modelInfo) && modelInfo.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty prop in modelInfo.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Number
+                        && prop.Value.TryGetInt32(out int v) && v > 0
+                        && prop.Name.Contains("context_length", StringComparison.OrdinalIgnoreCase))
+                    {
+                        contextWindow = v;
+                        return true;
+                    }
+                }
+            }
+
+            // 4. "llama" object with "context_length" (some providers nest under model family).
+            if (root.TryGetProperty("llama", out var llamaObj) && llamaObj.ValueKind == JsonValueKind.Object)
+            {
+                if (llamaObj.TryGetProperty("context_length", out var llamaCtx)
+                    && llamaCtx.ValueKind == JsonValueKind.Number
+                    && llamaCtx.TryGetInt32(out int llamaV) && llamaV > 0)
+                {
+                    contextWindow = llamaV;
+                    return true;
                 }
             }
         }
@@ -2100,6 +2171,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.InstructionSetName = mapping.InstructionSetName;
         dlg.ContextSummarizeModelId = mapping.ContextSummarizeModelId;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
+        dlg.Hidden = mapping.Hidden;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
@@ -2141,6 +2213,7 @@ internal sealed class ModelMappingDialog : Form
 
         mapping.ProxyName = dlg._txtProxyName.Text.Trim();
         mapping.IsEnabled = dlg._chkIsEnabled.Checked;
+        mapping.Hidden = dlg.Hidden;
         mapping.UpstreamUrl = dlg._cmbUpstreamUrl.Text.Trim();
         mapping.CredentialName = dlg.CredentialName;
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());

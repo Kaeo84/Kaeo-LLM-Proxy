@@ -165,6 +165,7 @@ internal sealed class AppDatabase : IDisposable
                 SELECT
                     id,
                     is_enabled,
+                    hidden,
                     proxy_name,
                     model_name,
                     enable_thinking_compatibility,
@@ -243,6 +244,7 @@ internal sealed class AppDatabase : IDisposable
                         id,
                         proxy_name,
                         is_enabled,
+                        hidden,
                         model_name,
                         enable_thinking_compatibility,
                         capabilities,
@@ -277,6 +279,7 @@ internal sealed class AppDatabase : IDisposable
                         $id,
                         $proxyName,
                         $isEnabled,
+                        $hidden,
                         $modelName,
                         $enableThinkingCompatibility,
                         $capabilities,
@@ -550,7 +553,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_api_explorer,
                     run_as_administrator,
                     collect_all_traffic,
-                    heartbeat_interval_seconds
+                    heartbeat_interval_seconds,
+                    compaction_fallback_context_tokens
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -576,6 +580,7 @@ internal sealed class AppDatabase : IDisposable
                 RunAsAdministrator = ReadBoolean(reader, 11),
                 CollectAllTraffic = ReadBoolean(reader, 12),
                 HeartbeatIntervalSeconds = reader.GetInt32(13),
+                CompactionFallbackContextTokens = reader.GetInt32(14),
             };
         }
     }
@@ -605,7 +610,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_api_explorer,
                     run_as_administrator,
                     collect_all_traffic,
-                    heartbeat_interval_seconds
+                    heartbeat_interval_seconds,
+                    compaction_fallback_context_tokens
                 )
                 VALUES (
                     $id,
@@ -622,7 +628,8 @@ internal sealed class AppDatabase : IDisposable
                     $enableApiExplorer,
                     $runAsAdministrator,
                     $collectAllTraffic,
-                    $heartbeatIntervalSeconds
+                    $heartbeatIntervalSeconds,
+                    $compactionFallbackContextTokens
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -638,7 +645,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_api_explorer = excluded.enable_api_explorer,
                     run_as_administrator = excluded.run_as_administrator,
                     collect_all_traffic = excluded.collect_all_traffic,
-                    heartbeat_interval_seconds = excluded.heartbeat_interval_seconds;
+                    heartbeat_interval_seconds = excluded.heartbeat_interval_seconds,
+                    compaction_fallback_context_tokens = excluded.compaction_fallback_context_tokens;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -656,6 +664,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
             command.Parameters.AddWithValue("$collectAllTraffic", ToSqliteBoolean(settings.CollectAllTraffic));
             command.Parameters.AddWithValue("$heartbeatIntervalSeconds", settings.HeartbeatIntervalSeconds);
+            command.Parameters.AddWithValue("$compactionFallbackContextTokens", settings.CompactionFallbackContextTokens);
             command.ExecuteNonQuery();
         }
     }
@@ -1159,6 +1168,7 @@ internal sealed class AppDatabase : IDisposable
                     id INTEGER NOT NULL DEFAULT 0,
                     proxy_name TEXT PRIMARY KEY,
                     is_enabled INTEGER NOT NULL,
+                    hidden INTEGER NOT NULL DEFAULT 0,
                     model_name TEXT NOT NULL,
                     enable_thinking_compatibility INTEGER NOT NULL,
                     capabilities TEXT NULL,
@@ -1231,7 +1241,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_api_explorer INTEGER NOT NULL DEFAULT 0,
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
                     collect_all_traffic INTEGER NOT NULL DEFAULT 0,
-                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300
+                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1643,6 +1654,16 @@ internal sealed class AppDatabase : IDisposable
 
             RaiseLegacyKeepAliveInterval(connection);
         }
+
+        if (!ColumnExists(connection, "runtime_settings", "compaction_fallback_context_tokens"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added compaction_fallback_context_tokens column.");
+        }
     }
 
     /// <summary>
@@ -1697,7 +1718,8 @@ internal sealed class AppDatabase : IDisposable
     /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
     /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
     /// <c>reasoning_effort_values</c>, <c>reasoning_effort_format</c>,
-    /// <c>context_summarize_model_name</c>, and <c>enable_heartbeats</c>.
+    /// <c>context_summarize_model_name</c>, <c>enable_heartbeats</c>,
+    /// <c>enable_copilot_compatibility</c>, and <c>hidden</c>.
     /// </summary>
     private static void MigrateModelMappingsTable(SqliteConnection connection)
     {
@@ -1879,6 +1901,18 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added enable_copilot_compatibility column.");
+        }
+
+        // Defaults to hidden=false so existing mappings remain visible in discovery endpoints.
+        // The Hidden flag is discovery-only: it filters /v1/models and /api/tags but does not
+        // affect routing, heartbeats, or eligibility as a compaction target.
+        if (!ColumnExists(connection, "model_mappings", "hidden"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added hidden column.");
         }
 
         // Post-migration: assign IDs to any mappings that don't have one yet, and convert
@@ -2141,6 +2175,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$id", mapping.Id);
         command.Parameters.AddWithValue("$proxyName", mapping.ProxyName);
         command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(mapping.IsEnabled));
+        command.Parameters.AddWithValue("$hidden", ToSqliteBoolean(mapping.Hidden));
         command.Parameters.AddWithValue("$modelName", mapping.ModelName);
         command.Parameters.AddWithValue("$enableThinkingCompatibility", ToSqliteBoolean(mapping.EnableThinkingCompatibility));
         command.Parameters.AddWithValue("$capabilities", mapping.Capabilities.Count > 0
@@ -2180,52 +2215,53 @@ internal sealed class AppDatabase : IDisposable
     {
         Id = reader.GetInt32(0),
         IsEnabled = ReadBoolean(reader, 1),
-        ProxyName = reader.GetString(2),
-        ModelName = reader.GetString(3),
-        EnableThinkingCompatibility = ReadBoolean(reader, 4),
-        Capabilities = reader.IsDBNull(5)
+        Hidden = ReadBoolean(reader, 2),
+        ProxyName = reader.GetString(3),
+        ModelName = reader.GetString(4),
+        EnableThinkingCompatibility = ReadBoolean(reader, 5),
+        Capabilities = reader.IsDBNull(6)
             ? []
-            : [.. reader.GetString(5).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        EnableSseKeepAlive = ReadBoolean(reader, 6),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(7))
-            ? (UpstreamType)reader.GetInt32(7)
+            : [.. reader.GetString(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        EnableSseKeepAlive = ReadBoolean(reader, 7),
+        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(8))
+            ? (UpstreamType)reader.GetInt32(8)
             : UpstreamType.OpenAI,
-        UpstreamUrl = reader.GetString(8),
-        UpstreamTimeoutSeconds = reader.GetInt32(9),
-        RepeatPenalty = reader.GetDouble(10),
-        Temperature = reader.GetDouble(11),
-        InstructionSetName = reader.IsDBNull(12) ? null : reader.GetString(12),
-        RedactRequestBodies = ReadBoolean(reader, 13),
-        RedactResponseBodies = ReadBoolean(reader, 14),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 15),
-        CredentialName = reader.IsDBNull(16) ? null : reader.GetString(16),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(17))
-            ? (ThinkingMode)reader.GetInt32(17)
+        UpstreamUrl = reader.GetString(9),
+        UpstreamTimeoutSeconds = reader.GetInt32(10),
+        RepeatPenalty = reader.GetDouble(11),
+        Temperature = reader.GetDouble(12),
+        InstructionSetName = reader.IsDBNull(13) ? null : reader.GetString(13),
+        RedactRequestBodies = ReadBoolean(reader, 14),
+        RedactResponseBodies = ReadBoolean(reader, 15),
+        RedactSensitiveJsonFields = ReadBoolean(reader, 16),
+        CredentialName = reader.IsDBNull(17) ? null : reader.GetString(17),
+        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(18))
+            ? (ThinkingMode)reader.GetInt32(18)
             : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(18),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(19))
-            ? (SamplingPriority)reader.GetInt32(19)
-            : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
+        ContextWindowTokens = reader.GetInt32(19),
+        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
             ? (SamplingPriority)reader.GetInt32(20)
             : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
+        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
             ? (SamplingPriority)reader.GetInt32(21)
             : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(22) ? null : reader.GetString(22),
-        ReasoningEffortValues = reader.IsDBNull(23)
+        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(22))
+            ? (SamplingPriority)reader.GetInt32(22)
+            : SamplingPriority.ClientApp,
+        ReasoningEffort = reader.IsDBNull(23) ? null : reader.GetString(23),
+        ReasoningEffortValues = reader.IsDBNull(24)
             ? []
-            : [.. reader.GetString(23).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(24)),
-        ProactiveOverflowPercent = reader.GetInt32(25),
-        ProactiveOverflowTokens = reader.GetInt32(26),
-        ContextSummarizeModelId = reader.IsDBNull(27) ? null : reader.GetInt32(27),
-        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(28))
-            ? (AutoCompactPaths)reader.GetInt32(28)
+            : [.. reader.GetString(24).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(25)),
+        ProactiveOverflowPercent = reader.GetInt32(26),
+        ProactiveOverflowTokens = reader.GetInt32(27),
+        ContextSummarizeModelId = reader.IsDBNull(28) ? null : reader.GetInt32(28),
+        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(29))
+            ? (AutoCompactPaths)reader.GetInt32(29)
             : AutoCompactPaths.None,
-        RedirectManualCompaction = ReadBoolean(reader, 29),
-        EnableHeartbeats = ReadBoolean(reader, 30),
-        EnableCopilotCompatibility = ReadBoolean(reader, 31),
+        RedirectManualCompaction = ReadBoolean(reader, 30),
+        EnableHeartbeats = ReadBoolean(reader, 31),
+        EnableCopilotCompatibility = ReadBoolean(reader, 32),
     };
 
     /// <summary>

@@ -160,6 +160,8 @@ partial class MainForm
         _cmbListenAddress = new ComboBox();
         _lblMaxLogs = new Label();
         _txtMaxLogs = new TextBox();
+        _lblCompactionFallback = new Label();
+        _txtCompactionFallback = new TextBox();
         _lblMappings = new Label();
         _dgvMappings = new DataGridView();
         _colMappingEnabled = new DataGridViewTextBoxColumn();
@@ -972,7 +974,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 19;
+        _tlpSettings.RowCount = 20;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -985,34 +987,36 @@ partial class MainForm
         _tlpSettings.Controls.Add(_flpMappingButtons, 0, 3);
         _tlpSettings.Controls.Add(_lblMaxLogs, 0, 4);
         _tlpSettings.Controls.Add(_txtMaxLogs, 1, 4);
+        _tlpSettings.Controls.Add(_lblCompactionFallback, 0, 5);
+        _tlpSettings.Controls.Add(_txtCompactionFallback, 1, 5);
         _tlpSettings.SetColumnSpan(_chkAutoStart, 2);
-        _tlpSettings.Controls.Add(_chkAutoStart, 0, 5);
+        _tlpSettings.Controls.Add(_chkAutoStart, 0, 6);
         _tlpSettings.SetColumnSpan(_chkStartWithDashboard, 2);
-        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 6);
+        _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 7);
         _tlpSettings.SetColumnSpan(_chkRunAsAdmin, 2);
-        _tlpSettings.Controls.Add(_chkRunAsAdmin, 0, 7);
+        _tlpSettings.Controls.Add(_chkRunAsAdmin, 0, 8);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 8);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 9);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 9);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 10);
         _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
-        _tlpSettings.Controls.Add(_chkDebugMode, 0, 10);
+        _tlpSettings.Controls.Add(_chkDebugMode, 0, 11);
         _tlpSettings.SetColumnSpan(_chkCollectAllTraffic, 2);
-        _tlpSettings.Controls.Add(_chkCollectAllTraffic, 0, 11);
+        _tlpSettings.Controls.Add(_chkCollectAllTraffic, 0, 12);
         _tlpSettings.SetColumnSpan(_lblCollectAllTrafficWarning, 2);
-        _tlpSettings.Controls.Add(_lblCollectAllTrafficWarning, 0, 12);
+        _tlpSettings.Controls.Add(_lblCollectAllTrafficWarning, 0, 13);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 13);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 14);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 14);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 15);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 15);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 16);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 16);
+        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 17);
         _tlpSettings.SetColumnSpan(_grpSseKeepAlive, 2);
-        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 17);
+        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 18);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 19);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1069,6 +1073,16 @@ partial class MainForm
 
         _txtMaxLogs.Dock = DockStyle.Fill;
         _txtMaxLogs.Margin = new Padding(4, 6, 4, 4);
+
+        _lblCompactionFallback.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblCompactionFallback.AutoSize = true;
+        _lblCompactionFallback.Margin = new Padding(4, 8, 8, 4);
+        _lblCompactionFallback.Name = "_lblCompactionFallback";
+        _lblCompactionFallback.Text = "Compaction Fallback Context (tokens):";
+
+        _txtCompactionFallback.Dock = DockStyle.Fill;
+        _txtCompactionFallback.Margin = new Padding(4, 6, 4, 4);
+        _txtCompactionFallback.Name = "_txtCompactionFallback";
         _txtMaxLogs.Name = "_txtMaxLogs";
 
         _chkAutoStart.AutoSize = true;
@@ -2323,6 +2337,8 @@ partial class MainForm
     private ComboBox _cmbListenAddress;
     private Label _lblMaxLogs;
     private TextBox _txtMaxLogs;
+    private Label _lblCompactionFallback;
+    private TextBox _txtCompactionFallback;
     private Label _lblMappings;
     private DataGridView _dgvMappings;
     private DataGridViewTextBoxColumn _colMappingEnabled;

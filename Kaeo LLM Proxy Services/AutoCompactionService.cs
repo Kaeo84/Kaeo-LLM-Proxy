@@ -46,13 +46,33 @@ internal sealed class AutoCompactionService
     /// Safety multiplier applied to estimated token counts to account for estimation error.
     /// Conservative estimate helps prevent overflow on the compact model.
     /// </summary>
-    private const double TokenEstimationSafetyFactor = 1.3;
+    internal const double TokenEstimationSafetyFactor = 1.3;
 
     /// <summary>Maximum number of recursive combine passes when reducing chunk summaries.</summary>
     private const int MaxCombinePasses = 6;
 
     /// <summary>Token budget for the last user message kept verbatim in a compacted request.</summary>
     private const int MaxKeptSuffixTokens = 8000;
+
+    /// <summary>
+    /// Maximum tokens to request from the summarizer model per chunk/sub-chunk. Subtracted from
+    /// the prompt budget so prompt + completion always fits within the compact model's window.
+    /// </summary>
+    internal const int SummaryMaxTokens = 1000;
+
+    /// <summary>
+    /// Maximum tokens requested from the reducer when merging summaries. Larger than
+    /// <see cref="SummaryMaxTokens"/> because the combine step has to carry forward the content of
+    /// several chunk summaries. Subtracted from the prompt budget for the same reason.
+    /// </summary>
+    internal const int CombineMaxTokens = 1500;
+
+    /// <summary>
+    /// Floor for the prompt budget left after the summary output is reserved. A model with a very
+    /// small window can otherwise produce a zero or negative budget, which would make every chunk
+    /// over-limit and spin the sub-chunk splitter without ever fitting a message.
+    /// </summary>
+    internal const int MinSummaryPromptTokens = 512;
 
     /// <summary>
     /// Shared system prompt for chunk/sub-chunk summarization. Directs the model to keep tool
@@ -576,10 +596,12 @@ internal sealed class AutoCompactionService
         int compactModelContextWindow,
         CancellationToken ct)
     {
-        // Use percentage of compact model's context window instead of hardcoded value
-        // Leave headroom for system prompt, response generation, and token estimation error
-        int maxTokensPerRequest = (int)(compactModelContextWindow * ContextWindowFraction);
-        const int maxTokensPerMessage = 10000; // Truncate individual messages if too long.
+        // Reserve space for the summary output so prompt + completion fits within the window
+        int maxTokensPerRequest = Math.Max(
+            MinSummaryPromptTokens,
+            (int)(compactModelContextWindow * ContextWindowFraction) - SummaryMaxTokens);
+        // Derive per-message cap from the budget instead of using a hardcoded value
+        int maxTokensPerMessage = Math.Max(1000, maxTokensPerRequest / 2);
 
         int estimatedTokens = EstimateChunkTokens(chunkMessages);
 
@@ -598,7 +620,7 @@ internal sealed class AutoCompactionService
                 // Greedily add messages that fit within the limit.
                 while (subChunkEnd < chunkMessages.Count)
                 {
-                    int msgTokens = EstimateMessageTokens(chunkMessages[subChunkEnd]);
+                    int msgTokens = (int)(EstimateMessageTokens(chunkMessages[subChunkEnd]) * TokenEstimationSafetyFactor);
 
                     // If this message would exceed the limit and we already have messages, start new sub-chunk.
                     if (subChunkTokens + msgTokens > maxTokensPerRequest && subChunkEnd > subChunkStart)
@@ -623,8 +645,8 @@ internal sealed class AutoCompactionService
             if (subChunkSummaries.Count == 0)
                 return null;
 
-            // Combine sub-chunk summaries.
-            return string.Join("\n\n", subChunkSummaries);
+            // Combine sub-chunk summaries using the same reduce logic
+            return await CombineSummariesAsync(model, subChunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
         }
 
         // Build a chat completion request to summarize this chunk.
@@ -649,7 +671,7 @@ internal sealed class AutoCompactionService
         {
             model,
             messages,
-            max_tokens = 1000,
+            max_tokens = SummaryMaxTokens,
             temperature = 0.3
         };
 
@@ -736,7 +758,7 @@ internal sealed class AutoCompactionService
         {
             model,
             messages,
-            max_tokens = 1000,
+            max_tokens = SummaryMaxTokens,
             temperature = 0.3
         };
 
@@ -809,8 +831,8 @@ internal sealed class AutoCompactionService
                 }
             }
         }
-        // Rough estimate: 1 token ≈ 4 characters
-        return totalChars / 4;
+        // Rough estimate: 1 token ≈ 4 characters, with safety factor applied
+        return (int)((totalChars / 4.0) * TokenEstimationSafetyFactor);
     }
 
     private static int EstimateMessageTokens(JsonElement message)
@@ -892,7 +914,9 @@ internal sealed class AutoCompactionService
         int compactModelContextWindow,
         CancellationToken ct)
     {
-        int maxTokensPerRequest = (int)(compactModelContextWindow * ContextWindowFraction);
+        int maxTokensPerRequest = Math.Max(
+            MinSummaryPromptTokens,
+            (int)(compactModelContextWindow * ContextWindowFraction) - CombineMaxTokens);
         List<string> current = chunkSummaries;
         int pass = 0;
 

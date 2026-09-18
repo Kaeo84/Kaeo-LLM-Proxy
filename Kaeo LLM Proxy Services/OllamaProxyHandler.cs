@@ -696,7 +696,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 // from the resolved target mapping.
                 var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping.ProxyName);
                 string compactModelName = compactMapping.ModelName ?? model;
-                int compactModelContext = compactMapping.GetEffectiveContextWindow();
+                // Size chunks from the compact model's window, falling back to the global
+                // conservative cap rather than the 131072 advertised default when the window was
+                // never set. Overestimating here is what made small compact models overflow on
+                // every attempt; the advertised value stays authoritative for /v1/models.
+                int compactModelContext = compactMapping.GetCompactionContextWindow(
+                    _settings.CompactionFallbackContextTokens);
                 int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
@@ -827,7 +832,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             var (baseUrl, timeout, apiKey) = ResolveUpstream(compactMapping.ProxyName);
             string compactModelName = compactMapping.ModelName ?? model;
-            int compactModelContext = compactMapping.GetEffectiveContextWindow();
+            int compactModelContext = compactMapping.GetCompactionContextWindow(
+                _settings.CompactionFallbackContextTokens);
             int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
 
             Log.Information("Reactive auto-compaction triggered for model {Model} after upstream context overflow", model);
@@ -3659,10 +3665,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private async Task HandleTagsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        // The Hidden flag is honored only by the two list endpoints (/v1/models and /api/tags)
+        // so clients that auto-discover models do not pick up embeddings-only or otherwise
+        // restricted mappings. Routing, heartbeats, keep-alive, and eligibility as a compaction
+        // target are unaffected — a hidden mapping remains fully usable when named explicitly.
         var tags = new OllamaTagsResponse
         {
             Models = [.. _settings.ModelMappings
-                .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
+                .Where(m => m.IsEnabled && !m.Hidden && !string.IsNullOrWhiteSpace(m.ProxyName))
                 .OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase)
                 .Select(CreateOllamaModelEntry)],
         };
@@ -3680,10 +3690,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     private async Task HandleV1ModelsAsync(HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
+        // The Hidden flag is honored only by the two list endpoints (/v1/models and /api/tags)
+        // so clients that auto-discover models do not pick up embeddings-only or otherwise
+        // restricted mappings. Routing, heartbeats, keep-alive, and eligibility as a compaction
+        // target are unaffected — a hidden mapping remains fully usable when named explicitly.
         var response = new LlamaCppModelsResponse
         {
             Data = [.. _settings.ModelMappings
-                .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
+                .Where(m => m.IsEnabled && !m.Hidden && !string.IsNullOrWhiteSpace(m.ProxyName))
                 .OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase)
                 .Select(m =>
                 {
@@ -3956,6 +3970,23 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (ShouldApplyCopilotCompatibility(targetMapping.ProxyName))
                 (forwardedBody, compactStreamOptions) = StripStreamOptions(forwardedBody);
 
+            // Pre-flight: a manual /compact body is forwarded verbatim, so unlike the proactive and
+            // reactive paths it has never been measured against the target model's window. An
+            // embeddings-only or otherwise small compaction target receives Copilot's entire
+            // conversation and the upstream rejects it with a raw overflow error the client cannot
+            // act on. Run it through the same map-reduce summarizer when the target allows it, and
+            // otherwise reject here with an actionable message instead of paying for a round-trip
+            // that is guaranteed to fail.
+            //
+            // This runs before any SSE headers are committed, so a rejection can still be delivered
+            // as a real HTTP status. A null result means the response has already been written.
+            string? preparedBody = await PrepareManualCompactBodyAsync(
+                targetMapping, forwardedBody, resp, log, ct);
+            if (preparedBody is null)
+                return;
+
+            forwardedBody = preparedBody;
+
             var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
 
             Log.Information(
@@ -4193,6 +4224,134 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 error = "Internal error during manual compaction. Please retry.",
             }, ct);
         }
+    }
+
+    /// <summary>
+    /// Ensures a manual compaction body will actually fit in the target model's context before it is
+    /// forwarded. The manual <c>/compact</c> endpoints relay the body verbatim, so — unlike the
+    /// proactive and reactive paths — nothing has measured it against the target's window, and an
+    /// oversized conversation aimed at a small compaction target (an embeddings model, for example)
+    /// fails upstream with an error the client cannot act on.
+    /// </summary>
+    /// <remarks>
+    /// Map-reduce summarization runs only when the <b>target</b> mapping has automatic compaction
+    /// enabled for the OpenAI path; the proxy never compacts behind a mapping's back. Redirection
+    /// itself is decided earlier by <see cref="ResolveManualCompactTarget"/>, so by the time this
+    /// runs the target is already the model that will do the summarizing.
+    /// <para>
+    /// The rejection happens before any SSE headers are committed, so it can still be delivered as a
+    /// real 413 status rather than a frame buried in an open stream.
+    /// </para>
+    /// </remarks>
+    /// <param name="targetMapping">The mapping whose upstream will receive the compaction request.</param>
+    /// <param name="bodyText">The upstream-bound compaction body.</param>
+    /// <param name="resp">Client response, written to when the request is rejected.</param>
+    /// <param name="log">Request log, updated when the request is rejected.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// The body to forward (unchanged, or compacted), or null when a rejection response has already
+    /// been written and the caller must stop.
+    /// </returns>
+    private async Task<string?> PrepareManualCompactBodyAsync(
+        ModelMapping targetMapping,
+        string bodyText,
+        HttpListenerResponse resp,
+        RequestLog log,
+        CancellationToken ct)
+    {
+        // Chunk sizing uses the compaction window (explicit value or the global conservative cap),
+        // never the advertised default: overestimating a compact model's capacity is precisely what
+        // made every attempt overflow.
+        int compactionWindow = targetMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
+        int estimated = EstimateTokenCount(bodyText);
+
+        // Fit inside the fraction the map-reduce path also respects, leaving room for the model's
+        // own reply.
+        int budget = (int)(compactionWindow * AutoCompactionService.ContextWindowFraction);
+        if (budget <= 0 || estimated <= budget)
+            return bodyText;
+
+        if (!targetMapping.IsAutoCompactActiveFor(AutoCompactPaths.OpenAI))
+        {
+            string message =
+                $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens but that model's "
+                + $"compaction context budget is {budget} tokens (window {compactionWindow}, 75% of it). "
+                + "Enable Auto-Compact Paths for this model so the proxy can summarize the conversation in "
+                + "chunks, or select a Compaction Model with a larger context window on the model that owns "
+                + "the conversation.";
+
+            Log.Warning(
+                "Manual compaction rejected for model {Model}: ~{Estimated} tokens exceeds the {Budget} token budget "
+                + "for a {Window} token context window, and automatic compaction is not enabled for this path.",
+                targetMapping.ProxyName, estimated, budget, compactionWindow);
+
+            log.StatusCode = 413;
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = message;
+
+            resp.StatusCode = 413;
+            await WriteJsonAsync(resp, new
+            {
+                error = new
+                {
+                    message,
+                    type = "context_length_exceeded",
+                    param = "model",
+                    code = "compaction_context_too_large",
+                },
+            }, ct);
+            return null;
+        }
+
+        var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
+        string compactModelName = string.IsNullOrWhiteSpace(targetMapping.ModelName)
+            ? targetMapping.ProxyName
+            : targetMapping.ModelName;
+        int maxTokensPerChunk = budget;
+
+        Log.Information(
+            "Manual compaction for {Model} exceeds its {Budget} token budget (~{Estimated} tokens); "
+            + "running chunked map-reduce summarization against the target's own upstream",
+            targetMapping.ProxyName, budget, estimated);
+
+        string sessionKey = $"manual:{targetMapping.ProxyName}:{bodyText.GetHashCode():X8}";
+        string? compacted = await _autoCompactionService.CompactAsync(
+            targetMapping,
+            bodyText,
+            sessionKey,
+            baseUrl,
+            apiKey,
+            timeout,
+            maxTokensPerChunk,
+            compactModelName,
+            compactionWindow,
+            compactionWindow,
+            ct,
+            CompactionFormat.Proxy);
+
+        if (compacted is null)
+        {
+            string message =
+                $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens, over its "
+                + $"{budget} token budget, and chunked summarization did not produce a smaller result. "
+                + "Check that the model is reachable and try a larger Compaction Model.";
+
+            Log.Warning("Manual compaction map-reduce failed for model {Model}", targetMapping.ProxyName);
+
+            log.StatusCode = 413;
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = message;
+
+            resp.StatusCode = 413;
+            await WriteJsonAsync(resp, new { error = message }, ct);
+            return null;
+        }
+
+        _autoCompactionService.RecordSuccess(sessionKey);
+        Log.Information(
+            "Manual compaction for {Model} compacted ~{Original} → ~{Compacted} est. tokens",
+            targetMapping.ProxyName, estimated, EstimateTokenCount(compacted));
+        return compacted;
     }
 
     // ── POST /v1/responses/compact → OpenAI-compatible conversation compaction ──

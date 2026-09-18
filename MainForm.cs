@@ -111,6 +111,7 @@ internal partial class MainForm : Form
         // Settings on the Settings tab persist immediately when changed; only the Listener
         // group (port/address) requires an explicit save because it needs a proxy restart.
         _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
+        _txtCompactionFallback.Validated += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1545,6 +1546,7 @@ internal partial class MainForm : Form
         _txtListenPort.Text = _settings.ListenPort.ToString();
         PopulateListenAddressOptions();
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
+        _txtCompactionFallback.Text = _settings.CompactionFallbackContextTokens.ToString();
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
@@ -1645,7 +1647,11 @@ internal partial class MainForm : Form
         if (!int.TryParse(_txtMaxLogs.Text, out int maxLogs) || maxLogs < 1)
             return;
 
+        if (!int.TryParse(_txtCompactionFallback.Text, out int compactionFallback) || compactionFallback < 1)
+            return;
+
         _settings.MaxLogEntries = maxLogs;
+        _settings.CompactionFallbackContextTokens = compactionFallback;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;

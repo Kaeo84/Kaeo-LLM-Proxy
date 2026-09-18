@@ -260,6 +260,12 @@ internal sealed class RuntimeSettings
 
     public int HeartbeatIntervalSeconds { get; set; } = 300;
 
+    /// <summary>
+    /// Conservative context window cap (in tokens) used when sizing compaction chunks for a model
+    /// whose ContextWindowTokens is not explicitly set. Default: 8192.
+    /// </summary>
+    public int CompactionFallbackContextTokens { get; set; } = 8192;
+
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
@@ -312,6 +318,22 @@ internal sealed class ModelMapping
 
     /// <summary>When false, this mapping is hidden from discovery and ignored for request routing.</summary>
     public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// When true, this mapping is omitted from the discovery list endpoints (<c>GET /v1/models</c>
+    /// and <c>GET /api/tags</c>) so clients that auto-discover models (e.g. GitHub Copilot) do not
+    /// pick it up, but the mapping remains fully usable for everything else: request routing still
+    /// resolves it by name, heartbeats and SSE keep-alive still run, and it is still eligible to be
+    /// selected as another mapping's compaction target. Default: false.
+    /// </summary>
+    /// <remarks>
+    /// Discovery-only. Intentionally does not affect <see cref="AppSettings.FindModelMapping"/>,
+    /// <see cref="AppSettings.ResolveModelName"/>, <c>/api/ps</c>, <c>/api/show</c>,
+    /// <c>/v1/models/{id}</c>, or the manual-compaction target resolver. Use this to keep an
+    /// embeddings-only model available for explicit use without it being advertised to tools that
+    /// should not be picking it for chat.
+    /// </remarks>
+    public bool Hidden { get; set; }
 
     /// <summary>The model name as exposed by this proxy to clients (e.g. "llama3").</summary>
     [JsonPropertyName("OllamaName")]
@@ -516,6 +538,18 @@ internal sealed class ModelMapping
     public int GetEffectiveContextWindow() => ContextWindowTokens > 0 ? ContextWindowTokens : DefaultContextWindowTokens;
 
     /// <summary>
+    /// Returns the context window to use when sizing compaction chunks: the explicit value if set,
+    /// otherwise the caller-provided fallback. Used by the compaction service to avoid overestimating
+    /// the compact model's capacity when its window is not explicitly configured.
+    /// </summary>
+    /// <param name="fallbackTokens">
+    /// Conservative cap to use when <see cref="ContextWindowTokens"/> is 0. Typically the global
+    /// <see cref="AppSettings.CompactionFallbackContextTokens"/> setting.
+    /// </param>
+    public int GetCompactionContextWindow(int fallbackTokens) =>
+        ContextWindowTokens > 0 ? ContextWindowTokens : fallbackTokens;
+
+    /// <summary>
     /// Proactive context-overflow threshold as a percentage of the effective context window (1–100).
     /// When the proxy estimates the incoming request exceeds this percentage of the context window,
     /// it returns 413 immediately without calling upstream. 0 disables (default).
@@ -614,6 +648,7 @@ internal sealed class ModelMapping
         {
             Id = Id,
             IsEnabled = IsEnabled,
+            Hidden = Hidden,
             ProxyName = ProxyName,
             ModelName = ModelName,
             EnableThinkingCompatibility = EnableThinkingCompatibility,
@@ -894,6 +929,21 @@ internal sealed class AppSettings
     [JsonIgnore]
     public int HeartbeatIntervalSeconds { get; set; } = DefaultHeartbeatIntervalSeconds;
 
+    /// <summary>
+    /// Conservative context window cap (in tokens) used when sizing compaction chunks for a model
+    /// whose <see cref="ModelMapping.ContextWindowTokens"/> is not explicitly set. Min: 1024, Max: 1048576.
+    /// Default: 8192.
+    /// </summary>
+    /// <remarks>
+    /// This is a fallback constant, not a compaction toggle. Compaction is still configured per
+    /// model mapping via <see cref="ModelMapping.AutoCompactPaths"/>, the proactive overflow thresholds,
+    /// the compaction target, and <see cref="ModelMapping.RedirectManualCompaction"/>. This setting
+    /// only affects how large a chunk the compaction service assumes a compact model can handle when
+    /// the model's own window is unknown.
+    /// </remarks>
+    [JsonIgnore]
+    public int CompactionFallbackContextTokens { get; set; } = DefaultCompactionFallbackContextTokens;
+
     /// <summary>Lower bound accepted for <see cref="SseKeepAliveIntervalSeconds"/>.</summary>
     public const int MinSseKeepAliveIntervalSeconds = 5;
 
@@ -910,11 +960,20 @@ internal sealed class AppSettings
     /// </summary>
     public const int MaxHeartbeatIntervalSeconds = 3600;
 
+    /// <summary>Lower bound accepted for <see cref="CompactionFallbackContextTokens"/>.</summary>
+    public const int MinCompactionFallbackContextTokens = 1024;
+
+    /// <summary>Upper bound accepted for <see cref="CompactionFallbackContextTokens"/>.</summary>
+    public const int MaxCompactionFallbackContextTokens = 1048576;
+
     /// <summary>Default SSE keep-alive cadence in seconds.</summary>
     public const int DefaultSseKeepAliveIntervalSeconds = 60;
 
     /// <summary>Default upstream liveness ping cadence in seconds.</summary>
     public const int DefaultHeartbeatIntervalSeconds = 300;
+
+    /// <summary>Default conservative cap for compaction chunk sizing when a model's window is unknown.</summary>
+    public const int DefaultCompactionFallbackContextTokens = 8192;
 
     /// <summary>
     /// Converts a keep-alive interval in seconds to a <see cref="TimeSpan"/>, clamped to the
@@ -954,6 +1013,10 @@ internal sealed class AppSettings
     // ModelMapping.RedirectManualCompaction. The default for a mapping is therefore
     // "do nothing": requests are handed to the model untouched and the model handles its
     // own context. A global default here would silently override that per-model intent.
+    //
+    // CompactionFallbackContextTokens below is not a toggle — it is a fallback constant
+    // used only when sizing compaction chunks for a model whose ContextWindowTokens is
+    // not explicitly set. It does not enable or disable compaction.
 
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
@@ -1030,6 +1093,8 @@ internal sealed class AppSettings
             SseKeepAliveIntervalSeconds, MinSseKeepAliveIntervalSeconds, MaxSseKeepAliveIntervalSeconds);
         HeartbeatIntervalSeconds = Math.Clamp(
             HeartbeatIntervalSeconds, MinHeartbeatIntervalSeconds, MaxHeartbeatIntervalSeconds);
+        CompactionFallbackContextTokens = Math.Clamp(
+            CompactionFallbackContextTokens, MinCompactionFallbackContextTokens, MaxCompactionFallbackContextTokens);
 
         foreach (ModelMapping mapping in ModelMappings)
         {
@@ -1065,6 +1130,7 @@ internal sealed class AppSettings
         EnableSseKeepAlive = EnableSseKeepAlive,
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
+        CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -1085,6 +1151,7 @@ internal sealed class AppSettings
         EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
+        CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }

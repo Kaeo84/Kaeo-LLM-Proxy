@@ -64,6 +64,18 @@ public class ModelMappingCloneTests
     }
 
     [Fact]
+    public void ClonePreservesHidden()
+    {
+        // Hidden only affects discovery, but a clone that dropped it would silently re-list a
+        // hidden model when the settings grid commits, so pin it explicitly.
+        ModelMapping original = new() { ProxyName = "embedder", Hidden = true };
+
+        ModelMapping clone = original.Clone();
+
+        Assert.True(clone.Hidden);
+    }
+
+    [Fact]
     public void CloneOfUnidentifiedMappingGetsFreshId()
     {
         ModelMapping original = new() { ProxyName = "main" };
