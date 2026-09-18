@@ -138,16 +138,33 @@ public class HiddenModelDiscoveryTests
     }
 
     [Fact]
-    public void SummaryBudget_ReservesRoomForTheModelsOwnReply()
+    public void GetSummaryPromptBudget_ReservesRoomForTheModelsOwnReply()
     {
         // Prompt + completion must fit the window, so the summary output is subtracted from the
         // budget before chunking rather than being left to overrun it.
-        int window = 8192;
-        int budget = (int)(window * AutoCompactionService.ContextWindowFraction)
-            - AutoCompactionService.SummaryMaxTokens;
+        int budget = AutoCompactionService.GetSummaryPromptBudget(8192);
 
         Assert.True(budget > 0);
-        Assert.True(budget + AutoCompactionService.SummaryMaxTokens <= window);
+        Assert.True(budget + AutoCompactionService.SummaryMaxTokens <= 8192);
+    }
+
+    [Fact]
+    public void GetSummaryPromptBudget_LeavesRoomForTheCombineStepToo()
+    {
+        int budget = AutoCompactionService.GetSummaryPromptBudget(
+            8192, AutoCompactionService.CombineMaxTokens);
+
+        Assert.True(budget + AutoCompactionService.CombineMaxTokens <= 8192);
+    }
+
+    [Fact]
+    public void GetSummaryPromptBudget_NeverCollapsesBelowTheFloor()
+    {
+        // A window smaller than the reserved output would otherwise produce a zero or negative
+        // budget, and the sub-chunk splitter would spin without ever fitting a message.
+        int budget = AutoCompactionService.GetSummaryPromptBudget(256);
+
+        Assert.Equal(AutoCompactionService.MinSummaryPromptTokens, budget);
     }
 
     // ── Global fallback cap ────────────────────────────────────────────────

@@ -75,6 +75,28 @@ internal sealed class AutoCompactionService
     internal const int MinSummaryPromptTokens = 512;
 
     /// <summary>
+    /// Largest conversation payload, in tokens, that can be handed to the summarizer for a model
+    /// with <paramref name="contextWindowTokens"/> once room for the model's own reply is reserved.
+    /// </summary>
+    /// <remarks>
+    /// Single source of truth for the compaction budget. The chunking gate, the map-reduce
+    /// splitter and the manual <c>/compact</c> pre-flight all previously computed this their own
+    /// way; the gate used <c>window * fraction</c> with no output reserve while the summarizer
+    /// reserved it, so a chunk that exactly satisfied the gate was still over the model's limit
+    /// before a single token of summary had been generated.
+    /// </remarks>
+    /// <param name="contextWindowTokens">The compact model's context window.</param>
+    /// <param name="reserveForReply">
+    /// Tokens held back for the model's own output: <see cref="SummaryMaxTokens"/> when
+    /// summarizing a chunk, <see cref="CombineMaxTokens"/> when merging summaries.
+    /// </param>
+    internal static int GetSummaryPromptBudget(
+        int contextWindowTokens,
+        int reserveForReply = SummaryMaxTokens) =>
+        Math.Max(MinSummaryPromptTokens,
+            (int)(contextWindowTokens * ContextWindowFraction) - reserveForReply);
+
+    /// <summary>
     /// Shared system prompt for chunk/sub-chunk summarization. Directs the model to keep tool
     /// activity explicit so compacted requests still record which tools succeeded.
     /// </summary>
@@ -597,9 +619,7 @@ internal sealed class AutoCompactionService
         CancellationToken ct)
     {
         // Reserve space for the summary output so prompt + completion fits within the window
-        int maxTokensPerRequest = Math.Max(
-            MinSummaryPromptTokens,
-            (int)(compactModelContextWindow * ContextWindowFraction) - SummaryMaxTokens);
+        int maxTokensPerRequest = GetSummaryPromptBudget(compactModelContextWindow);
         // Derive per-message cap from the budget instead of using a hardcoded value
         int maxTokensPerMessage = Math.Max(1000, maxTokensPerRequest / 2);
 
@@ -914,9 +934,7 @@ internal sealed class AutoCompactionService
         int compactModelContextWindow,
         CancellationToken ct)
     {
-        int maxTokensPerRequest = Math.Max(
-            MinSummaryPromptTokens,
-            (int)(compactModelContextWindow * ContextWindowFraction) - CombineMaxTokens);
+        int maxTokensPerRequest = GetSummaryPromptBudget(compactModelContextWindow, CombineMaxTokens);
         List<string> current = chunkSummaries;
         int pass = 0;
 

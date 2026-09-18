@@ -702,7 +702,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 // every attempt; the advertised value stays authoritative for /v1/models.
                 int compactModelContext = compactMapping.GetCompactionContextWindow(
                     _settings.CompactionFallbackContextTokens);
-                int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
+                int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(compactModelContext);
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
                 // Stream notification: compaction starting
@@ -834,7 +834,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             string compactModelName = compactMapping.ModelName ?? model;
             int compactModelContext = compactMapping.GetCompactionContextWindow(
                 _settings.CompactionFallbackContextTokens);
-            int maxTokensPerChunk = (int)(compactModelContext * AutoCompactionService.ContextWindowFraction);
+            int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(compactModelContext);
 
             Log.Information("Reactive auto-compaction triggered for model {Model} after upstream context overflow", model);
 
@@ -4265,17 +4265,18 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         int compactionWindow = targetMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
         int estimated = EstimateTokenCount(bodyText);
 
-        // Fit inside the fraction the map-reduce path also respects, leaving room for the model's
-        // own reply.
-        int budget = (int)(compactionWindow * AutoCompactionService.ContextWindowFraction);
-        if (budget <= 0 || estimated <= budget)
+        // Same budget the map-reduce path chunks against, so a body measured as fitting here is a
+        // body the summarizer can actually accept.
+        int budget = AutoCompactionService.GetSummaryPromptBudget(compactionWindow);
+        if (estimated <= budget)
             return bodyText;
 
         if (!targetMapping.IsAutoCompactActiveFor(AutoCompactPaths.OpenAI))
         {
             string message =
                 $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens but that model's "
-                + $"compaction context budget is {budget} tokens (window {compactionWindow}, 75% of it). "
+                + $"compaction budget is {budget} tokens (context window {compactionWindow}, less the room "
+                + "reserved for the summary reply). "
                 + "Enable Auto-Compact Paths for this model so the proxy can summarize the conversation in "
                 + "chunks, or select a Compaction Model with a larger context window on the model that owns "
                 + "the conversation.";
