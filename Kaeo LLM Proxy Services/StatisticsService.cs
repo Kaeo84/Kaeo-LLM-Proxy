@@ -209,6 +209,9 @@ internal sealed class StatisticsService : IDisposable
         OllamaPath = source.OllamaPath,
         UpstreamPath = source.UpstreamPath,
         Model = source.Model,
+        // Carried so the log list can show "Original → Effective (compact redirect)" for entries
+        // still only in memory; dropping it here made the redirect visible only after a reload.
+        OriginalModel = source.OriginalModel,
         Streaming = source.Streaming,
         Status = source.Status,
         ErrorMessage = source.ErrorMessage,

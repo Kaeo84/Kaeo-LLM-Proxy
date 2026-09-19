@@ -399,16 +399,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             return $"no mapping found for model '{originalModel}'";
         if (!mapping.RedirectManualCompaction)
             return "'Redirect manual compaction' is not enabled on the mapping, so the model handles its own compaction";
-        if (!mapping.ContextSummarizeModelId.HasValue)
-            return "no compaction model is selected on the mapping";
 
-        ModelMapping? compactMapping = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+        // Resolve through FindContextSummarizeTarget rather than reading the stored ID, so the
+        // reason reported here matches the target the redirect actually uses.
+        ModelMapping? compactMapping = settings.FindContextSummarizeTarget(mapping);
         if (compactMapping is null)
-            return $"compaction model with ID {mapping.ContextSummarizeModelId.Value} not found";
+            return "no compaction model is selected on the mapping";
         if (!compactMapping.IsEnabled)
-            return $"compaction model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) is not enabled";
+            return $"compaction model '{compactMapping.ProxyName}' is not enabled";
         if (string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl))
-            return $"compaction model '{compactMapping.ProxyName}' (ID {mapping.ContextSummarizeModelId.Value}) has no upstream URL";
+            return $"compaction model '{compactMapping.ProxyName}' has no upstream URL";
         if (compactMapping.Id == mapping.Id)
             return "the compaction model is the same mapping, so no redirect applies";
 
@@ -665,12 +665,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Check if auto-compaction should be attempted for this request.
         if (_autoCompactionService.ShouldCompact(mapping, requestPath, body, out string sessionKey))
         {
-            // Resolve the compaction target from the per-mapping ContextSummarizeModelId.
+            // Resolve the compaction target through FindContextSummarizeTarget, which prefers the
+            // stored proxy name and falls back to the stored ID.
             // Auto-compaction requires a resolved target — with none configured (dropdown =
             // None) it does nothing and lets upstream decide (no fallback to the original model).
-            ModelMapping? compactMapping = null;
-            if (mapping.ContextSummarizeModelId.HasValue)
-                compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            ModelMapping? compactMapping = _settings.FindContextSummarizeTarget(mapping);
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
 
@@ -807,12 +806,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         try
         {
-            // Resolve the compaction target from the per-mapping ContextSummarizeModelId.
+            // Resolve the compaction target through FindContextSummarizeTarget, which prefers the
+            // stored proxy name and falls back to the stored ID.
             // Reactive compaction requires a resolved target — with none configured it does
             // nothing and surfaces the upstream overflow error.
-            ModelMapping? compactMapping = null;
-            if (mapping.ContextSummarizeModelId.HasValue)
-                compactMapping = _settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
+            ModelMapping? compactMapping = _settings.FindContextSummarizeTarget(mapping);
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
 
@@ -3872,24 +3870,27 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// the static signature-based redirect (<see cref="ResolveEffectiveModel"/>) share one set of
     /// gates and cannot drift apart.
     /// </summary>
+    /// <remarks>
+    /// The target is resolved through <see cref="AppSettings.FindContextSummarizeTarget"/>, never
+    /// by reading <see cref="ModelMapping.ContextSummarizeModelId"/> directly. The ID is a
+    /// surrogate key that can end up belonging to a different mapping, after which it still
+    /// resolves — just to a model the user never chose. The finder prefers the stored proxy name
+    /// and only falls back to the ID.
+    /// </remarks>
     internal static (ModelMapping Target, bool Redirected) ResolveManualCompactTarget(
         AppSettings settings, ModelMapping mapping)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(mapping);
 
-        if (!mapping.RedirectManualCompaction || !mapping.ContextSummarizeModelId.HasValue)
+        if (!mapping.RedirectManualCompaction)
             return (mapping, false);
 
-        ModelMapping? candidate = settings.FindModelMappingById(mapping.ContextSummarizeModelId.Value);
-
+        // No target configured, or the configured target no longer exists. Either way the request
+        // goes to the model the client asked for, so that model produces its own summary.
+        ModelMapping? candidate = settings.FindContextSummarizeTarget(mapping);
         if (candidate is null)
-        {
-            Log.Warning(
-                "Manual compaction for {Model} is configured to redirect to compaction model ID {TargetId}, but no mapping with that ID exists. Forwarding to {Model} instead.",
-                mapping.ProxyName, mapping.ContextSummarizeModelId.Value, mapping.ProxyName);
             return (mapping, false);
-        }
 
         if (!candidate.IsEnabled)
         {

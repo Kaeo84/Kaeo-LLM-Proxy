@@ -1806,6 +1806,11 @@ internal partial class MainForm : Form
         }
 
         _settings.ModelMappings = committed;
+
+        // Renaming a model leaves the compaction targets that point at it referring to the old
+        // name, which would silently disable their redirect. Re-point those references at the
+        // renamed model, which the still-stable ID identifies.
+        _settings.RefreshCompactionTargetNames();
         return true;
     }
 

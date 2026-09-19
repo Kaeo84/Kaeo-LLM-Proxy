@@ -129,7 +129,6 @@ internal sealed class ModelMappingDialog : Form
     private List<StoredCredential> _credentials = [];
     private AppSettings? _settings;
     private StatisticsService? _stats;
-    private Dictionary<int, string> _compactModelIdToName = [];
     private Dictionary<string, int> _compactModelNameToId = [];
 
     // Set while ShowConfigureDialog populates controls so model-name change events do not
@@ -335,24 +334,24 @@ internal sealed class ModelMappingDialog : Form
         }
     }
 
+    /// <summary>
+    /// The Compaction Model dropdown, addressed by proxy name — the same convention this dialog
+    /// already uses for <see cref="InstructionSetName"/> and <see cref="CredentialName"/>.
+    /// </summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private int? ContextSummarizeModelId
+    private string? ContextSummarizeModelName
     {
         get
         {
             string? value = _cmbContextSummarizeModel.SelectedItem?.ToString();
-            if (string.IsNullOrWhiteSpace(value) || string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase))
-                return null;
-            return _compactModelNameToId.TryGetValue(value!, out int id) ? id : null;
+            return string.Equals(value, NoneLabel, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
         }
         set
         {
-            if (!value.HasValue || !_compactModelIdToName.TryGetValue(value.Value, out string? name))
-            {
-                _cmbContextSummarizeModel.SelectedIndex = 0;
-                return;
-            }
-            int idx = _cmbContextSummarizeModel.FindStringExact(name);
+            string target = string.IsNullOrWhiteSpace(value) ? NoneLabel : value!;
+            int idx = _cmbContextSummarizeModel.FindStringExact(target);
             _cmbContextSummarizeModel.SelectedIndex = idx >= 0 ? idx : 0;
         }
     }
@@ -747,16 +746,14 @@ internal sealed class ModelMappingDialog : Form
     {
         _cmbContextSummarizeModel.Items.Clear();
         _cmbContextSummarizeModel.Items.Add(NoneLabel);
-        _compactModelIdToName.Clear();
         _compactModelNameToId.Clear();
         if (_settings is not null)
         {
             foreach (ModelMapping m in _settings.ModelMappings)
             {
-                if (!string.IsNullOrWhiteSpace(m.ProxyName) && m.Id != 0)
+                if (!string.IsNullOrWhiteSpace(m.ProxyName))
                 {
                     _cmbContextSummarizeModel.Items.Add(m.ProxyName);
-                    _compactModelIdToName[m.Id] = m.ProxyName;
                     _compactModelNameToId[m.ProxyName] = m.Id;
                 }
             }
@@ -2169,7 +2166,9 @@ internal sealed class ModelMappingDialog : Form
         dlg._upstreamUrl = mapping.UpstreamUrl ?? string.Empty;
         dlg.PopulateModelItems(existingModelItems, mapping.ModelName);
         dlg.InstructionSetName = mapping.InstructionSetName;
-        dlg.ContextSummarizeModelId = mapping.ContextSummarizeModelId;
+        // Show the target the proxy will actually resolve to, so a stale stored ID cannot leave
+        // the dropdown displaying a different model than compaction uses.
+        dlg.ContextSummarizeModelName = settings.FindContextSummarizeTarget(mapping)?.ProxyName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.Hidden = mapping.Hidden;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
@@ -2219,7 +2218,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
         mapping.ModelName = (dlg._cmbModelName.SelectedItem?.ToString() ?? dlg._cmbModelName.Text ?? string.Empty).Trim();
         mapping.InstructionSetName = dlg.InstructionSetName;
-        mapping.ContextSummarizeModelId = dlg.ContextSummarizeModelId;
+        dlg.ApplyCompactionTarget(mapping);
         mapping.TemperaturePriority = dlg.TemperaturePriority;
         mapping.RepeatPenaltyPriority = dlg.RepeatPenaltyPriority;
         mapping.EnableThinkingCompatibility = dlg.EnableThinkingCompatibility;
@@ -2245,6 +2244,20 @@ internal sealed class ModelMappingDialog : Form
         mapping.RedactResponseBodies = dlg.RedactResponseBodies;
         mapping.RedactSensitiveJsonFields = dlg.RedactSensitiveJsonFields;
         return true;
+    }
+
+    /// <summary>
+    /// Writes the Compaction Model selection back onto <paramref name="mapping"/>. Stores the
+    /// proxy name the user picked along with its current ID, so the name remains available to
+    /// confirm the ID still means the same model when the mapping is later loaded.
+    /// </summary>
+    private void ApplyCompactionTarget(ModelMapping mapping)
+    {
+        string? name = ContextSummarizeModelName;
+        mapping.ContextSummarizeModelName = name;
+        mapping.ContextSummarizeModelId = name is not null && _compactModelNameToId.TryGetValue(name, out int id)
+            ? id
+            : null;
     }
 
     private void PopulateUpstreamTypes(UpstreamType selected)

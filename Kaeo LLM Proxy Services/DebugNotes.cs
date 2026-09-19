@@ -16,12 +16,18 @@ internal static class DebugNotes
     /// Describes the model-name resolution: a mapping rewrite or a pass-through when no
     /// enabled mapping matches the requested name.
     /// </summary>
+    /// <remarks>
+    /// The sides are labelled because this line is commonly printed directly under a
+    /// <see cref="ContextSummarizeRedirectPassthrough"/> line, which also uses an arrow but for a
+    /// different transformation. Unlabelled, the target of one line becomes the source of the
+    /// next and the pair reads as reversed.
+    /// </remarks>
     public static string ModelResolution(string proxyName, string resolved, bool mapped)
     {
         if (!mapped || string.Equals(proxyName, resolved, StringComparison.OrdinalIgnoreCase))
             return $"model: \"{proxyName}\" (no mapping — passed through unchanged)";
 
-        return $"model: \"{proxyName}\" → \"{resolved}\" (mapping \"{proxyName}\")";
+        return $"model: proxy name \"{proxyName}\" → upstream model \"{resolved}\" (mapping \"{proxyName}\")";
     }
 
     /// <summary>
@@ -30,7 +36,7 @@ internal static class DebugNotes
     /// mapping, instead of the model the client originally requested.
     /// </summary>
     public static string ContextSummarizeRedirect(string originalModel, string compactModel) =>
-        $"model: /compact request redirected \"{originalModel}\" → \"{compactModel}\" (context-summarize compact model)";
+        $"model: /compact request for client model \"{originalModel}\" → routed to compaction model \"{compactModel}\" (context-summarize compact model)";
 
     /// <summary>
     /// Describes a sampling field (e.g. <c>temperature</c> or <c>repeat_penalty</c>) decision
@@ -112,11 +118,17 @@ internal static class DebugNotes
 
     /// <summary>
     /// Describes a context-summarize (/compact) redirect for the passthrough debug summary:
-    /// the original model the client requested, the compact model it was redirected to, and
-    /// the reason (always "context-summarize signature detected").
+    /// the model the client actually asked for, the configured compaction model it was routed
+    /// to, and the reason (always "context-summarize signature detected").
     /// </summary>
+    /// <remarks>
+    /// Both sides are named rather than left as a bare arrow, because the
+    /// <see cref="ModelResolution"/> line printed immediately below also uses an arrow — for the
+    /// proxy-name-to-upstream-name rewrite — and it starts from this line's target. Unlabelled,
+    /// the two read as a single reversed chain.
+    /// </remarks>
     public static string ContextSummarizeRedirectPassthrough(string originalModel, string compactModel) =>
-        $"compact redirect: \"{originalModel}\" → \"{compactModel}\" (context-summarize signature detected)";
+        $"compact redirect: client requested \"{originalModel}\" → routed to compaction model \"{compactModel}\" (context-summarize signature detected)";
 
     /// <summary>
     /// Describes where a manual compaction request was forwarded. When <paramref name="redirected"/>
@@ -126,8 +138,8 @@ internal static class DebugNotes
     /// </summary>
     public static string ManualCompactionTarget(string originalModel, string upstreamModel, bool redirected) =>
         redirected
-            ? $"compaction: \"{originalModel}\" → \"{upstreamModel}\" (redirected to the configured compaction model)"
-            : $"compaction: \"{originalModel}\" → \"{upstreamModel}\" (no redirect — the requested model summarizes itself)";
+            ? $"compaction: client requested \"{originalModel}\" → forwarded to compaction model's upstream \"{upstreamModel}\" (redirected to the configured compaction model)"
+            : $"compaction: client requested \"{originalModel}\" → forwarded to its own upstream \"{upstreamModel}\" (no redirect — the requested model summarizes itself)";
 
     private static string DescribeFormats(ReasoningEffortFormat format)
     {

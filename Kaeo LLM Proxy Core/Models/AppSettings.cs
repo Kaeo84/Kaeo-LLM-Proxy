@@ -497,7 +497,21 @@ internal sealed class ModelMapping
     /// sampling, and instruction-set settings all apply. Leave null to handle compact requests
     /// with this model itself. References by ID survive proxy name renames.
     /// </summary>
+    /// <remarks>
+    /// Do not read this directly to route a request. The ID is a surrogate key that can end up
+    /// belonging to a different mapping, after which it still resolves — just to the wrong model.
+    /// Always go through <see cref="AppSettings.FindContextSummarizeTarget"/>, which resolves the
+    /// stored proxy name first and falls back to this ID.
+    /// </remarks>
     public int? ContextSummarizeModelId { get; set; }
+
+    /// <summary>
+    /// Proxy name of the compaction target, stored alongside <see cref="ContextSummarizeModelId"/>
+    /// and resolved ahead of it by <see cref="AppSettings.FindContextSummarizeTarget"/>. This is the
+    /// name the user picked in the dialog, so it says which model compaction goes to even when the
+    /// ID has been reassigned. Null when no target is configured.
+    /// </summary>
+    public string? ContextSummarizeModelName { get; set; }
 
     /// <summary>
     /// When true, captured request bodies for this model are replaced with a redaction marker.
@@ -670,6 +684,7 @@ internal sealed class ModelMapping
             ReasoningEffortFormat = ReasoningEffortFormat,
             InstructionSetName = InstructionSetName,
             ContextSummarizeModelId = ContextSummarizeModelId,
+            ContextSummarizeModelName = ContextSummarizeModelName,
             RedactRequestBodies = RedactRequestBodies,
             RedactResponseBodies = RedactResponseBodies,
             RedactSensitiveJsonFields = RedactSensitiveJsonFields,
@@ -1216,6 +1231,61 @@ internal sealed class AppSettings
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns the compaction target configured on <paramref name="source"/>, or null when it has
+    /// none. This is the only supported way to read the target: the stored
+    /// <see cref="ModelMapping.ContextSummarizeModelName"/> is resolved first, and the ID is the
+    /// fallback when that name no longer matches anything.
+    /// </summary>
+    /// <remarks>
+    /// The name rules because it is what the user picked in the dialog, whereas the ID is a
+    /// surrogate that can end up belonging to a different mapping after a duplicate or a rebuilt
+    /// database — at which point the number still resolves, just to the wrong model.
+    /// <para>
+    /// The fallback matters: renaming the target model leaves the stored name pointing at a name
+    /// that no longer exists, and the ID — which is stable across a rename — is then the only key
+    /// that still identifies the model the user chose. Dropping the redirect there would turn a
+    /// harmless rename into silently disabled compaction.
+    /// </para>
+    /// </remarks>
+    public ModelMapping? FindContextSummarizeTarget(ModelMapping source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (!string.IsNullOrWhiteSpace(source.ContextSummarizeModelName)
+            && FindModelMapping(source.ContextSummarizeModelName) is { } byName)
+        {
+            return byName;
+        }
+
+        return source.ContextSummarizeModelId is > 0 and int id
+            ? FindModelMappingById(id)
+            : null;
+    }
+
+    /// <summary>
+    /// Re-points every stored <see cref="ModelMapping.ContextSummarizeModelName"/> at the current
+    /// proxy name of the mapping it resolves to. Called after the mappings grid is committed, so a
+    /// rename of a compaction target does not leave the references pointing at the old name.
+    /// </summary>
+    /// <remarks>
+    /// Only the name is refreshed, never the ID: <see cref="ModelMapping.Id"/> is stable across a
+    /// rename, which is exactly why it remains the fallback that identifies the target once the
+    /// stored name has gone stale.
+    /// </remarks>
+    public void RefreshCompactionTargetNames()
+    {
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (FindContextSummarizeTarget(mapping) is { } target
+                && !string.Equals(mapping.ContextSummarizeModelName, target.ProxyName, StringComparison.Ordinal))
+            {
+                mapping.ContextSummarizeModelName = target.ProxyName;
+                mapping.ContextSummarizeModelId = target.Id;
+            }
+        }
     }
 
     /// <summary>

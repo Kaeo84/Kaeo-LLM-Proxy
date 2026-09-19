@@ -93,6 +93,7 @@ internal sealed class AppDatabase : IDisposable
                     ollama_path,
                     upstream_path,
                     model,
+                    original_model,
                     streaming,
                     status,
                     error_message,
@@ -122,6 +123,7 @@ internal sealed class AppDatabase : IDisposable
                     $ollamaPath,
                     $upstreamPath,
                     $model,
+                    $originalModel,
                     $streaming,
                     $status,
                     $errorMessage,
@@ -192,6 +194,7 @@ internal sealed class AppDatabase : IDisposable
                     proactive_overflow_percent,
                     proactive_overflow_tokens,
                     context_summarize_model_id,
+                    context_summarize_model_name,
                     auto_compact_paths,
                     redirect_manual_compaction,
                     enable_heartbeats,
@@ -270,6 +273,7 @@ internal sealed class AppDatabase : IDisposable
                         proactive_overflow_percent,
                         proactive_overflow_tokens,
                         context_summarize_model_id,
+                        context_summarize_model_name,
                         auto_compact_paths,
                         redirect_manual_compaction,
                         enable_heartbeats,
@@ -305,6 +309,7 @@ internal sealed class AppDatabase : IDisposable
                         $proactiveOverflowPercent,
                         $proactiveOverflowTokens,
                         $contextSummarizeModelId,
+                        $contextSummarizeModelName,
                         $autoCompactPaths,
                         $redirectManualCompaction,
                         $enableHeartbeats,
@@ -725,7 +730,11 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens,
                     reasoning_tokens,
                     draft_n,
-                    draft_n_accepted
+                    draft_n_accepted,
+                    debug_summary,
+                    upstream_response_body,
+                    stop_reason,
+                    original_model
                 FROM requests
                 ORDER BY timestamp_utc DESC
                 LIMIT $count;
@@ -775,7 +784,8 @@ internal sealed class AppDatabase : IDisposable
                     cached_prompt_tokens,
                     reasoning_tokens,
                     draft_n,
-                    draft_n_accepted
+                    draft_n_accepted,
+                    original_model
                 FROM (
                     SELECT
                         timestamp_utc,
@@ -798,7 +808,8 @@ internal sealed class AppDatabase : IDisposable
                         cached_prompt_tokens,
                         reasoning_tokens,
                         draft_n,
-                        draft_n_accepted
+                        draft_n_accepted,
+                        original_model
                     FROM {{RequestTable(source)}}
                     ORDER BY timestamp_utc DESC
                     LIMIT $count
@@ -858,7 +869,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n_accepted,
                     debug_summary,
                     upstream_response_body,
-                    stop_reason
+                    stop_reason,
+                    original_model
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1103,6 +1115,7 @@ internal sealed class AppDatabase : IDisposable
                     ollama_path TEXT NOT NULL,
                     upstream_path TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    original_model TEXT NULL,
                     streaming INTEGER NOT NULL,
                     status INTEGER NOT NULL,
                     error_message TEXT NULL,
@@ -1136,8 +1149,9 @@ internal sealed class AppDatabase : IDisposable
                     timestamp_utc TEXT NOT NULL,
                     method TEXT NOT NULL,
                     ollama_path TEXT NOT NULL,
-                    upstream_path TEXT NOT NULL,
+                    path TEXT NOT NULL,
                     model TEXT NOT NULL,
+                    original_model TEXT NULL,
                     streaming INTEGER NOT NULL,
                     status INTEGER NOT NULL,
                     error_message TEXT NULL,
@@ -1530,6 +1544,14 @@ internal sealed class AppDatabase : IDisposable
                 "ALTER TABLE requests ADD COLUMN stop_reason TEXT NULL;");
             AddColumnIfMissing(connection, "mcp_requests", "stop_reason",
                 "ALTER TABLE mcp_requests ADD COLUMN stop_reason TEXT NULL;");
+
+            // Records the model the client actually asked for when the proxy rewrote it for a
+            // compaction redirect. Without it the redirect is only visible in the in-memory entry
+            // and the log detail view loses the source model after a restart.
+            AddColumnIfMissing(connection, "requests", "original_model",
+                "ALTER TABLE requests ADD COLUMN original_model TEXT NULL;");
+            AddColumnIfMissing(connection, "mcp_requests", "original_model",
+                "ALTER TABLE mcp_requests ADD COLUMN original_model TEXT NULL;");
         }
 
     /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
@@ -1921,10 +1943,10 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Assigns unique IDs to any model mapping that doesn't have one, and converts legacy
-    /// <c>context_summarize_model_name</c> string references to <c>context_summarize_model_id</c>
-    /// integer references by matching proxy names. Runs once after the schema migration so
-    /// existing data is upgraded transparently.
+    /// Assigns unique IDs to any model mapping that doesn't have one, repairs IDs that collide
+    /// with another mapping's, and converts legacy <c>context_summarize_model_name</c> string
+    /// references to <c>context_summarize_model_id</c> integer references by matching proxy names.
+    /// Runs once after the schema migration so existing data is upgraded transparently.
     /// </summary>
     private static void MigrateMappingIds(SqliteConnection connection)
     {
@@ -1977,7 +1999,9 @@ internal sealed class AppDatabase : IDisposable
             }
         }
 
-        // Convert legacy string references to integer IDs.
+        // Convert legacy string references to integer IDs. Rows that already carry an ID are left
+        // alone: when the two disagree, AppSettings.FindContextSummarizeTarget resolves by name on
+        // load and repairs the ID there, so doing it here as well would be redundant.
         foreach (var row in rows)
         {
             if (!string.IsNullOrWhiteSpace(row.LegacyName) && row.CurrentId is null)
@@ -2146,6 +2170,9 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$ollamaPath", entry.OllamaPath);
         command.Parameters.AddWithValue("$upstreamPath", entry.UpstreamPath);
         command.Parameters.AddWithValue("$model", entry.Model);
+        // Null rather than empty so "no redirect happened" is distinguishable from a redirect,
+        // and so the column stays index-friendly. DbValue maps an empty OriginalModel to DBNull.
+        command.Parameters.AddWithValue("$originalModel", DbValue(entry.OriginalModel));
         command.Parameters.AddWithValue("$streaming", ToSqliteBoolean(entry.Streaming));
         command.Parameters.AddWithValue("$status", (int)entry.Status);
         command.Parameters.AddWithValue("$errorMessage", DbValue(entry.ErrorMessage));
@@ -2161,14 +2188,14 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$requestBytes", entry.RequestBytes);
         command.Parameters.AddWithValue("$responseBytes", entry.ResponseBytes);
         command.Parameters.AddWithValue("$totalTokens", entry.TotalTokens);
-            command.Parameters.AddWithValue("$cachedPromptTokens", entry.CachedPromptTokens);
-            command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
-            command.Parameters.AddWithValue("$draftN", entry.DraftN);
-            command.Parameters.AddWithValue("$draftNAccepted", entry.DraftNAccepted);
-            command.Parameters.AddWithValue("$debugSummary", DbValue(entry.DebugSummary));
-            command.Parameters.AddWithValue("$upstreamResponseBody", DbValue(entry.UpstreamResponseBody));
-            command.Parameters.AddWithValue("$stopReason", DbValue(entry.StopReason));
-        }
+        command.Parameters.AddWithValue("$cachedPromptTokens", entry.CachedPromptTokens);
+        command.Parameters.AddWithValue("$reasoningTokens", entry.ReasoningTokens);
+        command.Parameters.AddWithValue("$draftN", entry.DraftN);
+        command.Parameters.AddWithValue("$draftNAccepted", entry.DraftNAccepted);
+        command.Parameters.AddWithValue("$debugSummary", DbValue(entry.DebugSummary));
+        command.Parameters.AddWithValue("$upstreamResponseBody", DbValue(entry.UpstreamResponseBody));
+        command.Parameters.AddWithValue("$stopReason", DbValue(entry.StopReason));
+    }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
     {
@@ -2205,6 +2232,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$proactiveOverflowPercent", mapping.ProactiveOverflowPercent);
         command.Parameters.AddWithValue("$proactiveOverflowTokens", mapping.ProactiveOverflowTokens);
         command.Parameters.AddWithValue("$contextSummarizeModelId", mapping.ContextSummarizeModelId.HasValue ? (object)mapping.ContextSummarizeModelId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("$contextSummarizeModelName", DbValue(mapping.ContextSummarizeModelName));
         command.Parameters.AddWithValue("$autoCompactPaths", (int)mapping.AutoCompactPaths);
         command.Parameters.AddWithValue("$redirectManualCompaction", ToSqliteBoolean(mapping.RedirectManualCompaction));
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
@@ -2256,12 +2284,13 @@ internal sealed class AppDatabase : IDisposable
         ProactiveOverflowPercent = reader.GetInt32(26),
         ProactiveOverflowTokens = reader.GetInt32(27),
         ContextSummarizeModelId = reader.IsDBNull(28) ? null : reader.GetInt32(28),
-        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(29))
-            ? (AutoCompactPaths)reader.GetInt32(29)
+        ContextSummarizeModelName = reader.IsDBNull(29) ? null : reader.GetString(29),
+        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(30))
+            ? (AutoCompactPaths)reader.GetInt32(30)
             : AutoCompactPaths.None,
-        RedirectManualCompaction = ReadBoolean(reader, 30),
-        EnableHeartbeats = ReadBoolean(reader, 31),
-        EnableCopilotCompatibility = ReadBoolean(reader, 32),
+        RedirectManualCompaction = ReadBoolean(reader, 31),
+        EnableHeartbeats = ReadBoolean(reader, 32),
+        EnableCopilotCompatibility = ReadBoolean(reader, 33),
     };
 
     /// <summary>
@@ -2311,6 +2340,7 @@ internal sealed class AppDatabase : IDisposable
         DebugSummary = reader.IsDBNull(24) ? null : reader.GetString(24),
         UpstreamResponseBody = reader.IsDBNull(25) ? null : reader.GetString(25),
         StopReason = reader.IsDBNull(26) ? null : reader.GetString(26),
+        OriginalModel = reader.IsDBNull(27) ? string.Empty : reader.GetString(27),
     };
 
     /// <summary>
@@ -2345,6 +2375,7 @@ internal sealed class AppDatabase : IDisposable
         ReasoningTokens = reader.GetInt32(18),
         DraftN = reader.GetInt32(19),
         DraftNAccepted = reader.GetInt32(20),
+        OriginalModel = reader.IsDBNull(21) ? string.Empty : reader.GetString(21),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()
