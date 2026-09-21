@@ -1149,7 +1149,7 @@ internal sealed class AppDatabase : IDisposable
                     timestamp_utc TEXT NOT NULL,
                     method TEXT NOT NULL,
                     ollama_path TEXT NOT NULL,
-                    path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
                     model TEXT NOT NULL,
                     original_model TEXT NULL,
                     streaming INTEGER NOT NULL,
@@ -1290,6 +1290,7 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             MigrateSseKeepAliveRename(connection);
+            MigrateMcpRequestPathRename(connection);
             MigrateRuntimeSettingsTable(connection);
             MigrateModelMappingsTable(connection);
             MigrateRequestsTable(connection);
@@ -1530,29 +1531,46 @@ internal sealed class AppDatabase : IDisposable
             "ALTER TABLE requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
         AddColumnIfMissing(connection, "mcp_requests", "draft_n",
             "ALTER TABLE mcp_requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
-            AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
-                "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
-            AddColumnIfMissing(connection, "requests", "debug_summary",
-                "ALTER TABLE requests ADD COLUMN debug_summary TEXT NULL;");
-            AddColumnIfMissing(connection, "requests", "upstream_response_body",
-                "ALTER TABLE requests ADD COLUMN upstream_response_body TEXT NULL;");
-            AddColumnIfMissing(connection, "mcp_requests", "debug_summary",
-                "ALTER TABLE mcp_requests ADD COLUMN debug_summary TEXT NULL;");
-            AddColumnIfMissing(connection, "mcp_requests", "upstream_response_body",
-                "ALTER TABLE mcp_requests ADD COLUMN upstream_response_body TEXT NULL;");
-            AddColumnIfMissing(connection, "requests", "stop_reason",
-                "ALTER TABLE requests ADD COLUMN stop_reason TEXT NULL;");
-            AddColumnIfMissing(connection, "mcp_requests", "stop_reason",
-                "ALTER TABLE mcp_requests ADD COLUMN stop_reason TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
+            "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
+        AddColumnIfMissing(connection, "requests", "debug_summary",
+            "ALTER TABLE requests ADD COLUMN debug_summary TEXT NULL;");
+        AddColumnIfMissing(connection, "requests", "upstream_response_body",
+            "ALTER TABLE requests ADD COLUMN upstream_response_body TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "debug_summary",
+            "ALTER TABLE mcp_requests ADD COLUMN debug_summary TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "upstream_response_body",
+            "ALTER TABLE mcp_requests ADD COLUMN upstream_response_body TEXT NULL;");
+        AddColumnIfMissing(connection, "requests", "stop_reason",
+            "ALTER TABLE requests ADD COLUMN stop_reason TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "stop_reason",
+            "ALTER TABLE mcp_requests ADD COLUMN stop_reason TEXT NULL;");
 
-            // Records the model the client actually asked for when the proxy rewrote it for a
-            // compaction redirect. Without it the redirect is only visible in the in-memory entry
-            // and the log detail view loses the source model after a restart.
-            AddColumnIfMissing(connection, "requests", "original_model",
-                "ALTER TABLE requests ADD COLUMN original_model TEXT NULL;");
-            AddColumnIfMissing(connection, "mcp_requests", "original_model",
-                "ALTER TABLE mcp_requests ADD COLUMN original_model TEXT NULL;");
-        }
+        // Records the model the client actually asked for when the proxy rewrote it for a
+        // compaction redirect. Without it the redirect is only visible in the in-memory entry
+        // and the log detail view loses the source model after a restart.
+        AddColumnIfMissing(connection, "requests", "original_model",
+            "ALTER TABLE requests ADD COLUMN original_model TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "original_model",
+            "ALTER TABLE mcp_requests ADD COLUMN original_model TEXT NULL;");
+    }
+
+    /// <summary>
+    /// Renames the <c>mcp_requests.path</c> column onto the <c>upstream_path</c> name used by the
+    /// baseline DDL and by every read/write query, preserving data.
+    /// </summary>
+    /// <remarks>
+    /// A database created while the MCP baseline briefly declared the column as <c>path</c> is left
+    /// with that name on disk, because <c>CREATE TABLE IF NOT EXISTS</c> never revisits an existing
+    /// table. Every query still names <c>upstream_path</c>, so such a database fails at startup with
+    /// "no such column: upstream_path". The rename is idempotent and degrades to a warning when the
+    /// file is held by a concurrent instance.
+    /// </remarks>
+    private static void MigrateMcpRequestPathRename(SqliteConnection connection)
+    {
+        RenameColumnIfPresent(connection, "mcp_requests",
+            "path", "upstream_path", "TEXT NOT NULL DEFAULT ''");
+    }
 
     /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
     private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string alterStatement)
