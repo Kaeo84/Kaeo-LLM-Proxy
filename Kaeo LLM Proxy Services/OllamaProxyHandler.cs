@@ -3124,54 +3124,32 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
                     List<JsonElement> messages = [.. prop.Value.EnumerateArray()];
 
-                    // Collect and merge consecutive leading system message contents.
-                    var systemParts = new List<string>();
-                    if (!string.IsNullOrWhiteSpace(injectedInstructions))
-                        systemParts.Add(injectedInstructions);
+                    // System-prompt composition is shared with /api/chat and /api/generate: the
+                    // instruction-set text and every leading system message are folded into exactly
+                    // one system message, because strict chat templates reject a second one.
+                    int leadingSystemCount = SystemPromptComposer.LeadingSystemCount(messages);
+                    bool recomposeSystem = SystemPromptComposer.ShouldRecompose(injectedInstructions, leadingSystemCount);
 
-                    bool merging = true;
+                    if (recomposeSystem)
+                    {
+                        writer.WriteStartObject();
+                        writer.WriteString("role", "system");
+                        writer.WriteString("content", SystemPromptComposer.Merge(
+                            injectedInstructions,
+                            SystemPromptComposer.LeadingSystemContents(messages, leadingSystemCount)));
+                        writer.WriteEndObject();
+                    }
 
-                    for (int i = 0; i < messages.Count; i++)
+                    // When nothing is being recomposed the client's lone system message is forwarded
+                    // verbatim so any extra properties it carries survive.
+                    for (int i = recomposeSystem ? leadingSystemCount : 0; i < messages.Count; i++)
                     {
                         JsonElement msg = messages[i];
 
                         if (hasTrailingAssistantPrefill && i == messages.Count - 1 && IsAssistantResponsePrefill(msg))
                             continue;
 
-                        bool isSystem = merging
-                            && msg.TryGetProperty("role", out JsonElement r)
-                            && r.GetString()?.Equals("system", StringComparison.OrdinalIgnoreCase) == true;
-
-                        if (isSystem)
-                        {
-                            string content = msg.TryGetProperty("content", out JsonElement c)
-                                ? c.GetString() ?? string.Empty
-                                : string.Empty;
-                            systemParts.Add(content);
-                        }
-                        else
-                        {
-                            // Emit the merged system message once when we leave the system block.
-                            if (merging && systemParts.Count > 0)
-                            {
-                                writer.WriteStartObject();
-                                writer.WriteString("role", "system");
-                                writer.WriteString("content", string.Join("\n\n", systemParts));
-                                writer.WriteEndObject();
-                                merging = false;
-                            }
-
-                            msg.WriteTo(writer);
-                        }
-                    }
-
-                    // Edge case: all messages were system messages.
-                    if (merging && systemParts.Count > 0)
-                    {
-                        writer.WriteStartObject();
-                        writer.WriteString("role", "system");
-                        writer.WriteString("content", string.Join("\n\n", systemParts));
-                        writer.WriteEndObject();
+                        msg.WriteTo(writer);
                     }
 
                     writer.WriteEndArray();
@@ -4776,27 +4754,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         log.Streaming = ollamaReq.Stream;
         var (genBase, genTimeout, genApiKey) = ResolveUpstream(effectiveModel);
 
-        // Build the prompt, optionally injecting custom instructions
-        string prompt = ollamaReq.Prompt;
-        string? systemPrefix = ollamaReq.System;
-
-        // Inject custom instructions if configured for this model mapping
+        // Build the prompt, composing the system prompt once on the same rule as the other two
+        // paths: instruction text first, then the client's system text, joined by a blank line.
+        // /api/generate carries system as a single string rather than a message array, so there is
+        // no multi-system-message case to fold here.
         ModelMapping? mapping = _settings.FindModelMapping(effectiveModel);
-        if (mapping?.InstructionSetName is not null)
-        {
-            InstructionSet? instructionSet = _settings.FindInstructionSet(mapping.InstructionSetName);
-            if (instructionSet is not null && !string.IsNullOrWhiteSpace(instructionSet.Instructions))
-            {
-                // Prepend custom instructions to the system prompt
-                systemPrefix = string.IsNullOrEmpty(systemPrefix)
-                    ? instructionSet.Instructions
-                    : $"{instructionSet.Instructions}\n\n{systemPrefix}";
-            }
-        }
+        string? instructionText = GetInstructionTextForModel(_settings, effectiveModel);
+        string systemPrefix = SystemPromptComposer.Merge(
+            instructionText,
+            string.IsNullOrWhiteSpace(ollamaReq.System) ? [] : [ollamaReq.System]);
+        string prompt = string.IsNullOrEmpty(systemPrefix)
+            ? ollamaReq.Prompt
+            : $"{systemPrefix}{SystemPromptComposer.Separator}{ollamaReq.Prompt}";
 
-        // Combine system and user prompt
-        if (!string.IsNullOrEmpty(systemPrefix))
-            prompt = $"{systemPrefix}\n\n{prompt}";
+        if (genDebugNotes is not null && mapping?.InstructionSetName is not null && instructionText is not null)
+            genDebugNotes.AppendLine(DebugNotes.InstructionInjection(mapping.InstructionSetName));
 
         var llamaReq = new LlamaCppCompletionRequest
         {
@@ -4975,16 +4947,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 debugNotes.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
         }
 
-        // Inject custom instructions if configured for this model mapping
-        if (mapping?.InstructionSetName is not null)
+        // Compose the system prompt exactly once, on the same rule as the /v1/* passthrough and
+        // /api/generate: instruction text first, then every leading system message, folded into one.
+        string? instructionText = GetInstructionTextForModel(_settings, effectiveModel);
+        int leadingSystemCount = SystemPromptComposer.LeadingSystemCount(messages);
+
+        if (SystemPromptComposer.ShouldRecompose(instructionText, leadingSystemCount))
         {
-            InstructionSet? instructionSet = _settings.FindInstructionSet(mapping.InstructionSetName);
-            if (instructionSet is not null && !string.IsNullOrWhiteSpace(instructionSet.Instructions))
+            string merged = SystemPromptComposer.Merge(
+                instructionText,
+                SystemPromptComposer.LeadingSystemContents(messages, leadingSystemCount));
+
+            messages.RemoveRange(0, leadingSystemCount);
+            messages.Insert(0, new LlamaCppMessage("system", merged));
+
+            if (debugNotes is not null)
             {
-                // Prepend system message with custom instructions
-                messages.Insert(0, new LlamaCppMessage("system", instructionSet.Instructions));
-                if (debugNotes is not null)
-                    debugNotes.AppendLine(DebugNotes.InstructionInjection(instructionSet.Name));
+                if (mapping?.InstructionSetName is not null)
+                    debugNotes.AppendLine(DebugNotes.InstructionInjection(mapping.InstructionSetName));
+                if (leadingSystemCount > 1)
+                    debugNotes.AppendLine("messages: merged consecutive leading system messages into a single system message");
             }
         }
 
