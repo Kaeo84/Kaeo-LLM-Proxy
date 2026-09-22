@@ -1560,7 +1560,14 @@ internal partial class MainForm : Form
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkDebugMode.Checked = _settings.DebugMode;
-        _chkCollectAllTraffic.Checked = _settings.CollectAllTraffic;
+        // Interim mapping until the Settings tab exposes one toggle per category: the old single
+                // checkbox reads as checked when any category beyond the always-on rejected-requests set is
+                // enabled, i.e. when routine noise is being captured.
+                _chkCollectAllTraffic.Checked =
+                    _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.HealthProbes)
+                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.VersionAndExplorer)
+                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.CorsPreflight)
+                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.LocalStubs);
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
@@ -1665,7 +1672,12 @@ internal partial class MainForm : Form
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.DebugMode = _chkDebugMode.Checked;
-        _settings.CollectAllTraffic = _chkCollectAllTraffic.Checked;
+        // Interim mapping: checked means "capture everything", matching the old single switch. The
+                // per-category toggles replace this. Rejected requests stay on regardless, so errors are
+                // never hidden by toggling noise off.
+                _settings.CollectNonProxiedCategories = _chkCollectAllTraffic.Checked
+                    ? [.. NonProxiedCategorySet.All]
+                    : [NonProxiedCategory.RejectedRequests];
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
         _settings.EnableSseKeepAlive = _chkSseKeepAlive.Checked;

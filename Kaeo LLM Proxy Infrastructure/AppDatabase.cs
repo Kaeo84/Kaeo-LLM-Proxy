@@ -563,7 +563,8 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator,
                     collect_all_traffic,
                     heartbeat_interval_seconds,
-                    compaction_fallback_context_tokens
+                    compaction_fallback_context_tokens,
+                    collect_non_proxied_categories
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -587,9 +588,13 @@ internal sealed class AppDatabase : IDisposable
                 EnablePerformanceSampling = ReadBoolean(reader, 9),
                 EnableApiExplorer = ReadBoolean(reader, 10),
                 RunAsAdministrator = ReadBoolean(reader, 11),
-                CollectAllTraffic = ReadBoolean(reader, 12),
+                // Ordinal 12 (collect_all_traffic) is intentionally no longer read: the per-category
+                // set below replaced it. The column stays in the SELECT to keep the ordinals that
+                // follow it stable, and in the schema so an older build can still open the file.
                 HeartbeatIntervalSeconds = reader.GetInt32(13),
                 CompactionFallbackContextTokens = reader.GetInt32(14),
+                CollectNonProxiedCategories = NonProxiedCategorySet.Parse(
+                    reader.IsDBNull(15) ? null : reader.GetString(15)),
             };
         }
     }
@@ -620,7 +625,8 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator,
                     collect_all_traffic,
                     heartbeat_interval_seconds,
-                    compaction_fallback_context_tokens
+                    compaction_fallback_context_tokens,
+                    collect_non_proxied_categories
                 )
                 VALUES (
                     $id,
@@ -638,7 +644,8 @@ internal sealed class AppDatabase : IDisposable
                     $runAsAdministrator,
                     $collectAllTraffic,
                     $heartbeatIntervalSeconds,
-                    $compactionFallbackContextTokens
+                    $compactionFallbackContextTokens,
+                    $collectNonProxiedCategories
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -655,7 +662,8 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator = excluded.run_as_administrator,
                     collect_all_traffic = excluded.collect_all_traffic,
                     heartbeat_interval_seconds = excluded.heartbeat_interval_seconds,
-                    compaction_fallback_context_tokens = excluded.compaction_fallback_context_tokens;
+                    compaction_fallback_context_tokens = excluded.compaction_fallback_context_tokens,
+                    collect_non_proxied_categories = excluded.collect_non_proxied_categories;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -671,9 +679,14 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enablePerformanceSampling", ToSqliteBoolean(settings.EnablePerformanceSampling));
             command.Parameters.AddWithValue("$enableApiExplorer", ToSqliteBoolean(settings.EnableApiExplorer));
             command.Parameters.AddWithValue("$runAsAdministrator", ToSqliteBoolean(settings.RunAsAdministrator));
-            command.Parameters.AddWithValue("$collectAllTraffic", ToSqliteBoolean(settings.CollectAllTraffic));
+            // The legacy switch is no longer written: the per-category set replaces it. It is still
+            // bound so the column keeps a value for an older build reading the same file.
+            command.Parameters.AddWithValue("$collectAllTraffic", ToSqliteBoolean(false));
             command.Parameters.AddWithValue("$heartbeatIntervalSeconds", settings.HeartbeatIntervalSeconds);
             command.Parameters.AddWithValue("$compactionFallbackContextTokens", settings.CompactionFallbackContextTokens);
+            command.Parameters.AddWithValue(
+                "$collectNonProxiedCategories",
+                NonProxiedCategorySet.Format(settings.CollectNonProxiedCategories));
             command.ExecuteNonQuery();
         }
     }
@@ -1013,9 +1026,12 @@ internal sealed class AppDatabase : IDisposable
             {
                 using SqliteCommand resetSequence = connection.CreateCommand();
                 resetSequence.Transaction = transaction;
+                // Reset the sequence for THIS source's table. Clearing the proxy log also clears the
+                // exceptions table, which shares its lifecycle. Building the name from RequestTable
+                // rather than branching on the source keeps every source correct as more are added.
                 resetSequence.CommandText = source == LogSource.Proxy
                     ? "DELETE FROM sqlite_sequence WHERE name IN ('requests', 'exceptions');"
-                    : "DELETE FROM sqlite_sequence WHERE name = 'mcp_requests';";
+                    : $"DELETE FROM sqlite_sequence WHERE name = '{RequestTable(source)}';";
                 resetSequence.ExecuteNonQuery();
             }
 
@@ -1029,8 +1045,12 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>Maps a log source to its backing request log table.</summary>
-    private static string RequestTable(LogSource source) =>
-        source == LogSource.Mcp ? "mcp_requests" : "requests";
+    private static string RequestTable(LogSource source) => source switch
+    {
+        LogSource.Mcp => "mcp_requests",
+        LogSource.NonProxied => "non_proxied_requests",
+        _ => "requests",
+    };
 
     /// <summary>Returns aggregate stats from the active database file.</summary>
     public (long total, long errors, long promptTokens, long completionTokens) QueryTotals()
@@ -1190,6 +1210,42 @@ internal sealed class AppDatabase : IDisposable
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
 
+                                CREATE TABLE IF NOT EXISTS non_proxied_requests (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    timestamp_utc TEXT NOT NULL,
+                                    method TEXT NOT NULL,
+                                    ollama_path TEXT NOT NULL,
+                                    upstream_path TEXT NOT NULL,
+                                    model TEXT NOT NULL,
+                                    original_model TEXT NULL,
+                                    streaming INTEGER NOT NULL,
+                                    status INTEGER NOT NULL,
+                                    error_message TEXT NULL,
+                                    status_code INTEGER NOT NULL,
+                                    duration_ms REAL NOT NULL,
+                                    prompt_tokens INTEGER NOT NULL,
+                                    completion_tokens INTEGER NOT NULL,
+                                    tokens_per_second REAL NOT NULL,
+                                    exception_id INTEGER NULL,
+                                    request_body TEXT NULL,
+                                    upstream_request_body TEXT NULL,
+                                    response_body TEXT NULL,
+                                    request_bytes INTEGER NOT NULL,
+                                    response_bytes INTEGER NOT NULL,
+                                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                                    draft_n INTEGER NOT NULL DEFAULT 0,
+                                    draft_n_accepted INTEGER NOT NULL DEFAULT 0,
+                                    debug_summary TEXT NULL,
+                                    upstream_response_body TEXT NULL,
+                                    stop_reason TEXT NULL,
+                                    client_address TEXT NULL,
+                                    user_agent TEXT NULL
+                                );
+
+                                CREATE INDEX IF NOT EXISTS idx_non_proxied_requests_timestamp_utc ON non_proxied_requests(timestamp_utc);
+
                 CREATE TABLE IF NOT EXISTS model_mappings (
                     id INTEGER NOT NULL DEFAULT 0,
                     proxy_name TEXT PRIMARY KEY,
@@ -1268,7 +1324,8 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
                     collect_all_traffic INTEGER NOT NULL DEFAULT 0,
                     heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
-                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192
+                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
+                    collect_non_proxied_categories TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1706,6 +1763,33 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated runtime_settings table: added collect_all_traffic column.");
+        }
+
+        // Replaces the single collect_all_traffic switch with a per-category set. The legacy column
+        // is left in place (its ordinal is still read) but no longer written, so an older build can
+        // still open the same file. An existing "log all traffic" choice migrates to every category,
+        // preserving what that user had; a blank value falls back to the default set on load.
+        if (!ColumnExists(connection, "runtime_settings", "collect_non_proxied_categories"))
+        {
+            using (SqliteCommand addColumn = connection.CreateCommand())
+            {
+                addColumn.CommandText =
+                    "ALTER TABLE runtime_settings ADD COLUMN collect_non_proxied_categories TEXT NULL;";
+                addColumn.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand seedFromLegacy = connection.CreateCommand())
+            {
+                seedFromLegacy.CommandText =
+                    "UPDATE runtime_settings SET collect_non_proxied_categories = $all " +
+                    "WHERE collect_all_traffic = 1 AND collect_non_proxied_categories IS NULL;";
+                seedFromLegacy.Parameters.AddWithValue(
+                    "$all", NonProxiedCategorySet.Format(NonProxiedCategorySet.All));
+                seedFromLegacy.ExecuteNonQuery();
+            }
+
+            Log.Information(
+                "Migrated runtime_settings table: added collect_non_proxied_categories column.");
         }
 
         if (!ColumnExists(connection, "runtime_settings", "heartbeat_interval_seconds"))

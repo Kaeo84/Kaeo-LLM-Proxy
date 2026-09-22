@@ -1283,9 +1283,16 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (log.Status == RequestStatus.Success && derived != RequestStatus.Success)
                     log.Status = derived;
 
-                // Infrastructure noise is captured only on request; everything else — including
-                // every error and every unknown endpoint — is logged unconditionally.
-                if (!infrastructureNoise || _settings.CollectAllTraffic)
+                // Infrastructure noise (probes, preflight, version, explorer) is captured only when at least
+                // one of the noise categories is enabled. The rejected-request categories are on by
+                // default, and everything that reaches a model is logged unconditionally.
+                // Per-category routing to the Non-proxied log lands with the classification step.
+                bool captureNoiseCategory =
+                    _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.HealthProbes)
+                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.VersionAndExplorer)
+                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.CorsPreflight);
+
+                if (!infrastructureNoise || captureNoiseCategory)
                     _stats.AddLog(log);
             }
         }

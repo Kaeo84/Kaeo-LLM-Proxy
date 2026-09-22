@@ -206,6 +206,84 @@ internal sealed class StoredCredential
         || !string.IsNullOrWhiteSpace(Certificate);
 }
 
+/// <summary>
+/// A category of request the proxy answers without calling a model. Each is independently
+/// toggleable so the frequent automated probes can be silenced without also hiding the errors
+/// worth investigating (an unknown endpoint, an unsupported call, a malformed body).
+/// </summary>
+internal enum NonProxiedCategory
+{
+    /// <summary>Load-balancer / uptime probes: <c>GET /</c> and <c>HEAD /</c>.</summary>
+    HealthProbes,
+
+    /// <summary>Static endpoints: <c>/api/version</c>, <c>/scalar</c>, <c>/openapi/v1/openapi.json</c>.</summary>
+    VersionAndExplorer,
+
+    /// <summary>CORS preflight <c>OPTIONS</c> requests.</summary>
+    CorsPreflight,
+
+    /// <summary>Stubs answered from local configuration: <c>/api/ps</c>, <c>/api/show</c>, <c>/v1/models*</c>.</summary>
+    LocalStubs,
+
+    /// <summary>
+    /// Requests rejected before or instead of a model call: unknown endpoint (404), unsupported
+    /// model management (501), malformed body (400), oversize body (413), unhandled (500), and
+    /// overload sheds (503). On by default — these are the ones worth surfacing.
+    /// </summary>
+    RejectedRequests,
+}
+
+/// <summary>
+/// Serialises the enabled <see cref="NonProxiedCategory"/> set to and from a single comma-joined
+/// string, mirroring how <c>model_mappings.capabilities</c> stores its multi-select set. Storing
+/// one compact column instead of five boolean columns keeps the ordinal-based
+/// <c>runtime_settings</c> reads from growing unmanageably.
+/// </summary>
+internal static class NonProxiedCategorySet
+{
+    private const char Separator = ',';
+
+    /// <summary>Every category, in a stable order for display and storage.</summary>
+    public static readonly NonProxiedCategory[] All =
+    [
+        NonProxiedCategory.HealthProbes,
+        NonProxiedCategory.VersionAndExplorer,
+        NonProxiedCategory.CorsPreflight,
+        NonProxiedCategory.LocalStubs,
+        NonProxiedCategory.RejectedRequests,
+    ];
+
+    /// <summary>
+    /// What a database that has never been configured captures: errors are on because they are the
+    /// ones worth finding, and the routine noise is off so a 9-second health poller cannot bury
+    /// them. This preserves the behaviour of the previous single "log infrastructure noise" switch.
+    /// </summary>
+    public static readonly NonProxiedCategory[] Default = [NonProxiedCategory.RejectedRequests];
+
+    /// <summary>Parses a stored set. Null or blank yields <see cref="Default"/>.</summary>
+    public static HashSet<NonProxiedCategory> Parse(string? stored)
+    {
+        if (string.IsNullOrWhiteSpace(stored))
+            return [.. Default];
+
+        HashSet<NonProxiedCategory> result = [];
+        foreach (string part in stored.Split(Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Enum.TryParse(part, ignoreCase: true, out NonProxiedCategory category))
+                result.Add(category);
+        }
+
+        return result;
+    }
+
+    /// <summary>Formats a set for storage, in <see cref="All"/> order so the stored value is stable.</summary>
+    public static string Format(IEnumerable<NonProxiedCategory> categories)
+    {
+        HashSet<NonProxiedCategory> set = [.. categories];
+        return string.Join(Separator, All.Where(set.Contains).Select(c => c.ToString()));
+    }
+}
+
 /// <summary>Mutable runtime settings stored in the application database.</summary>
 internal sealed class RuntimeSettings
 {
@@ -247,16 +325,16 @@ internal sealed class RuntimeSettings
     public bool DebugMode { get; set; } = false;
 
     /// <summary>
-    /// When true, the proxy logs ALL HTTP traffic passing through it, including non-transformed
-    /// requests such as /api/tags, /v1/models, /v1/models/{model}, and /v1/*. This provides
-    /// complete visibility into proxy routing and client behavior but significantly increases
-    /// CPU usage and log storage. Use with caution in production environments. Default: false.
+    /// Which categories of non-model request are captured into the Non-proxied log. Each category is
+    /// independently toggleable so the frequent automated probes (a health poller hitting
+    /// <c>HEAD /</c> every few seconds) can be silenced without also hiding the errors worth
+    /// investigating. Serialised as a comma-joined set.
     /// </summary>
-    public bool CollectAllTraffic { get; set; } = false;
+    public HashSet<NonProxiedCategory> CollectNonProxiedCategories { get; set; } = [.. NonProxiedCategorySet.Default];
 
-    public bool EnableSseKeepAlive { get; set; } = true;
+        public bool EnableSseKeepAlive { get; set; } = true;
 
-    public int SseKeepAliveIntervalSeconds { get; set; } = 60;
+        public int SseKeepAliveIntervalSeconds { get; set; } = 60;
 
     public int HeartbeatIntervalSeconds { get; set; } = 300;
 
@@ -892,13 +970,13 @@ internal sealed class AppSettings
     public bool DebugMode { get; set; } = false;
 
     /// <summary>
-    /// When true, the proxy logs ALL HTTP traffic passing through it, including non-transformed
-    /// requests such as /api/tags, /v1/models, /v1/models/{model}, and /v1/*. This provides
-    /// complete visibility into proxy routing and client behavior but significantly increases
-    /// CPU usage and log storage. Use with caution in production environments. Default: false.
+    /// Which categories of non-model request are captured into the Non-proxied log. Independently
+    /// toggleable per category so routine noise (a health poller hitting <c>HEAD /</c> every few
+    /// seconds) can be silenced without hiding the errors worth investigating. Persisted as a
+    /// comma-joined set; not read from the settings file.
     /// </summary>
     [JsonIgnore]
-    public bool CollectAllTraffic { get; set; } = false;
+    public HashSet<NonProxiedCategory> CollectNonProxiedCategories { get; set; } = [.. NonProxiedCategorySet.Default];
 
     /// <summary>
     /// When true, streaming responses emit harmless SSE comment frames to the client while waiting
@@ -1141,7 +1219,7 @@ internal sealed class AppSettings
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
         DebugMode = DebugMode,
-        CollectAllTraffic = CollectAllTraffic,
+        CollectNonProxiedCategories = [.. CollectNonProxiedCategories],
         EnableSseKeepAlive = EnableSseKeepAlive,
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
@@ -1162,7 +1240,7 @@ internal sealed class AppSettings
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         DebugMode = runtimeSettings.DebugMode;
-        CollectAllTraffic = runtimeSettings.CollectAllTraffic;
+        CollectNonProxiedCategories = [.. runtimeSettings.CollectNonProxiedCategories];
         EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;

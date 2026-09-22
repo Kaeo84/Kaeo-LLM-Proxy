@@ -10,8 +10,20 @@ internal enum RequestStatus
 /// <summary>Identifies which service produced a request log entry.</summary>
 internal enum LogSource
 {
+    /// <summary>Requests the proxy answered by calling an upstream model.</summary>
     Proxy,
+
+    /// <summary>Requests handled by the MCP server.</summary>
     Mcp,
+
+    /// <summary>
+    /// Requests the proxy answered without calling a model: health probes, stubs, preflight, the
+    /// API explorer, and the requests rejected before reaching a model (unknown endpoint,
+    /// unsupported model-management calls, malformed bodies, oversized bodies, overload sheds).
+    /// Kept in its own table and GUI tab so the frequent automated probes cannot bury real
+    /// proxied traffic, while still being logged and attributable.
+    /// </summary>
+    NonProxied,
 }
 
 /// <summary>A single logged proxy request with timing and token stats.</summary>

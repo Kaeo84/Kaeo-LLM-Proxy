@@ -178,7 +178,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     [Fact]
     public async Task HealthProbeIsNotLoggedWhenNoiseCaptureIsOff()
     {
-        _settings.CollectAllTraffic = false;
+        _settings.CollectNonProxiedCategories = [NonProxiedCategory.RejectedRequests];
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/");
@@ -191,7 +191,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     [Fact]
     public async Task HealthProbeIsLoggedWhenNoiseCaptureIsOn()
     {
-        _settings.CollectAllTraffic = true;
+        _settings.CollectNonProxiedCategories = [.. NonProxiedCategorySet.All];
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/");
@@ -208,8 +208,8 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     public async Task UnknownEndpointIsLoggedEvenWhenNoiseCaptureIsOff()
     {
         // The point of the fix: errors are never gated behind the noise switch, so an unrecognised
-        // caller stays visible with CollectAllTraffic left at its default.
-        _settings.CollectAllTraffic = false;
+        // caller stays visible with routine noise left off.
+        _settings.CollectNonProxiedCategories = [NonProxiedCategory.RejectedRequests];
         StartProxy();
 
         await _client.GetAsync("/some/unknown/probe");
