@@ -28,6 +28,12 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
 
     private readonly AppDatabase _database;
     private readonly StatisticsService _statistics;
+
+    /// <summary>
+    /// The store non-proxied requests are routed to. Kept separate from <see cref="_statistics"/> so
+    /// a test can assert which log a request landed in, which is the whole point of the split.
+    /// </summary>
+    private readonly StatisticsService _nonProxiedStatistics;
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
     private readonly OllamaProxyHandler _handler;
@@ -40,10 +46,11 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     {
         _database = new AppDatabase(new LoggingSettings { ApplicationDatabasePath = _dbPath });
         _statistics = new StatisticsService(maxEntries: 500, store: null);
+        _nonProxiedStatistics = new StatisticsService(maxEntries: 500, store: null, source: LogSource.NonProxied);
         _moduleHost = new ModuleHost(_database, _settings);
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _statistics);
 
-        _handler = new OllamaProxyHandler(_settings, _statistics, _moduleHost, _mcpServer);
+        _handler = new OllamaProxyHandler(_settings, _statistics, _moduleHost, _mcpServer, _nonProxiedStatistics);
         _server = new ProxyServer(_handler);
     }
 
@@ -53,6 +60,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         _server.Dispose();
         _handler.Dispose();
         _statistics.Dispose();
+        _nonProxiedStatistics.Dispose();
         _database.Dispose();
         await _mcpServer.DisposeAsync();
     }
@@ -75,6 +83,9 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     }
 
     private RequestLog? LastLog() => _statistics.GetRecentLogs().LastOrDefault();
+
+    /// <summary>Most recent entry in the Non-proxied log, or null when none was captured.</summary>
+    private RequestLog? LastNonProxiedLog() => _nonProxiedStatistics.GetRecentLogs().LastOrDefault();
 
     /// <summary>
     /// Waits until <paramref name="expected"/> requests have been logged, then returns.
@@ -107,6 +118,24 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     /// </summary>
     private static Task SettleAsync() => Task.Delay(400);
 
+    /// <summary>
+    /// Waits until <paramref name="expected"/> requests have reached the Non-proxied store, for the
+    /// same response-before-finally reason as <see cref="WaitForLogsAsync"/>.
+    /// </summary>
+    private async Task WaitForNonProxiedLogsAsync(int expected)
+    {
+        try
+        {
+            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(15));
+            while (_nonProxiedStatistics.TotalRequests < expected)
+                await Task.Delay(10, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Let the caller's assertion fail with the actual observed state.
+        }
+    }
+
     // ── Errors are logged with the code the client received ────────────────
 
     [Fact]
@@ -115,10 +144,10 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/api/does-not-exist");
-        await WaitForLogsAsync(1);
+        await WaitForNonProxiedLogsAsync(1);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        RequestLog? log = LastLog();
+        RequestLog? log = LastNonProxiedLog();
         Assert.NotNull(log);
         Assert.Equal("/api/does-not-exist", log.OllamaPath);
         Assert.Equal(404, log.StatusCode);
@@ -131,10 +160,10 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         StartProxy();
 
         HttpResponseMessage response = await _client.PostAsync("/api/pull", new StringContent("{}"));
-        await WaitForLogsAsync(1);
+        await WaitForNonProxiedLogsAsync(1);
 
         Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
-        RequestLog? log = LastLog();
+        RequestLog? log = LastNonProxiedLog();
         Assert.NotNull(log);
         Assert.Equal(501, log.StatusCode);
         Assert.Equal(RequestStatus.Error, log.Status);
@@ -150,6 +179,8 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         await WaitForLogsAsync(1);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // /api/chat is a route addressed to a model, so a malformed body stays with the Proxy log
+        // rather than the noise log: the client asked for a model and this is that request failing.
         RequestLog? log = LastLog();
         Assert.NotNull(log);
         Assert.Equal(400, log.StatusCode);
@@ -161,30 +192,48 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     [Fact]
     public async Task ServedRequestIsLoggedAsASuccess()
     {
+        // /api/ps is answered from local mapping config with no upstream call, so it is classified
+        // as a non-proxied local stub and lands in the Non-proxied log rather than the Proxy log.
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/api/ps");
-        await WaitForLogsAsync(1);
+        await WaitForNonProxiedLogsAsync(1);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        RequestLog? log = LastLog();
+        RequestLog? log = LastNonProxiedLog();
         Assert.NotNull(log);
         Assert.Equal(200, log.StatusCode);
         Assert.Equal(RequestStatus.Success, log.Status);
     }
 
-    // ── Infrastructure noise follows the CollectAllTraffic switch ──────────
+    [Fact]
+    public async Task NonProxiedRequestDoesNotLandInTheProxyLog()
+    {
+        // The separation is the point of the change: a locally-answered stub must not appear in the
+        // Proxy log, or the frequent automated probes would still bury real traffic.
+        StartProxy();
+
+        await _client.GetAsync("/api/ps");
+        await WaitForNonProxiedLogsAsync(1);
+
+        Assert.Empty(_statistics.GetRecentLogs());
+    }
+
+    // ── Health-probe noise follows its own category toggle ─────
 
     [Fact]
     public async Task HealthProbeIsNotLoggedWhenNoiseCaptureIsOff()
     {
-        _settings.CollectNonProxiedCategories = [NonProxiedCategory.RejectedRequests];
+        // HealthProbes is a genuinely automated category and is off by default, so a 9-second
+        // poller cannot bury real traffic. Both logs must stay empty.
+        _settings.CollectNonProxiedCategories = [NonProxiedCategory.LocalStubs, NonProxiedCategory.RejectedRequests];
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/");
         await SettleAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(_nonProxiedStatistics.GetRecentLogs());
         Assert.Empty(_statistics.GetRecentLogs());
     }
 
@@ -195,10 +244,10 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         StartProxy();
 
         HttpResponseMessage response = await _client.GetAsync("/");
-        await WaitForLogsAsync(1);
+        await WaitForNonProxiedLogsAsync(1);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        RequestLog? log = LastLog();
+        RequestLog? log = LastNonProxiedLog();
         Assert.NotNull(log);
         Assert.Equal(200, log.StatusCode);
         Assert.Equal(RequestStatus.Success, log.Status);
@@ -213,9 +262,9 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         StartProxy();
 
         await _client.GetAsync("/some/unknown/probe");
-        await WaitForLogsAsync(1);
+        await WaitForNonProxiedLogsAsync(1);
 
-        Assert.Equal(404, LastLog()?.StatusCode);
+        Assert.Equal(404, LastNonProxiedLog()?.StatusCode);
     }
 
     // ── The 503 shed path ──────────────────────────────────────────────────
@@ -227,7 +276,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         // logging finally never executes — the handler records the rejection directly. Exercised
         // through a real HttpListenerContext, which keeps the test deterministic; saturating the
         // actual concurrency gate would make it timing-dependent.
-        using OllamaProxyHandler handler = new(_settings, _statistics, _moduleHost, _mcpServer);
+        using OllamaProxyHandler handler = new(_settings, _statistics, _moduleHost, _mcpServer, _nonProxiedStatistics);
         using HttpListener listener = new();
         listener.Prefixes.Add($"http://localhost:{GetFreePort()}/");
         listener.Start();
@@ -243,7 +292,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         HttpResponseMessage response = await call;
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        RequestLog? log = LastLog();
+        RequestLog? log = LastNonProxiedLog();
         Assert.NotNull(log);
         Assert.Equal(503, log.StatusCode);
         Assert.Equal(RequestStatus.Error, log.Status);

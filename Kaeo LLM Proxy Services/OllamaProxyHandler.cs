@@ -20,7 +20,7 @@ namespace Kaeo.LlmProxy.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer) : IDisposable
+internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -41,6 +41,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     private int _inFlightRequests;
 
     private readonly StatisticsService _stats = stats;
+
+        /// <summary>
+        /// Destination for requests the proxy answered without calling a model. Kept separate so the
+        /// frequent automated probes cannot bury real traffic in the main log. Falls back to
+        /// <see cref="_stats"/> when no dedicated store is supplied, which keeps the split purely a
+        /// presentation concern in hosts that do not wire one.
+        /// </summary>
+        private readonly StatisticsService _nonProxiedStats = nonProxiedStats ?? stats;
     private readonly ModuleHost _moduleHost = moduleHost;
     private readonly McpServerService _mcpServer = mcpServer;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
@@ -992,7 +1000,10 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 UserAgent = string.IsNullOrWhiteSpace(req.UserAgent) ? null : req.UserAgent,
             };
 
-            _stats.AddLog(log);
+            // A shed request never reached a model, so it belongs with the other rejected calls.
+            // Written directly to the Non-proxied store rather than routed through the classifier,
+            // because no handler ran and there is no request lifecycle to classify after the fact.
+            _nonProxiedStats.AddLog(log);
         }
         catch (Exception ex)
         {
@@ -1018,6 +1029,78 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return address.ToString();
     }
 
+    /// <summary>
+    /// Classifies a request as a category of non-proxied traffic, or returns null when the request
+    /// is proxied — meaning it reached, or was meant to reach, an upstream model. The boundary is
+    /// "the proxy answered this without calling a model". Pure and listener-free so it can be
+    /// unit tested directly.
+    /// </summary>
+    /// <remarks>
+    /// Classification is deliberately based on method and path only, never on the response status
+    /// or <c>UpstreamPath</c>. Both of those are unreliable here: the routing table assigns
+    /// <c>UpstreamPath</c> optimistically as soon as a route matches, before the body is even
+    /// parsed, and a status code cannot distinguish a proxy-produced 400 from an upstream one that
+    /// was passed through. The question "was a model meant to be called?" is answerable from the
+    /// route alone, so that is what this uses.
+    /// <para>
+    /// Consequence worth knowing: a malformed body on <c>/api/chat</c> is a <em>proxied</em> route,
+    /// so it stays in the Proxy log even though no model was reached. That is the deliberate
+    /// reading of the boundary — the request was addressed to a model — and it keeps a client's
+    /// broken chat call with the traffic it belongs to rather than in the noise log.
+    /// </para>
+    /// </remarks>
+    internal static NonProxiedCategory? ClassifyNonProxied(string method, string path, int statusCode)
+    {
+        _ = statusCode; // Retained for call-site clarity; routing alone decides the category.
+
+        bool isGet = method.Equals("GET", StringComparison.OrdinalIgnoreCase);
+        bool isHead = method.Equals("HEAD", StringComparison.OrdinalIgnoreCase);
+
+        if (method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+            return NonProxiedCategory.CorsPreflight;
+
+        if (path == "/" && (isGet || isHead))
+            return NonProxiedCategory.HealthProbes;
+
+        if (isGet && path == "/api/version")
+            return NonProxiedCategory.VersionAndExplorer;
+
+        if (path is "/scalar" or "/scalar/" or "/openapi/v1/openapi.json")
+            return NonProxiedCategory.VersionAndExplorer;
+
+        // Answered entirely from local mapping configuration, with no upstream call.
+        if (path is "/api/ps" or "/api/show")
+            return NonProxiedCategory.LocalStubs;
+
+        if (isGet && (path.Equals("/v1/models", StringComparison.OrdinalIgnoreCase)
+                   || path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase)))
+            return NonProxiedCategory.LocalStubs;
+
+        // Routes addressed to a model stay in the Proxy log — including when they fail, because the
+        // client asked for a model and the failure belongs with that traffic. Note /api/tags maps
+        // onto the upstream's /v1/models, so it is a real call, unlike the local /v1/models above.
+        if (IsModelRoute(method, path))
+            return null;
+
+        // Everything else was answered without reaching a model: unknown endpoints, unsupported
+        // model-management calls, and the overload shed.
+        return NonProxiedCategory.RejectedRequests;
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is a route whose purpose is to reach an upstream model.
+    /// </summary>
+    private static bool IsModelRoute(string method, string path)
+    {
+        if (path is "/api/chat" or "/api/generate" or "/api/embeddings" or "/api/embed"
+            || path.Equals("/api/tags", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // OpenAI-native passthrough, including the compact endpoints. The local /v1/models lookups
+        // were already returned above, so any remaining /v1* path is a model call.
+        return path.StartsWith("/v1", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task HandleCoreAsync(
         HttpListenerRequest req,
         HttpListenerResponse resp,
@@ -1030,12 +1113,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         // exception detail. Suppresses the second AddLog in the finally.
         bool exceptionLogged = false;
-
-        // Infrastructure noise — health probes, CORS preflight, the version stub, the API explorer.
-        // Every other request is logged unconditionally, because an unrecognised call is exactly
-        // what needs to be visible; these four are answered without touching a model and would
-        // otherwise dominate the log.
-        bool infrastructureNoise = false;
 
         // One try/finally wraps the whole method, including the early-return branches above the
         // routing table. Previously those returned before the try, so a health probe produced no
@@ -1055,7 +1132,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 {
                     RecordResponseStatus(resp, log, 204);
                     resp.Close();
-                    infrastructureNoise = true;
                     return;
                 }
             }
@@ -1082,7 +1158,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     resp.Close();
                 }
 
-                infrastructureNoise = true;
                 return;
             }
 
@@ -1092,7 +1167,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 RecordResponseStatus(resp, log, 200);
                 await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
-                infrastructureNoise = true;
                 return;
             }
 
@@ -1103,7 +1177,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 {
                     RecordResponseStatus(resp, log, 200);
                     await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
-                    infrastructureNoise = true;
                     return;
                 }
 
@@ -1111,7 +1184,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 {
                     RecordResponseStatus(resp, log, 200);
                     await WriteJsonRawAsync(resp, OpenApiSpec, ct);
-                    infrastructureNoise = true;
                     return;
                 }
             }
@@ -1283,17 +1355,23 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 if (log.Status == RequestStatus.Success && derived != RequestStatus.Success)
                     log.Status = derived;
 
-                // Infrastructure noise (probes, preflight, version, explorer) is captured only when at least
-                // one of the noise categories is enabled. The rejected-request categories are on by
-                // default, and everything that reaches a model is logged unconditionally.
-                // Per-category routing to the Non-proxied log lands with the classification step.
-                bool captureNoiseCategory =
-                    _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.HealthProbes)
-                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.VersionAndExplorer)
-                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.CorsPreflight);
+                // Classify where this request belongs. A request the proxy answered without calling a model
+                // is filed as Non-proxied so the frequent automated probes cannot bury real traffic;
+                // everything else stays in the main Proxy log, unconditionally, because an
+                // unrecognised caller is exactly what needs to stay findable.
+                NonProxiedCategory? category = ClassifyNonProxied(method, path, log.StatusCode);
 
-                if (!infrastructureNoise || captureNoiseCategory)
+                if (category is { } classified)
+                {
+                    // Capture is per category: routine noise can be silenced while the rejected
+                    // requests worth investigating stay on.
+                    if (_settings.CollectNonProxiedCategories.Contains(classified))
+                        _nonProxiedStats.AddLog(log);
+                }
+                else
+                {
                     _stats.AddLog(log);
+                }
             }
         }
     }

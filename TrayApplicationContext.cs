@@ -19,6 +19,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppSettings _settings;
     private readonly StatisticsService _stats;
     private readonly StatisticsService _mcpStats;
+
+    /// <summary>
+    /// Store for requests the proxy answered without calling a model. Owned here alongside the
+    /// other two so every log source has exactly one lifetime and one persistence channel.
+    /// </summary>
+    private readonly StatisticsService _nonProxiedStats;
     private readonly PerformanceService _perfService;
     private readonly OllamaProxyHandler _handler;
     private readonly ProxyServer _server;
@@ -53,6 +59,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
         _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp);
+        _nonProxiedStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.NonProxied);
 
         // Modules were initialized with a forwarding sink; point it at the real MCP log store
         // so module activity (e.g. SSH connections) appears in the MCP logs.
@@ -60,7 +67,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
-        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
+        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer, _nonProxiedStats);
         _handler.StartHeartbeatMonitors();
         _server = new ProxyServer(_handler);
 
@@ -346,6 +353,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _handler.Dispose();
             _stats.Dispose();
             _mcpStats.Dispose();
+            _nonProxiedStats.Dispose();
             _perfService.Dispose();
             // The database is owned by Program.Main (created and disposed there); only one
             // shared instance exists per process, so it must not be disposed here.

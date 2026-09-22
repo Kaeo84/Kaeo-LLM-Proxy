@@ -254,11 +254,14 @@ internal static class NonProxiedCategorySet
     ];
 
     /// <summary>
-    /// What a database that has never been configured captures: errors are on because they are the
-    /// ones worth finding, and the routine noise is off so a 9-second health poller cannot bury
-    /// them. This preserves the behaviour of the previous single "log infrastructure noise" switch.
+    /// What a database that has never been configured captures. The genuinely automated noise
+    /// (health probes, version/explorer, preflight) is off so a 9-second poller cannot bury real
+    /// traffic, while local stubs and rejected requests are on because they are real client API
+    /// calls and the errors worth investigating. This keeps the promise that all API requests and
+    /// every error are logged, and reproduces the previous behaviour where only probes were gated.
     /// </summary>
-    public static readonly NonProxiedCategory[] Default = [NonProxiedCategory.RejectedRequests];
+    public static readonly NonProxiedCategory[] Default =
+        [NonProxiedCategory.LocalStubs, NonProxiedCategory.RejectedRequests];
 
     /// <summary>Parses a stored set. Null or blank yields <see cref="Default"/>.</summary>
     public static HashSet<NonProxiedCategory> Parse(string? stored)
