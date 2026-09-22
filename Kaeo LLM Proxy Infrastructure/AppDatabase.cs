@@ -2598,6 +2598,16 @@ internal sealed class AppDatabase : IDisposable
 
     private static object DbValue(string? value) => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value;
 
+        /// <summary>
+        /// Escapes the LIKE wildcards (<c>%</c> and <c>_</c>) plus the escape character itself, so a
+        /// user typing a literal percent or underscore searches for that character instead of matching
+        /// everything. Pair with <c>ESCAPE '\'</c> in the query.
+        /// </summary>
+        private static string EscapeLike(string value) => value
+            .Replace("\\", "\\\\")
+            .Replace("%", "\\%")
+            .Replace("_", "\\_");
+
     // ── Module registry + module database gateway support ───────────────────
 
     /// <summary>Loads all registered modules ordered by registration.</summary>
@@ -2844,44 +2854,70 @@ internal sealed class AppDatabase : IDisposable
     /// </summary>
     /// <param name="levelFilter">Optional level name to filter by (e.g. "Error"). Null returns all.</param>
     /// <param name="limit">Maximum number of entries to return. Default 500.</param>
-    public IReadOnlyList<SystemLogEntry> GetSystemLogs(string? levelFilter = null, int limit = 500)
-    {
-        lock (_lock)
+    public IReadOnlyList<SystemLogEntry> GetSystemLogs(
+            string? levelFilter = null, int limit = 500,
+            IReadOnlyCollection<string>? levelFilters = null, string? searchText = null)
         {
-            using SqliteConnection connection = OpenConnection();
-            using SqliteCommand command = connection.CreateCommand();
-
-            if (string.IsNullOrEmpty(levelFilter))
+            lock (_lock)
             {
+                using SqliteConnection connection = OpenConnection();
+                using SqliteCommand command = connection.CreateCommand();
+
+                List<string> clauses = [];
+
+                // Multi-select levels take precedence over the legacy single-level argument, so existing
+                // callers keep working while the UI moves to a checked list.
+                List<string> levels = levelFilters is { Count: > 0 }
+                    ? [.. levelFilters]
+                    : (string.IsNullOrEmpty(levelFilter) ? [] : [levelFilter]);
+
+                if (levels.Count > 0)
+                {
+                    List<string> levelParams = [];
+                    for (int i = 0; i < levels.Count; i++)
+                    {
+                        string name = $"$level{i}";
+                        levelParams.Add(name);
+                        command.Parameters.AddWithValue(name, levels[i]);
+                    }
+
+                    clauses.Add($"level IN ({string.Join(", ", levelParams)})");
+                }
+
+                // Free-text search spans the fields a user can actually see, so a term matches whether it
+                // appears in the message, the exception detail, or the source context. LIKE is
+                // case-insensitive for ASCII in SQLite by default; the ESCAPE clause keeps a literal
+                // percent or underscore in the term from acting as a wildcard.
+                if (!string.IsNullOrWhiteSpace(searchText))
+                {
+                    clauses.Add(
+                        "(message LIKE $search ESCAPE '\\' " +
+                        "OR exception LIKE $search ESCAPE '\\' " +
+                        "OR source_context LIKE $search ESCAPE '\\')");
+                    command.Parameters.AddWithValue("$search", "%" + EscapeLike(searchText.Trim()) + "%");
+                }
+
+                string where = clauses.Count > 0 ? " WHERE " + string.Join(" AND ", clauses) : string.Empty;
                 command.CommandText =
                     "SELECT timestamp_utc, level, message, exception, source_context " +
-                    "FROM system_logs ORDER BY id DESC LIMIT $limit";
+                    $"FROM system_logs{where} ORDER BY id DESC LIMIT $limit";
                 command.Parameters.AddWithValue("$limit", limit);
-            }
-            else
-            {
-                command.CommandText =
-                    "SELECT timestamp_utc, level, message, exception, source_context " +
-                    "FROM system_logs WHERE level = $level ORDER BY id DESC LIMIT $limit";
-                command.Parameters.AddWithValue("$level", levelFilter);
-                command.Parameters.AddWithValue("$limit", limit);
-            }
 
-            using SqliteDataReader reader = command.ExecuteReader();
-            List<SystemLogEntry> results = [];
+                using SqliteDataReader reader = command.ExecuteReader();
+                List<SystemLogEntry> results = [];
 
-            while (reader.Read())
-            {
-                DateTime timestamp = DateTime.Parse(reader.GetString(0),
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.RoundtripKind);
-                string level = reader.GetString(1);
-                string message = reader.GetString(2);
-                string? exception = reader.IsDBNull(3) ? null : reader.GetString(3);
-                string? sourceContext = reader.IsDBNull(4) ? null : reader.GetString(4);
+                while (reader.Read())
+                {
+                    DateTime timestamp = DateTime.Parse(reader.GetString(0),
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.RoundtripKind);
+                    string level = reader.GetString(1);
+                    string message = reader.GetString(2);
+                    string? exception = reader.IsDBNull(3) ? null : reader.GetString(3);
+                    string? sourceContext = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-                results.Add(new SystemLogEntry(timestamp, level, message, exception, sourceContext));
-            }
+                    results.Add(new SystemLogEntry(timestamp, level, message, exception, sourceContext));
+                }
 
             return results;
         }
