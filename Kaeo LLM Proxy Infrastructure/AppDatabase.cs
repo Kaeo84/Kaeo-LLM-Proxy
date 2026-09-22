@@ -115,7 +115,9 @@ internal sealed class AppDatabase : IDisposable
                     draft_n_accepted,
                     debug_summary,
                     upstream_response_body,
-                    stop_reason
+                    stop_reason,
+                    client_address,
+                    user_agent
                 )
                 VALUES (
                     $timestampUtc,
@@ -145,7 +147,9 @@ internal sealed class AppDatabase : IDisposable
                     $draftNAccepted,
                     $debugSummary,
                     $upstreamResponseBody,
-                    $stopReason
+                    $stopReason,
+                    $clientAddress,
+                    $userAgent
                 );
                 """;
 
@@ -734,7 +738,9 @@ internal sealed class AppDatabase : IDisposable
                     debug_summary,
                     upstream_response_body,
                     stop_reason,
-                    original_model
+                    original_model,
+                    client_address,
+                    user_agent
                 FROM requests
                 ORDER BY timestamp_utc DESC
                 LIMIT $count;
@@ -870,7 +876,9 @@ internal sealed class AppDatabase : IDisposable
                     debug_summary,
                     upstream_response_body,
                     stop_reason,
-                    original_model
+                    original_model,
+                    client_address,
+                    user_agent
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1137,7 +1145,9 @@ internal sealed class AppDatabase : IDisposable
                     draft_n_accepted INTEGER NOT NULL DEFAULT 0,
                     debug_summary TEXT NULL,
                     upstream_response_body TEXT NULL,
-                    stop_reason TEXT NULL
+                    stop_reason TEXT NULL,
+                    client_address TEXT NULL,
+                    user_agent TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1173,7 +1183,9 @@ internal sealed class AppDatabase : IDisposable
                     draft_n_accepted INTEGER NOT NULL DEFAULT 0,
                     debug_summary TEXT NULL,
                     upstream_response_body TEXT NULL,
-                    stop_reason TEXT NULL
+                    stop_reason TEXT NULL,
+                    client_address TEXT NULL,
+                    user_agent TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1553,6 +1565,19 @@ internal sealed class AppDatabase : IDisposable
             "ALTER TABLE requests ADD COLUMN original_model TEXT NULL;");
         AddColumnIfMissing(connection, "mcp_requests", "original_model",
             "ALTER TABLE mcp_requests ADD COLUMN original_model TEXT NULL;");
+
+        // Caller identity captured for every request so a row that carries no model or meaningful
+        // path (a health probe, an unknown endpoint, a malformed call) can still be traced to its
+        // source. Existing databases predate these columns, so CREATE TABLE IF NOT EXISTS leaves
+        // them absent; the reads would then fail with "no such column".
+        AddColumnIfMissing(connection, "requests", "client_address",
+            "ALTER TABLE requests ADD COLUMN client_address TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "client_address",
+            "ALTER TABLE mcp_requests ADD COLUMN client_address TEXT NULL;");
+        AddColumnIfMissing(connection, "requests", "user_agent",
+            "ALTER TABLE requests ADD COLUMN user_agent TEXT NULL;");
+        AddColumnIfMissing(connection, "mcp_requests", "user_agent",
+            "ALTER TABLE mcp_requests ADD COLUMN user_agent TEXT NULL;");
     }
 
     /// <summary>
@@ -2213,6 +2238,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$debugSummary", DbValue(entry.DebugSummary));
         command.Parameters.AddWithValue("$upstreamResponseBody", DbValue(entry.UpstreamResponseBody));
         command.Parameters.AddWithValue("$stopReason", DbValue(entry.StopReason));
+        command.Parameters.AddWithValue("$clientAddress", DbValue(entry.ClientAddress));
+        command.Parameters.AddWithValue("$userAgent", DbValue(entry.UserAgent));
     }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -2359,6 +2386,8 @@ internal sealed class AppDatabase : IDisposable
         UpstreamResponseBody = reader.IsDBNull(25) ? null : reader.GetString(25),
         StopReason = reader.IsDBNull(26) ? null : reader.GetString(26),
         OriginalModel = reader.IsDBNull(27) ? string.Empty : reader.GetString(27),
+        ClientAddress = reader.IsDBNull(28) ? null : reader.GetString(28),
+        UserAgent = reader.IsDBNull(29) ? null : reader.GetString(29),
     };
 
     /// <summary>

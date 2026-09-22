@@ -347,7 +347,7 @@ td code{font-size:11.6px}
           <div class="stat ok"><div class="n">7</div><div class="l">Error codes recorded</div></div>
           <div class="stat ok"><div class="n">0</div><div class="l">Unlogged paths left</div></div>
           <div class="stat"><div class="n">5</div><div class="l">Noise, gated by setting</div></div>
-          <div class="stat ok"><div class="n">8</div><div class="l">Coverage tests</div></div>
+          <div class="stat ok"><div class="n">10</div><div class="l">Coverage tests</div></div>
         </div>
 
         <div class="card">
@@ -451,6 +451,47 @@ public int StatusCode { get; set; }                                 // 0</code><
             <p style="margin-top:12px">
               <strong>Everything else is logged unconditionally</strong> — every API request and every error, including
               404s. An unrecognised caller stays visible with the checkbox left at its default.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Caller attribution</h3>
+          <p>
+            Logging <em>every</em> request made the noise problem obvious: a <code>HEAD /</code> probe produces a
+            row with no model, no upstream, and no body — nothing to tell you <strong>who</strong> sent it. Every
+            request now captures the caller's identity so any row is traceable:
+          </p>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th style="width:22%">Field</th><th style="width:34%">Source</th><th>Why it helps</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><code>ClientAddress</code></td>
+                  <td><code>req.RemoteEndPoint</code> (IPv4-mapped IPv6 normalised)</td>
+                  <td>Identifies the socket the request came from</td>
+                </tr>
+                <tr>
+                  <td><code>UserAgent</code></td>
+                  <td><code>req.UserAgent</code></td>
+                  <td>Names the calling tool — a VS probe vs a browser vs a script — in one glance</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="margin-top:12px">
+            Both are set once in <code>HandleAsync</code> and <code>RecordRejectedRequest</code>, so every path that
+            produces a row is attributed, including the pre-routing 503. They persist as nullable columns on
+            <code>requests</code> and <code>mcp_requests</code> (baseline DDL <strong>and</strong> an
+            <code>AddColumnIfMissing</code> migration, so an existing database gains them), and the detail pane shows a
+            <code>Client</code> / <code>Agent</code> line after <code>Path</code> — only when present, so older rows
+            simply omit it.
+          </p>
+          <div class="callout" style="margin-bottom:0">
+            <span class="lbl">This does not change what is logged</span>
+            <p>
+              Probes are still gated by <code>CollectAllTraffic</code>. Attribution only makes those rows
+              <em>actionable</em> when you turn noise capture on to see who is probing.
             </p>
           </div>
         </div>
@@ -634,7 +675,7 @@ log.Status = log.StatusCode &gt;= 400 ? RequestStatus.Error : RequestStatus.Succ
                 <tr>
                   <td>Coverage tests</td>
                   <td><span class="pill ok">done</span></td>
-                  <td><code>RequestLoggingCoverageTests</code> — 8 tests over a real listener on an ephemeral port. Full suite 320 passed, 0 failed.</td>
+                  <td><code>RequestLoggingCoverageTests</code> — 8 listener cases plus 2 SQLite round-trip tests pinning attribution and the INSERT/SELECT column alignment. Full suite 322 passed, 0 failed.</td>
                 </tr>
               </tbody>
             </table>
@@ -1095,6 +1136,7 @@ if (typeof mermaid === 'undefined') {
     ['RecordUndeliverableError','OllamaProxyHandler.cs','Error','Notes that the client received a truncated response, and records the intended status code.'],
     ['RecordRejectedRequest','OllamaProxyHandler.cs','Error','Logs a request ProxyServer shed before it reached HandleAsync. Infallible by design, since it runs on a fire-and-forget overload path.'],
     ['RequestLog.DeriveStatus','RequestLog.cs','Error','The single rule mapping an HTTP code to a RequestStatus. Treats 499 as Cancelled and 0 as Error.'],
+    ['GetClientAddress','OllamaProxyHandler.cs','Attribution','Renders req.RemoteEndPoint as a display string, normalising IPv4-mapped IPv6 to plain IPv4 so a row identifies its caller. Mirrors the MCP host helper.'],
     ['AddLog','StatisticsService.cs','Persist','Enqueues a body-free summary for the GUI, updates counters, hands the full entry to the persistence channel.'],
     ['PersistLoopAsync','StatisticsService.cs','Persist','Single writer draining the bounded channel into SQLite off the request path.'],
     ['Insert','AppDatabase.cs','Persist','Writes the row into requests or mcp_requests, persisting exception detail in its own transaction.']

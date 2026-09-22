@@ -925,6 +925,13 @@ internal partial class MainForm : Form
         sb.AppendLine($"Timestamp : {log.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
         sb.AppendLine($"Method    : {log.Method}");
         sb.AppendLine($"Path      : {log.OllamaPath}");
+        // Attribution: which caller produced this row. Decisive for the headless requests that
+        // carry no model or meaningful path (health probes, unknown endpoints, malformed bodies),
+        // which otherwise give nothing to trace a source from.
+        if (!string.IsNullOrEmpty(log.ClientAddress))
+            sb.AppendLine($"Client    : {log.ClientAddress}");
+        if (!string.IsNullOrEmpty(log.UserAgent))
+            sb.AppendLine($"Agent     : {log.UserAgent}");
         if (source == LogSource.Proxy)
         {
             sb.AppendLine($"Upstream  : {log.UpstreamPath}");

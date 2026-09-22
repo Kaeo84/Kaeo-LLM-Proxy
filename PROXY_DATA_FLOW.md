@@ -96,6 +96,7 @@ flowchart TD
 | `RecordResponseStatus` | OllamaProxyHandler.cs | Records the code on the log entry, derives `Status`, then sets `resp.StatusCode`. Writes the log first because setting the response status throws once headers are committed. |
 | `RecordRejectedRequest` | OllamaProxyHandler.cs | Logs a request `ProxyServer` shed before it reached `HandleAsync`. Infallible by design — it runs on a fire-and-forget overload path. |
 | `RequestLog.DeriveStatus` | RequestLog.cs | The single rule mapping an HTTP code to a `RequestStatus`. Treats 499 as `Cancelled` and 0 as `Error`. |
+| `GetClientAddress` | OllamaProxyHandler.cs | Renders `req.RemoteEndPoint` as a display string for caller attribution, normalising IPv4-mapped IPv6 to plain IPv4. Mirrors the MCP host's helper so both log views show addresses the same way. |
 | `NormalizeRequestBody` | OllamaProxyHandler.cs | Rewrites `model`, applies sampling and reasoning-effort priorities, strips `stream_options` under Copilot compatibility, composes the system prompt, applies the `/compact` redirect. Returns the original text untouched when nothing needs rewriting. |
 | `SystemPromptComposer.Merge` | SystemPromptComposer.cs | Folds instruction-set text plus all leading system messages into exactly one system message. |
 | `ResolveEffectiveModel` | OllamaProxyHandler.cs | Detects a Copilot `/compact` summary request and redirects it to the configured compaction model. |
@@ -175,6 +176,26 @@ and would otherwise dominate the log:
 **Everything else is logged unconditionally** — every API request and every error, including 404s.
 An unrecognised endpoint stays visible with the checkbox left at its default, which is the point.
 
+### Caller attribution
+
+Logging *every* request made the noise problem obvious: a `HEAD /` probe produces a row with no
+model, no upstream, and no body — nothing to tell you **who** sent it. Every request now captures
+the caller's identity so any row is traceable:
+
+| Field | Source | Why it helps |
+|---|---|---|
+| `ClientAddress` | `req.RemoteEndPoint` (IPv4-mapped IPv6 normalised) | Identifies the socket the request came from |
+| `UserAgent` | `req.UserAgent` | Names the calling tool — a VS probe vs a browser vs a script — in one glance |
+
+Both are set once in `HandleAsync` and in `RecordRejectedRequest`, so every path that produces a row
+is attributed, including the pre-routing 503. They are persisted as nullable columns on `requests`
+and `mcp_requests` (baseline DDL **and** an `AddColumnIfMissing` migration, so an existing database
+gains them), and the detail pane shows a `Client` / `Agent` line after `Path` — only when present, so
+older rows simply omit it.
+
+This does **not** change what is logged: probes are still gated by `CollectAllTraffic`. Attribution
+only makes those rows actionable *when* you turn noise capture on to see who is probing.
+
 ### Still out of scope
 
 Truly malformed HTTP — bad request line, invalid headers, garbage bytes — is rejected by Windows
@@ -252,9 +273,15 @@ proxy now does the same, with the two caveats above that the MCP host does not h
 `RequestLoggingCoverageTests` binds a real `HttpListener` on an ephemeral loopback port and drives it
 over HTTP, because the bug lived in the control flow *around* the handlers — branches returning
 before the logging `finally`, and error paths answering without recording. A handler-level unit test
-cannot observe either failure. Eight cases: unknown endpoint → 404, `/api/pull` → 501, malformed
-JSON → 400, `/api/ps` → 200, health probe not logged with noise capture off, health probe logged
-with it on, unknown endpoint logged **even with noise capture off**, and the 503 shed path.
+cannot observe either failure. Eight listener cases: unknown endpoint → 404, `/api/pull` → 501,
+malformed JSON → 400, `/api/ps` → 200, health probe not logged with noise capture off, health probe
+logged with it on, unknown endpoint logged **even with noise capture off**, and the 503 shed path.
+
+Two further tests pin caller attribution with a real SQLite round-trip — `Insert` then
+`LoadFullLogEntry` — asserting `ClientAddress`/`UserAgent` come back intact, and that a row with no
+attribution reloads as `null` rather than empty. These also guard the column/ordinal alignment
+between the 30-column `INSERT` and the two `SELECT`s that share `ReadRequestLog`: a misaligned
+ordinal would read the wrong field and fail here instead of silently corrupting the GUI.
 
 One race surfaced while writing them and is worth knowing about: a handler writes and closes the
 response *before* the logging `finally` runs, so the client can observe the status code while the

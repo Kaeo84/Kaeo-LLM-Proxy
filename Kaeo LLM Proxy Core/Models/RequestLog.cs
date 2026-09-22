@@ -140,6 +140,21 @@ internal sealed class RequestLog
     public long ResponseBytes { get; set; }
 
     /// <summary>
+    /// The caller's IP address as seen by the listener, used to attribute a request to its source
+    /// when the request itself carries no model or path that identifies it (a health probe, an
+    /// unknown endpoint, a malformed call). Null when the transport did not supply an endpoint.
+    /// IPv4-mapped IPv6 addresses are normalised to plain IPv4.
+    /// </summary>
+    public string? ClientAddress { get; set; }
+
+    /// <summary>
+    /// The caller's User-Agent header, the most human-readable attribution signal: it names the tool
+    /// that made the request (a Visual Studio probe, a browser, a script) rather than just its socket.
+    /// Null when the client sent no User-Agent.
+    /// </summary>
+    public string? UserAgent { get; set; }
+
+    /// <summary>
     /// Derives the <see cref="RequestStatus"/> that corresponds to an HTTP status code, so every
     /// logging path shares one rule instead of each branch remembering to set
     /// <see cref="RequestLog.Status"/> alongside <see cref="RequestLog.StatusCode"/>.

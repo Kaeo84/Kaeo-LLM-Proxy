@@ -249,4 +249,60 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         Assert.Equal(RequestStatus.Error, log.Status);
         Assert.Contains("capacity", log.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
+
+    // ── Caller attribution is persisted and read back ──────────────────────
+
+    [Fact]
+    public void AttributionSurvivesADatabaseRoundTrip()
+    {
+        // The detail pane reloads a row from SQLite, so attribution must be persisted rather than
+        // carried only on the in-memory summary. This also pins the column/ordinal alignment
+        // between the INSERT and the two SELECTs that share ReadRequestLog: an off-by-one or a
+        // column that is selected in one query but not the other fails here (or reads the wrong
+        // field) instead of silently corrupting the GUI at runtime.
+        DateTime timestamp = new(2026, 9, 22, 11, 42, 30, DateTimeKind.Local);
+
+        _database.Insert(new RequestLog
+        {
+            Timestamp = timestamp,
+            Method = "HEAD",
+            OllamaPath = "/",
+            StatusCode = 200,
+            Status = RequestStatus.Success,
+            ClientAddress = "127.0.0.1",
+            UserAgent = "Visual Studio Copilot probe",
+        });
+
+        RequestLog? reloaded = _database.LoadFullLogEntry(timestamp);
+
+        Assert.NotNull(reloaded);
+        Assert.Equal("HEAD", reloaded.Method);
+        Assert.Equal("127.0.0.1", reloaded.ClientAddress);
+        Assert.Equal("Visual Studio Copilot probe", reloaded.UserAgent);
+    }
+
+    [Fact]
+    public void AttributionIsOptionalWhenTheCallerSendsNothing()
+    {
+        // An older row, or a caller that sent no User-Agent, persists nulls rather than empty
+        // strings (DbValue maps blank to DBNull), and the reader must return null cleanly instead
+        // of throwing on the isDBNull guard. This is the path that keeps the detail dialog omitting
+        // the Client/Agent lines rather than showing "null".
+        DateTime timestamp = new(2026, 9, 22, 11, 42, 31, DateTimeKind.Local);
+
+        _database.Insert(new RequestLog
+        {
+            Timestamp = timestamp,
+            Method = "GET",
+            OllamaPath = "/api/ps",
+            StatusCode = 200,
+            Status = RequestStatus.Success,
+        });
+
+        RequestLog? reloaded = _database.LoadFullLogEntry(timestamp);
+
+        Assert.NotNull(reloaded);
+        Assert.Null(reloaded.ClientAddress);
+        Assert.Null(reloaded.UserAgent);
+    }
 }

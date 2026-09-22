@@ -941,6 +941,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             RequestId = requestId,
             Method = method,
             OllamaPath = path,
+            // Captured for every request so a row that carries no model or meaningful path (a
+            // health probe, an unknown endpoint, a malformed body) can still be traced to who sent
+            // it. User-Agent names the calling tool; the address identifies the socket.
+            ClientAddress = GetClientAddress(req.RemoteEndPoint),
+            UserAgent = string.IsNullOrWhiteSpace(req.UserAgent) ? null : req.UserAgent,
         };
 
         var sw = Stopwatch.StartNew();
@@ -983,6 +988,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 Status = RequestLog.DeriveStatus(statusCode),
                 ErrorMessage = reason,
                 RequestBytes = Math.Max(0, req.ContentLength64),
+                ClientAddress = GetClientAddress(req.RemoteEndPoint),
+                UserAgent = string.IsNullOrWhiteSpace(req.UserAgent) ? null : req.UserAgent,
             };
 
             _stats.AddLog(log);
@@ -991,6 +998,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             Log.Warning(ex, "Failed to record a rejected request in the request log");
         }
+    }
+
+    /// <summary>
+    /// Renders the caller's IP as a display string for request-log attribution, preferring IPv4:
+    /// an IPv4-mapped IPv6 address (what a loopback connection often presents on a dual-stack
+    /// listener) is reported as plain IPv4 so the log stays readable. Mirrors the MCP host's
+    /// equivalent so both log views show addresses the same way.
+    /// </summary>
+    private static string? GetClientAddress(IPEndPoint? remoteEndPoint)
+    {
+        if (remoteEndPoint is null)
+            return null;
+
+        IPAddress address = remoteEndPoint.Address;
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+
+        return address.ToString();
     }
 
     private async Task HandleCoreAsync(
