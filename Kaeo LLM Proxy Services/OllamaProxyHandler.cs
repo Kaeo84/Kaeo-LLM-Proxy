@@ -958,6 +958,41 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
     }
 
+    /// <summary>
+    /// Records a request that <see cref="ProxyServer"/> rejected before it ever reached
+    /// <see cref="HandleAsync"/> — currently only the 503 shed when no concurrency slot frees within
+    /// the acquire timeout. Such a request has no <see cref="RequestLog"/> and never runs the
+    /// logging <c>finally</c>, so without this it would leave no trace at all despite having been
+    /// answered on the proxy's port.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately infallible: this runs on a fire-and-forget path already handling an overload,
+    /// so a logging failure here must not turn a shed request into an unobserved exception.
+    /// </remarks>
+    internal void RecordRejectedRequest(HttpListenerRequest req, int statusCode, string reason)
+    {
+        try
+        {
+            RequestLog log = new()
+            {
+                RequestId = Guid.NewGuid().ToString("N")[..12],
+                Method = req.HttpMethod,
+                OllamaPath = req.Url?.AbsolutePath ?? "/",
+                UpstreamPath = "(rejected before routing — no upstream call)",
+                StatusCode = statusCode,
+                Status = RequestLog.DeriveStatus(statusCode),
+                ErrorMessage = reason,
+                RequestBytes = Math.Max(0, req.ContentLength64),
+            };
+
+            _stats.AddLog(log);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to record a rejected request in the request log");
+        }
+    }
+
     private async Task HandleCoreAsync(
         HttpListenerRequest req,
         HttpListenerResponse resp,
@@ -968,111 +1003,94 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         Stopwatch sw,
         CancellationToken ct)
     {
-        // CORS headers and OPTIONS preflight are only emitted when explicitly enabled. In a
-        // backend-to-backend topology (behind a load balancer/WAF) browsers never call the proxy
-        // directly, so a wildcard CORS policy is unnecessary and would let any webpage drive it.
-        if (_settings.EnableCors)
-        {
-            resp.AddHeader("Access-Control-Allow-Origin", "*");
-            resp.AddHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-            resp.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-            if (method == "OPTIONS")
-            {
-                resp.StatusCode = 204;
-                resp.Close();
-
-                if (_settings.CollectAllTraffic)
-                {
-                    log.Status = RequestStatus.Success;
-                    log.StatusCode = 204;
-                    sw.Stop();
-                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
-                    _stats.AddLog(log);
-                }
-                return;
-            }
-        }
-
-        // Load balancer / uptime health checks commonly probe "/" with GET or HEAD. Answer
-        // directly without logging. HEAD must never write body bytes — HttpListener treats the
-        // response as having a 0-byte entity body for HEAD requests, and writing anything to the
-        // output stream (even via WriteJsonAsync's normal JSON payload) throws
-        // ProtocolViolationException ("Bytes to be written to the stream exceed the Content-Length
-        // bytes size specified").
-        if (path == "/" && (method == "GET" || method == "HEAD"))
-        {
-            resp.ContentType = "text/plain";
-            if (method == "HEAD")
-            {
-                resp.ContentLength64 = 0;
-                resp.Close();
-            }
-            else
-            {
-                byte[] bytes = Encoding.UTF8.GetBytes("OK");
-                resp.ContentLength64 = bytes.Length;
-                await resp.OutputStream.WriteAsync(bytes, ct);
-                resp.Close();
-            }
-
-            return;
-        }
-
-        // Static version probe answered without logging — infrastructure noise that would inflate
-        // the request log on every client connection.
-        if (method == "GET" && path == "/api/version")
-        {
-            await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
-
-            if (_settings.CollectAllTraffic)
-            {
-                log.Status = RequestStatus.Success;
-                log.StatusCode = 200;
-                sw.Stop();
-                log.DurationMs = sw.Elapsed.TotalMilliseconds;
-                _stats.AddLog(log);
-            }
-            return;
-        }
-
-        // Scalar API explorer — served only when explicitly enabled in settings.
-        if (_settings.EnableApiExplorer && method == "GET")
-        {
-            if (path is "/scalar" or "/scalar/")
-            {
-                await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
-
-                if (_settings.CollectAllTraffic)
-                {
-                    log.Status = RequestStatus.Success;
-                    log.StatusCode = 200;
-                    sw.Stop();
-                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
-                    _stats.AddLog(log);
-                }
-                return;
-            }
-
-            if (path == "/openapi/v1/openapi.json")
-            {
-                await WriteJsonRawAsync(resp, OpenApiSpec, ct);
-
-                if (_settings.CollectAllTraffic)
-                {
-                    log.Status = RequestStatus.Success;
-                    log.StatusCode = 200;
-                    sw.Stop();
-                    log.DurationMs = sw.Elapsed.TotalMilliseconds;
-                    _stats.AddLog(log);
-                }
-                return;
-            }
-        }
-
+        // exception detail. Suppresses the second AddLog in the finally.
         bool exceptionLogged = false;
+
+        // Infrastructure noise — health probes, CORS preflight, the version stub, the API explorer.
+        // Every other request is logged unconditionally, because an unrecognised call is exactly
+        // what needs to be visible; these four are answered without touching a model and would
+        // otherwise dominate the log.
+        bool infrastructureNoise = false;
+
+        // One try/finally wraps the whole method, including the early-return branches above the
+        // routing table. Previously those returned before the try, so a health probe produced no
+        // log entry at all — even with CollectAllTraffic on.
         try
         {
+            // CORS headers and OPTIONS preflight are only emitted when explicitly enabled. In a
+            // backend-to-backend topology (behind a load balancer/WAF) browsers never call the proxy
+            // directly, so a wildcard CORS policy is unnecessary and would let any webpage drive it.
+            if (_settings.EnableCors)
+            {
+                resp.AddHeader("Access-Control-Allow-Origin", "*");
+                resp.AddHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+                resp.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+                if (method == "OPTIONS")
+                {
+                    RecordResponseStatus(resp, log, 204);
+                    resp.Close();
+                    infrastructureNoise = true;
+                    return;
+                }
+            }
+
+            // Load balancer / uptime health checks commonly probe "/" with GET or HEAD. HEAD must
+            // never write body bytes — HttpListener treats the response as having a 0-byte entity
+            // body for HEAD requests, and writing anything to the output stream (even via
+            // WriteJsonAsync's normal JSON payload) throws ProtocolViolationException ("Bytes to be
+            // written to the stream exceed the Content-Length bytes size specified").
+            if (path == "/" && (method == "GET" || method == "HEAD"))
+            {
+                RecordResponseStatus(resp, log, 200);
+                resp.ContentType = "text/plain";
+                if (method == "HEAD")
+                {
+                    resp.ContentLength64 = 0;
+                    resp.Close();
+                }
+                else
+                {
+                    byte[] bytes = Encoding.UTF8.GetBytes("OK");
+                    resp.ContentLength64 = bytes.Length;
+                    await resp.OutputStream.WriteAsync(bytes, ct);
+                    resp.Close();
+                }
+
+                infrastructureNoise = true;
+                return;
+            }
+
+            // Static version probe — infrastructure noise that would inflate the request log on
+            // every client connection.
+            if (method == "GET" && path == "/api/version")
+            {
+                RecordResponseStatus(resp, log, 200);
+                await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
+                infrastructureNoise = true;
+                return;
+            }
+
+            // Scalar API explorer — served only when explicitly enabled in settings.
+            if (_settings.EnableApiExplorer && method == "GET")
+            {
+                if (path is "/scalar" or "/scalar/")
+                {
+                    RecordResponseStatus(resp, log, 200);
+                    await WriteHtmlAsync(resp, await BuildApiExplorerHtmlAsync(ct).ConfigureAwait(false), ct);
+                    infrastructureNoise = true;
+                    return;
+                }
+
+                if (path == "/openapi/v1/openapi.json")
+                {
+                    RecordResponseStatus(resp, log, 200);
+                    await WriteJsonRawAsync(resp, OpenApiSpec, ct);
+                    infrastructureNoise = true;
+                    return;
+                }
+            }
+
             if (method == "GET" && path == "/api/tags")
             {
                 log.UpstreamPath = "/v1/models";
@@ -1104,8 +1122,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else if (path is "/api/pull" or "/api/push" or "/api/create" or "/api/copy" or "/api/delete")
             {
-                log.Status = RequestStatus.Error;
-                resp.StatusCode = 501;
+                RecordResponseStatus(resp, log, 501);
                 await WriteJsonAsync(resp,
                     new { error = $"'{path}' is not supported. llama.cpp has no model-management API." }, ct);
             }
@@ -1143,18 +1160,20 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             }
             else
             {
-                resp.StatusCode = 404;
+                // Unknown endpoint. Recorded explicitly so an unrecognised call — a scanner, a
+                // misconfigured client, or an endpoint this proxy does not implement — is visible
+                // in the log as a 404 rather than defaulting to a success with no status code.
+                RecordResponseStatus(resp, log, 404);
+                log.ErrorMessage = $"Unknown endpoint: {path}";
                 await WriteJsonAsync(resp, new { error = $"Unknown endpoint: {path}" }, ct);
             }
         }
         catch (OperationCanceledException)
         {
-            log.Status = RequestStatus.Cancelled;
-
             // The response may already have started (a streaming request commits its SSE headers
             // before the upstream answers), in which case the 499 cannot be delivered. Record that
             // rather than silently swallowing it, then always release the connection.
-            if (!await TryWriteErrorResponseAsync(resp, 499, new { error = "Request cancelled.", requestId }, CancellationToken.None))
+            if (!await TryWriteErrorResponseAsync(resp, log, 499, new { error = "Request cancelled.", requestId }, CancellationToken.None))
             {
                 RecordUndeliverableError(log, 499);
                 CloseResponseQuietly(resp);
@@ -1163,12 +1182,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         catch (RequestBodyTooLargeException ex)
         {
             // Oversized request body — reject before buffering to protect against memory exhaustion.
-            log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
             Log.Warning("Rejected oversized request body on {Path}: {Message}", path, ex.Message);
 
             // The body is rejected before anything is streamed, so this should always be deliverable.
-            if (!await TryWriteErrorResponseAsync(resp, 413, new { error = "Request body too large.", requestId }, CancellationToken.None))
+            if (!await TryWriteErrorResponseAsync(resp, log, 413, new { error = "Request body too large.", requestId }, CancellationToken.None))
                 RecordUndeliverableError(log, 413);
 
             sw.Stop();
@@ -1177,7 +1195,6 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         }
         catch (Exception ex)
         {
-            log.Status = RequestStatus.Error;
             log.ErrorMessage = ex.Message;
 
             // Log the full exception detail server-side only. The client receives a generic
@@ -1187,7 +1204,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // A streaming request commits its SSE headers before the upstream answers, so this 500 is
             // often undeliverable and the client is left with a truncated response. Say so in the log
             // instead of swallowing the failure, which is what previously made these hangs invisible.
-            if (!await TryWriteErrorResponseAsync(resp, 500, new { error = "Internal proxy error.", requestId }, CancellationToken.None))
+            if (!await TryWriteErrorResponseAsync(resp, log, 500, new { error = "Internal proxy error.", requestId }, CancellationToken.None))
             {
                 RecordUndeliverableError(log, 500);
                 CloseResponseQuietly(resp);
@@ -1206,8 +1223,46 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
+
+            // The unhandled-exception handler already persisted this entry with its exception
+            // detail. AddLog passes the same instance to the background writer, so mutating it
+            // here would race that write — and its status is already correct.
             if (!exceptionLogged)
-                _stats.AddLog(log);
+            {
+                // Safety net for any branch that answered the client without recording what it sent.
+                // Only fills a zero: PassthroughCoreAsync stores the *upstream* status, and
+                // HandleChatAsync deliberately records the upstream 400 while rewriting the
+                // client-facing code to 413, so an unconditional overwrite would corrupt both.
+                // Reading after Close() can throw; a failure leaves the code at 0, which
+                // DeriveStatus treats as an error — the safe direction for a missing status.
+                if (log.StatusCode == 0)
+                {
+                    try
+                    {
+                        log.StatusCode = resp.StatusCode;
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException
+                        or HttpListenerException
+                        or ObjectDisposedException)
+                    {
+                        Log.Debug(ex, "Could not read the response status to backfill the request log");
+                    }
+                }
+
+                // Derive the status from the code, but only ever escalate. A branch that already
+                // recorded Error or Cancelled knows something the code cannot express — the
+                // passthrough failure at "headers already committed" leaves StatusCode at the
+                // upstream's 200 because that status line is already on the wire, yet the request
+                // genuinely failed. Deriving unconditionally would downgrade it back to Success.
+                RequestStatus derived = RequestLog.DeriveStatus(log.StatusCode);
+                if (log.Status == RequestStatus.Success && derived != RequestStatus.Success)
+                    log.Status = derived;
+
+                // Infrastructure noise is captured only on request; everything else — including
+                // every error and every unknown endpoint — is logged unconditionally.
+                if (!infrastructureNoise || _settings.CollectAllTraffic)
+                    _stats.AddLog(log);
+            }
         }
     }
 
@@ -4893,7 +4948,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         // Context-summarize (/compact) redirect: route the request to the mapping's configured
         // compaction model when the first message is a Copilot session-summary prompt and the
         // mapping opted in via RedirectManualCompaction.
-        string chatFirstContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
+        string? chatFirstContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
         string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, chatFirstContent);
 
         bool compactRedirected = !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase);
@@ -6128,9 +6183,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         if (result is null)
         {
-            log.Status = RequestStatus.Error;
             log.ErrorMessage = "Invalid or malformed request body.";
-            resp.StatusCode = 400;
+            RecordResponseStatus(resp, log, 400);
             await WriteJsonAsync(resp, new { error = "Invalid or malformed request body." }, ct);
         }
 
@@ -6155,11 +6209,11 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// must say so in the log rather than swallowing the failure silently.
     /// </summary>
     private static async Task<bool> TryWriteErrorResponseAsync(
-        HttpListenerResponse resp, int statusCode, object payload, CancellationToken ct)
+        HttpListenerResponse resp, RequestLog log, int statusCode, object payload, CancellationToken ct)
     {
         try
         {
-            resp.StatusCode = statusCode;
+            RecordResponseStatus(resp, log, statusCode);
             await WriteJsonAsync(resp, payload, ct).ConfigureAwait(false);
             return true;
         }
@@ -6199,9 +6253,32 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     {
         const string suffix = " The response had already started, so no error could be delivered and the client received a truncated response.";
 
+        // The response object is unusable here — it already committed — so the intended code is
+        // recorded directly. Without this the entry would keep whatever status the streaming path
+        // set before the failure, hiding that an error was never delivered.
+        log.StatusCode = statusCode;
+        log.Status = RequestLog.DeriveStatus(statusCode);
+
         log.ErrorMessage = string.IsNullOrEmpty(log.ErrorMessage)
             ? $"Failed to deliver a {statusCode} error response.{suffix}"
             : log.ErrorMessage + suffix;
+    }
+
+    /// <summary>
+    /// Records an HTTP status on the log entry and sets it on the response together, so no branch
+    /// can answer the client and then leave the entry at its <see cref="RequestStatus.Success"/>
+    /// default. Every proxy-originated error goes through here.
+    /// </summary>
+    /// <remarks>
+    /// The log entry is written first: <c>HttpListenerResponse.StatusCode</c> throws once the
+    /// response has committed its headers, and recording first means the entry still carries the
+    /// code the proxy intended to send when that happens.
+    /// </remarks>
+    private static void RecordResponseStatus(HttpListenerResponse resp, RequestLog log, int statusCode)
+    {
+        log.StatusCode = statusCode;
+        log.Status = RequestLog.DeriveStatus(statusCode);
+        resp.StatusCode = statusCode;
     }
 
     private static async Task WriteJsonRawAsync(HttpListenerResponse resp, string json, CancellationToken ct)

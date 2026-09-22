@@ -1118,13 +1118,13 @@ partial class MainForm
         _chkCollectAllTraffic.AutoSize = true;
         _chkCollectAllTraffic.Margin = new Padding(4, 4, 4, 4);
         _chkCollectAllTraffic.Name = "_chkCollectAllTraffic";
-        _chkCollectAllTraffic.Text = "Collect all traffic through proxy (logs ALL requests including non-transformed)";
+        _chkCollectAllTraffic.Text = "Also log infrastructure noise (health probes, CORS preflight, version and API explorer calls)";
 
         _lblCollectAllTrafficWarning.AutoSize = true;
         _lblCollectAllTrafficWarning.Margin = new Padding(20, 0, 4, 4);
         _lblCollectAllTrafficWarning.Name = "_lblCollectAllTrafficWarning";
         _lblCollectAllTrafficWarning.ForeColor = Color.DarkOrange;
-        _lblCollectAllTrafficWarning.Text = "⚠ Warning: Significantly increases CPU usage and log storage. Use with caution.";
+        _lblCollectAllTrafficWarning.Text = "⚠ All API requests and every error (404, 400, 500, 503…) are always logged. This adds only the frequent automated probes.";
 
         _chkPerformanceSampling.AutoSize = true;
         _chkPerformanceSampling.Margin = new Padding(4, 4, 4, 8);

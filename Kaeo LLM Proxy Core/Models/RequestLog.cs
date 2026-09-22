@@ -138,4 +138,30 @@ internal sealed class RequestLog
 
     /// <summary>Size of the outbound response body in bytes. -1 when unknown.</summary>
     public long ResponseBytes { get; set; }
+
+    /// <summary>
+    /// Derives the <see cref="RequestStatus"/> that corresponds to an HTTP status code, so every
+    /// logging path shares one rule instead of each branch remembering to set
+    /// <see cref="RequestLog.Status"/> alongside <see cref="RequestLog.StatusCode"/>.
+    /// </summary>
+    /// <remarks>
+    /// 499 is the nginx convention for a client that closed the connection before the response
+    /// completed, which the proxy reports for a cancelled request. It maps to
+    /// <see cref="RequestStatus.Cancelled"/> rather than <see cref="RequestStatus.Error"/> so a
+    /// user abandoning a request is not counted against the upstream's reliability.
+    /// <para>
+    /// A code of zero means no response was recorded at all — the request never reached a handler
+    /// that could answer it. That is treated as an error rather than a success, because
+    /// <see cref="RequestStatus"/> defaults to <see cref="RequestStatus.Success"/> and an
+    /// unanswered request silently appearing successful is what made undeliverable errors
+    /// invisible in the log.
+    /// </para>
+    /// </remarks>
+    internal static RequestStatus DeriveStatus(int statusCode) => statusCode switch
+    {
+        499 => RequestStatus.Cancelled,
+        >= 400 => RequestStatus.Error,
+        0 => RequestStatus.Error,
+        _ => RequestStatus.Success,
+    };
 }

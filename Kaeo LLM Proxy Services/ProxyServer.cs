@@ -225,8 +225,17 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         }
     }
 
-    private static async Task RejectOverloadedAsync(HttpListenerContext context)
+    private async Task RejectOverloadedAsync(HttpListenerContext context)
     {
+        // Recorded before the response is attempted: the client may already be gone, but a request
+        // was still answered on this port and shedding it is exactly the kind of event that needs
+        // to be visible. This runs before HandleAsync, so there is no RequestLog and no logging
+        // finally to fall back on.
+        _handler.RecordRejectedRequest(
+            context.Request,
+            503,
+            $"Server at capacity: no concurrency slot became available within {_acquireTimeout.TotalSeconds:0}s.");
+
         try
         {
             context.Response.StatusCode = 503;

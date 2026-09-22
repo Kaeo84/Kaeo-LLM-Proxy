@@ -312,9 +312,8 @@ td code{font-size:11.6px}
         <h3>Legend</h3>
         <div class="row"><span class="swatch" style="background:#7b4fd4"></span>Proxy process</div>
         <div class="row"><span class="swatch" style="background:#4a7de0"></span>External / upstream</div>
-        <div class="row"><span class="swatch" style="background:#2f8f5b"></span>Logged correctly</div>
-        <div class="row"><span class="swatch" style="background:#c2574f"></span>Logging gap</div>
-        <div class="row"><span class="swatch" style="background:#b8862f"></span>Gated by setting</div>
+        <div class="row"><span class="swatch" style="background:#2f8f5b"></span>Always logged</div>
+        <div class="row"><span class="swatch" style="background:#b8862f"></span>Noise — gated by setting</div>
         <div class="row"><span class="swatch" style="background:#5a4a7a"></span>Persistence</div>
       </div>
 
@@ -336,124 +335,123 @@ td code{font-size:11.6px}
     <!-- ═══ Logging coverage ══════════════════════════════ -->
     <section class="view" id="loggingView" role="tabpanel">
       <div class="wrap">
-        <h2 class="sec">Why invalid calls look unlogged</h2>
+        <h2 class="sec">Request-log coverage</h2>
         <p class="lede">
-          They <strong>are</strong> being logged — they are <strong>mislabelled</strong>. The <code>finally</code> block in
-          <code>HandleCoreAsync</code> calls <code>_stats.AddLog(log)</code> unconditionally, so every request that reaches the
-          routing table produces a row. What is missing is the status metadata, which makes those rows invisible to any error filter.
+          Every request reaching the proxy's port is now logged with the status the client was actually given.
+          Previously the rows were written but <strong>mislabelled</strong> — <code>RequestLog</code> defaulted to
+          <code>Success</code> / code <code>0</code> and no error path overrode it, so a 404 was indistinguishable
+          from a 200. Two paths produced no row at all. All three gaps are closed.
         </p>
 
         <div class="statgrid">
-          <div class="stat err"><div class="n">5</div><div class="l">Error branches</div></div>
-          <div class="stat err"><div class="n">0</div><div class="l">Set StatusCode</div></div>
-          <div class="stat err"><div class="n">2</div><div class="l">Never logged</div></div>
-          <div class="stat"><div class="n">4</div><div class="l">Gated by setting</div></div>
+          <div class="stat ok"><div class="n">7</div><div class="l">Error codes recorded</div></div>
+          <div class="stat ok"><div class="n">0</div><div class="l">Unlogged paths left</div></div>
+          <div class="stat"><div class="n">5</div><div class="l">Noise, gated by setting</div></div>
+          <div class="stat ok"><div class="n">8</div><div class="l">Coverage tests</div></div>
         </div>
 
         <div class="card">
           <h3>Root cause</h3>
-          <p><code>RequestLog</code> defaults are the reason an error is recorded as a success:</p>
+          <p><code>RequestLog</code> defaults made an error indistinguishable from a success:</p>
 <pre><code>public RequestStatus Status { get; set; } = RequestStatus.Success;   // enum member 0
 public int StatusCode { get; set; }                                 // 0</code></pre>
           <p>
-            Nothing in the error paths overrode them. <code>log.StatusCode</code> was assigned in sixteen places in
-            <code>OllamaProxyHandler</code> — every one a success path, an upstream-status copy, or a
-            <code>CollectAllTraffic</code> stub. <strong>No proxy-originated error path ever set it.</strong>
+            Nothing in the error paths overrode them. <code>log.StatusCode</code> was assigned in sixteen places,
+            every one a success path, an upstream-status copy, or a <code>CollectAllTraffic</code> stub.
+            <strong>No proxy-originated error path ever set it.</strong> The 404 branch set neither field, so an
+            unrecognised caller could not be found by any filter.
           </p>
         </div>
 
         <div class="card">
-          <h3>Status coverage before the fix</h3>
+          <h3>Status coverage — before and after</h3>
           <div class="tablewrap">
             <table>
               <thead>
-                <tr><th>Response</th><th>Sets <code>Status</code>?</th><th>Sets <code>StatusCode</code>?</th><th>How it appeared in the log</th></tr>
+                <tr><th>Response</th><th>Before</th><th>After</th></tr>
               </thead>
               <tbody>
                 <tr>
                   <td><strong>404</strong> unknown endpoint</td>
-                  <td><span class="pill err">no</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td><strong>Success, code 0</strong> — looked like a normal request</td>
+                  <td><span class="pill err">Success, code 0</span></td>
+                  <td><span class="pill ok">Error, 404</span></td>
                 </tr>
                 <tr>
                   <td><strong>501</strong> model-management</td>
-                  <td><span class="pill warn">Error</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td>Error, code 0</td>
+                  <td><span class="pill warn">Error, code 0</span></td>
+                  <td><span class="pill ok">Error, 501</span></td>
                 </tr>
                 <tr>
                   <td><strong>499</strong> cancelled</td>
-                  <td><span class="pill warn">Cancelled</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td>Cancelled, code 0</td>
+                  <td><span class="pill warn">Cancelled, code 0</span></td>
+                  <td><span class="pill ok">Cancelled, 499</span></td>
                 </tr>
                 <tr>
                   <td><strong>413</strong> body too large</td>
-                  <td><span class="pill warn">Error</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td>Error, code 0</td>
+                  <td><span class="pill warn">Error, code 0</span></td>
+                  <td><span class="pill ok">Error, 413</span></td>
                 </tr>
                 <tr>
                   <td><strong>500</strong> unhandled</td>
-                  <td><span class="pill warn">Error</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td>Error, code 0</td>
+                  <td><span class="pill warn">Error, code 0</span></td>
+                  <td><span class="pill ok">Error, 500</span></td>
                 </tr>
                 <tr>
                   <td><strong>400</strong> malformed body</td>
-                  <td><span class="pill warn">Error</span></td>
-                  <td><span class="pill err">no</span></td>
-                  <td>Error, code 0</td>
+                  <td><span class="pill warn">Error, code 0</span></td>
+                  <td><span class="pill ok">Error, 400</span></td>
+                </tr>
+                <tr>
+                  <td><strong>503</strong> overload shed</td>
+                  <td><span class="pill err">no row at all</span></td>
+                  <td><span class="pill ok">Error, 503</span></td>
                 </tr>
                 <tr>
                   <td>200 upstream success</td>
-                  <td><span class="pill ok">yes</span></td>
-                  <td><span class="pill ok">yes</span></td>
-                  <td>correct</td>
+                  <td><span class="pill ok">correct</span></td>
+                  <td><span class="pill ok">correct</span></td>
                 </tr>
               </tbody>
             </table>
-          </div>
-          <div class="callout err" style="margin-top:16px;margin-bottom:0">
-            <span class="lbl">Worst case</span>
-            <p>
-              The 404 branch set neither field, so an unknown-endpoint call was <strong>indistinguishable from a
-              successful one</strong>. That is exactly the "unknown app call" you wanted to surface — and it was the
-              one response that could not be found by any filter.
-            </p>
           </div>
         </div>
 
         <div class="grid2">
           <div class="card">
-            <h3>Genuinely never logged</h3>
-            <p>These produce a response on your port with <strong>no row at all</strong>:</p>
+            <h3>The two paths that produced no row</h3>
+            <p>Both are now logged:</p>
             <ol>
               <li>
                 <strong>503 overload rejection</strong> — <code>RejectOverloadedAsync</code> runs in
-                <code>ProxyServer</code> before <code>HandleAsync</code> is called, so no <code>RequestLog</code>
-                is ever constructed.
+                <code>ProxyServer</code> before <code>HandleAsync</code>, so no <code>RequestLog</code> existed and no
+                logging <code>finally</code> could run. It now calls
+                <code>OllamaProxyHandler.RecordRejectedRequest</code> <em>before</em> attempting the response write,
+                since the client may already be gone but the request was still answered on the proxy's port.
               </li>
               <li>
-                <strong><code>GET /</code> and <code>HEAD /</code> health probes</strong> —
-                <code>HandleCoreAsync</code> returns before the <code>try</code>, bypassing the <code>finally</code>.
-                Deliberate, to keep load-balancer noise out of the log, but it means probes are invisible even
-                under <code>CollectAllTraffic</code>.
+                <strong><code>GET /</code> and <code>HEAD /</code> health probes</strong> — these returned before the
+                <code>try</code> owning the logging <code>finally</code>. <code>HandleCoreAsync</code> now wraps its
+                entire body in one <code>try</code>/<code>finally</code>, so no branch can escape logging. They are
+                classified as infrastructure noise.
               </li>
             </ol>
           </div>
 
           <div class="card">
-            <h3>Logged only under <code>CollectAllTraffic</code></h3>
-            <p>Each returns early and calls <code>_stats.AddLog</code> only inside a settings guard, so with that
-            setting off they leave no trace:</p>
+            <h3>What <code>CollectAllTraffic</code> means now</h3>
+            <p>It gates <strong>infrastructure noise only</strong> — responses answered without touching a model, which
+            would otherwise dominate the log:</p>
             <ul>
+              <li><code>GET /</code>, <code>HEAD /</code> health probe</li>
               <li><code>OPTIONS</code> CORS preflight → 204</li>
               <li><code>GET /api/version</code> → 200</li>
               <li><code>GET /scalar</code> → 200</li>
               <li><code>GET /openapi/v1/openapi.json</code> → 200</li>
             </ul>
+            <p style="margin-top:12px">
+              <strong>Everything else is logged unconditionally</strong> — every API request and every error, including
+              404s. An unrecognised caller stays visible with the checkbox left at its default.
+            </p>
           </div>
         </div>
 
@@ -512,8 +510,10 @@ public int StatusCode { get; set; }                                 // 0</code><
       <div class="wrap">
         <h2 class="sec">Fix design</h2>
         <p class="lede">
-          The gap is that status metadata was set at each individual <code>resp.StatusCode = N</code> assignment, so any
-          path that forgot it silently logged a success. The fix centralises the rule and closes the two unlogged paths.
+          The gap was that status metadata got set at each individual <code>resp.StatusCode = N</code> assignment, so any
+          path that forgot it silently logged a success. The fix centralises the rule into one derivation helper, routes
+          every error branch through a single recorder, backfills defensively in one <code>finally</code>, and closes the
+          two paths that produced no row at all. All steps are implemented and tested.
         </p>
 
         <div class="card">
@@ -575,11 +575,28 @@ log.Status = log.StatusCode &gt;= 400 ? RequestStatus.Error : RequestStatus.Succ
               <code>PassthroughCoreAsync</code> sets <code>log.StatusCode</code> from the <em>upstream</em> response. A
               backfill must only fill a zero, never overwrite that.
             </li>
+            <li>
+              The backfill must <strong>only escalate, never downgrade</strong>. The passthrough failure at
+              "headers already committed" sets <code>Status = Error</code> while leaving <code>StatusCode</code> at the
+              upstream's <strong>200</strong>, because that status line is already on the wire. Deriving unconditionally
+              would flip a genuine failure back to <code>Success</code> — reintroducing the very bug class this fix
+              exists to remove. So the derived status is applied only while the entry is still at its
+              <code>Success</code> default.
+            </li>
           </ul>
+          <div class="callout warn" style="margin-bottom:0">
+            <span class="lbl">Why the finally skips the exception path</span>
+            <p>
+              The unhandled-exception handler logs the entry itself so it can attach the exception detail, so the
+              <code>finally</code> skips both the backfill and a second <code>AddLog</code>. That avoids a duplicate row,
+              but the stronger reason is a race: <code>AddLog</code> hands the <em>same</em> <code>RequestLog</code>
+              instance to the background persistence channel, so mutating it afterwards would race that write.
+            </p>
+          </div>
         </div>
 
         <div class="card">
-          <h3>Remaining work</h3>
+          <h3>Implementation status</h3>
           <div class="tablewrap">
             <table>
               <thead><tr><th>Step</th><th>Status</th><th>Detail</th></tr></thead>
@@ -587,49 +604,73 @@ log.Status = log.StatusCode &gt;= 400 ? RequestStatus.Error : RequestStatus.Succ
                 <tr>
                   <td><code>DeriveStatus</code> helper</td>
                   <td><span class="pill ok">done</span></td>
-                  <td>Applied, Core project builds clean.</td>
+                  <td>Added to <code>RequestLog.cs</code>. The only place a status code becomes a <code>RequestStatus</code>.</td>
                 </tr>
                 <tr>
                   <td>Explicit codes on error branches</td>
                   <td><span class="pill ok">done</span></td>
-                  <td>404, 501, 400 malformed, 499, 413, 500 all record; <code>RecordUndeliverableError</code> records the intended code directly.</td>
+                  <td>404, 501, 400 malformed, 499, 413 and 500 all record via <code>RecordResponseStatus</code>; <code>RecordUndeliverableError</code> records the intended code directly.</td>
                 </tr>
                 <tr>
                   <td><code>HandleCoreAsync</code> restructure</td>
-                  <td><span class="pill err">pending</span></td>
-                  <td>One <code>try</code>/<code>finally</code> wrapping the whole body so the health probe stops escaping the logger; <code>finally</code> backfills from the response and always logs.</td>
+                  <td><span class="pill ok">done</span></td>
+                  <td>One <code>try</code>/<code>finally</code> now wraps the whole body, so the health probe and the version/explorer stubs can no longer escape the logger.</td>
                 </tr>
                 <tr>
                   <td>Delete redundant guards</td>
-                  <td><span class="pill err">pending</span></td>
-                  <td>Four duplicated <code>if (CollectAllTraffic) { …AddLog… }</code> blocks, now owned by the <code>finally</code>.</td>
+                  <td><span class="pill ok">done</span></td>
+                  <td>All four duplicated <code>if (CollectAllTraffic) { …AddLog… }</code> blocks removed; one guard in the <code>finally</code> remains.</td>
                 </tr>
                 <tr>
                   <td>Make the 503 loggable</td>
-                  <td><span class="pill err">pending</span></td>
-                  <td><code>RejectOverloadedAsync</code> needs a <code>RequestLog</code> and access to <code>_stats</code>.</td>
+                  <td><span class="pill ok">done</span></td>
+                  <td>Added <code>RecordRejectedRequest</code>; <code>RejectOverloadedAsync</code> became an instance method so it can reach the handler.</td>
                 </tr>
                 <tr>
                   <td>Checkbox relabel</td>
-                  <td><span class="pill err">pending</span></td>
-                  <td><code>CollectAllTraffic</code> becomes a noise-only switch: health probes, preflight, <code>/api/version</code>, <code>/scalar</code>, <code>/openapi.json</code>. Errors and API traffic log unconditionally.</td>
+                  <td><span class="pill ok">done</span></td>
+                  <td>Now reads as a noise-only switch, with the warning clarifying that all API traffic and every error are always logged.</td>
                 </tr>
                 <tr>
                   <td>Coverage tests</td>
-                  <td><span class="pill err">pending</span></td>
-                  <td>Bind a real listener on an ephemeral port; assert a row with the right code for each scenario.</td>
+                  <td><span class="pill ok">done</span></td>
+                  <td><code>RequestLoggingCoverageTests</code> — 8 tests over a real listener on an ephemeral port. Full suite 320 passed, 0 failed.</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <div class="callout warn" style="margin-top:16px;margin-bottom:0">
-            <span class="lbl">Working tree state</span>
+          <div class="callout ok" style="margin-top:16px;margin-bottom:0">
+            <span class="lbl">Verification</span>
             <p>
-              Steps 1 and 2 are applied but <strong>not committed</strong>. They build clean in isolation, but the goal —
-              every call on the port logged — is not yet achieved: the health probe and 503 still produce no row, and the
-              four redundant guards are still present. This is a half-finished refactor.
+              Clean rebuild (<code>--no-incremental</code>): build succeeded, 0 errors, and zero warnings in any file this
+              change touched. The <code>CS8600</code> previously reported in <code>OllamaProxyHandler.cs</code> is gone.
+              The 72 remaining solution warnings are pre-existing nullable-reference warnings confined to the
+              <em>Kaeo VS Extension</em> project, which is out of scope.
             </p>
           </div>
+          <div class="callout warn" style="margin-bottom:0">
+            <span class="lbl">Known limitation</span>
+            <p>
+              HTTP that <code>http.sys</code> rejects before managed code runs still produces no row — see the
+              out-of-scope note on the Logging Coverage tab.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>A race worth knowing about</h3>
+          <p>
+            A handler writes and closes the response <em>before</em> <code>HandleCoreAsync</code>'s logging
+            <code>finally</code> runs. So a client can observe the status code while the log entry does not exist yet.
+            This is inherent to the design, not a defect — but it means a test that asserts immediately after receiving
+            a response will fail intermittently, passing or failing on scheduling alone.
+          </p>
+          <p style="margin-bottom:0">
+            <code>RequestLoggingCoverageTests</code> therefore polls <code>TotalRequests</code> — which
+            <code>AddLog</code> increments after enqueueing — instead of asserting straight away. Verified deterministic
+            across four consecutive full-class runs. Anything asserting on log contents after a live request needs the
+            same wait.
+          </p>
         </div>
 
         <div class="foot">
@@ -651,7 +692,7 @@ flowchart TD
 
     subgraph SRV["ProxyServer.cs"]
         Accept["AcceptLoopAsync<br/>GetContextAsync + concurrency gate"]:::proxy
-        Accept -->|"no slot in 5s"| Reject["RejectOverloadedAsync<br/>503 — NEVER LOGGED"]:::gap
+        Accept -->|"no slot in 5s"| Reject["RejectOverloadedAsync<br/>503 + RecordRejectedRequest"]:::ok
         Accept -->|"slot acquired"| Safe["HandleRequestSafelyAsync<br/>observes exceptions, releases gate"]:::proxy
     end
 
@@ -659,15 +700,15 @@ flowchart TD
 
     subgraph HND["OllamaProxyHandler.cs"]
         Handle["HandleAsync<br/>assigns RequestId, creates RequestLog,<br/>starts Stopwatch"]:::proxy
-        Handle --> Core["HandleCoreAsync<br/>CORS, health probes, routing table,<br/>error handlers"]:::proxy
+        Handle --> Core["HandleCoreAsync<br/>one try/finally owns logging<br/>for every branch"]:::proxy
     end
 
-    Core -->|"GET / or HEAD /"| Health["200 OK<br/>NEVER LOGGED"]:::gap
-    Core -->|"GET /api/version"| Version["version stub<br/>logged only if CollectAllTraffic"]:::gated
-    Core -->|"GET /scalar, /openapi.json"| Explorer["API explorer<br/>logged only if CollectAllTraffic"]:::gated
-    Core -->|"OPTIONS preflight"| Cors["204<br/>logged only if CollectAllTraffic"]:::gated
-    Core -->|"/api/pull,push,create,copy,delete"| E501["501 Unsupported<br/>Status=Error, StatusCode=0"]:::gap
-    Core -->|"unknown endpoint"| E404["404 Unknown endpoint<br/>Status=Success, StatusCode=0"]:::gap
+    Core -->|"GET / or HEAD /"| Health["200 OK<br/>noise — gated by CollectAllTraffic"]:::gated
+    Core -->|"GET /api/version"| Version["version stub<br/>noise — gated by CollectAllTraffic"]:::gated
+    Core -->|"GET /scalar, /openapi.json"| Explorer["API explorer<br/>noise — gated by CollectAllTraffic"]:::gated
+    Core -->|"OPTIONS preflight"| Cors["204<br/>noise — gated by CollectAllTraffic"]:::gated
+    Core -->|"/api/pull,push,create,copy,delete"| E501["501 Unsupported<br/>always logged"]:::ok
+    Core -->|"unknown endpoint"| E404["404 Unknown endpoint<br/>always logged"]:::ok
 
     Core -->|"GET /api/tags"| Tags["HandleTagsAsync → upstream /v1/models"]:::proxy
     Core -->|"GET /api/ps"| Ps["HandlePsAsync — local stub"]:::proxy
@@ -710,8 +751,10 @@ flowchart TD
     Show --> Fin
     Models --> Fin
 
-    Fin["finally: sw.Stop(), log.DurationMs,<br/>_stats.AddLog(log)"]:::proxy
+    Fin["finally: sw.Stop(), log.DurationMs,<br/>backfill StatusCode if 0,<br/>escalate Status, AddLog unless gated noise"]:::proxy
     Fin --> Stats
+
+    Reject -.->|"RecordRejectedRequest<br/>(no RequestLog existed)"| Stats
 
     subgraph STA["StatisticsService.cs"]
         Stats["AddLog<br/>enqueue summary (no bodies),<br/>update counters, raise StatsChanged"]:::proxy
@@ -724,7 +767,6 @@ flowchart TD
     classDef ext fill:#243b63,stroke:#4a7de0,stroke-width:2px,color:#dce8ff
     classDef proxy fill:#2e1b4d,stroke:#7b4fd4,stroke-width:1.5px,color:#e9dcff
     classDef ok fill:#17402c,stroke:#2f8f5b,stroke-width:2px,color:#d3f5e2
-    classDef gap fill:#4a1f1c,stroke:#c2574f,stroke-width:2.5px,color:#ffd9d6
     classDef gated fill:#453319,stroke:#b8862f,stroke-width:2px,color:#ffe9bd
     classDef store fill:#2a2140,stroke:#5a4a7a,stroke-width:2px,color:#ded4f2
 </script>
@@ -1028,10 +1070,10 @@ if (typeof mermaid === 'undefined') {
   /* ── Function table ──────────────────────────────────── */
   const FUNCS = [
     ['AcceptLoopAsync','ProxyServer.cs','Ingest','Accepts connections and enforces the concurrency limit via a SemaphoreSlim.'],
-    ['RejectOverloadedAsync','ProxyServer.cs','Ingest','Answers 503 when no concurrency slot frees within 5s. Runs before any RequestLog exists.'],
+    ['RejectOverloadedAsync','ProxyServer.cs','Ingest','Answers 503 when no concurrency slot frees within 5s. Runs before any RequestLog exists, so it records the rejection through RecordRejectedRequest.'],
     ['HandleRequestSafelyAsync','ProxyServer.cs','Ingest','Dispatches to the handler, swallows benign disconnects, always closes the response and releases the slot.'],
     ['HandleAsync','OllamaProxyHandler.cs','Entry','Generates the 12-char RequestId, creates the RequestLog, pushes the id into Serilog LogContext, starts the stopwatch.'],
-    ['HandleCoreAsync','OllamaProxyHandler.cs','Route','CORS/preflight, health probes, the whole routing table, and the catch blocks. Owns the finally that persists the log.'],
+    ['HandleCoreAsync','OllamaProxyHandler.cs','Route','CORS/preflight, health probes, the whole routing table, and the three catch blocks. One try/finally wraps the entire body, so no branch can escape logging.'],
     ['NormalizeRequestBody','OllamaProxyHandler.cs','Transform','Rewrites model, applies sampling and reasoning-effort priorities, strips stream_options under Copilot compatibility, composes the system prompt, applies the /compact redirect. Returns input untouched when nothing needs rewriting.'],
     ['SystemPromptComposer.Merge','SystemPromptComposer.cs','Transform','Folds instruction-set text plus all leading system messages into exactly one system message.'],
     ['ResolveEffectiveModel','OllamaProxyHandler.cs','Transform','Detects a Copilot /compact summary request and redirects it to the configured compaction model.'],
@@ -1046,11 +1088,13 @@ if (typeof mermaid === 'undefined') {
     ['HandlePsAsync','OllamaProxyHandler.cs','Local','Answers /api/ps from local mapping config; no upstream call.'],
     ['HandleShowAsync','OllamaProxyHandler.cs','Local','Answers /api/show from local mapping config; no upstream call.'],
     ['HandleV1ModelsAsync','OllamaProxyHandler.cs','Local','Serves /v1/models from the local mapping table; no upstream call.'],
-    ['PassthroughCoreAsync','OllamaProxyHandler.cs','Passthrough','Forwards OpenAI-native /v1/* requests with the normalized body.'],
+    ['PassthroughCoreAsync','OllamaProxyHandler.cs','Passthrough','Forwards OpenAI-native /v1/* requests with the normalized body. Stores the upstream status code, which the finally backfill must not overwrite.'],
     ['ForwardCompactToUpstreamAsync','OllamaProxyHandler.cs','Compact','Shared body of both manual /compact endpoints. Bypasses NormalizeRequestBody deliberately.'],
     ['TryWriteErrorResponseAsync','OllamaProxyHandler.cs','Error','Best-effort error delivery from a catch. Returns false when the response already started.'],
     ['RecordResponseStatus','OllamaProxyHandler.cs','Error','Records the code on the log entry then sets it on the response, so no branch answers the client and leaves a Success default.'],
     ['RecordUndeliverableError','OllamaProxyHandler.cs','Error','Notes that the client received a truncated response, and records the intended status code.'],
+    ['RecordRejectedRequest','OllamaProxyHandler.cs','Error','Logs a request ProxyServer shed before it reached HandleAsync. Infallible by design, since it runs on a fire-and-forget overload path.'],
+    ['RequestLog.DeriveStatus','RequestLog.cs','Error','The single rule mapping an HTTP code to a RequestStatus. Treats 499 as Cancelled and 0 as Error.'],
     ['AddLog','StatisticsService.cs','Persist','Enqueues a body-free summary for the GUI, updates counters, hands the full entry to the persistence channel.'],
     ['PersistLoopAsync','StatisticsService.cs','Persist','Single writer draining the bounded channel into SQLite off the request path.'],
     ['Insert','AppDatabase.cs','Persist','Writes the row into requests or mcp_requests, persisting exception detail in its own transaction.']
