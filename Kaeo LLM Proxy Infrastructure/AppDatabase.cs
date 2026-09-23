@@ -776,10 +776,17 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Loads up to <paramref name="count"/> recent entries from the active database into
-    /// the supplied list, oldest first (so callers can enqueue them in chronological order).
-    /// Used to seed the in-memory queue on startup.
+    /// Loads up to <paramref name="count"/> recent entries from the active database, oldest first
+    /// (so callers can enqueue them in chronological order). Used to seed the in-memory queue on
+    /// startup.
     /// </summary>
+    /// <remarks>
+    /// A single ordered query with the limit, then reversed in memory. Ordering newest-first is what
+    /// makes <c>LIMIT</c> select the *most recent* rows — SQLite applies the limit after the sort —
+    /// so asking for ascending order directly would return the oldest rows in the table instead.
+    /// Reversing here is cheaper than the previous derived-table form (<c>SELECT ... FROM (SELECT ...
+    /// LIMIT) ORDER BY</c>), which made SQLite materialize and re-sort the whole derived table.
+    /// </remarks>
     public IReadOnlyList<RequestLog> LoadRecent(int count, LogSource source = LogSource.Proxy)
     {
         lock (_lock)
@@ -811,35 +818,9 @@ internal sealed class AppDatabase : IDisposable
                     draft_n,
                     draft_n_accepted,
                     original_model
-                FROM (
-                    SELECT
-                        timestamp_utc,
-                        method,
-                        ollama_path,
-                        upstream_path,
-                        model,
-                        streaming,
-                        status,
-                        error_message,
-                        status_code,
-                        duration_ms,
-                        prompt_tokens,
-                        completion_tokens,
-                        tokens_per_second,
-                        exception_id,
-                        request_bytes,
-                        response_bytes,
-                        total_tokens,
-                        cached_prompt_tokens,
-                        reasoning_tokens,
-                        draft_n,
-                        draft_n_accepted,
-                        original_model
-                    FROM {{RequestTable(source)}}
-                    ORDER BY timestamp_utc DESC
-                    LIMIT $count
-                ) recent
-                ORDER BY timestamp_utc ASC;
+                FROM {{RequestTable(source)}}
+                ORDER BY timestamp_utc DESC, id DESC
+                LIMIT $count;
                 """;
             command.Parameters.AddWithValue("$count", count);
 
@@ -848,6 +829,8 @@ internal sealed class AppDatabase : IDisposable
             while (reader.Read())
                 entries.Add(ReadRequestLogSummary(reader));
 
+            // Newest-first from the query; reverse to the chronological order callers enqueue in.
+            entries.Reverse();
             return entries;
         }
     }
@@ -921,66 +904,57 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            using SqliteConnection connection = OpenConnection();
-            using SqliteTransaction transaction = connection.BeginTransaction();
-
-            List<int> exceptionIds = [];
-
-            using (SqliteCommand selectCommand = connection.CreateCommand())
+            using (SqliteConnection connection = OpenConnection())
+            using (SqliteTransaction transaction = connection.BeginTransaction())
             {
-                selectCommand.Transaction = transaction;
-                selectCommand.CommandText =
-                    $$"""
-                    SELECT exception_id
-                    FROM {{RequestTable(source)}}
-                    WHERE timestamp_utc < $cutoffUtc
-                      AND exception_id IS NOT NULL;
-                    """;
-                selectCommand.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
-
-                using SqliteDataReader reader = selectCommand.ExecuteReader();
-                while (reader.Read())
-                    exceptionIds.Add(reader.GetInt32(0));
-            }
-
-            int deleted;
-
-            using (SqliteCommand deleteRequests = connection.CreateCommand())
-            {
-                deleteRequests.Transaction = transaction;
-                deleteRequests.CommandText =
-                    $$"""
-                    DELETE FROM {{RequestTable(source)}}
-                    WHERE timestamp_utc < $cutoffUtc;
-                    """;
-                deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
-                deleted = deleteRequests.ExecuteNonQuery();
-            }
-
-            if (exceptionIds.Count > 0)
-            {
-                var distinctIds = exceptionIds.Distinct().ToList();
-                var parameters = new List<string>();
-                using SqliteCommand deleteExceptions = connection.CreateCommand();
-                deleteExceptions.Transaction = transaction;
-
-                for (int i = 0; i < distinctIds.Count; i++)
+                // Exceptions are pruned first, while the request rows that reference them still
+                // exist, so the delete is driven by the exact same predicate that decides which
+                // requests go. That is equivalent to the previous "delete the exceptions whose ids
+                // I just collected" behaviour, but the id set is evaluated by SQLite instead of
+                // being materialized in memory and rebuilt as one bound parameter per id — a list
+                // that grows unbounded with the backlog and would eventually exceed
+                // SQLITE_MAX_VARIABLE_NUMBER.
+                //
+                // Only the proxy log links exception rows; the MCP and non-proxied paths carry
+                // HTTP-level errors on the entry itself.
+                if (source == LogSource.Proxy)
                 {
-                    string paramName = $"$id{i}";
-                    parameters.Add(paramName);
-                    deleteExceptions.Parameters.AddWithValue(paramName, distinctIds[i]);
+                    using SqliteCommand deleteExceptions = connection.CreateCommand();
+                    deleteExceptions.Transaction = transaction;
+                    deleteExceptions.CommandText =
+                        """
+                        DELETE FROM exceptions
+                        WHERE id IN (
+                            SELECT exception_id
+                            FROM requests
+                            WHERE timestamp_utc < $cutoffUtc
+                              AND exception_id IS NOT NULL
+                        );
+                        """;
+                    deleteExceptions.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+                    deleteExceptions.ExecuteNonQuery();
                 }
 
-                deleteExceptions.CommandText = $"DELETE FROM exceptions WHERE id IN ({string.Join(", ", parameters)});";
-                deleteExceptions.ExecuteNonQuery();
+                int deleted;
+                using (SqliteCommand deleteRequests = connection.CreateCommand())
+                {
+                    deleteRequests.Transaction = transaction;
+                    deleteRequests.CommandText =
+                        $$"""
+                        DELETE FROM {{RequestTable(source)}}
+                        WHERE timestamp_utc < $cutoffUtc;
+                        """;
+                    deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+                    deleted = deleteRequests.ExecuteNonQuery();
+                }
+
+                transaction.Commit();
+
+                if (deleted > 0)
+                    Log.Debug("AppDatabase pruned {Count} request entries older than {Cutoff:u}", deleted, cutoff);
+
+                return deleted;
             }
-
-            transaction.Commit();
-
-            if (deleted > 0)
-                Log.Debug("AppDatabase pruned {Count} request entries older than {Cutoff:u}", deleted, cutoff);
-
-            return deleted;
         }
     }
 
@@ -1404,16 +1378,18 @@ internal sealed class AppDatabase : IDisposable
     {
         try
         {
-            long mappingCount;
+            bool hasMappings;
 
+            // EXISTS short-circuits on the first row, where COUNT(*) had to scan the whole table to
+            // answer "is it empty?". This runs on every startup, so the difference is paid each launch.
             using (SqliteConnection connection = OpenConnection())
             using (SqliteCommand command = connection.CreateCommand())
             {
-                command.CommandText = "SELECT COUNT(*) FROM model_mappings;";
-                mappingCount = Convert.ToInt64(command.ExecuteScalar());
+                command.CommandText = "SELECT EXISTS (SELECT 1 FROM model_mappings LIMIT 1);";
+                hasMappings = Convert.ToInt64(command.ExecuteScalar()) != 0;
             }
 
-            if (mappingCount > 0)
+            if (hasMappings)
                 return;
 
             List<ModelMapping> mappings = SeedData.CreateModelMappings();
