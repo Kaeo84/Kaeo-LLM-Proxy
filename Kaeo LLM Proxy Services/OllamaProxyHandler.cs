@@ -20,7 +20,7 @@ namespace Kaeo.LlmProxy.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null) : IDisposable
+internal sealed partial class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -273,8 +273,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         {
             if (!string.IsNullOrWhiteSpace(userAgent))
             {
-                if (userAgent.IndexOf("copilot", StringComparison.OrdinalIgnoreCase) >= 0
-                    || userAgent.IndexOf("github", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (userAgent.Contains("copilot", StringComparison.OrdinalIgnoreCase)
+                    || userAgent.Contains("github", StringComparison.OrdinalIgnoreCase))
                     return true;
             }
 
@@ -1117,7 +1117,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// <summary>
     /// True when <paramref name="path"/> is a route whose purpose is to reach an upstream model.
     /// </summary>
-    private static bool IsModelRoute(string method, string path)
+    /// <remarks>
+    /// The method verb is accepted but unused: every model route here is identified by path alone.
+    /// It is kept on the signature because it is the natural discriminator if a path ever needs
+    /// different handling per verb, and because callers already have it to hand.
+    /// </remarks>
+    private static bool IsModelRoute(string _, string path)
     {
         if (path is "/api/chat" or "/api/generate" or "/api/embeddings" or "/api/embed"
             || path.Equals("/api/tags", StringComparison.OrdinalIgnoreCase))
@@ -1734,7 +1739,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Token totals for a synthesized usage chunk, read only after the usage sniffer has flushed so
         // any counts the upstream did report are included.
-        Func<(int PromptTokens, int CompletionTokens)> tokenCounts = () => (log.PromptTokens, log.CompletionTokens);
+        (int PromptTokens, int CompletionTokens) tokenCounts() => (log.PromptTokens, log.CompletionTokens);
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
         ApplyApiKey(upstreamReq, apiKey);
@@ -1942,7 +1947,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
         // Capture the terminal usage chunk (prompt/completion/cached/reasoning tokens + draft timings)
         // on every passthrough path without buffering the forwarded body.
-        Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
+        void onUsage(LlamaCppStreamChunk chunk) => FillTokenStats(log, chunk);
 
         bool collectResponse = _settings.CollectResponseDetails;
         // Debug mode captures the raw upstream response (the "before" of any transformation)
@@ -2197,7 +2202,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         {
                             message["tool_calls"] = BuildOpenAiToolCallsArray(allowedCalls);
                             // Strip only the accepted blocks; rejected XML stays visible as text.
-                            message["content"] = JsonValue.Create(XmlToolCallRegex.Replace(
+                            message["content"] = JsonValue.Create(XmlToolCallRegex().Replace(
                                 content,
                                 match => IsToolNameAllowed(declaredToolNames, match.Groups["name"].Value.Trim())
                                     ? string.Empty
@@ -2294,25 +2299,39 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
     // Inline XML tool-call format emitted by some llama.cpp templates; shared by the
     // streaming rewriter and the non-streaming transform.
-    private static readonly Regex XmlToolCallRegex = new(
-        @"<tool_call>\s*<function=(?<name>[^>\s]+)>\s*(?<body>.*?)\s*</function>\s*</tool_call>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    [GeneratedRegex(@"<tool_call>\s*<function=(?<name>[^>\s]+)>\s*(?<body>.*?)\s*</function>\s*</tool_call>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex XmlToolCallRegex();
 
-    private static readonly Regex XmlParameterRegex = new(
-        @"<parameter=(?<n>[^>\s]+)>\s*(?<v>.*?)\s*</parameter>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    [GeneratedRegex(@"<parameter=(?<n>[^>\s]+)>\s*(?<v>.*?)\s*</parameter>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex XmlParameterRegex();
+
+    /// <summary>
+    /// The same parameter element as <see cref="XmlParameterRegex"/>, but capturing under the
+    /// <c>name</c>/<c>value</c> group names the non-streaming extractor reads. Kept separate rather
+    /// than renaming one set of call sites: the two extractors, for the streaming rewriter and the
+    /// non-streaming transform, are independent translation paths and each names its captures to
+    /// match its own surrounding code.
+    /// </summary>
+    [GeneratedRegex(@"<parameter=(?<name>[^>\s]+)>\s*(?<value>.*?)\s*</parameter>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex XmlToolCallParameterRegex();
 
     /// <summary>
     /// Returns true when a JSON POST body has <c>"stream": true</c>, indicating the client
     /// expects an SSE response and we should pre-commit headers before the upstream responds.
     /// Uses a lightweight regex scan instead of parsing the full JSON DOM.
     /// </summary>
+    [GeneratedRegex("\"stream\"\\s*:\\s*true", RegexOptions.IgnoreCase, 100)]
+    private static partial Regex StreamingJsonRegex();
+
     private static bool IsStreamingJsonBody(string json)
     {
         try
         {
             // Match "stream": true with optional whitespace, case-insensitive
-            return Regex.IsMatch(json, "\"stream\"\\s*:\\s*true", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+            return StreamingJsonRegex().IsMatch(json);
         }
         catch (RegexMatchTimeoutException)
         {
@@ -2539,17 +2558,22 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         private const string OpenTag = "<think>";
         private const string CloseTag = "</think>";
 
-        private readonly string _openTag;
-        private readonly string _closeTag;
-
-        private bool _inThink;
-        private string _pending = string.Empty;
-
         // Qwen thinking compatibility markers: the model emits a literal [Thinking] marker, the
         // reasoning, then a literal [Answer] marker and the final answer.
         public const string QwenOpenTag = "[Thinking]";
         public const string QwenCloseTag = "[Answer]";
 
+        private readonly string _openTag;
+        private readonly string _closeTag;
+        private bool _inThink;
+        private string _pending = string.Empty;
+
+        /// <summary>
+        /// Creates an extractor for a tag pair, defaulting to the standard think tags. Uses an
+        /// explicit constructor rather than a primary constructor so the parameter defaults can
+        /// reference <see cref="OpenTag"/>/<see cref="CloseTag"/> rather than repeating their
+        /// literals, which a primary constructor cannot do.
+        /// </summary>
         public ThinkTagExtractor(string openTag = OpenTag, string closeTag = CloseTag)
         {
             _openTag = openTag;
@@ -2812,7 +2836,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 // Handle inline <think>...</think> blocks per the configured thinking mode:
                 // move them into reasoning_content (MoveToReasoningContent/ExtractThinkTags),
                 // drop them entirely (StripFromOutput), or leave them untouched (LeaveInline/Off).
-                if (_thinkingMode != ThinkingMode.LeaveInline && delta is not null)
+                if (delta is JsonObject inlineDelta && _thinkingMode != ThinkingMode.LeaveInline)
                 {
                     if (!_thinkExtractors.TryGetValue(index, out ThinkTagExtractor? extractor))
                     {
@@ -2820,7 +2844,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                         _thinkExtractors[index] = extractor;
                     }
 
-                    string incoming = delta["content"] is JsonValue contentValue
+                    string incoming = inlineDelta["content"] is JsonValue contentValue
                         && contentValue.TryGetValue(out string? contentStr)
                             ? contentStr ?? string.Empty
                             : string.Empty;
@@ -2831,13 +2855,13 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     {
                         // Thinking must not reach the client at all; drop any native
                         // reasoning_content the upstream may have sent as well.
-                        delta.Remove("reasoning_content");
+                        inlineDelta.Remove("reasoning_content");
                     }
                     else if (reasoning.Length > 0)
                     {
-                        string existingReasoning = delta["reasoning_content"] is JsonValue erv
+                        string existingReasoning = inlineDelta["reasoning_content"] is JsonValue erv
                             && erv.TryGetValue(out string? ervStr) ? ervStr ?? string.Empty : string.Empty;
-                        delta["reasoning_content"] = JsonValue.Create(existingReasoning + reasoning);
+                        inlineDelta["reasoning_content"] = JsonValue.Create(existingReasoning + reasoning);
                     }
 
                     // Rewrite content based on what the extractor produced:
@@ -2846,9 +2870,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                     //   buffering) → remove the key so reasoning-only / role-only deltas are clean
                     // - no incoming content at all → leave delta untouched (don't fabricate "")
                     if (content.Length > 0)
-                        delta["content"] = JsonValue.Create(content);
+                        inlineDelta["content"] = JsonValue.Create(content);
                     else if (incoming.Length > 0)
-                        delta.Remove("content");
+                        inlineDelta.Remove("content");
                 }
 
                 // Mirror reasoning_content → content (when content is empty/null). Only in
@@ -3003,10 +3027,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 return visible.ToString();
             }
 
-            private void EmitToolCallFromBuffer(JsonObject root, JsonObject choice, int choiceIndex, List<JsonObject> extraFrames)
+            // The incoming choice object is not read: the frame is rebuilt from the parsed XML and the
+            // buffered call state, so only the index and the outgoing frame list are needed.
+            private void EmitToolCallFromBuffer(JsonObject root, JsonObject _, int choiceIndex, List<JsonObject> extraFrames)
             {
                 string xml = _toolBuffer.ToString();
-                Match m = XmlToolCallRegex.Match(xml);
+                Match m = XmlToolCallRegex().Match(xml);
                 if (!m.Success) return;
 
                 string name = m.Groups["name"].Value.Trim();
@@ -3020,7 +3046,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 }
 
                 Dictionary<string, object?> args = new(StringComparer.OrdinalIgnoreCase);
-                foreach (Match pm in XmlParameterRegex.Matches(m.Groups["body"].Value))
+                foreach (Match pm in XmlParameterRegex().Matches(m.Groups["body"].Value))
                 {
                     args[pm.Groups["n"].Value.Trim()] = ParseXmlToolParameterValue(pm.Groups["v"].Value.Trim());
                 }
@@ -4444,14 +4470,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
 
             if (IsServerSentEventsResponse(upstreamResp))
             {
-                Action<LlamaCppStreamChunk> onUsage = chunk => FillTokenStats(log, chunk);
+                void onUsage(LlamaCppStreamChunk chunk) => FillTokenStats(log, chunk);
 
                 // Guarantee the compaction stream reaches its terminal event, for the same reason the
                 // passthrough path does: the client that asked for a summary awaits `data: [DONE]`.
                 OpenAiStreamTerminator? streamTerminator = ShouldApplyCopilotCompatibility(targetMapping.ProxyName)
                     ? new OpenAiStreamTerminator(originalModel, compactStreamOptions.MustSynthesizeUsage)
                     : null;
-                Func<(int PromptTokens, int CompletionTokens)> tokenCounts = () => (log.PromptTokens, log.CompletionTokens);
+                (int PromptTokens, int CompletionTokens) tokenCounts() => (log.PromptTokens, log.CompletionTokens);
 
                 if (collectResponse || debugCapture)
                 {
@@ -4491,14 +4517,14 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             {
                 // Buffer once so token usage and the optional captures read from the same body
                 // that is forwarded to the client.
-                Action<string> onBody = body =>
+                void onBody(string body)
                 {
                     FillTokenStats(log, TryParseChunk(body));
                     if (collectResponse)
                         log.ResponseBody = RedactResponseBodyForLog(body, originalModel);
                     if (debugCapture)
                         log.UpstreamResponseBody = RedactResponseBodyForLog(body, originalModel);
-                };
+                }
 
                 // ThinkingMode.LeaveInline with no tool extraction forwards the body byte-for-byte.
                 await CopyNonStreamingChatResponseAsync(
@@ -5042,15 +5068,21 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         };
     }
 
+    [GeneratedRegex(@"(?<size>\d+(?:\.\d+)?)[bB](?![A-Za-z])")]
+    private static partial Regex ParameterSizeRegex();
+
     private static string GetParameterSize(string modelId)
     {
-        Match match = Regex.Match(modelId, @"(?<size>\d+(?:\.\d+)?)[bB](?![A-Za-z])");
+        Match match = ParameterSizeRegex().Match(modelId);
         return match.Success ? $"{match.Groups["size"].Value}B" : string.Empty;
     }
 
+    [GeneratedRegex(@"(?<quant>q\d(?:_[a-z0-9]+)?)", RegexOptions.IgnoreCase)]
+    private static partial Regex QuantizationLevelRegex();
+
     private static string GetQuantizationLevel(string modelId)
     {
-        Match match = Regex.Match(modelId, @"(?<quant>q\d(?:_[a-z0-9]+)?)", RegexOptions.IgnoreCase);
+        Match match = QuantizationLevelRegex().Match(modelId);
         return match.Success ? match.Groups["quant"].Value.ToUpperInvariant() : string.Empty;
     }
 
@@ -5510,8 +5542,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 : nativeThinking;
 
             ToolCallExtraction toolCallExtraction = ExtractXmlToolCalls(content);
-            if (toolCalls is null)
-                toolCalls = toolCallExtraction.ToolCalls;
+            // Only fill tool calls that the upstream did not already supply.
+            toolCalls ??= toolCallExtraction.ToolCalls;
 
             content = toolCallExtraction.Content;
 
@@ -6260,30 +6292,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         if (string.IsNullOrEmpty(content))
             return new(content, null);
 
-        MatchCollection matches = Regex.Matches(
-            content,
-            @"<tool_call>\s*<function=(?<name>[^>\s]+)>\s*(?<body>.*?)\s*</function>\s*</tool_call>",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        MatchCollection matches = XmlToolCallRegex().Matches(content);
 
-        if (matches.Count == 0)
-            return new(content, null);
+                if (matches.Count == 0)
+                    return new(content, null);
 
-        List<OllamaToolCall> toolCalls = [];
-        foreach (Match match in matches)
-        {
-            string name = match.Groups["name"].Value.Trim();
-            string body = match.Groups["body"].Value;
-            Dictionary<string, object?> arguments = new(StringComparer.OrdinalIgnoreCase);
+                List<OllamaToolCall> toolCalls = [];
+                foreach (Match match in matches)
+                {
+                    string name = match.Groups["name"].Value.Trim();
+                    string body = match.Groups["body"].Value;
+                    Dictionary<string, object?> arguments = new(StringComparer.OrdinalIgnoreCase);
 
-            foreach (Match parameterMatch in Regex.Matches(
-                body,
-                @"<parameter=(?<name>[^>\s]+)>\s*(?<value>.*?)\s*</parameter>",
-                RegexOptions.IgnoreCase | RegexOptions.Singleline))
-            {
-                string parameterName = parameterMatch.Groups["name"].Value.Trim();
-                string parameterValue = parameterMatch.Groups["value"].Value.Trim();
-                arguments[parameterName] = ParseXmlToolParameterValue(parameterValue);
-            }
+                    foreach (Match parameterMatch in XmlToolCallParameterRegex().Matches(body))
+                                {
+                                    string parameterName = parameterMatch.Groups["name"].Value.Trim();
+                                    string parameterValue = parameterMatch.Groups["value"].Value.Trim();
+                                    arguments[parameterName] = ParseXmlToolParameterValue(parameterValue);
+                                }
 
             toolCalls.Add(new OllamaToolCall
             {
@@ -6496,7 +6522,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// malformed, or does not match the expected shape, writes a 400 Bad Request response, marks
     /// the log as an error, and returns null so the caller can simply return.
     /// </summary>
-    private async Task<T?> TryDeserializeRequestAsync<T>(string body, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    private static async Task<T?> TryDeserializeRequestAsync<T>(string body, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
         where T : class
     {
         T? result;
@@ -7352,7 +7378,7 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         private readonly Action<ModelMapping, string> _recordFailure;
         private readonly CancellationTokenSource _cts = new();
         private readonly SemaphoreSlim _sendLock = new(1, 1);
-        private System.Threading.Timer _timer;
+        private readonly System.Threading.Timer _timer;
         private ModelMapping _mapping;
 
         public PeriodicHeartbeatState(

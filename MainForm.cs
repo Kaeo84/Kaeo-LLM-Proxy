@@ -524,7 +524,7 @@ internal partial class MainForm : Form
     /// Runs a synchronous button operation with the button disabled so a click re-entering
     /// through a MessageBox message pump cannot retrigger it.
     /// </summary>
-    private void RunOnceWhileDisabled(Button button, Action operation)
+    private static void RunOnceWhileDisabled(Button button, Action operation)
     {
         if (!button.Enabled)
             return;
@@ -1342,8 +1342,8 @@ internal partial class MainForm : Form
             // Only send levels the user actually checked; with every level checked (the initial
             // state) the set covers all rows and the query needs no level clause at all.
             List<string> levels = [.. _clbSysLogLevel.SelectedItems];
-            IReadOnlyCollection<string>? levelFilters =
-                            levels.Count > 0 && levels.Count < SystemLogLevels.Length ? levels : null;
+            List<string>? levelFilters =
+                levels.Count > 0 && levels.Count < SystemLogLevels.Length ? levels : null;
             string? searchText = string.IsNullOrWhiteSpace(_txtSysLogFilter.Text) ? null : _txtSysLogFilter.Text.Trim();
 
             IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(
@@ -2066,7 +2066,7 @@ internal partial class MainForm : Form
             }
         }
 
-        persistedCredentials = _settings.Credentials.Select(credential =>
+        persistedCredentials = [.. _settings.Credentials.Select(credential =>
         {
             if (!credential.HasSecretMaterial || string.IsNullOrEmpty(_settings.RuntimePassphrase))
             {
@@ -2082,7 +2082,7 @@ internal partial class MainForm : Form
                 PrivateKey = EncryptForSave(credential.PrivateKey, _settings.RuntimePassphrase),
                 Certificate = EncryptForSave(credential.Certificate, _settings.RuntimePassphrase),
             };
-        }).ToList();
+        })];
 
         return true;
     }
@@ -3318,8 +3318,8 @@ internal partial class MainForm : Form
 
                 // The non-streaming body carries the same usage block as the terminal stream
                 // chunk; capture it so token stats are populated on this path too.
-                TryParseJsonDocument(body, out JsonDocument? nonStreamDoc);
-                if (nonStreamDoc is not null)
+                bool parsedNonStream = TryParseJsonDocument(body, out JsonDocument? nonStreamDoc);
+                if (parsedNonStream && nonStreamDoc is not null)
                     using (nonStreamDoc)
                         diagnostics.RecordUsage(nonStreamDoc.RootElement);
 
@@ -3417,60 +3417,58 @@ internal partial class MainForm : Form
                 if (doc is null)
                     continue;
 
-                using (JsonDocument parsed = doc)
+                using JsonDocument parsed = doc;
+                JsonElement root = parsed.RootElement;
+
+                diagnostics.RecordUsage(root);
+
+                if (TryExtractSseError(root, out string errorMessage))
                 {
-                    JsonElement root = parsed.RootElement;
+                    yield return new TestConsoleToken(
+                        $"[Upstream stream error]\r\n{errorMessage}",
+                        IsThinking: false);
+                    yield break;
+                }
 
-                    diagnostics.RecordUsage(root);
+                if (!root.TryGetProperty("choices", out JsonElement choices))
+                {
+                    foreach (TestConsoleToken token in ExtractTokensFromElement(root))
+                        yield return token;
 
-                    if (TryExtractSseError(root, out string errorMessage))
+                    continue;
+                }
+
+                bool yieldedAnyChoiceToken = false;
+
+                foreach (JsonElement choice in choices.EnumerateArray())
+                {
+                    if (choice.TryGetProperty("delta", out JsonElement delta))
                     {
-                        yield return new TestConsoleToken(
-                            $"[Upstream stream error]\r\n{errorMessage}",
-                            IsThinking: false);
-                        yield break;
-                    }
-
-                    if (!root.TryGetProperty("choices", out JsonElement choices))
-                    {
-                        foreach (TestConsoleToken token in ExtractTokensFromElement(root))
-                            yield return token;
-
-                        continue;
-                    }
-
-                    bool yieldedAnyChoiceToken = false;
-
-                    foreach (JsonElement choice in choices.EnumerateArray())
-                    {
-                        if (choice.TryGetProperty("delta", out JsonElement delta))
-                        {
-                            foreach (TestConsoleToken token in ExtractTokensFromElement(delta))
-                            {
-                                yieldedAnyChoiceToken = true;
-                                yield return token;
-                            }
-                        }
-
-                        if (choice.TryGetProperty("message", out JsonElement message))
-                        {
-                            foreach (TestConsoleToken token in ExtractTokensFromElement(message))
-                            {
-                                yieldedAnyChoiceToken = true;
-                                yield return token;
-                            }
-                        }
-
-                        foreach (TestConsoleToken token in ExtractTokensFromElement(choice))
+                        foreach (TestConsoleToken token in ExtractTokensFromElement(delta))
                         {
                             yieldedAnyChoiceToken = true;
                             yield return token;
                         }
                     }
 
-                    if (!yieldedAnyChoiceToken)
-                        diagnostics.RecordIgnoredChunk(data);
+                    if (choice.TryGetProperty("message", out JsonElement message))
+                    {
+                        foreach (TestConsoleToken token in ExtractTokensFromElement(message))
+                        {
+                            yieldedAnyChoiceToken = true;
+                            yield return token;
+                        }
+                    }
+
+                    foreach (TestConsoleToken token in ExtractTokensFromElement(choice))
+                    {
+                        yieldedAnyChoiceToken = true;
+                        yield return token;
+                    }
                 }
+
+                if (!yieldedAnyChoiceToken)
+                    diagnostics.RecordIgnoredChunk(data);
             }
         }
     }

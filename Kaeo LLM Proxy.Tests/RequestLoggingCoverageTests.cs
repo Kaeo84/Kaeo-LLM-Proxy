@@ -86,10 +86,17 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         return port;
     }
 
-    private RequestLog? LastLog() => _statistics.GetRecentLogs().LastOrDefault();
+    private RequestLog? LastLog() => Last(_statistics.GetRecentLogs());
 
     /// <summary>Most recent entry in the Non-proxied log, or null when none was captured.</summary>
-    private RequestLog? LastNonProxiedLog() => _nonProxiedStatistics.GetRecentLogs().LastOrDefault();
+    private RequestLog? LastNonProxiedLog() => Last(_nonProxiedStatistics.GetRecentLogs());
+
+    /// <summary>
+    /// Returns the final element of an already-indexable list, or null when it is empty. Indexing
+    /// avoids the enumerator a LINQ LastOrDefault allocates for a list that supports direct access.
+    /// </summary>
+    private static RequestLog? Last(IReadOnlyList<RequestLog> logs) =>
+        logs.Count == 0 ? null : logs[^1];
 
     /// <summary>
     /// Waits until <paramref name="expected"/> requests have been logged, then returns.
@@ -133,7 +140,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
             // the persisted entry appears rather than assuming it is already there.
             while (!cts.IsCancellationRequested)
             {
-                RequestLog? summary = _nonProxiedStatistics.GetRecentLogs().LastOrDefault();
+                RequestLog? summary = Last(_nonProxiedStatistics.GetRecentLogs());
                 if (summary is not null
                     && _database.LoadFullLogEntry(summary.Timestamp, LogSource.NonProxied) is { } full)
                 {

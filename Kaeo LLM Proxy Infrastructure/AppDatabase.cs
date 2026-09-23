@@ -904,57 +904,56 @@ internal sealed class AppDatabase : IDisposable
     {
         lock (_lock)
         {
-            using (SqliteConnection connection = OpenConnection())
-            using (SqliteTransaction transaction = connection.BeginTransaction())
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            // Exceptions are pruned first, while the request rows that reference them still
+            // exist, so the delete is driven by the exact same predicate that decides which
+            // requests go. That is equivalent to the previous "delete the exceptions whose ids
+            // I just collected" behaviour, but the id set is evaluated by SQLite instead of
+            // being materialized in memory and rebuilt as one bound parameter per id — a list
+            // that grows unbounded with the backlog and would eventually exceed
+            // SQLITE_MAX_VARIABLE_NUMBER.
+            //
+            // Only the proxy log links exception rows; the MCP and non-proxied paths carry
+            // HTTP-level errors on the entry itself.
+            if (source == LogSource.Proxy)
             {
-                // Exceptions are pruned first, while the request rows that reference them still
-                // exist, so the delete is driven by the exact same predicate that decides which
-                // requests go. That is equivalent to the previous "delete the exceptions whose ids
-                // I just collected" behaviour, but the id set is evaluated by SQLite instead of
-                // being materialized in memory and rebuilt as one bound parameter per id — a list
-                // that grows unbounded with the backlog and would eventually exceed
-                // SQLITE_MAX_VARIABLE_NUMBER.
-                //
-                // Only the proxy log links exception rows; the MCP and non-proxied paths carry
-                // HTTP-level errors on the entry itself.
-                if (source == LogSource.Proxy)
-                {
-                    using SqliteCommand deleteExceptions = connection.CreateCommand();
-                    deleteExceptions.Transaction = transaction;
-                    deleteExceptions.CommandText =
-                        """
-                        DELETE FROM exceptions
-                        WHERE id IN (
-                            SELECT exception_id
-                            FROM requests
-                            WHERE timestamp_utc < $cutoffUtc
-                              AND exception_id IS NOT NULL
-                        );
-                        """;
-                    deleteExceptions.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
-                    deleteExceptions.ExecuteNonQuery();
-                }
-
-                int deleted;
-                using (SqliteCommand deleteRequests = connection.CreateCommand())
-                {
-                    deleteRequests.Transaction = transaction;
-                    deleteRequests.CommandText =
-                        $$"""
-                        DELETE FROM {{RequestTable(source)}}
-                        WHERE timestamp_utc < $cutoffUtc;
-                        """;
-                    deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
-                    deleted = deleteRequests.ExecuteNonQuery();
-                }
-
-                transaction.Commit();
-
-                if (deleted > 0)
-                    Log.Debug("AppDatabase pruned {Count} request entries older than {Cutoff:u}", deleted, cutoff);
-
-                return deleted;
+                using SqliteCommand deleteExceptions = connection.CreateCommand();
+                deleteExceptions.Transaction = transaction;
+                deleteExceptions.CommandText =
+                    """
+                    DELETE FROM exceptions
+                    WHERE id IN (
+                        SELECT exception_id
+                        FROM requests
+                        WHERE timestamp_utc < $cutoffUtc
+                          AND exception_id IS NOT NULL
+                    );
+                    """;
+                deleteExceptions.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+                deleteExceptions.ExecuteNonQuery();
             }
+
+            int deleted;
+            using (SqliteCommand deleteRequests = connection.CreateCommand())
+            {
+                deleteRequests.Transaction = transaction;
+                deleteRequests.CommandText =
+                    $$"""
+                    DELETE FROM {{RequestTable(source)}}
+                    WHERE timestamp_utc < $cutoffUtc;
+                    """;
+                deleteRequests.Parameters.AddWithValue("$cutoffUtc", ToUtcText(cutoff));
+                deleted = deleteRequests.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+
+            if (deleted > 0)
+                Log.Debug("AppDatabase pruned {Count} request entries older than {Cutoff:u}", deleted, cutoff);
+
+            return deleted;
         }
     }
 
@@ -2101,28 +2100,28 @@ internal sealed class AppDatabase : IDisposable
         // Build a proxy-name → id lookup from existing non-zero IDs.
         Dictionary<string, int> nameToId = new(StringComparer.OrdinalIgnoreCase);
         int nextId = 1;
-        foreach (var row in rows)
+        foreach ((string proxyName, int id, _, _) in rows)
         {
-            if (row.Id > 0)
+            if (id > 0)
             {
-                nameToId[row.ProxyName] = row.Id;
-                if (row.Id >= nextId)
-                    nextId = row.Id + 1;
+                nameToId[proxyName] = id;
+                if (id >= nextId)
+                    nextId = id + 1;
             }
         }
 
         // Assign IDs to rows that don't have one yet.
-        foreach (var row in rows)
+        foreach ((string proxyName, int id0, _, _) in rows)
         {
-            if (row.Id == 0 && !nameToId.ContainsKey(row.ProxyName))
+            if (id0 == 0 && !nameToId.ContainsKey(proxyName))
             {
                 int id = nextId++;
-                nameToId[row.ProxyName] = id;
+                nameToId[proxyName] = id;
 
                 using SqliteCommand updateCmd = connection.CreateCommand();
                 updateCmd.CommandText = "UPDATE model_mappings SET id = $id WHERE proxy_name = $proxyName;";
                 updateCmd.Parameters.AddWithValue("$id", id);
-                updateCmd.Parameters.AddWithValue("$proxyName", row.ProxyName);
+                updateCmd.Parameters.AddWithValue("$proxyName", proxyName);
                 updateCmd.ExecuteNonQuery();
             }
         }
@@ -2130,16 +2129,16 @@ internal sealed class AppDatabase : IDisposable
         // Convert legacy string references to integer IDs. Rows that already carry an ID are left
         // alone: when the two disagree, AppSettings.FindContextSummarizeTarget resolves by name on
         // load and repairs the ID there, so doing it here as well would be redundant.
-        foreach (var row in rows)
+        foreach ((string proxyName, _, string? legacyName, int? currentId) in rows)
         {
-            if (!string.IsNullOrWhiteSpace(row.LegacyName) && row.CurrentId is null)
+            if (!string.IsNullOrWhiteSpace(legacyName) && currentId is null)
             {
-                if (nameToId.TryGetValue(row.LegacyName.Trim(), out int targetId))
+                if (nameToId.TryGetValue(legacyName.Trim(), out int targetId))
                 {
                     using SqliteCommand updateCmd = connection.CreateCommand();
                     updateCmd.CommandText = "UPDATE model_mappings SET context_summarize_model_id = $id WHERE proxy_name = $proxyName;";
                     updateCmd.Parameters.AddWithValue("$id", targetId);
-                    updateCmd.Parameters.AddWithValue("$proxyName", row.ProxyName);
+                    updateCmd.Parameters.AddWithValue("$proxyName", proxyName);
                     updateCmd.ExecuteNonQuery();
                 }
             }
