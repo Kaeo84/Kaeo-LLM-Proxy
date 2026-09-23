@@ -46,8 +46,10 @@ partial class MainForm
         _tabSysLogs = new TabPage();
         _tlpSysLogs = new TableLayoutPanel();
         _flpSysLogTop = new FlowLayoutPanel();
-        _cboSysLogLevel = new ComboBox();
+        _clbSysLogLevel = new CheckedListBox();
         _lblSysLogLevel = new Label();
+        _lblSysLogFilter = new Label();
+        _txtSysLogFilter = new TextBox();
         _lstSysLogs = new ListView();
         _colSysLogTime = new ColumnHeader();
         _colSysLogLevel = new ColumnHeader();
@@ -137,7 +139,27 @@ partial class MainForm
         _colBytes = new ColumnHeader();
         _logSubTabs = new TabControl();
         _logProxyPage = new TabPage();
+        _tlpProxyLogs = new TableLayoutPanel();
+        _flpProxyLogTop = new FlowLayoutPanel();
+        _lblProxyLogFilter = new Label();
+        _txtProxyLogFilter = new TextBox();
         _logMcpPage = new TabPage();
+        _tlpMcpLogs = new TableLayoutPanel();
+        _flpMcpLogTop = new FlowLayoutPanel();
+        _lblMcpLogFilter = new Label();
+        _txtMcpLogFilter = new TextBox();
+        _logNonProxiedPage = new TabPage();
+        _tlpNonProxiedLogs = new TableLayoutPanel();
+        _flpNonProxiedLogTop = new FlowLayoutPanel();
+        _lblNonProxiedLogFilter = new Label();
+        _txtNonProxiedLogFilter = new TextBox();
+        _lstNonProxiedLogs = new ListView();
+        _colNpTime = new ColumnHeader();
+        _colNpMethod = new ColumnHeader();
+        _colNpPath = new ColumnHeader();
+        _colNpStatus = new ColumnHeader();
+        _colNpDuration = new ColumnHeader();
+        _colNpBytes = new ColumnHeader();
         _lstMcpLogs = new ListView();
         _colMcpTime = new ColumnHeader();
         _colMcpMethod = new ColumnHeader();
@@ -187,8 +209,15 @@ partial class MainForm
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
         _chkDebugMode = new CheckBox();
-        _chkCollectAllTraffic = new CheckBox();
-        _lblCollectAllTrafficWarning = new Label();
+        _grpNonProxiedCapture = new GroupBox();
+        _tlpNonProxiedCapture = new TableLayoutPanel();
+        _lblNonProxiedCaptureIntro = new Label();
+        _chkCollectHealthProbes = new CheckBox();
+        _chkCollectVersionExplorer = new CheckBox();
+        _chkCollectCorsPreflight = new CheckBox();
+        _chkCollectLocalStubs = new CheckBox();
+        _chkCollectRejectedRequests = new CheckBox();
+        _lblCollectNonProxiedWarning = new Label();
         _chkPerformanceSampling = new CheckBox();
         _chkApiExplorer = new CheckBox();
         _lblApiExplorerUrl = new Label();
@@ -311,7 +340,14 @@ partial class MainForm
         _tabLogs.SuspendLayout();
         _logSubTabs.SuspendLayout();
         _logProxyPage.SuspendLayout();
+        _tlpProxyLogs.SuspendLayout();
+        _flpProxyLogTop.SuspendLayout();
         _logMcpPage.SuspendLayout();
+        _tlpMcpLogs.SuspendLayout();
+        _flpMcpLogTop.SuspendLayout();
+        _logNonProxiedPage.SuspendLayout();
+        _tlpNonProxiedLogs.SuspendLayout();
+        _flpNonProxiedLogTop.SuspendLayout();
         _tlpLogs.SuspendLayout();
         _flpLogsButtons.SuspendLayout();
         _tabSettings.SuspendLayout();
@@ -338,6 +374,8 @@ partial class MainForm
         _tabSysLogs.SuspendLayout();
         _tlpSysLogs.SuspendLayout();
         _flpSysLogTop.SuspendLayout();
+        _grpNonProxiedCapture.SuspendLayout();
+        _tlpNonProxiedCapture.SuspendLayout();
         _tabHelp.SuspendLayout();
         _helpTabs.SuspendLayout();
         _tlpHeartbeats.SuspendLayout();
@@ -811,25 +849,166 @@ partial class MainForm
 
         // _logSubTabs — per-service request logs
         _logSubTabs.Controls.Add(_logProxyPage);
-        _logSubTabs.Controls.Add(_tabSysLogs);
         _logSubTabs.Controls.Add(_logMcpPage);
+        _logSubTabs.Controls.Add(_logNonProxiedPage);
+        _logSubTabs.Controls.Add(_tabSysLogs);
         _logSubTabs.Dock = DockStyle.Fill;
         _logSubTabs.Name = "_logSubTabs";
         _logSubTabs.SelectedIndexChanged += LogSubTabs_SelectionChanged;
 
         // _logProxyPage
-        _logProxyPage.Controls.Add(_lstLogs);
+        _logProxyPage.Controls.Add(_tlpProxyLogs);
         _logProxyPage.Dock = DockStyle.Fill;
         _logProxyPage.Name = "_logProxyPage";
         _logProxyPage.Padding = new Padding(3);
         _logProxyPage.Text = "Proxy";
 
+        // _tlpProxyLogs — 1 column: filter bar AutoSize | list fills
+        _tlpProxyLogs.ColumnCount = 1;
+        _tlpProxyLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpProxyLogs.Controls.Add(_flpProxyLogTop, 0, 0);
+        _tlpProxyLogs.Controls.Add(_lstLogs, 0, 1);
+        _tlpProxyLogs.Dock = DockStyle.Fill;
+        _tlpProxyLogs.Name = "_tlpProxyLogs";
+        _tlpProxyLogs.RowCount = 2;
+        _tlpProxyLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpProxyLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpProxyLogTop
+        _flpProxyLogTop.AutoSize = true;
+        _flpProxyLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpProxyLogTop.Controls.Add(_lblProxyLogFilter);
+        _flpProxyLogTop.Controls.Add(_txtProxyLogFilter);
+        _flpProxyLogTop.Dock = DockStyle.Fill;
+        _flpProxyLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpProxyLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpProxyLogTop.Name = "_flpProxyLogTop";
+        _flpProxyLogTop.WrapContents = false;
+
+        _lblProxyLogFilter.Anchor = AnchorStyles.Left;
+        _lblProxyLogFilter.AutoSize = true;
+        _lblProxyLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblProxyLogFilter.Name = "_lblProxyLogFilter";
+        _lblProxyLogFilter.Text = "Filter:";
+
+        _txtProxyLogFilter.Anchor = AnchorStyles.Left;
+        _txtProxyLogFilter.Margin = new Padding(0, 0, 0, 0);
+        _txtProxyLogFilter.Name = "_txtProxyLogFilter";
+        _txtProxyLogFilter.PlaceholderText = "Filter by method, path, model, or status";
+        _txtProxyLogFilter.Size = new Size(320, 23);
+        _txtProxyLogFilter.TextChanged += LogFilter_TextChanged;
+
         // _logMcpPage
-        _logMcpPage.Controls.Add(_lstMcpLogs);
+        _logMcpPage.Controls.Add(_tlpMcpLogs);
         _logMcpPage.Dock = DockStyle.Fill;
         _logMcpPage.Name = "_logMcpPage";
         _logMcpPage.Padding = new Padding(3);
         _logMcpPage.Text = "MCP";
+
+        // _tlpMcpLogs — 1 column: filter bar AutoSize | list fills
+        _tlpMcpLogs.ColumnCount = 1;
+        _tlpMcpLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpMcpLogs.Controls.Add(_flpMcpLogTop, 0, 0);
+        _tlpMcpLogs.Controls.Add(_lstMcpLogs, 0, 1);
+        _tlpMcpLogs.Dock = DockStyle.Fill;
+        _tlpMcpLogs.Name = "_tlpMcpLogs";
+        _tlpMcpLogs.RowCount = 2;
+        _tlpMcpLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpMcpLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpMcpLogTop
+        _flpMcpLogTop.AutoSize = true;
+        _flpMcpLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpMcpLogTop.Controls.Add(_lblMcpLogFilter);
+        _flpMcpLogTop.Controls.Add(_txtMcpLogFilter);
+        _flpMcpLogTop.Dock = DockStyle.Fill;
+        _flpMcpLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpMcpLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpMcpLogTop.Name = "_flpMcpLogTop";
+        _flpMcpLogTop.WrapContents = false;
+
+        _lblMcpLogFilter.Anchor = AnchorStyles.Left;
+        _lblMcpLogFilter.AutoSize = true;
+        _lblMcpLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblMcpLogFilter.Name = "_lblMcpLogFilter";
+        _lblMcpLogFilter.Text = "Filter:";
+
+        _txtMcpLogFilter.Anchor = AnchorStyles.Left;
+        _txtMcpLogFilter.Margin = new Padding(0, 0, 0, 0);
+        _txtMcpLogFilter.Name = "_txtMcpLogFilter";
+        _txtMcpLogFilter.PlaceholderText = "Filter by method, path, or status";
+        _txtMcpLogFilter.Size = new Size(320, 23);
+        _txtMcpLogFilter.TextChanged += LogFilter_TextChanged;
+
+        // _logNonProxiedPage
+        _logNonProxiedPage.Controls.Add(_tlpNonProxiedLogs);
+        _logNonProxiedPage.Dock = DockStyle.Fill;
+        _logNonProxiedPage.Name = "_logNonProxiedPage";
+        _logNonProxiedPage.Padding = new Padding(3);
+        _logNonProxiedPage.Text = "Non-proxied";
+
+        // _tlpNonProxiedLogs — 1 column: filter bar AutoSize | list fills
+        _tlpNonProxiedLogs.ColumnCount = 1;
+        _tlpNonProxiedLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpNonProxiedLogs.Controls.Add(_flpNonProxiedLogTop, 0, 0);
+        _tlpNonProxiedLogs.Controls.Add(_lstNonProxiedLogs, 0, 1);
+        _tlpNonProxiedLogs.Dock = DockStyle.Fill;
+        _tlpNonProxiedLogs.Name = "_tlpNonProxiedLogs";
+        _tlpNonProxiedLogs.RowCount = 2;
+        _tlpNonProxiedLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpNonProxiedLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpNonProxiedLogTop
+        _flpNonProxiedLogTop.AutoSize = true;
+        _flpNonProxiedLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpNonProxiedLogTop.Controls.Add(_lblNonProxiedLogFilter);
+        _flpNonProxiedLogTop.Controls.Add(_txtNonProxiedLogFilter);
+        _flpNonProxiedLogTop.Dock = DockStyle.Fill;
+        _flpNonProxiedLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpNonProxiedLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpNonProxiedLogTop.Name = "_flpNonProxiedLogTop";
+        _flpNonProxiedLogTop.WrapContents = false;
+
+        _lblNonProxiedLogFilter.Anchor = AnchorStyles.Left;
+        _lblNonProxiedLogFilter.AutoSize = true;
+        _lblNonProxiedLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblNonProxiedLogFilter.Name = "_lblNonProxiedLogFilter";
+        _lblNonProxiedLogFilter.Text = "Filter:";
+
+        _txtNonProxiedLogFilter.Anchor = AnchorStyles.Left;
+        _txtNonProxiedLogFilter.Margin = new Padding(0, 0, 0, 0);
+        _txtNonProxiedLogFilter.Name = "_txtNonProxiedLogFilter";
+        _txtNonProxiedLogFilter.PlaceholderText = "Filter by method, path, or status";
+        _txtNonProxiedLogFilter.Size = new Size(320, 23);
+        _txtNonProxiedLogFilter.TextChanged += LogFilter_TextChanged;
+
+        // _lstNonProxiedLogs
+        _lstNonProxiedLogs.Columns.Add(_colNpTime);
+        _lstNonProxiedLogs.Columns.Add(_colNpMethod);
+        _lstNonProxiedLogs.Columns.Add(_colNpPath);
+        _lstNonProxiedLogs.Columns.Add(_colNpStatus);
+        _lstNonProxiedLogs.Columns.Add(_colNpDuration);
+        _lstNonProxiedLogs.Columns.Add(_colNpBytes);
+        _lstNonProxiedLogs.FullRowSelect = true;
+        _lstNonProxiedLogs.GridLines = true;
+        _lstNonProxiedLogs.Dock = DockStyle.Fill;
+        _lstNonProxiedLogs.Margin = new Padding(0);
+        _lstNonProxiedLogs.Name = "_lstNonProxiedLogs";
+        _lstNonProxiedLogs.View = View.Details;
+        _lstNonProxiedLogs.DoubleClick += LstNonProxiedLogs_DoubleClick;
+
+        _colNpTime.Text = "Time";
+        _colNpTime.Width = 105;
+        _colNpMethod.Text = "Method";
+        _colNpMethod.Width = 55;
+        _colNpPath.Text = "Path";
+        _colNpPath.Width = 260;
+        _colNpStatus.Text = "Status";
+        _colNpStatus.Width = 60;
+        _colNpDuration.Text = "ms";
+        _colNpDuration.Width = 60;
+        _colNpBytes.Text = "Bytes (req/resp)";
+        _colNpBytes.Width = 110;
 
         // _flpLogsButtons
         _flpLogsButtons.AutoSize = true;
@@ -1003,10 +1182,8 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 10);
         _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
         _tlpSettings.Controls.Add(_chkDebugMode, 0, 11);
-        _tlpSettings.SetColumnSpan(_chkCollectAllTraffic, 2);
-        _tlpSettings.Controls.Add(_chkCollectAllTraffic, 0, 12);
-        _tlpSettings.SetColumnSpan(_lblCollectAllTrafficWarning, 2);
-        _tlpSettings.Controls.Add(_lblCollectAllTrafficWarning, 0, 13);
+        _tlpSettings.SetColumnSpan(_grpNonProxiedCapture, 2);
+        _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 12);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
         _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 14);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
@@ -1117,16 +1294,69 @@ partial class MainForm
         _chkDebugMode.Name = "_chkDebugMode";
         _chkDebugMode.Text = "Debug mode (log before/after translation details and applied overrides)";
 
-        _chkCollectAllTraffic.AutoSize = true;
-        _chkCollectAllTraffic.Margin = new Padding(4, 4, 4, 4);
-        _chkCollectAllTraffic.Name = "_chkCollectAllTraffic";
-        _chkCollectAllTraffic.Text = "Also log infrastructure noise (health probes, CORS preflight, version and API explorer calls)";
+        // _grpNonProxiedCapture — one toggle per category of request the proxy answers without
+        // calling a model, replacing the old all-or-nothing switch. Rejected requests default on
+        // so turning automated noise off can never hide an error.
+        _grpNonProxiedCapture.AutoSize = true;
+        _grpNonProxiedCapture.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpNonProxiedCapture.Controls.Add(_tlpNonProxiedCapture);
+        _grpNonProxiedCapture.Dock = DockStyle.Fill;
+        _grpNonProxiedCapture.Margin = new Padding(4, 4, 4, 4);
+        _grpNonProxiedCapture.Name = "_grpNonProxiedCapture";
+        _grpNonProxiedCapture.Padding = new Padding(6, 2, 6, 4);
+        _grpNonProxiedCapture.Text = "Non-proxied request capture";
 
-        _lblCollectAllTrafficWarning.AutoSize = true;
-        _lblCollectAllTrafficWarning.Margin = new Padding(20, 0, 4, 4);
-        _lblCollectAllTrafficWarning.Name = "_lblCollectAllTrafficWarning";
-        _lblCollectAllTrafficWarning.ForeColor = Color.DarkOrange;
-        _lblCollectAllTrafficWarning.Text = "⚠ All API requests and every error (404, 400, 500, 503…) are always logged. This adds only the frequent automated probes.";
+        _tlpNonProxiedCapture.AutoSize = true;
+        _tlpNonProxiedCapture.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpNonProxiedCapture.ColumnCount = 1;
+        _tlpNonProxiedCapture.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpNonProxiedCapture.Dock = DockStyle.Fill;
+        _tlpNonProxiedCapture.Margin = new Padding(4);
+        _tlpNonProxiedCapture.Name = "_tlpNonProxiedCapture";
+        _tlpNonProxiedCapture.RowCount = 7;
+        _tlpNonProxiedCapture.Controls.Add(_lblNonProxiedCaptureIntro, 0, 0);
+        _tlpNonProxiedCapture.Controls.Add(_chkCollectLocalStubs, 0, 1);
+        _tlpNonProxiedCapture.Controls.Add(_chkCollectRejectedRequests, 0, 2);
+        _tlpNonProxiedCapture.Controls.Add(_chkCollectHealthProbes, 0, 3);
+        _tlpNonProxiedCapture.Controls.Add(_chkCollectVersionExplorer, 0, 4);
+        _tlpNonProxiedCapture.Controls.Add(_chkCollectCorsPreflight, 0, 5);
+        _tlpNonProxiedCapture.Controls.Add(_lblCollectNonProxiedWarning, 0, 6);
+
+        _lblNonProxiedCaptureIntro.AutoSize = true;
+        _lblNonProxiedCaptureIntro.Margin = new Padding(4, 4, 4, 4);
+        _lblNonProxiedCaptureIntro.Name = "_lblNonProxiedCaptureIntro";
+        _lblNonProxiedCaptureIntro.Text = "Requests the proxy answers without calling a model are logged to the Non-proxied tab. Choose which categories to capture:";
+
+        _chkCollectLocalStubs.AutoSize = true;
+        _chkCollectLocalStubs.Margin = new Padding(4, 4, 4, 0);
+        _chkCollectLocalStubs.Name = "_chkCollectLocalStubs";
+        _chkCollectLocalStubs.Text = "Local model stubs (/api/ps, /api/show, /v1/models)";
+
+        _chkCollectRejectedRequests.AutoSize = true;
+        _chkCollectRejectedRequests.Margin = new Padding(4, 0, 4, 0);
+        _chkCollectRejectedRequests.Name = "_chkCollectRejectedRequests";
+        _chkCollectRejectedRequests.Text = "Rejected requests (404, 501, 400, 413, 500, 503)";
+
+        _chkCollectHealthProbes.AutoSize = true;
+        _chkCollectHealthProbes.Margin = new Padding(4, 0, 4, 0);
+        _chkCollectHealthProbes.Name = "_chkCollectHealthProbes";
+        _chkCollectHealthProbes.Text = "Health probes (GET /, HEAD /)";
+
+        _chkCollectVersionExplorer.AutoSize = true;
+        _chkCollectVersionExplorer.Margin = new Padding(4, 0, 4, 0);
+        _chkCollectVersionExplorer.Name = "_chkCollectVersionExplorer";
+        _chkCollectVersionExplorer.Text = "Version and API explorer (/api/version, /scalar, /openapi.json)";
+
+        _chkCollectCorsPreflight.AutoSize = true;
+        _chkCollectCorsPreflight.Margin = new Padding(4, 0, 4, 0);
+        _chkCollectCorsPreflight.Name = "_chkCollectCorsPreflight";
+        _chkCollectCorsPreflight.Text = "CORS preflight (OPTIONS)";
+
+        _lblCollectNonProxiedWarning.AutoSize = true;
+        _lblCollectNonProxiedWarning.Margin = new Padding(4, 4, 4, 4);
+        _lblCollectNonProxiedWarning.Name = "_lblCollectNonProxiedWarning";
+        _lblCollectNonProxiedWarning.ForeColor = Color.DarkOrange;
+        _lblCollectNonProxiedWarning.Text = "⚠ Turning a category off stops that traffic from being logged at all. Health probes and version/explorer calls arrive every few seconds, so leaving them on can bury real traffic.";
 
         _chkPerformanceSampling.AutoSize = true;
         _chkPerformanceSampling.Margin = new Padding(4, 4, 4, 8);
@@ -1943,19 +2173,41 @@ partial class MainForm
         _flpSysLogTop.Name = "_flpSysLogTop";
         _flpSysLogTop.WrapContents = false;
         _flpSysLogTop.Controls.Add(_lblSysLogLevel);
-        _flpSysLogTop.Controls.Add(_cboSysLogLevel);
+        _flpSysLogTop.Controls.Add(_clbSysLogLevel);
+        _flpSysLogTop.Controls.Add(_lblSysLogFilter);
+        _flpSysLogTop.Controls.Add(_txtSysLogFilter);
         _flpSysLogTop.Controls.Add(_lblSysLogStatus);
 
         _lblSysLogLevel.Anchor = AnchorStyles.Left;
         _lblSysLogLevel.AutoSize = true;
         _lblSysLogLevel.Margin = new Padding(0, 5, 4, 0);
         _lblSysLogLevel.Name = "_lblSysLogLevel";
-        _lblSysLogLevel.Text = "Level:";
+        _lblSysLogLevel.Text = "Levels:";
 
-        _cboSysLogLevel.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cboSysLogLevel.Margin = new Padding(0, 0, 8, 0);
-        _cboSysLogLevel.Name = "_cboSysLogLevel";
-        _cboSysLogLevel.Size = new Size(100, 23);
+        // A CheckedListBox rather than a dropdown: levels are a filter set, so the user must be
+        // able to see and combine several at once. IntegralHeight keeps it on one row of the
+        // top bar instead of growing to fit every item.
+        _clbSysLogLevel.Anchor = AnchorStyles.Left;
+        _clbSysLogLevel.BorderStyle = BorderStyle.FixedSingle;
+        _clbSysLogLevel.CheckOnClick = true;
+        _clbSysLogLevel.IntegralHeight = false;
+        _clbSysLogLevel.Margin = new Padding(0, 0, 12, 0);
+        _clbSysLogLevel.Name = "_clbSysLogLevel";
+        _clbSysLogLevel.Size = new Size(130, 22);
+        _clbSysLogLevel.ItemCheck += ClbSysLogLevel_ItemCheck;
+
+        _lblSysLogFilter.Anchor = AnchorStyles.Left;
+        _lblSysLogFilter.AutoSize = true;
+        _lblSysLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblSysLogFilter.Name = "_lblSysLogFilter";
+        _lblSysLogFilter.Text = "Filter:";
+
+        _txtSysLogFilter.Anchor = AnchorStyles.Left;
+        _txtSysLogFilter.Margin = new Padding(0, 0, 8, 0);
+        _txtSysLogFilter.Name = "_txtSysLogFilter";
+        _txtSysLogFilter.PlaceholderText = "Search message, exception, or source";
+        _txtSysLogFilter.Size = new Size(280, 23);
+        _txtSysLogFilter.TextChanged += SysLogFilter_TextChanged;
 
         _lblSysLogStatus.Anchor = AnchorStyles.Left;
         _lblSysLogStatus.AutoSize = true;
@@ -2331,7 +2583,27 @@ partial class MainForm
     private ColumnHeader _colBytes;
     private TabControl _logSubTabs;
     private TabPage _logProxyPage;
+    private TableLayoutPanel _tlpProxyLogs;
+    private FlowLayoutPanel _flpProxyLogTop;
+    private Label _lblProxyLogFilter;
+    private TextBox _txtProxyLogFilter;
     private TabPage _logMcpPage;
+    private TableLayoutPanel _tlpMcpLogs;
+    private FlowLayoutPanel _flpMcpLogTop;
+    private Label _lblMcpLogFilter;
+    private TextBox _txtMcpLogFilter;
+    private TabPage _logNonProxiedPage;
+    private TableLayoutPanel _tlpNonProxiedLogs;
+    private FlowLayoutPanel _flpNonProxiedLogTop;
+    private Label _lblNonProxiedLogFilter;
+    private TextBox _txtNonProxiedLogFilter;
+    private ListView _lstNonProxiedLogs;
+    private ColumnHeader _colNpTime;
+    private ColumnHeader _colNpMethod;
+    private ColumnHeader _colNpPath;
+    private ColumnHeader _colNpStatus;
+    private ColumnHeader _colNpDuration;
+    private ColumnHeader _colNpBytes;
     private ListView _lstMcpLogs;
     private ColumnHeader _colMcpTime;
     private ColumnHeader _colMcpMethod;
@@ -2377,8 +2649,15 @@ partial class MainForm
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
     private CheckBox _chkDebugMode;
-    private CheckBox _chkCollectAllTraffic;
-    private Label _lblCollectAllTrafficWarning;
+    private GroupBox _grpNonProxiedCapture;
+    private TableLayoutPanel _tlpNonProxiedCapture;
+    private Label _lblNonProxiedCaptureIntro;
+    private CheckBox _chkCollectHealthProbes;
+    private CheckBox _chkCollectVersionExplorer;
+    private CheckBox _chkCollectCorsPreflight;
+    private CheckBox _chkCollectLocalStubs;
+    private CheckBox _chkCollectRejectedRequests;
+    private Label _lblCollectNonProxiedWarning;
     private CheckBox _chkPerformanceSampling;
     private CheckBox _chkApiExplorer;
     private Label _lblApiExplorerUrl;
@@ -2489,8 +2768,10 @@ partial class MainForm
     private TabPage _tabSysLogs;
     private TableLayoutPanel _tlpSysLogs;
     private FlowLayoutPanel _flpSysLogTop;
-    private ComboBox _cboSysLogLevel;
+    private CheckedListBox _clbSysLogLevel;
     private Label _lblSysLogLevel;
+    private Label _lblSysLogFilter;
+    private TextBox _txtSysLogFilter;
     private ListView _lstSysLogs;
     private ColumnHeader _colSysLogTime;
     private ColumnHeader _colSysLogLevel;

@@ -32,6 +32,13 @@ internal partial class MainForm : Form
     private readonly McpServerService _mcpServer;
     private readonly StatisticsService _mcpStats;
 
+    /// <summary>
+    /// Requests the proxy answered without calling a model (health probes, static endpoints,
+    /// CORS preflight, local stubs, and rejections). Surfaced as its own Logs sub-tab so these
+    /// high-frequency rows cannot bury real model traffic in the Proxy tab.
+    /// </summary>
+    private readonly StatisticsService _nonProxiedStats;
+
     // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
     private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
@@ -43,6 +50,13 @@ internal partial class MainForm : Form
     // (plus a small buffer) are materialized as ListViewItem objects via RetrieveVirtualItem.
     private IReadOnlyList<RequestLog> _logCache = [];
     private IReadOnlyList<RequestLog> _mcpLogCache = [];
+    private IReadOnlyList<RequestLog> _nonProxiedLogCache = [];
+
+        /// <summary>
+        /// Debounces the System Logs free-text filter so a database query is not issued per keystroke.
+        /// Created lazily on first use and disposed with the form.
+        /// </summary>
+        private System.Windows.Forms.Timer? _sysLogFilterDebounce;
 
     // Set while LoadSettingsToForm populates controls so the immediate-save event handlers
     // do not persist values that are merely being loaded.
@@ -69,7 +83,7 @@ internal partial class MainForm : Form
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats)
     {
         _settings = settings;
         _stats = stats;
@@ -80,6 +94,7 @@ internal partial class MainForm : Form
         _moduleHost = moduleHost;
         _mcpServer = mcpServer;
         _mcpStats = mcpServer.Statistics;
+        _nonProxiedStats = nonProxiedStats;
 
         InitializeComponent();
         Icon = Program.GetApplicationIcon();
@@ -97,6 +112,8 @@ internal partial class MainForm : Form
         _lstLogs.RetrieveVirtualItem += LstLogs_RetrieveVirtualItem;
         _lstMcpLogs.VirtualMode = true;
         _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
+        _lstNonProxiedLogs.VirtualMode = true;
+        _lstNonProxiedLogs.RetrieveVirtualItem += LstNonProxiedLogs_RetrieveVirtualItem;
 
         _stats.StatsChanged += OnStatsChanged;
         _mcpStats.StatsChanged += OnMcpStatsChanged;
@@ -118,7 +135,11 @@ internal partial class MainForm : Form
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
-        _chkCollectAllTraffic.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectLocalStubs.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectRejectedRequests.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectHealthProbes.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectVersionExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkCollectCorsPreflight.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkPerformanceSampling.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkApiExplorer.CheckedChanged += (_, _) => SaveGeneralSettings();
 
@@ -148,15 +169,10 @@ internal partial class MainForm : Form
         _btnMcpApply.Click += (_, _) => OnMcpSettingChanged();
 
         // System Logs tab
-        _cboSysLogLevel.Items.Add("(All)");
-        _cboSysLogLevel.Items.Add("Verbose");
-        _cboSysLogLevel.Items.Add("Debug");
-        _cboSysLogLevel.Items.Add("Information");
-        _cboSysLogLevel.Items.Add("Warning");
-        _cboSysLogLevel.Items.Add("Error");
-        _cboSysLogLevel.Items.Add("Fatal");
-        _cboSysLogLevel.SelectedIndex = 0;
-        _cboSysLogLevel.SelectedIndexChanged += (_, _) => RefreshSystemLogs();
+        // Levels are a filter set: every level is listed and starts checked, and the user can
+        // combine any subset. The EventsCheckedListChanged handler lives in MainForm.cs.
+        foreach (string level in SystemLogLevels)
+            _clbSysLogLevel.Items.Add(level, true);
     }
 
     protected override void OnLoad(EventArgs e)
@@ -168,6 +184,7 @@ internal partial class MainForm : Form
         RefreshMcpStats();
         RefreshLogs();
         RefreshMcpLogs();
+        RefreshNonProxiedLogs();
         RefreshSystemLogs();
         RefreshHeartbeats();
         RefreshCredentials();
@@ -196,6 +213,9 @@ internal partial class MainForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _refreshTimer.Stop();
+        _sysLogFilterDebounce?.Stop();
+        _sysLogFilterDebounce?.Dispose();
+        _sysLogFilterDebounce = null;
         _stats.StatsChanged -= OnStatsChanged;
         _mcpStats.StatsChanged -= OnMcpStatsChanged;
         _stats.ConnectionHealthChanged -= OnConnectionHealthChanged;
@@ -732,19 +752,91 @@ internal partial class MainForm : Form
 
     // ── Logs ─────────────────────────────────────────────────────────────────
 
-    private void RefreshLogs()
-    {
-        _logCache = _stats.GetRecentLogs();
-        _lstLogs.VirtualListSize = _logCache.Count;
-        _lstLogs.Invalidate();
-    }
+        /// <summary>
+        /// The levels offered in the System Logs filter, in severity order. Kept in sync with the
+        /// Serilog level names so what the user checks matches what the sink wrote.
+        /// </summary>
+        private static readonly string[] SystemLogLevels =
+            ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
 
-    private void RefreshMcpLogs()
-    {
-        _mcpLogCache = _mcpStats.GetRecentLogs();
-        _lstMcpLogs.VirtualListSize = _mcpLogCache.Count;
-        _lstMcpLogs.Invalidate();
-    }
+        /// <summary>
+        /// Case-insensitive free-text match across the fields a user can see in a request-log row,
+        /// so the same term works whether it names a method, a path, a model, or a status. A blank
+        /// filter matches everything.
+        /// </summary>
+        private static bool MatchesFilter(RequestLog log, string filter)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+                return true;
+
+            return log.Method.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || log.OllamaPath.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || log.Model.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || log.OriginalModel.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || log.Status.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || log.StatusCode.ToString().Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || (log.ClientAddress?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false);
+        }
+
+        private void RefreshLogs()
+        {
+            string filter = _txtProxyLogFilter.Text;
+            _logCache = [.. _stats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
+            _lstLogs.VirtualListSize = _logCache.Count;
+            _lstLogs.Invalidate();
+        }
+
+        private void RefreshMcpLogs()
+        {
+            string filter = _txtMcpLogFilter.Text;
+            _mcpLogCache = [.. _mcpStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
+            _lstMcpLogs.VirtualListSize = _mcpLogCache.Count;
+            _lstMcpLogs.Invalidate();
+        }
+
+        private void RefreshNonProxiedLogs()
+        {
+            string filter = _txtNonProxiedLogFilter.Text;
+            _nonProxiedLogCache = [.. _nonProxiedStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
+            _lstNonProxiedLogs.VirtualListSize = _nonProxiedLogCache.Count;
+            _lstNonProxiedLogs.Invalidate();
+        }
+
+        /// <summary>
+        /// Re-applies the active tab's filter. Text filters are applied in memory over the cached
+        /// summaries rather than re-queried, so typing re-filters instantly without a database round
+        /// trip; the timer-driven refresh still re-reads the store.
+        /// </summary>
+        private void LogFilter_TextChanged(object? sender, EventArgs e) => RefreshActiveLogTab();
+
+        private void SysLogFilter_TextChanged(object? sender, EventArgs e) =>
+            RefreshSystemLogsDebounced();
+
+        /// <summary>
+        /// A CheckedListBox raises ItemCheck before the item's state changes, so the refresh is
+        /// posted to the message queue and runs after the new check state has been applied.
+        /// </summary>
+        private void ClbSysLogLevel_ItemCheck(object? sender, ItemCheckEventArgs e) =>
+            BeginInvoke(RefreshSystemLogs);
+
+        /// <summary>
+        /// Refreshes the System Logs list after a short debounce so a fast typist does not trigger a
+        /// database query per keystroke. The debounce timer is created once and restarted on each call.
+        /// </summary>
+        private void RefreshSystemLogsDebounced()
+        {
+            _sysLogFilterDebounce ??= new System.Windows.Forms.Timer { Interval = 250 };
+            _sysLogFilterDebounce.Tick -= SysLogFilterDebounce_Tick;
+            _sysLogFilterDebounce.Tick += SysLogFilterDebounce_Tick;
+            _sysLogFilterDebounce.Stop();
+            _sysLogFilterDebounce.Start();
+        }
+
+        private void SysLogFilterDebounce_Tick(object? sender, EventArgs e)
+        {
+            _sysLogFilterDebounce?.Stop();
+            RefreshSystemLogs();
+        }
 
     private void LstLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
     {
@@ -806,6 +898,33 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
+    private void LstNonProxiedLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _nonProxiedLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        RequestLog log = _nonProxiedLogCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
+    }
+
     private void BtnClearLogs_Click(object? sender, EventArgs e) =>
         RunOnceWhileDisabled(_btnClearLogs, () =>
         {
@@ -815,6 +934,13 @@ internal partial class MainForm : Form
                 _mcpLogCache = [];
                 _lstMcpLogs.VirtualListSize = 0;
                 _lstMcpLogs.Invalidate();
+            }
+            else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
+            {
+                _nonProxiedStats.ClearLogs();
+                _nonProxiedLogCache = [];
+                _lstNonProxiedLogs.VirtualListSize = 0;
+                _lstNonProxiedLogs.Invalidate();
             }
             else if (_logSubTabs.SelectedTab == _tabSysLogs)
             {
@@ -838,6 +964,8 @@ internal partial class MainForm : Form
     {
         if (_logSubTabs.SelectedTab == _logMcpPage)
             ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
+        else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
+            ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             ShowSelectedSysLogDetails();
         else
@@ -906,6 +1034,9 @@ internal partial class MainForm : Form
 
     private void LstMcpLogs_DoubleClick(object? sender, EventArgs e) =>
         ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
+
+    private void LstNonProxiedLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
 
     private void ShowLogDetails(RequestLog log, LogSource source)
     {
@@ -1179,15 +1310,20 @@ internal partial class MainForm : Form
 
         try
         {
-            string? levelFilter = _cboSysLogLevel.SelectedIndex > 0
-                ? _cboSysLogLevel.Items[_cboSysLogLevel.SelectedIndex]?.ToString()
-                : null;
+            // Only send levels the user actually checked; with every level checked (the initial
+            // state) the set covers all rows and the query needs no level clause at all.
+            List<string> levels = [.. _clbSysLogLevel.CheckedItems.Cast<object>().Select(o => o.ToString() ?? string.Empty)];
+            IReadOnlyCollection<string>? levelFilters =
+                            levels.Count > 0 && levels.Count < SystemLogLevels.Length ? levels : null;
+            string? searchText = string.IsNullOrWhiteSpace(_txtSysLogFilter.Text) ? null : _txtSysLogFilter.Text.Trim();
 
-            IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(levelFilter, 500);
+            IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(
+                levelFilter: null, limit: 500, levelFilters: levelFilters, searchText: searchText);
 
             bool dbHealthy = AppLogger.DbSink?.IsUsingDatabase ?? true;
+            string scope = levelFilters is null ? "all levels" : $"{levelFilters.Count} level(s)";
             _lblSysLogStatus.Text = dbHealthy
-                ? $"Database ({entries.Count} entries)"
+                ? $"Database ({entries.Count} entries, {scope})"
                 : "Fallback file active (DB unavailable)";
             _lblSysLogStatus.ForeColor = dbHealthy ? SystemColors.ControlText : Color.OrangeRed;
 
@@ -1231,6 +1367,8 @@ internal partial class MainForm : Form
     {
         if (_logSubTabs.SelectedTab == _logMcpPage)
             RefreshMcpLogs();
+        else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
+            RefreshNonProxiedLogs();
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             RefreshSystemLogs();
         else
@@ -1560,14 +1698,12 @@ internal partial class MainForm : Form
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkDebugMode.Checked = _settings.DebugMode;
-        // Interim mapping until the Settings tab exposes one toggle per category: the old single
-                // checkbox reads as checked when any category beyond the always-on rejected-requests set is
-                // enabled, i.e. when routine noise is being captured.
-                _chkCollectAllTraffic.Checked =
-                    _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.HealthProbes)
-                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.VersionAndExplorer)
-                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.CorsPreflight)
-                    || _settings.CollectNonProxiedCategories.Contains(NonProxiedCategory.LocalStubs);
+        HashSet<NonProxiedCategory> capture = _settings.CollectNonProxiedCategories;
+        _chkCollectLocalStubs.Checked = capture.Contains(NonProxiedCategory.LocalStubs);
+        _chkCollectRejectedRequests.Checked = capture.Contains(NonProxiedCategory.RejectedRequests);
+        _chkCollectHealthProbes.Checked = capture.Contains(NonProxiedCategory.HealthProbes);
+        _chkCollectVersionExplorer.Checked = capture.Contains(NonProxiedCategory.VersionAndExplorer);
+        _chkCollectCorsPreflight.Checked = capture.Contains(NonProxiedCategory.CorsPreflight);
         _chkPerformanceSampling.Checked = _settings.EnablePerformanceSampling;
         _chkApiExplorer.Checked = _settings.EnableApiExplorer;
         _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
@@ -1686,12 +1822,15 @@ internal partial class MainForm : Form
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.DebugMode = _chkDebugMode.Checked;
-        // Interim mapping: checked means "capture everything", matching the old single switch. The
-                // per-category toggles replace this. Rejected requests stay on regardless, so errors are
-                // never hidden by toggling noise off.
-                _settings.CollectNonProxiedCategories = _chkCollectAllTraffic.Checked
-                    ? [.. NonProxiedCategorySet.All]
-                    : [NonProxiedCategory.RejectedRequests];
+        // One toggle per category. Rejected requests are deliberately affected by their own toggle
+        // rather than forced on, so the user can silence them if they want a quiet log.
+        HashSet<NonProxiedCategory> capture = [];
+        if (_chkCollectLocalStubs.Checked) capture.Add(NonProxiedCategory.LocalStubs);
+        if (_chkCollectRejectedRequests.Checked) capture.Add(NonProxiedCategory.RejectedRequests);
+        if (_chkCollectHealthProbes.Checked) capture.Add(NonProxiedCategory.HealthProbes);
+        if (_chkCollectVersionExplorer.Checked) capture.Add(NonProxiedCategory.VersionAndExplorer);
+        if (_chkCollectCorsPreflight.Checked) capture.Add(NonProxiedCategory.CorsPreflight);
+        _settings.CollectNonProxiedCategories = capture;
         _settings.EnablePerformanceSampling = _chkPerformanceSampling.Checked;
         _settings.EnableApiExplorer = _chkApiExplorer.Checked;
         _settings.EnableSseKeepAlive = _chkSseKeepAlive.Checked;
