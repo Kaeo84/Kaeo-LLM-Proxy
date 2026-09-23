@@ -2253,13 +2253,12 @@ internal partial class MainForm : Form
         duplicatedMapping.AssignNewId();
         duplicatedMapping.ProxyName = GenerateUniqueProxyName(originalMapping.ProxyName);
 
-        // A duplicate is a new, independent mapping. The clone deliberately carries the source's
-        // cross-mapping compaction pointer so the grid-commit path cannot silently drop a target,
-        // but that same pointer must not be inherited here or the copy redirects /compact to a
-        // model the user never picked for it. Detaching makes the copy's own compaction state
-        // explicit; the user can select a target in Configure if the copy needs one.
-        duplicatedMapping.DetachCompactionTarget();
-
+        // A duplicate is a full copy: it keeps the source's entire configuration, including the
+        // compaction target and redirect setting, so the copy behaves exactly like the model it
+        // was cloned from. Clone() deep-copies every collection and AssignNewId() gives the copy
+        // its own identity, so every relation is the copy's own — editing or clearing a setting
+        // on either mapping afterwards affects only that mapping. The grid shows the inherited
+        // compaction state (Compaction Model / Redirect /compact columns) so it is never hidden.
         int idx = AddMappingRow(duplicatedMapping);
         DataGridViewRow newRow = _dgvMappings.Rows[idx];
 

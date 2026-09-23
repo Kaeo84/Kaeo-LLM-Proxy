@@ -789,20 +789,6 @@ internal sealed class ModelMapping
         Id = 0;
         EnsureId();
     }
-
-    /// <summary>
-    /// Clears the context-summarize (/compact) target and disables the manual-compaction redirect.
-    /// Used when duplicating a mapping: the clone intentionally carries the source's cross-mapping
-    /// pointer so the grid-commit path cannot drop a target, but a duplicate is a new mapping and
-    /// must not inherit a redirect to a model the user never selected for it. Its own compaction
-    /// state then starts empty and is set explicitly via the Configure dialog.
-    /// </summary>
-    internal void DetachCompactionTarget()
-    {
-        ContextSummarizeModelId = null;
-        ContextSummarizeModelName = null;
-        RedirectManualCompaction = false;
-    }
 }
 
 /// <summary>Logging configuration persisted inside settings.jsonc.</summary>

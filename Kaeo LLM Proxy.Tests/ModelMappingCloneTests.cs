@@ -100,35 +100,113 @@ public class ModelMappingCloneTests
     }
 
     [Fact]
-    public void DetachCompactionTargetClearsTargetAndRedirect()
+    public void DuplicateIsAFullCopyOfTheSourceConfiguration()
     {
-        // Duplicating a mapping detaches the inherited compaction pointer so the copy does not
-        // redirect /compact to a model the user never selected for it. The clone itself still
-        // carries the pointer (the grid-commit path depends on that), so the detach must be an
-        // explicit, separate step.
-        ModelMapping original = new()
+        // A duplicate keeps the source's entire configuration, including the compaction target
+        // and the manual-compaction redirect, so the copy behaves exactly like the model it came
+        // from. Only the identity and proxy name change.
+        ModelMapping compact = new() { ProxyName = "compaction-model" };
+        compact.EnsureId();
+
+        ModelMapping source = new()
         {
-            ProxyName = "main",
-            ContextSummarizeModelId = 42,
-            ContextSummarizeModelName = "compaction-model",
+            ProxyName = "main-model",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelId = compact.Id,
+            ContextSummarizeModelName = compact.ProxyName,
             RedirectManualCompaction = true,
+            AutoCompactPaths = AutoCompactPaths.Both,
+            ProactiveOverflowPercent = 85,
         };
-        original.EnsureId();
+        source.EnsureId();
 
-        ModelMapping duplicate = original.Clone();
-        duplicate.DetachCompactionTarget();
+        ModelMapping duplicate = source.Clone();
+        duplicate.AssignNewId();
+        duplicate.ProxyName = "main-model - Copy";
 
-        Assert.Null(duplicate.ContextSummarizeModelId);
-        Assert.Null(duplicate.ContextSummarizeModelName);
-        Assert.False(duplicate.RedirectManualCompaction);
+        Assert.Equal(compact.Id, duplicate.ContextSummarizeModelId);
+        Assert.Equal(compact.ProxyName, duplicate.ContextSummarizeModelName);
+        Assert.True(duplicate.RedirectManualCompaction);
+        Assert.Equal(AutoCompactPaths.Both, duplicate.AutoCompactPaths);
+        Assert.Equal(85, duplicate.ProactiveOverflowPercent);
     }
 
     [Fact]
-    public void DetachedDuplicateDoesNotRedirectToTheSourceCompactionModel()
+    public void DuplicatedMappingsAreIndependentSoEditingOneLeavesTheOtherAlone()
     {
-        // End-to-end shape of the reported bug: duplicating a mapping that redirected /compact
-        // used to leave the copy pointing at the source's compaction model, so /compact for the
-        // copy was silently routed to a model the user never chose for it.
+        // "Full copy" must not mean "shared": clearing or changing a relation on the duplicate
+        // must affect only the duplicate. This is the property the user depends on when they
+        // duplicate a model to try a different compaction setup.
+        ModelMapping compact = new() { ProxyName = "compaction-model" };
+        compact.EnsureId();
+
+        ModelMapping source = new()
+        {
+            ProxyName = "main-model",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelId = compact.Id,
+            ContextSummarizeModelName = compact.ProxyName,
+            RedirectManualCompaction = true,
+            Capabilities = ["vision"],
+        };
+        source.EnsureId();
+
+        ModelMapping duplicate = source.Clone();
+        duplicate.AssignNewId();
+        duplicate.ProxyName = "main-model - Copy";
+
+        // Clear the duplicate's compaction relation.
+        duplicate.ContextSummarizeModelId = null;
+        duplicate.ContextSummarizeModelName = null;
+        duplicate.RedirectManualCompaction = false;
+        duplicate.Capabilities.Clear();
+
+        // The source must be untouched, and the two must be distinct identities.
+        Assert.Equal(compact.Id, source.ContextSummarizeModelId);
+        Assert.Equal(compact.ProxyName, source.ContextSummarizeModelName);
+        Assert.True(source.RedirectManualCompaction);
+        Assert.Single(source.Capabilities);
+        Assert.NotEqual(source.Id, duplicate.Id);
+    }
+
+    [Fact]
+    public void ChangingTheSourceAfterDuplicatingDoesNotAffectTheDuplicate()
+    {
+        // The reverse direction: independence has to hold both ways, so retargeting the source's
+        // compaction relation must not drag the already-created duplicate along with it.
+        ModelMapping compact = new() { ProxyName = "compaction-model" };
+        compact.EnsureId();
+        ModelMapping other = new() { ProxyName = "other-model" };
+        other.EnsureId();
+
+        ModelMapping source = new()
+        {
+            ProxyName = "main-model",
+            ContextSummarizeModelId = compact.Id,
+            ContextSummarizeModelName = compact.ProxyName,
+            RedirectManualCompaction = true,
+        };
+        source.EnsureId();
+
+        ModelMapping duplicate = source.Clone();
+        duplicate.AssignNewId();
+        duplicate.ProxyName = "main-model - Copy";
+
+        source.ContextSummarizeModelId = other.Id;
+        source.ContextSummarizeModelName = other.ProxyName;
+
+        Assert.Equal(compact.Id, duplicate.ContextSummarizeModelId);
+        Assert.Equal(compact.ProxyName, duplicate.ContextSummarizeModelName);
+    }
+
+    [Fact]
+    public void DuplicateResolvesItsOwnCopiedCompactionTarget()
+    {
+        // End-to-end shape of the requirement: the copy is a full duplicate, so it redirects
+        // /compact to the same target the source did — and resolves that target by its own
+        // stored copy of the relation rather than by sharing state with the source.
         ModelMapping compact = new()
         {
             ProxyName = "compaction-model",
@@ -155,14 +233,65 @@ public class ModelMappingCloneTests
         ModelMapping duplicate = main.Clone();
         duplicate.AssignNewId();
         duplicate.ProxyName = "main-model - Copy";
-        duplicate.DetachCompactionTarget();
         settings.ModelMappings.Add(duplicate);
 
-        Assert.Null(settings.FindContextSummarizeTarget(duplicate));
+        Assert.Same(compact, settings.FindContextSummarizeTarget(duplicate));
+
         (ModelMapping resolved, bool redirected) =
             OllamaProxyHandler.ResolveManualCompactTarget(settings, duplicate);
-        Assert.False(redirected);
-        Assert.Same(duplicate, resolved);
+        Assert.True(redirected);
+        Assert.Same(compact, resolved);
+    }
+
+    [Fact]
+    public void ClearingTheDuplicateCompactionTargetStopsOnlyItsRedirect()
+    {
+        // The reported failure: the copy's Configure dialog showed no compaction model while the
+        // copy still redirected. With a full, independent copy, clearing the duplicate's target
+        // stops the duplicate's redirect and leaves the source's redirect working.
+        ModelMapping compact = new()
+        {
+            ProxyName = "compaction-model",
+            ModelName = "compaction-upstream",
+            UpstreamUrl = "http://localhost:8081",
+        };
+        compact.EnsureId();
+
+        ModelMapping main = new()
+        {
+            ProxyName = "main-model",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelId = compact.Id,
+            ContextSummarizeModelName = compact.ProxyName,
+            RedirectManualCompaction = true,
+        };
+        main.EnsureId();
+
+        AppSettings settings = new();
+        settings.ModelMappings.Add(compact);
+        settings.ModelMappings.Add(main);
+
+        ModelMapping duplicate = main.Clone();
+        duplicate.AssignNewId();
+        duplicate.ProxyName = "main-model - Copy";
+        settings.ModelMappings.Add(duplicate);
+
+        // Simulate the user clearing the compaction model in the duplicate's Configure dialog.
+        duplicate.ContextSummarizeModelId = null;
+        duplicate.ContextSummarizeModelName = null;
+        duplicate.RedirectManualCompaction = false;
+
+        Assert.Null(settings.FindContextSummarizeTarget(duplicate));
+        (_, bool duplicateRedirected) =
+            OllamaProxyHandler.ResolveManualCompactTarget(settings, duplicate);
+        Assert.False(duplicateRedirected);
+
+        // The source is unaffected and still redirects.
+        (ModelMapping sourceResolved, bool sourceRedirected) =
+            OllamaProxyHandler.ResolveManualCompactTarget(settings, main);
+        Assert.True(sourceRedirected);
+        Assert.Same(compact, sourceResolved);
     }
 
     [Fact]
