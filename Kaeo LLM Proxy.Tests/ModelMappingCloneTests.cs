@@ -1,4 +1,5 @@
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Services;
 using Xunit;
 
 namespace Kaeo.LlmProxy.Tests;
@@ -96,6 +97,72 @@ public class ModelMappingCloneTests
 
         Assert.NotEqual(0, mapping.Id);
         Assert.NotEqual(originalId, mapping.Id);
+    }
+
+    [Fact]
+    public void DetachCompactionTargetClearsTargetAndRedirect()
+    {
+        // Duplicating a mapping detaches the inherited compaction pointer so the copy does not
+        // redirect /compact to a model the user never selected for it. The clone itself still
+        // carries the pointer (the grid-commit path depends on that), so the detach must be an
+        // explicit, separate step.
+        ModelMapping original = new()
+        {
+            ProxyName = "main",
+            ContextSummarizeModelId = 42,
+            ContextSummarizeModelName = "compaction-model",
+            RedirectManualCompaction = true,
+        };
+        original.EnsureId();
+
+        ModelMapping duplicate = original.Clone();
+        duplicate.DetachCompactionTarget();
+
+        Assert.Null(duplicate.ContextSummarizeModelId);
+        Assert.Null(duplicate.ContextSummarizeModelName);
+        Assert.False(duplicate.RedirectManualCompaction);
+    }
+
+    [Fact]
+    public void DetachedDuplicateDoesNotRedirectToTheSourceCompactionModel()
+    {
+        // End-to-end shape of the reported bug: duplicating a mapping that redirected /compact
+        // used to leave the copy pointing at the source's compaction model, so /compact for the
+        // copy was silently routed to a model the user never chose for it.
+        ModelMapping compact = new()
+        {
+            ProxyName = "compaction-model",
+            ModelName = "compaction-upstream",
+            UpstreamUrl = "http://localhost:8081",
+        };
+        compact.EnsureId();
+
+        ModelMapping main = new()
+        {
+            ProxyName = "main-model",
+            ModelName = "main-upstream",
+            UpstreamUrl = "http://localhost:8080",
+            ContextSummarizeModelId = compact.Id,
+            ContextSummarizeModelName = compact.ProxyName,
+            RedirectManualCompaction = true,
+        };
+        main.EnsureId();
+
+        AppSettings settings = new();
+        settings.ModelMappings.Add(compact);
+        settings.ModelMappings.Add(main);
+
+        ModelMapping duplicate = main.Clone();
+        duplicate.AssignNewId();
+        duplicate.ProxyName = "main-model - Copy";
+        duplicate.DetachCompactionTarget();
+        settings.ModelMappings.Add(duplicate);
+
+        Assert.Null(settings.FindContextSummarizeTarget(duplicate));
+        (ModelMapping resolved, bool redirected) =
+            OllamaProxyHandler.ResolveManualCompactTarget(settings, duplicate);
+        Assert.False(redirected);
+        Assert.Same(duplicate, resolved);
     }
 
     [Fact]

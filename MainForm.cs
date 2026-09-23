@@ -1616,10 +1616,24 @@ internal partial class MainForm : Form
             mapping.ModelName,
             mapping.InstructionSetName ?? string.Empty,
             mapping.ReasoningEffort ?? string.Empty,
-            mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No");
+            mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No",
+            DescribeCompactionTarget(mapping),
+            mapping.RedirectManualCompaction ? "Yes" : "No");
 
         _dgvMappings.Rows[idx].Tag = mapping;
         return idx;
+    }
+
+    /// <summary>
+    /// Describes where /compact requests for <paramref name="mapping"/> actually go, using the
+    /// same resolver the proxy uses so the grid can never display a target that differs from the
+    /// one routing picks. A target that resolves to the mapping itself reads as no target, matching
+    /// the self-reference rule in the manual-compaction resolver.
+    /// </summary>
+    private string DescribeCompactionTarget(ModelMapping mapping)
+    {
+        ModelMapping? target = _settings.FindContextSummarizeTarget(mapping);
+        return target is null || target.Id == mapping.Id ? string.Empty : target.ProxyName;
     }
 
     /// <summary>
@@ -2008,6 +2022,8 @@ internal partial class MainForm : Form
             row.Cells[_colInstructionSet.Name].Value = mapping.InstructionSetName ?? string.Empty;
             row.Cells[_colReasoningEffort.Name].Value = mapping.ReasoningEffort ?? string.Empty;
             row.Cells[_colVision.Name].Value = mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No";
+            row.Cells[_colCompactionTarget.Name].Value = DescribeCompactionTarget(mapping);
+            row.Cells[_colCompactionRedirect.Name].Value = mapping.RedirectManualCompaction ? "Yes" : "No";
 
             CommitMappingsFromGrid();
         }
@@ -2097,6 +2113,13 @@ internal partial class MainForm : Form
         ModelMapping duplicatedMapping = originalMapping.Clone();
         duplicatedMapping.AssignNewId();
         duplicatedMapping.ProxyName = GenerateUniqueProxyName(originalMapping.ProxyName);
+
+        // A duplicate is a new, independent mapping. The clone deliberately carries the source's
+        // cross-mapping compaction pointer so the grid-commit path cannot silently drop a target,
+        // but that same pointer must not be inherited here or the copy redirects /compact to a
+        // model the user never picked for it. Detaching makes the copy's own compaction state
+        // explicit; the user can select a target in Configure if the copy needs one.
+        duplicatedMapping.DetachCompactionTarget();
 
         int idx = AddMappingRow(duplicatedMapping);
         DataGridViewRow newRow = _dgvMappings.Rows[idx];

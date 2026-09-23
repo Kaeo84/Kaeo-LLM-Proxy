@@ -170,6 +170,8 @@ partial class MainForm
         _colInstructionSet = new DataGridViewTextBoxColumn();
         _colReasoningEffort = new DataGridViewTextBoxColumn();
         _colVision = new DataGridViewTextBoxColumn();
+        _colCompactionTarget = new DataGridViewTextBoxColumn();
+        _colCompactionRedirect = new DataGridViewTextBoxColumn();
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
@@ -1169,6 +1171,8 @@ partial class MainForm
         _dgvMappings.Columns.Add(_colInstructionSet);
         _dgvMappings.Columns.Add(_colReasoningEffort);
         _dgvMappings.Columns.Add(_colVision);
+        _dgvMappings.Columns.Add(_colCompactionTarget);
+        _dgvMappings.Columns.Add(_colCompactionRedirect);
         _dgvMappings.Dock = DockStyle.Fill;
         _dgvMappings.Margin = new Padding(4, 4, 4, 4);
         _dgvMappings.MinimumSize = new Size(0, 120);
@@ -1200,6 +1204,15 @@ partial class MainForm
         _colVision.HeaderText = "Vision";
         _colVision.Name = "_colVision";
         _colVision.FillWeight = 50;
+
+        _colCompactionTarget.HeaderText = "Compaction Model";
+        _colCompactionTarget.Name = "_colCompactionTarget";
+        _colCompactionTarget.FillWeight = 110;
+        _colCompactionTarget.DefaultCellStyle.NullValue = string.Empty;
+
+        _colCompactionRedirect.HeaderText = "Redirect /compact";
+        _colCompactionRedirect.Name = "_colCompactionRedirect";
+        _colCompactionRedirect.FillWeight = 70;
 
         _flpMappingButtons.AutoSize = true;
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -2347,6 +2360,8 @@ partial class MainForm
     private DataGridViewTextBoxColumn _colInstructionSet;
     private DataGridViewTextBoxColumn _colReasoningEffort;
     private DataGridViewTextBoxColumn _colVision;
+    private DataGridViewTextBoxColumn _colCompactionTarget;
+    private DataGridViewTextBoxColumn _colCompactionRedirect;
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
