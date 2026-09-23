@@ -2194,7 +2194,6 @@ partial class MainForm
         _clbSysLogLevel.Margin = new Padding(0, 0, 12, 0);
         _clbSysLogLevel.Name = "_clbSysLogLevel";
         _clbSysLogLevel.Size = new Size(130, 22);
-        _clbSysLogLevel.ItemCheck += ClbSysLogLevel_ItemCheck;
 
         _lblSysLogFilter.Anchor = AnchorStyles.Left;
         _lblSysLogFilter.AutoSize = true;
