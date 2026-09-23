@@ -170,14 +170,13 @@ internal partial class MainForm : Form
 
         // System Logs tab
         // Levels are a filter set: every level is listed and starts checked, and the user can
-        // combine any subset.
+        // combine any subset. The drop-down lists them all with checkboxes.
         foreach (string level in SystemLogLevels)
-            _clbSysLogLevel.Items.Add(level, true);
+            _clbSysLogLevel.AddItem(level, true);
 
-        // Wired only after the items exist. Items.Add(level, true) raises ItemCheck per item, and
-        // the handler posts a refresh to the message queue — illegal before the window handle
-        // exists, which is exactly the crash this ordering prevents.
-        _clbSysLogLevel.ItemCheck += ClbSysLogLevel_ItemCheck;
+        // Wired only after the items exist: adding an item with a check state raises the control's
+        // internal ItemCheck, and a refresh posted from there would run before the form is usable.
+        _clbSysLogLevel.SelectionChanged += (_, _) => RefreshSystemLogsDebounced();
     }
 
     protected override void OnLoad(EventArgs e)
@@ -824,20 +823,6 @@ internal partial class MainForm : Form
             RefreshSystemLogsDebounced();
 
         /// <summary>
-        /// A CheckedListBox raises ItemCheck before the item's state changes, so the refresh is
-        /// posted to the message queue to run after the new check state is applied. ItemCheck is
-        /// used rather than SelectedIndexChanged because re-clicking an already-selected row toggles
-        /// its check without changing the selection, which SelectedIndexChanged never reports.
-        /// </summary>
-        private void ClbSysLogLevel_ItemCheck(object? sender, ItemCheckEventArgs e)
-        {
-            // Posting requires a handle. The subscription is added after the items are populated,
-            // so this is defensive rather than expected, but a pre-handle BeginInvoke throws.
-            if (IsHandleCreated)
-                BeginInvoke(RefreshSystemLogs);
-        }
-
-        /// <summary>
         /// Refreshes the System Logs list after a short debounce so a fast typist does not trigger a
         /// database query per keystroke. The debounce timer is created once and restarted on each call.
         /// </summary>
@@ -1223,6 +1208,32 @@ internal partial class MainForm : Form
             tabControl.Controls.Add(responseTab);
         }
 
+        if (log.RequestHeaders is not null)
+        {
+            TabPage requestHeadersTab = new()
+            {
+                Name = "_tabLogRequestHeaders",
+                Padding = new Padding(8),
+                Text = "Request Headers",
+            };
+
+            requestHeadersTab.Controls.Add(CreateLogDetailsTextBox(log.RequestHeaders));
+            tabControl.Controls.Add(requestHeadersTab);
+        }
+
+        if (log.ResponseHeaders is not null)
+        {
+            TabPage responseHeadersTab = new()
+            {
+                Name = "_tabLogResponseHeaders",
+                Padding = new Padding(8),
+                Text = "Response Headers",
+            };
+
+            responseHeadersTab.Controls.Add(CreateLogDetailsTextBox(log.ResponseHeaders));
+            tabControl.Controls.Add(responseHeadersTab);
+        }
+
         detailForm.Controls.Add(tabControl);
         detailForm.ShowDialog(this);
     }
@@ -1330,7 +1341,7 @@ internal partial class MainForm : Form
         {
             // Only send levels the user actually checked; with every level checked (the initial
             // state) the set covers all rows and the query needs no level clause at all.
-            List<string> levels = [.. _clbSysLogLevel.CheckedItems.Cast<object>().Select(o => o.ToString() ?? string.Empty)];
+            List<string> levels = [.. _clbSysLogLevel.SelectedItems];
             IReadOnlyCollection<string>? levelFilters =
                             levels.Count > 0 && levels.Count < SystemLogLevels.Length ? levels : null;
             string? searchText = string.IsNullOrWhiteSpace(_txtSysLogFilter.Text) ? null : _txtSysLogFilter.Text.Trim();

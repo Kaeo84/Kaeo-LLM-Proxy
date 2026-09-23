@@ -46,7 +46,7 @@ partial class MainForm
         _tabSysLogs = new TabPage();
         _tlpSysLogs = new TableLayoutPanel();
         _flpSysLogTop = new FlowLayoutPanel();
-        _clbSysLogLevel = new CheckedListBox();
+        _clbSysLogLevel = new MultiSelectDropDown();
         _lblSysLogLevel = new Label();
         _lblSysLogFilter = new Label();
         _txtSysLogFilter = new TextBox();
@@ -2184,16 +2184,14 @@ partial class MainForm
         _lblSysLogLevel.Name = "_lblSysLogLevel";
         _lblSysLogLevel.Text = "Levels:";
 
-        // A CheckedListBox rather than a dropdown: levels are a filter set, so the user must be
-        // able to see and combine several at once. IntegralHeight keeps it on one row of the
-        // top bar instead of growing to fit every item.
+        // A multi-select drop-down: the closed control is one line, and clicking it lists every
+        // level with a checkbox so they can all be seen and combined at once.
         _clbSysLogLevel.Anchor = AnchorStyles.Left;
-        _clbSysLogLevel.BorderStyle = BorderStyle.FixedSingle;
-        _clbSysLogLevel.CheckOnClick = true;
-        _clbSysLogLevel.IntegralHeight = false;
         _clbSysLogLevel.Margin = new Padding(0, 0, 12, 0);
         _clbSysLogLevel.Name = "_clbSysLogLevel";
-        _clbSysLogLevel.Size = new Size(130, 22);
+        _clbSysLogLevel.Size = new Size(150, 25);
+        _clbSysLogLevel.Text = "All";
+        _clbSysLogLevel.TextAlign = ContentAlignment.MiddleLeft;
 
         _lblSysLogFilter.Anchor = AnchorStyles.Left;
         _lblSysLogFilter.AutoSize = true;
@@ -2487,6 +2485,26 @@ partial class MainForm
         _tlpSysLogs.PerformLayout();
         _flpSysLogTop.ResumeLayout(false);
         _flpSysLogTop.PerformLayout();
+        // Every container suspended above must be resumed, or its children never receive the
+        // layout pass that positions them: a Dock = Fill list inside an un-resumed panel keeps its
+        // default bounds and the pane looks empty even though the filter row beside it renders.
+        _tlpProxyLogs.ResumeLayout(false);
+        _tlpProxyLogs.PerformLayout();
+        _flpProxyLogTop.ResumeLayout(false);
+        _flpProxyLogTop.PerformLayout();
+        _tlpMcpLogs.ResumeLayout(false);
+        _tlpMcpLogs.PerformLayout();
+        _flpMcpLogTop.ResumeLayout(false);
+        _flpMcpLogTop.PerformLayout();
+        _tlpNonProxiedLogs.ResumeLayout(false);
+        _tlpNonProxiedLogs.PerformLayout();
+        _flpNonProxiedLogTop.ResumeLayout(false);
+        _flpNonProxiedLogTop.PerformLayout();
+        _logNonProxiedPage.ResumeLayout(false);
+        _grpNonProxiedCapture.ResumeLayout(false);
+        _grpNonProxiedCapture.PerformLayout();
+        _tlpNonProxiedCapture.ResumeLayout(false);
+        _tlpNonProxiedCapture.PerformLayout();
         _helpTabs.ResumeLayout(false);
         _tabHelp.ResumeLayout(false);
         _grpListener.ResumeLayout(false);
@@ -2767,7 +2785,7 @@ partial class MainForm
     private TabPage _tabSysLogs;
     private TableLayoutPanel _tlpSysLogs;
     private FlowLayoutPanel _flpSysLogTop;
-    private CheckedListBox _clbSysLogLevel;
+    private MultiSelectDropDown _clbSysLogLevel;
     private Label _lblSysLogLevel;
     private Label _lblSysLogFilter;
     private TextBox _txtSysLogFilter;
