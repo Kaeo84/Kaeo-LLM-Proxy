@@ -515,6 +515,48 @@ public int StatusCode { get; set; }                                 // 0</code><
           </div>
         </div>
 
+        <div class="card">
+          <h3>Header capture</h3>
+          <p>
+            Attribution names <em>who</em> called; headers say <em>what they sent</em>. Every request now captures its
+            full header block, and every response captures its own, persisted as <code>request_headers</code> and
+            <code>response_headers</code> on all three tables. This is what makes a body-less request — a probe, an
+            unknown endpoint — diagnosable, since the headers name the client library, content type, and any
+            tracing/correlation headers.
+          </p>
+          <div class="callout warn" style="margin-bottom:0">
+            <span class="lbl">Credential values are always masked</span>
+            <p>
+              <code>Authorization</code>, <code>Proxy-Authorization</code>, <code>Cookie</code>, <code>Set-Cookie</code>,
+              <code>Api-Key</code>, and any <code>*-token</code> / <code>*-secret</code> / <code>*-password</code> /
+              <code>*-auth</code> / <code>*-key</code> name is replaced with <code>[REDACTED]</code>
+              <strong>independently of the redaction settings</strong> — a log that stores a bearer token is a
+              credential leak, and the value has no diagnostic worth the risk. The header <em>name</em> is kept so the
+              request stays traceable. The block is truncated at 32&nbsp;KB so a pathological header set cannot bloat
+              every row.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Non-proxied bodies</h3>
+          <p>
+            Non-proxied rows previously carried no payload, so an unknown app hitting the proxy gave nothing to look
+            at. The branches that answer without a model — the health probe, <code>/api/version</code>, the 501
+            unsupported-call path, and the 404 unknown-endpoint path — now capture both the caller's payload and the
+            proxy's error body.
+          </p>
+          <div class="callout" style="margin-bottom:0">
+            <span class="lbl">Unmapped payloads stay readable</span>
+            <p>
+              A mapped request's body is prompt content, so whole-body redaction is the default there. A request with
+              no mapping (an unknown endpoint by definition) is not carrying a prompt, and its payload is the main
+              reason to capture it, so it gets <em>field-level</em> redaction instead: credentials and known sensitive
+              fields are still masked, but the payload structure stays readable.
+            </p>
+          </div>
+        </div>
+
         <div class="callout warn">
           <span class="lbl">Out of scope</span>
           <p>
@@ -759,16 +801,16 @@ flowchart TD
     Safe --> Handle
 
     subgraph HND["OllamaProxyHandler.cs"]
-        Handle["HandleAsync<br/>assigns RequestId, creates RequestLog,<br/>starts Stopwatch"]:::proxy
+        Handle["HandleAsync<br/>assigns RequestId, creates RequestLog,<br/>captures request headers (credentials masked),<br/>starts Stopwatch"]:::proxy
         Handle --> Core["HandleCoreAsync<br/>one try/finally owns logging<br/>for every branch"]:::proxy
     end
 
     Core -->|"GET / or HEAD /"| Health["200 OK<br/>category: HealthProbes"]:::gated
-    Core -->|"GET /api/version"| Version["version stub<br/>category: VersionAndExplorer"]:::gated
+    Core -->|"GET /api/version"| Version["version stub<br/>category: VersionAndExplorer<br/>body captured"]:::gated
     Core -->|"GET /scalar, /openapi.json"| Explorer["API explorer<br/>category: VersionAndExplorer"]:::gated
     Core -->|"OPTIONS preflight"| Cors["204<br/>category: CorsPreflight"]:::gated
     Core -->|"/api/pull,push,create,copy,delete"| E501["501 Unsupported<br/>category: RejectedRequests"]:::gated
-    Core -->|"unknown endpoint"| E404["404 Unknown endpoint<br/>category: RejectedRequests"]:::gated
+    Core -->|"unknown endpoint"| E404["404 Unknown endpoint<br/>category: RejectedRequests<br/>payload + error body captured"]:::gated
 
     Core -->|"GET /api/tags"| Tags["HandleTagsAsync → upstream /v1/models"]:::proxy
     Core -->|"GET /api/ps"| Ps["HandlePsAsync — local stub<br/>category: LocalStubs"]:::gated
@@ -1164,6 +1206,9 @@ if (typeof mermaid === 'undefined') {
     ['ClassifyNonProxied','OllamaProxyHandler.cs','Route','Decides whether an answered request belongs in the non-proxied store, by method + path only. Ignores status code and UpstreamPath because both are ambiguous.'],
     ['IsModelRoute','OllamaProxyHandler.cs','Route','Recognises the paths that genuinely reach a model (/api/chat, /api/generate, /api/embed*, /api/tags, /v1*), keeping them in the Proxy log.'],
     ['GetClientAddress','OllamaProxyHandler.cs','Attribution','Renders req.RemoteEndPoint as a display string, normalising IPv4-mapped IPv6 to plain IPv4 so a row identifies its caller. Mirrors the MCP host helper.'],
+    ['FormatHeadersForLog','OllamaProxyHandler.cs','Attribution','Formats a header collection as a Name: value block, always masking credential-bearing names, truncated at the 32 KB cap.'],
+    ['RedactUnmappedRequestBodyForLog','OllamaProxyHandler.cs','Attribution','Field-level redaction for a payload with no resolved mapping, so an unknown caller is still diagnosable rather than whole-body masked.'],
+    ['CaptureRejectedBodyAsync','OllamaProxyHandler.cs','Attribution','Captures the payload and error body on the reject branches that answer without a model. Read-once and best-effort.'],
     ['AddLog','StatisticsService.cs','Persist','Enqueues a body-free summary for the GUI, updates counters, hands the full entry to the persistence channel. Each log source owns one StatisticsService.'],
     ['PersistLoopAsync','StatisticsService.cs','Persist','Single writer draining the bounded channel into SQLite off the request path.'],
     ['RequestTable','AppDatabase.cs','Persist','Maps a LogSource to its table so the three sources share one persistence path.'],

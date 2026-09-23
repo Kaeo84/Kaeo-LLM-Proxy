@@ -45,8 +45,12 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     public RequestLoggingCoverageTests()
     {
         _database = new AppDatabase(new LoggingSettings { ApplicationDatabasePath = _dbPath });
-        _statistics = new StatisticsService(maxEntries: 500, store: null);
-        _nonProxiedStatistics = new StatisticsService(maxEntries: 500, store: null, source: LogSource.NonProxied);
+        // The store is wired so entries are persisted as well as queued. The in-memory summary
+        // deliberately omits the large fields (bodies, headers) — the detail view reloads them from
+        // SQLite — so the only faithful way to assert on captured bodies/headers is to read the row
+        // back, which also exercises the INSERT/SELECT ordinal alignment end to end.
+        _statistics = new StatisticsService(maxEntries: 500, store: _database);
+        _nonProxiedStatistics = new StatisticsService(maxEntries: 500, store: _database, source: LogSource.NonProxied);
         _moduleHost = new ModuleHost(_database, _settings);
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _statistics);
 
@@ -110,6 +114,41 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         {
             // Let the caller's assertion fail with the actual observed state.
         }
+    }
+
+    /// <summary>
+    /// Waits until the newest Non-proxied row has been written to SQLite and returns it fully
+    /// loaded. Bodies and headers are not on the in-memory summary by design, so a test that asserts
+    /// on captured detail must read the persisted row — which is exactly what the detail dialog does.
+    /// </summary>
+    private async Task<RequestLog?> WaitForPersistedNonProxiedLogAsync()
+    {
+        try
+        {
+            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(15));
+            while (_nonProxiedStatistics.TotalRequests < 1)
+                await Task.Delay(10, cts.Token);
+
+            // AddLog enqueues for the background writer, so the row can lag the counter. Retry until
+            // the persisted entry appears rather than assuming it is already there.
+            while (!cts.IsCancellationRequested)
+            {
+                RequestLog? summary = _nonProxiedStatistics.GetRecentLogs().LastOrDefault();
+                if (summary is not null
+                    && _database.LoadFullLogEntry(summary.Timestamp, LogSource.NonProxied) is { } full)
+                {
+                    return full;
+                }
+
+                await Task.Delay(25, cts.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Let the caller's assertion report the actual observed state.
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -353,5 +392,119 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         Assert.NotNull(reloaded);
         Assert.Null(reloaded.ClientAddress);
         Assert.Null(reloaded.UserAgent);
+    }
+
+    // ── Header capture ─────────────────────────────────────────────────────
+
+    [Fact]
+    public void HeaderBlocksSurviveADatabaseRoundTrip()
+    {
+        // Headers are appended at the end of the column list, so this also pins the INSERT/reader
+        // ordinal agreement for the two newest columns.
+        DateTime timestamp = new(2026, 9, 23, 9, 15, 0, DateTimeKind.Local);
+
+        _database.Insert(new RequestLog
+        {
+            Timestamp = timestamp,
+            Method = "POST",
+            OllamaPath = "/v1/chat/completions",
+            StatusCode = 200,
+            Status = RequestStatus.Success,
+            RequestHeaders = "Content-Type: application/json\nAccept: text/event-stream",
+            ResponseHeaders = "Content-Type: text/event-stream\nX-Context-Compacted: true",
+        });
+
+        RequestLog? reloaded = _database.LoadFullLogEntry(timestamp);
+
+        Assert.NotNull(reloaded);
+        Assert.Equal("Content-Type: application/json\nAccept: text/event-stream", reloaded.RequestHeaders);
+        Assert.Equal("Content-Type: text/event-stream\nX-Context-Compacted: true", reloaded.ResponseHeaders);
+    }
+
+    [Theory]
+    [InlineData("/", 200)]
+    [InlineData("/api/ps", 200)]
+    [InlineData("/nope", 404)]
+    [InlineData("/api/pull", 501)]
+    public async Task EveryNonProxiedResponseCarriesRequestHeaders(string path, int expectedStatus)
+    {
+        // The point of header capture: an opaque request (no model, no body) is diagnosable from
+        // its headers alone. Asserted across a health probe, a local stub, an unknown endpoint and
+        // an unsupported call, because each answers through a different branch.
+        _settings.CollectRequestDetails = true;
+        _settings.CollectNonProxiedCategories = [.. NonProxiedCategorySet.All];
+        StartProxy();
+
+        using var request = new HttpRequestMessage(
+            path == "/api/pull" ? HttpMethod.Post : HttpMethod.Get, path);
+        request.Headers.TryAddWithoutValidation("X-Kaeo-Test", "header-capture");
+
+        await _client.SendAsync(request);
+
+        RequestLog? log = await WaitForPersistedNonProxiedLogAsync();
+        Assert.NotNull(log);
+        Assert.Equal(expectedStatus, log.StatusCode);
+        Assert.NotNull(log.RequestHeaders);
+        Assert.Contains("X-Kaeo-Test: header-capture", log.RequestHeaders);
+    }
+
+    [Fact]
+    public async Task CredentialHeaderValuesAreAlwaysRedacted()
+    {
+        // A log that stores a bearer token is a credential leak, so masking happens regardless of
+        // the redaction settings. The header NAME is kept so the request is still diagnosable.
+        _settings.CollectRequestDetails = true;
+        _settings.CollectNonProxiedCategories = [.. NonProxiedCategorySet.All];
+        StartProxy();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/nope");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer super-secret-token");
+        request.Headers.TryAddWithoutValidation("X-Api-Key", "sk-live-abc123");
+
+        await _client.SendAsync(request);
+
+        RequestLog? log = await WaitForPersistedNonProxiedLogAsync();
+        Assert.NotNull(log);
+        Assert.NotNull(log.RequestHeaders);
+        Assert.Contains("Authorization:", log.RequestHeaders);
+        Assert.DoesNotContain("super-secret-token", log.RequestHeaders);
+        Assert.Contains("X-Api-Key:", log.RequestHeaders);
+        Assert.DoesNotContain("sk-live-abc123", log.RequestHeaders);
+    }
+
+    [Fact]
+    public async Task UnknownEndpointCapturesTheCallersPayload()
+    {
+        // The user-visible gap: a non-proxied row showed no payload, so there was nothing to see
+        // about what the calling app actually sent. The unknown-endpoint branch now captures it.
+        _settings.CollectRequestDetails = true;
+        _settings.CollectNonProxiedCategories = [.. NonProxiedCategorySet.All];
+        StartProxy();
+
+        const string payload = """{"who":"is","calling":"me"}""";
+        using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+
+        await _client.PostAsync("/some/unknown/app/endpoint", content);
+
+        RequestLog? log = await WaitForPersistedNonProxiedLogAsync();
+        Assert.NotNull(log);
+        Assert.Equal(404, log.StatusCode);
+        Assert.NotNull(log.RequestBody);
+        Assert.Contains("calling", log.RequestBody);
+    }
+
+    [Fact]
+    public async Task NonProxiedResponseBodyIsCapturedWhenResponseCaptureIsOn()
+    {
+        _settings.CollectResponseDetails = true;
+        _settings.CollectNonProxiedCategories = [.. NonProxiedCategorySet.All];
+        StartProxy();
+
+        await _client.GetAsync("/nope");
+
+        RequestLog? log = await WaitForPersistedNonProxiedLogAsync();
+        Assert.NotNull(log);
+        Assert.NotNull(log.ResponseBody);
+        Assert.Contains("Unknown endpoint", log.ResponseBody);
     }
 }

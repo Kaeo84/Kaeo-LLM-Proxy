@@ -117,7 +117,9 @@ internal sealed class AppDatabase : IDisposable
                     upstream_response_body,
                     stop_reason,
                     client_address,
-                    user_agent
+                    user_agent,
+                    request_headers,
+                    response_headers
                 )
                 VALUES (
                     $timestampUtc,
@@ -149,7 +151,9 @@ internal sealed class AppDatabase : IDisposable
                     $upstreamResponseBody,
                     $stopReason,
                     $clientAddress,
-                    $userAgent
+                    $userAgent,
+                    $requestHeaders,
+                    $responseHeaders
                 );
                 """;
 
@@ -753,7 +757,9 @@ internal sealed class AppDatabase : IDisposable
                     stop_reason,
                     original_model,
                     client_address,
-                    user_agent
+                    user_agent,
+                    request_headers,
+                    response_headers
                 FROM requests
                 ORDER BY timestamp_utc DESC
                 LIMIT $count;
@@ -891,7 +897,9 @@ internal sealed class AppDatabase : IDisposable
                     stop_reason,
                     original_model,
                     client_address,
-                    user_agent
+                    user_agent,
+                    request_headers,
+                    response_headers
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc = $timestampUtc
                 ORDER BY id DESC
@@ -1167,7 +1175,9 @@ internal sealed class AppDatabase : IDisposable
                     upstream_response_body TEXT NULL,
                     stop_reason TEXT NULL,
                     client_address TEXT NULL,
-                    user_agent TEXT NULL
+                    user_agent TEXT NULL,
+                    request_headers TEXT NULL,
+                    response_headers TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1205,7 +1215,9 @@ internal sealed class AppDatabase : IDisposable
                     upstream_response_body TEXT NULL,
                     stop_reason TEXT NULL,
                     client_address TEXT NULL,
-                    user_agent TEXT NULL
+                    user_agent TEXT NULL,
+                    request_headers TEXT NULL,
+                    response_headers TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1241,7 +1253,9 @@ internal sealed class AppDatabase : IDisposable
                                     upstream_response_body TEXT NULL,
                                     stop_reason TEXT NULL,
                                     client_address TEXT NULL,
-                                    user_agent TEXT NULL
+                                    user_agent TEXT NULL,
+                                    request_headers TEXT NULL,
+                                    response_headers TEXT NULL
                                 );
 
                                 CREATE INDEX IF NOT EXISTS idx_non_proxied_requests_timestamp_utc ON non_proxied_requests(timestamp_utc);
@@ -1635,6 +1649,17 @@ internal sealed class AppDatabase : IDisposable
             "ALTER TABLE requests ADD COLUMN user_agent TEXT NULL;");
         AddColumnIfMissing(connection, "mcp_requests", "user_agent",
             "ALTER TABLE mcp_requests ADD COLUMN user_agent TEXT NULL;");
+
+        // Full request/response header blocks, captured for every log source. Existing databases
+        // predate these columns, so CREATE TABLE IF NOT EXISTS leaves them absent and the reads
+        // would fail with "no such column" on the next start.
+        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+        {
+            AddColumnIfMissing(connection, table, "request_headers",
+                $"ALTER TABLE {table} ADD COLUMN request_headers TEXT NULL;");
+            AddColumnIfMissing(connection, table, "response_headers",
+                $"ALTER TABLE {table} ADD COLUMN response_headers TEXT NULL;");
+        }
     }
 
     /// <summary>
@@ -2324,6 +2349,8 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$stopReason", DbValue(entry.StopReason));
         command.Parameters.AddWithValue("$clientAddress", DbValue(entry.ClientAddress));
         command.Parameters.AddWithValue("$userAgent", DbValue(entry.UserAgent));
+        command.Parameters.AddWithValue("$requestHeaders", DbValue(entry.RequestHeaders));
+        command.Parameters.AddWithValue("$responseHeaders", DbValue(entry.ResponseHeaders));
     }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -2472,6 +2499,8 @@ internal sealed class AppDatabase : IDisposable
         OriginalModel = reader.IsDBNull(27) ? string.Empty : reader.GetString(27),
         ClientAddress = reader.IsDBNull(28) ? null : reader.GetString(28),
         UserAgent = reader.IsDBNull(29) ? null : reader.GetString(29),
+        RequestHeaders = reader.IsDBNull(30) ? null : reader.GetString(30),
+        ResponseHeaders = reader.IsDBNull(31) ? null : reader.GetString(31),
     };
 
     /// <summary>

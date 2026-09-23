@@ -167,6 +167,38 @@ internal sealed class RequestLog
     public string? UserAgent { get; set; }
 
     /// <summary>
+    /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
+    /// every log source. This is what makes an otherwise opaque request — an unknown app hitting the
+    /// proxy, a probe with no body — diagnosable, since it names the client library, content type,
+    /// and any tracing/correlation headers.
+    /// </summary>
+    /// <remarks>
+    /// Captured whenever request details are collected (<c>CollectRequestDetails</c> or
+    /// <c>DebugMode</c>). Values of credential-bearing headers (Authorization, cookies, api-key,
+    /// and any <c>*-token</c>/<c>*-secret</c> name) are ALWAYS replaced with a redaction marker
+    /// regardless of the redaction settings — a log that stores bearer tokens is a credential leak.
+    /// The block is truncated at <c>MaxHeaderBlockChars</c> so an oversized set cannot bloat the
+    /// database. Null when capture is disabled or the request had no headers.
+    /// </remarks>
+    public string? RequestHeaders { get; set; }
+
+    /// <summary>
+    /// The response's headers as a pre-formatted <c>Name: value</c> block, one per line. Useful for
+    /// confirming what the proxy actually asserted to the client (content type, cache, and the
+    /// compaction signal headers). Credential-bearing header names are always redacted, as with
+    /// <see cref="RequestHeaders"/>. Null when response capture is disabled, the response never
+    /// started, or its headers became unreadable after the response was committed.
+    /// </summary>
+    public string? ResponseHeaders { get; set; }
+
+    /// <summary>
+    /// Upper bound on the length of <see cref="RequestHeaders"/> and <see cref="ResponseHeaders"/>
+    /// after formatting. Keeps a pathological header set (a proxy chain appending hundreds of
+    /// forwarding entries) from writing an unbounded blob into every log row.
+    /// </summary>
+    public const int MaxHeaderBlockChars = 32 * 1024;
+
+    /// <summary>
     /// Derives the <see cref="RequestStatus"/> that corresponds to an HTTP status code, so every
     /// logging path shares one rule instead of each branch remembering to set
     /// <see cref="RequestLog.Status"/> alongside <see cref="RequestLog.StatusCode"/>.

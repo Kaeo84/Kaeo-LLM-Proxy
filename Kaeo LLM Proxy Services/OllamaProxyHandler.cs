@@ -954,6 +954,12 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // it. User-Agent names the calling tool; the address identifies the socket.
             ClientAddress = GetClientAddress(req.RemoteEndPoint),
             UserAgent = string.IsNullOrWhiteSpace(req.UserAgent) ? null : req.UserAgent,
+            // Captured here rather than in each handler so every path — including the ones that
+            // answer without a body — carries the caller's headers. Credential values are always
+            // masked by the formatter.
+            RequestHeaders = _settings.CollectRequestDetails || _settings.DebugMode
+                ? FormatHeadersForLog(EnumerateRequestHeaders(req))
+                : null,
         };
 
         var sw = Stopwatch.StartNew();
@@ -998,6 +1004,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 RequestBytes = Math.Max(0, req.ContentLength64),
                 ClientAddress = GetClientAddress(req.RemoteEndPoint),
                 UserAgent = string.IsNullOrWhiteSpace(req.UserAgent) ? null : req.UserAgent,
+                RequestHeaders = _settings.CollectRequestDetails || _settings.DebugMode
+                    ? FormatHeadersForLog(EnumerateRequestHeaders(req))
+                    : null,
             };
 
             // A shed request never reached a model, so it belongs with the other rejected calls.
@@ -1008,6 +1017,24 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         catch (Exception ex)
         {
             Log.Warning(ex, "Failed to record a rejected request in the request log");
+        }
+    }
+
+    /// <summary>
+    /// Flattens <see cref="HttpListenerRequest.Headers"/> into name/value pairs for logging. Some
+    /// header names legitimately repeat (e.g. <c>Accept</c>, <c>Via</c>), and the indexed accessor
+    /// returns them comma-joined, which is what the wire format allows, so no information is lost.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, string>> EnumerateRequestHeaders(HttpListenerRequest req)
+    {
+        System.Collections.Specialized.NameValueCollection headers = req.Headers;
+        foreach (string? key in headers.AllKeys)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+                continue;
+
+            yield return new KeyValuePair<string, string>(
+                key, headers[key] ?? string.Empty);
         }
     }
 
@@ -1153,6 +1180,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 else
                 {
                     byte[] bytes = Encoding.UTF8.GetBytes("OK");
+                    if (_settings.CollectResponseDetails)
+                        log.ResponseBody = "OK";
                     resp.ContentLength64 = bytes.Length;
                     await resp.OutputStream.WriteAsync(bytes, ct);
                     resp.Close();
@@ -1166,6 +1195,9 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             if (method == "GET" && path == "/api/version")
             {
                 RecordResponseStatus(resp, log, 200);
+                const string versionJson = "{\"version\":\"0.1.0\"}";
+                if (_settings.CollectResponseDetails)
+                    log.ResponseBody = versionJson;
                 await WriteJsonAsync(resp, new { version = "0.1.0" }, ct);
                 return;
             }
@@ -1220,6 +1252,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             else if (path is "/api/pull" or "/api/push" or "/api/create" or "/api/copy" or "/api/delete")
             {
                 RecordResponseStatus(resp, log, 501);
+                string errorJson = $"{{\"error\":\"'{path}' is not supported. llama.cpp has no model-management API.\"}}";
+                await CaptureRejectedBodyAsync(req, log, errorJson, ct);
                 await WriteJsonAsync(resp,
                     new { error = $"'{path}' is not supported. llama.cpp has no model-management API." }, ct);
             }
@@ -1262,6 +1296,8 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
                 // in the log as a 404 rather than defaulting to a success with no status code.
                 RecordResponseStatus(resp, log, 404);
                 log.ErrorMessage = $"Unknown endpoint: {path}";
+                string errorJson = $"{{\"error\":\"Unknown endpoint: {path}\"}}";
+                await CaptureRejectedBodyAsync(req, log, errorJson, ct);
                 await WriteJsonAsync(resp, new { error = $"Unknown endpoint: {path}" }, ct);
             }
         }
@@ -1326,6 +1362,33 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             // here would race that write — and its status is already correct.
             if (!exceptionLogged)
             {
+                // Response headers are captured before anything else, while the response object is
+                // most likely still readable. HttpListenerResponse.Headers throws once the response
+                // is closed or its headers are committed, so this is best-effort: a failure just
+                // leaves the field null rather than losing the whole log entry.
+                if (_settings.CollectResponseDetails)
+                {
+                    try
+                    {
+                        List<KeyValuePair<string, string>> responseHeaders = [];
+                        foreach (string? key in resp.Headers.AllKeys)
+                        {
+                            if (string.IsNullOrWhiteSpace(key))
+                                continue;
+
+                            responseHeaders.Add(new KeyValuePair<string, string>(key, resp.Headers[key] ?? string.Empty));
+                        }
+
+                        log.ResponseHeaders = FormatHeadersForLog(responseHeaders);
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException
+                        or ObjectDisposedException
+                        or HttpListenerException)
+                    {
+                        Log.Debug(ex, "Could not read the response headers for the request log");
+                    }
+                }
+
                 // Safety net for any branch that answered the client without recording what it sent.
                 // Only fills a zero: PassthroughCoreAsync stores the *upstream* status, and
                 // HandleChatAsync deliberately records the upstream 400 while rewriting the
@@ -3525,6 +3588,26 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
             : body;
     }
 
+    /// <summary>
+    /// Redacts a request body from a caller with no resolved model mapping — an unknown endpoint, an
+    /// unsupported call, or a health probe. Such a request is by definition not carrying a model
+    /// prompt, and its payload is the main thing that makes the call diagnosable ("what is this app
+    /// actually sending me?"), so whole-body masking would defeat the purpose of capturing it.
+    /// </summary>
+    /// <remarks>
+    /// Falls back to field-level redaction, which still masks credentials and known sensitive JSON
+    /// fields (<see cref="AppSettings.RedactSensitiveJsonFields"/> defaults to on) while leaving the
+    /// payload structure readable. Whole-body masking remains the behaviour for a request that does
+    /// resolve to a mapping, where the body is prompt content.
+    /// </remarks>
+    internal static string RedactUnmappedRequestBodyForLog(string body)
+    {
+        // Whole-body masking is the default for a mapped request because there the body is prompt
+        // content. Here there is no mapping to consult, and field-level redaction already masks
+        // credentials and known sensitive fields, so the payload stays readable.
+        return RedactSensitiveJsonFields(body);
+    }
+
     private string RedactResponseBodyForLog(string body, string modelName)
     {
         ModelMapping? mapping = _settings.FindModelMapping(modelName);
@@ -3534,6 +3617,105 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
         return mapping?.RedactSensitiveJsonFields ?? true
             ? RedactSensitiveJsonFields(body)
             : body;
+    }
+
+    /// <summary>
+    /// Formats a header collection as a <c>Name: value</c> block for the log, masking the value of
+    /// every credential-bearing header.
+    /// </summary>
+    /// <remarks>
+    /// Credential headers are ALWAYS masked, independently of the redaction settings: a log that
+    /// stores a bearer token is a credential leak, and unlike a body there is no diagnostic value
+    /// in keeping it. The block is truncated at <see cref="RequestLog.MaxHeaderBlockChars"/> so a
+    /// pathological set (a proxy chain appending hundreds of forwarding entries) cannot write an
+    /// unbounded blob into every row.
+    /// </remarks>
+    internal static string? FormatHeadersForLog(IEnumerable<KeyValuePair<string, string>> headers)
+    {
+        ArgumentNullException.ThrowIfNull(headers);
+
+        StringBuilder sb = new();
+        foreach (KeyValuePair<string, string> header in headers)
+        {
+            if (sb.Length >= RequestLog.MaxHeaderBlockChars)
+            {
+                sb.Append(RedactedValueText)
+                    .Append(" (truncated at ")
+                    .Append(RequestLog.MaxHeaderBlockChars)
+                    .Append(" characters)");
+                break;
+            }
+
+            sb.Append(header.Key)
+                .Append(": ")
+                .Append(IsSensitiveHeaderName(header.Key) ? RedactedValueText : header.Value)
+                .Append('\n');
+        }
+
+        return sb.Length == 0 ? null : sb.ToString().TrimEnd('\n');
+    }
+
+    /// <summary>
+    /// Reports whether a header carries a credential, by name. Matched case-insensitively and by
+    /// substring so vendor-prefixed variants (e.g. <c>x-goog-api-key</c>) are covered rather than
+    /// only the exact names.
+    /// </summary>
+    private static bool IsSensitiveHeaderName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        // Exact matches first: short names that must not be matched loosely.
+        if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Proxy-Authorization", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Cookie", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Set-Cookie", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Api-Key", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("X-Api-Key", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Authentication", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Suffix/substring matches cover the long tail of vendor-specific credential headers
+        // (x-auth-token, x-access-token, x-goog-api-key, x-amz-security-token, ...).
+        return name.Contains("-api-key", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("-token", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("-secret", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("-password", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("-auth", StringComparison.OrdinalIgnoreCase)
+            || name.Contains("-key", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Replaces the value of every credential-bearing header in a pre-formatted block.</summary>
+    /// <remarks>
+    /// Used for response headers, which are read back off the response as a name/value collection
+    /// and formatted by the caller. Kept separate from <see cref="FormatHeadersForLog"/> so a caller
+    /// holding an already-formatted string can still be scrubbed.
+    /// </remarks>
+    internal static string? RedactHeaderBlock(string? block)
+    {
+        if (string.IsNullOrWhiteSpace(block))
+            return block;
+
+        StringBuilder sb = new();
+        foreach (string line in block.Split('\n'))
+        {
+            int colon = line.IndexOf(':');
+            if (colon <= 0)
+            {
+                sb.Append(line).Append('\n');
+                continue;
+            }
+
+            string name = line[..colon].Trim();
+            sb.Append(name)
+                .Append(": ")
+                .Append(IsSensitiveHeaderName(name) ? RedactedValueText : line[(colon + 1)..].TrimStart())
+                .Append('\n');
+        }
+
+        return sb.ToString().TrimEnd('\n');
     }
 
     /// <summary>
@@ -6240,7 +6422,44 @@ internal sealed class OllamaProxyHandler(AppSettings settings, StatisticsService
     /// are fully buffered protects the proxy from memory-exhaustion (DoS) attacks.
     /// </summary>
     /// <exception cref="RequestBodyTooLargeException">Thrown when the body exceeds the limit.</exception>
-    private async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
+    /// <summary>
+        /// Captures the request payload and proxy error body for a request the proxy rejected without
+        /// handing it to a model. Called only on the reject branches, because reading the request body
+        /// drains the stream — on any path that later forwards the body this would consume it first.
+        /// </summary>
+        /// <remarks>
+        /// Best-effort: a request rejected before routing may have no readable body (a GET, a
+        /// content-length-less request, an already-consumed stream), and failing to capture it must not
+        /// change the response the client receives.
+        /// </remarks>
+        private async Task CaptureRejectedBodyAsync(HttpListenerRequest req, RequestLog log, string errorJson, CancellationToken ct)
+        {
+            if (_settings.CollectRequestDetails)
+            {
+                try
+                {
+                    // ReadBodyAsync enforces the size limit and throws for an oversized body; the catch
+                    // below records the reason instead of losing the row.
+                    string body = await ReadBodyAsync(req, ct);
+                                    if (!string.IsNullOrWhiteSpace(body))
+                                                        log.RequestBody = RedactUnmappedRequestBodyForLog(body);
+                }
+                catch (RequestBodyTooLargeException)
+                {
+                    // The bytes are deliberately not buffered, so there is nothing to capture.
+                    log.RequestBody = null;
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Could not capture the request body of a rejected request");
+                }
+            }
+
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = errorJson;
+        }
+
+        private async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
     {
         long limit = _settings.MaxRequestBodyBytes;
 
