@@ -785,6 +785,8 @@ internal partial class MainForm : Form
 
         private void RefreshLogs()
         {
+            if (IsDisposed || !IsHandleCreated) return;
+
             string filter = _txtProxyLogFilter.Text;
             _logCache = [.. _stats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
             _lstLogs.VirtualListSize = _logCache.Count;
@@ -793,6 +795,8 @@ internal partial class MainForm : Form
 
         private void RefreshMcpLogs()
         {
+            if (IsDisposed || !IsHandleCreated) return;
+
             string filter = _txtMcpLogFilter.Text;
             _mcpLogCache = [.. _mcpStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
             _lstMcpLogs.VirtualListSize = _mcpLogCache.Count;
@@ -801,6 +805,8 @@ internal partial class MainForm : Form
 
         private void RefreshNonProxiedLogs()
         {
+            if (IsDisposed || !IsHandleCreated) return;
+
             string filter = _txtNonProxiedLogFilter.Text;
             _nonProxiedLogCache = [.. _nonProxiedStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
             _lstNonProxiedLogs.VirtualListSize = _nonProxiedLogCache.Count;
