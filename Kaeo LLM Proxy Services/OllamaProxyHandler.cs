@@ -395,9 +395,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// diagnostic logging. Reports which gate in <see cref="ResolveEffectiveModel"/> stopped the
     /// redirect: signature not detected, no mapping found, redirection not enabled, no compaction
     /// target configured, or the target not being usable. Returns a generic fallback if every gate
-    /// passed (which would mean a redirect was expected but did not occur).
+    /// passed (which would mean a redirect was expected but did not occur). Shared with the Phase-B
+    /// payload pipeline so both report the same reason.
     /// </summary>
-    private static string DescribeCompactSkipReason(AppSettings settings, string originalModel, string? firstMessageContent)
+    internal static string DescribeCompactSkipReason(AppSettings settings, string originalModel, string? firstMessageContent)
     {
         if (!IsContextSummarizeRequest(firstMessageContent))
             return "first message did not match a /compact signature";
@@ -1653,13 +1654,29 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             {
                 string bodyText = await ReadBodyAsync(req, ct);
                 log.RequestBytes = Encoding.UTF8.GetByteCount(bodyText);
-                string rewritten = NormalizeRequestBody(
-                    bodyText,
-                    _settings,
-                    log,
-                    modelName => ShouldApplyThinkingCompatibility(_settings, modelName),
-                    out passthroughStreamOptions);
-                originalModel = log.Model; // set by NormalizeRequestBody
+
+                // Phase B4: the ordered payload pipeline (Plans/20260914-proxy-meai-phase-b-design.md)
+                // behind the same default-off flag as the IR frame translator; parity tests pin it to
+                // the legacy method, which remains the default coding path.
+                string rewritten;
+                if (_settings.UseIrTranslation)
+                {
+                    RequestPayloadPipeline.Result pipeline = RequestPayloadPipeline.Run(
+                        bodyText, _settings, log, RequestPayloadPipeline.DefaultSteps);
+                    rewritten = pipeline.Body;
+                    passthroughStreamOptions = pipeline.StreamOptions;
+                }
+                else
+                {
+                    rewritten = NormalizeRequestBody(
+                        bodyText,
+                        _settings,
+                        log,
+                        modelName => ShouldApplyThinkingCompatibility(_settings, modelName),
+                        out passthroughStreamOptions);
+                }
+
+                originalModel = log.Model; // set by the normalization path
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
                 // side-by-side in the request log. Debug mode captures bodies independently of
