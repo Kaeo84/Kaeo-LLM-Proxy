@@ -141,6 +141,21 @@ internal static class DebugNotes
             ? $"compaction: client requested \"{originalModel}\" → forwarded to compaction model's upstream \"{upstreamModel}\" (redirected to the configured compaction model)"
             : $"compaction: client requested \"{originalModel}\" → forwarded to its own upstream \"{upstreamModel}\" (no redirect — the requested model summarizes itself)";
 
+    /// <summary>
+    /// Names which implementation coded a request, so a session can be audited for which path
+    /// actually ran when the IR translation switch is being validated against live traffic.
+    /// </summary>
+    /// <remarks>
+    /// Reported unconditionally rather than only under <see cref="AppSettings.DebugMode"/>: the whole
+    /// point of the switch is to compare the two codings on real traffic, so the attribution has to be
+    /// present in the log the user will actually be reading. Both codings produce their own audit
+    /// lines, so without this an entry gives no way to tell which one produced them.
+    /// </remarks>
+    public static string TranslationCoding(string surface, bool ir) =>
+        ir
+            ? $"translation ({surface}): IR pipeline (Microsoft.Extensions.AI intermediate representation)"
+            : $"translation ({surface}): legacy implementation";
+
     private static string DescribeFormats(ReasoningEffortFormat format)
     {
         List<string> parts = [];

@@ -568,7 +568,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_all_traffic,
                     heartbeat_interval_seconds,
                     compaction_fallback_context_tokens,
-                    collect_non_proxied_categories
+                    collect_non_proxied_categories,
+                    enable_ir_translation
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -599,6 +600,8 @@ internal sealed class AppDatabase : IDisposable
                 CompactionFallbackContextTokens = reader.GetInt32(14),
                 CollectNonProxiedCategories = NonProxiedCategorySet.Parse(
                     reader.IsDBNull(15) ? null : reader.GetString(15)),
+                // Appended last so every existing ordinal above stays stable.
+                EnableIrTranslation = ReadBoolean(reader, 16),
             };
         }
     }
@@ -630,7 +633,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_all_traffic,
                     heartbeat_interval_seconds,
                     compaction_fallback_context_tokens,
-                    collect_non_proxied_categories
+                    collect_non_proxied_categories,
+                    enable_ir_translation
                 )
                 VALUES (
                     $id,
@@ -649,7 +653,8 @@ internal sealed class AppDatabase : IDisposable
                     $collectAllTraffic,
                     $heartbeatIntervalSeconds,
                     $compactionFallbackContextTokens,
-                    $collectNonProxiedCategories
+                    $collectNonProxiedCategories,
+                    $enableIrTranslation
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -667,7 +672,8 @@ internal sealed class AppDatabase : IDisposable
                     collect_all_traffic = excluded.collect_all_traffic,
                     heartbeat_interval_seconds = excluded.heartbeat_interval_seconds,
                     compaction_fallback_context_tokens = excluded.compaction_fallback_context_tokens,
-                    collect_non_proxied_categories = excluded.collect_non_proxied_categories;
+                    collect_non_proxied_categories = excluded.collect_non_proxied_categories,
+                    enable_ir_translation = excluded.enable_ir_translation;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -691,6 +697,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue(
                 "$collectNonProxiedCategories",
                 NonProxiedCategorySet.Format(settings.CollectNonProxiedCategories));
+            command.Parameters.AddWithValue("$enableIrTranslation", ToSqliteBoolean(settings.EnableIrTranslation));
             command.ExecuteNonQuery();
         }
     }
@@ -1311,9 +1318,10 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
                     collect_all_traffic INTEGER NOT NULL DEFAULT 0,
                     heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
-                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
-                    collect_non_proxied_categories TEXT NULL
-                );
+                                compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
+                                collect_non_proxied_categories TEXT NULL,
+                                enable_ir_translation INTEGER NOT NULL DEFAULT 0
+                            );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1708,7 +1716,7 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Adds columns to pre-existing runtime_settings tables that were created before they
     /// were introduced: <c>enable_performance_sampling</c>, <c>enable_api_explorer</c>,
-    /// and <c>run_as_administrator</c>.
+    /// <c>run_as_administrator</c>, and <c>enable_ir_translation</c>.
     /// </summary>
     private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
     {
@@ -1812,6 +1820,16 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated runtime_settings table: added compaction_fallback_context_tokens column.");
+        }
+
+        if (!ColumnExists(connection, "runtime_settings", "enable_ir_translation"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN enable_ir_translation INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added enable_ir_translation column.");
         }
     }
 

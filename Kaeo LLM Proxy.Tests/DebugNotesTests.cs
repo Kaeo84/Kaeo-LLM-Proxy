@@ -73,6 +73,37 @@ public class DebugNotesTests
         Assert.Contains("injected", line);
     }
 
+    // ── Translation coding attribution ─────────────────────────────────────
+
+    /// <summary>
+    /// The attribution line is what makes a live IR validation session auditable: without it a log
+    /// entry does not say which implementation produced the audit lines above it.
+    /// </summary>
+    [Fact]
+    public void TranslationCodingNamesTheIrPipelineWhenEnabled()
+    {
+        string line = DebugNotes.TranslationCoding("/api/chat request", ir: true);
+        Assert.Contains("IR pipeline", line);
+        Assert.Contains("/api/chat request", line);
+    }
+
+    [Fact]
+    public void TranslationCodingNamesTheLegacyImplementationWhenDisabled()
+    {
+        string line = DebugNotes.TranslationCoding("/api/chat request", ir: false);
+        Assert.Contains("legacy", line);
+        Assert.Contains("/api/chat request", line);
+    }
+
+    [Fact]
+    public void TranslationCodingDistinguishesTheTwoCodings()
+    {
+        // If both codings produced the same wording the attribution would be useless for comparison.
+        Assert.NotEqual(
+            DebugNotes.TranslationCoding("passthrough request", ir: true),
+            DebugNotes.TranslationCoding("passthrough request", ir: false));
+    }
+
     [Fact]
     public void ReasoningEffortProxyPriorityInjectsViaMultipleFormats()
     {

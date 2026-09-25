@@ -209,6 +209,7 @@ partial class MainForm
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
         _chkDebugMode = new CheckBox();
+        _chkIrTranslation = new CheckBox();
         _grpNonProxiedCapture = new GroupBox();
         _tlpNonProxiedCapture = new TableLayoutPanel();
         _lblNonProxiedCaptureIntro = new Label();
@@ -1182,6 +1183,8 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 10);
         _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
         _tlpSettings.Controls.Add(_chkDebugMode, 0, 11);
+        _tlpSettings.SetColumnSpan(_chkIrTranslation, 2);
+        _tlpSettings.Controls.Add(_chkIrTranslation, 0, 13);
         _tlpSettings.SetColumnSpan(_grpNonProxiedCapture, 2);
         _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 12);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
@@ -1293,6 +1296,11 @@ partial class MainForm
         _chkDebugMode.Margin = new Padding(4, 4, 4, 4);
         _chkDebugMode.Name = "_chkDebugMode";
         _chkDebugMode.Text = "Debug mode (log before/after translation details and applied overrides)";
+
+        _chkIrTranslation.AutoSize = true;
+        _chkIrTranslation.Margin = new Padding(4, 4, 4, 4);
+        _chkIrTranslation.Name = "_chkIrTranslation";
+        _chkIrTranslation.Text = "Use IR translation pipeline (experimental: validate the Microsoft.Extensions.AI path against live traffic)";
 
         // _grpNonProxiedCapture — one toggle per category of request the proxy answers without
         // calling a model, replacing the old all-or-nothing switch. Rejected requests default on
@@ -2666,6 +2674,7 @@ partial class MainForm
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
     private CheckBox _chkDebugMode;
+    private CheckBox _chkIrTranslation;
     private GroupBox _grpNonProxiedCapture;
     private TableLayoutPanel _tlpNonProxiedCapture;
     private Label _lblNonProxiedCaptureIntro;

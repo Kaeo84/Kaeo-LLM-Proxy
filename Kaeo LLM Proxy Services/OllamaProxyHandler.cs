@@ -242,6 +242,23 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
+    /// Appends the coding attribution for a translated surface to the request's debug summary.
+    /// </summary>
+    /// <remarks>
+    /// Written unconditionally rather than only under <see cref="AppSettings.DebugMode"/>: the whole
+    /// point of the IR switch is comparing the two codings on live traffic, so gating the attribution
+    /// behind debug mode would mean a user turns the switch on and sees no evidence of which path ran.
+    /// The summary is displayed and persisted whenever it is non-empty, so no other flag is needed.
+    /// Must be called after any path that assigns <c>log.DebugSummary</c> from scratch, or the line
+    /// will be overwritten.
+    /// </remarks>
+    private static void AppendTranslationCoding(RequestLog log, string surface, bool ir)
+    {
+        string note = DebugNotes.TranslationCoding(surface, ir);
+        log.DebugSummary = string.IsNullOrEmpty(log.DebugSummary) ? note : log.DebugSummary + "\n" + note;
+    }
+
+    /// <summary>
     /// Detects whether a request is a GitHub Copilot context-summarize (/compact) request by
     /// inspecting only the head of the first message. The Copilot /compact system prompt begins
     /// with a distinctive instruction to produce a session summary; matching a short prefix keeps
@@ -1676,6 +1693,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                         out passthroughStreamOptions);
                 }
 
+                // Name the coding so a live session can be audited for which path actually ran.
+                AppendTranslationCoding(log, "passthrough request", _settings.UseIrTranslation);
+
                 originalModel = log.Model; // set by the normalization path
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
@@ -1981,6 +2001,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 using ResponseCaptureStream? rawCapture = collectResponse || debugCapture
                     ? new ResponseCaptureStream(Stream.Null)
                     : null;
+
+                // Name the response-side coding too, since the request-side attribution above only
+                // covers the request pipeline. A live audit needs both to tell which pair ran.
+                AppendTranslationCoding(log, "passthrough response stream", _settings.UseIrTranslation);
                 await CopyOpenAiChatCompletionSseStreamAsync(
                     upstreamStream,
                     countingStream,
@@ -5302,6 +5326,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 mapping?.ProxyName ?? effectiveModel, chatBase, !string.IsNullOrWhiteSpace(chatApiKey), chatTimeout));
             log.DebugSummary = debugNotes.ToString().TrimEnd();
         }
+
+        // Appended after the block above, which assigns the summary from scratch and would otherwise
+        // discard this line. Names the coding so a live session can be audited for which path ran.
+        AppendTranslationCoding(log, "/api/chat request", _settings.UseIrTranslation);
 
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body so proxy-injected values such as

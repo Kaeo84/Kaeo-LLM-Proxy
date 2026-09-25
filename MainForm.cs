@@ -135,6 +135,7 @@ internal partial class MainForm : Form
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkIrTranslation.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectLocalStubs.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectRejectedRequests.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectHealthProbes.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1727,6 +1728,7 @@ internal partial class MainForm : Form
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkDebugMode.Checked = _settings.DebugMode;
+        _chkIrTranslation.Checked = _settings.UseIrTranslation;
         HashSet<NonProxiedCategory> capture = _settings.CollectNonProxiedCategories;
         _chkCollectLocalStubs.Checked = capture.Contains(NonProxiedCategory.LocalStubs);
         _chkCollectRejectedRequests.Checked = capture.Contains(NonProxiedCategory.RejectedRequests);
@@ -1851,6 +1853,7 @@ internal partial class MainForm : Form
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.DebugMode = _chkDebugMode.Checked;
+        _settings.UseIrTranslation = _chkIrTranslation.Checked;
         // One toggle per category. Rejected requests are deliberately affected by their own toggle
         // rather than forced on, so the user can silence them if they want a quiet log.
         HashSet<NonProxiedCategory> capture = [];

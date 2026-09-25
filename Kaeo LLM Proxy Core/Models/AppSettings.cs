@@ -327,15 +327,29 @@ internal sealed class RuntimeSettings
     /// </summary>
     public bool DebugMode { get; set; } = false;
 
-    /// <summary>
-    /// Which categories of non-model request are captured into the Non-proxied log. Each category is
-    /// independently toggleable so the frequent automated probes (a health poller hitting
-    /// <c>HEAD /</c> every few seconds) can be silenced without also hiding the errors worth
-    /// investigating. Serialised as a comma-joined set.
-    /// </summary>
-    public HashSet<NonProxiedCategory> CollectNonProxiedCategories { get; set; } = [.. NonProxiedCategorySet.Default];
+        /// <summary>
+        /// When true, the passthrough request pipeline and the OpenAI SSE rewriter are routed through the
+        /// Phase-B IR translation path instead of the legacy string/JSON-surgery implementations.
+        /// Default: false.
+        /// </summary>
+        /// <remarks>
+        /// An opt-in validation switch, not a recommended setting. The IR path is pinned to the legacy
+        /// path by byte-level and semantic parity tests, but it has not yet carried live traffic, so it
+        /// stays off until a real session shows the two agree. Turn it on to exercise the IR coding
+        /// against a real client and upstream; the request log records which coding handled each request,
+        /// so a divergence is visible rather than silent.
+        /// </remarks>
+        public bool EnableIrTranslation { get; set; } = false;
 
-        public bool EnableSseKeepAlive { get; set; } = true;
+        /// <summary>
+        /// Which categories of non-model request are captured into the Non-proxied log. Each category is
+        /// independently toggleable so the frequent automated probes (a health poller hitting
+        /// <c>HEAD /</c> every few seconds) can be silenced without also hiding the errors worth
+        /// investigating. Serialised as a comma-joined set.
+        /// </summary>
+        public HashSet<NonProxiedCategory> CollectNonProxiedCategories { get; set; } = [.. NonProxiedCategorySet.Default];
+
+            public bool EnableSseKeepAlive { get; set; } = true;
 
         public int SseKeepAliveIntervalSeconds { get; set; } = 60;
 
@@ -995,11 +1009,19 @@ internal sealed class AppSettings
     public bool EnableSseKeepAlive { get; set; } = true;
 
     /// <summary>
-    /// When true, /api/chat request translation runs through the Microsoft.Extensions.AI IR
-    /// pipeline (Translation/OllamaRequestTranslation) instead of the legacy mapper. Golden
-    /// structural-parity tests pin the IR route to the legacy output; the flag stays off by
-    /// default until the IR route has held in practice. Default: false.
+    /// When true, translation is routed through the Microsoft.Extensions.AI IR pipeline instead of
+    /// the legacy implementations: the <c>/api/chat</c> request mapper
+    /// (<c>Translation/OllamaRequestTranslation</c>), the passthrough request pipeline
+    /// (<c>Translation/RequestPayloadPipeline</c>), and the OpenAI SSE frame translator
+    /// (<c>Translation/OpenAiSseFrameTranslation</c>). Default: false.
     /// </summary>
+    /// <remarks>
+    /// An opt-in validation switch, not a recommended setting. Each IR route is pinned to its legacy
+    /// counterpart by parity tests (byte-level for the frame translator, semantic for the payload
+    /// pipeline and the request mapper, which are also the only ones the pre-existing note here
+    /// covered), but they have not yet carried live traffic. Persisted through
+    /// <see cref="RuntimeSettings.EnableIrTranslation"/>.
+    /// </remarks>
     [JsonIgnore]
     public bool UseIrTranslation { get; set; } = false;
 
@@ -1222,6 +1244,7 @@ internal sealed class AppSettings
         CollectRequestDetails = CollectRequestDetails,
         CollectResponseDetails = CollectResponseDetails,
         DebugMode = DebugMode,
+        EnableIrTranslation = UseIrTranslation,
         CollectNonProxiedCategories = [.. CollectNonProxiedCategories],
         EnableSseKeepAlive = EnableSseKeepAlive,
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
@@ -1243,6 +1266,7 @@ internal sealed class AppSettings
         CollectRequestDetails = runtimeSettings.CollectRequestDetails;
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         DebugMode = runtimeSettings.DebugMode;
+        UseIrTranslation = runtimeSettings.EnableIrTranslation;
         CollectNonProxiedCategories = [.. runtimeSettings.CollectNonProxiedCategories];
         EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;

@@ -33,23 +33,23 @@ public class OpenAiSpecConformanceTests
 
     private static VendorSpec Spec => SpecCatalog.OpenAiSpec!;
 
-        private static JsonObject Chunk(string json) => JsonNode.Parse(json)!.AsObject();
+    private static JsonObject Chunk(string json) => JsonNode.Parse(json)!.AsObject();
 
-        /// <summary>Builds a full chunk envelope around a delta, as an upstream would emit it.</summary>
-        private static JsonObject Frame(JsonObject delta, string? finishReason = null)
-        => new()
+    /// <summary>Builds a full chunk envelope around a delta, as an upstream would emit it.</summary>
+    private static JsonObject Frame(JsonObject delta, string? finishReason = null)
+    => new()
+    {
+        ["id"] = "chatcmpl-conformance",
+        ["object"] = "chat.completion.chunk",
+        ["created"] = 1786657431,
+        ["model"] = "test-model",
+        ["choices"] = new JsonArray(new JsonObject
         {
-            ["id"] = "chatcmpl-conformance",
-            ["object"] = "chat.completion.chunk",
-            ["created"] = 1786657431,
-            ["model"] = "test-model",
-            ["choices"] = new JsonArray(new JsonObject
-            {
-                ["index"] = 0,
-                ["delta"] = delta,
-                ["finish_reason"] = finishReason,
-            }),
-        };
+            ["index"] = 0,
+            ["delta"] = delta,
+            ["finish_reason"] = finishReason,
+        }),
+    };
 
     /// <summary>
     /// Runs a whole stream through the IR frame translator and returns every emitted frame, since a
