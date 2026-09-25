@@ -392,6 +392,203 @@ public class RequestPayloadParityTests
         AssertParity(body, settings);
     }
 
+    // ── Per-step isolation ────────────────────────────────────────────────
+    //
+    // A step that reports Applies without changing anything, or reports that it does not apply and
+    // then changes something anyway, would break the fast path that keeps an unmodified request
+    // byte-identical. These tests pin that contract step by step, so a later edit to one step fails
+    // here precisely rather than only showing up as a whole-body parity failure.
+
+    /// <summary>Runs one step alone and reports whether it claimed to apply and whether it changed anything.</summary>
+    private static (bool Claimed, bool Changed) RunSingleStep(
+        IRequestPayloadStep step, string body, AppSettings settings)
+    {
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = settings,
+            Log = new RequestLog(),
+        };
+
+        string before = context.Payload.ToJsonString();
+
+        bool claimed = step.Applies(context);
+        if (claimed)
+            step.Apply(context);
+
+        return (claimed, !string.Equals(before, context.Payload.ToJsonString(), StringComparison.Ordinal));
+    }
+
+    private static string UnmappedBody()
+        => new JsonObject
+        {
+            ["model"] = "unknown-model",
+            ["messages"] = new JsonArray(new JsonObject { ["role"] = "user", ["content"] = "hi" }),
+        }.ToJsonString();
+
+    [Fact]
+    public void SamplingStepDoesNotClaimForAnUnmappedModel()
+    {
+        (bool claimed, bool changed) = RunSingleStep(
+            new SamplingPriorityStep(), UnmappedBody(), SettingsWith());
+
+        Assert.False(claimed);
+        Assert.False(changed);
+    }
+
+    [Fact]
+    public void SamplingStepDoesNotClaimForClientAppPriority()
+    {
+        AppSettings settings = SettingsWith();
+        AddMapping(settings, "m");
+
+        string body = new JsonObject
+        {
+            ["model"] = "m",
+            ["temperature"] = 0.5,
+            ["messages"] = new JsonArray(),
+        }.ToJsonString();
+
+        // ClientApp on both members means the client's own values are authoritative.
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = settings,
+            Log = new RequestLog(),
+            Mapping = settings.FindModelMapping("m"),
+        };
+
+        Assert.False(new SamplingPriorityStep().Applies(context));
+    }
+
+    [Fact]
+    public void SamplingStepInjectsADefaultWhenTheClientSentNothing()
+    {
+        AppSettings settings = SettingsWith();
+        AddMapping(settings, "m", mapping =>
+        {
+            mapping.TemperaturePriority = SamplingPriority.Proxy;
+            mapping.Temperature = 0.35;
+        });
+
+        (bool claimed, bool changed) = RunSingleStep(new SamplingPriorityStep(), UnmappedBody(), settings);
+
+        // Unmapped model: the step looks up "unknown-model" and finds no mapping, so it must not
+        // claim. This pins that the step reads the resolved mapping rather than a stray default.
+        Assert.False(claimed);
+        Assert.False(changed);
+    }
+
+    [Fact]
+    public void ReasoningStepDoesNotClaimWithoutAConfiguredEffort()
+    {
+        AppSettings settings = SettingsWith();
+        AddMapping(settings, "m", mapping =>
+        {
+            mapping.ReasoningEffortPriority = SamplingPriority.Proxy;
+            mapping.ReasoningEffort = null;
+        });
+
+        string body = new JsonObject { ["model"] = "m", ["messages"] = new JsonArray() }.ToJsonString();
+
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = settings,
+            Log = new RequestLog(),
+            Mapping = settings.FindModelMapping("m"),
+        };
+
+        // Proxy priority with no value configured must not inject anything.
+        Assert.False(new ReasoningEffortStep().Applies(context));
+    }
+
+    [Fact]
+    public void StreamOptionsStepDoesNotClaimWhenTheBodyHasNoStreamOptions()
+    {
+        AppSettings settings = SettingsWith();
+        AddMapping(settings, "m");
+
+        string body = new JsonObject { ["model"] = "m", ["messages"] = new JsonArray() }.ToJsonString();
+
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = settings,
+            Log = new RequestLog(),
+            Mapping = settings.FindModelMapping("m"),
+        };
+
+        Assert.False(new StreamOptionsStep().Applies(context));
+    }
+
+    [Fact]
+    public void ComposeMessagesStepDoesNotClaimForAWellFormedConversation()
+    {
+        AppSettings settings = SettingsWith();
+        AddMapping(settings, "m");
+
+        string body = ChatBody("m", "system", "one", "user", "hi");
+
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = settings,
+            Log = new RequestLog(),
+            Mapping = settings.FindModelMapping("m"),
+        };
+
+        // A single leading system message with no instruction set needs no recomposition.
+        Assert.False(new ComposeMessagesStep().Applies(context));
+    }
+
+    [Fact]
+    public void RewriteModelNameStepDoesNotClaimWhenNamesAlreadyMatch()
+    {
+        string body = UnmappedBody();
+
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = SettingsWith(),
+            Log = new RequestLog(),
+            OriginalModel = "same",
+            ResolvedModel = "same",
+        };
+
+        Assert.False(new RewriteModelNameStep().Applies(context));
+    }
+
+    [Fact]
+    public void ResolveModelStepAlwaysClaimsSoLaterStepsHaveAMapping()
+    {
+        string body = UnmappedBody();
+
+        RequestPayloadContext context = new()
+        {
+            OriginalJson = body,
+            Payload = JsonNode.Parse(body)!.AsObject(),
+            Settings = SettingsWith(),
+            Log = new RequestLog(),
+        };
+
+        ResolveModelStep step = new();
+        Assert.True(step.Applies(context));
+
+        step.Apply(context);
+
+        // It records the resolution without necessarily mutating the payload, which is why it must
+        // claim unconditionally: the later steps depend on the values it sets.
+        Assert.Equal("unknown-model", context.OriginalModel);
+        Assert.Equal("unknown-model", context.EffectiveModel);
+    }
+
     /// <summary>
     /// The legacy single-pass writer reads the client's <c>model</c> member case-sensitively
     /// (<c>TryGetProperty</c>) but rewrites it case-insensitively, so a client that capitalizes the

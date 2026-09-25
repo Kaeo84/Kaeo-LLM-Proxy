@@ -206,6 +206,109 @@ public class CompactionTargetResolutionTests
         Assert.Equal("compaction-model", main.ContextSummarizeModelName);
     }
 
+    // ── Upstream dialect ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// The declared upstream dialect is the mapping's statement of which wire conventions its
+    /// upstream speaks. It has to round-trip through the database, because a silently reverted
+    /// dialect would change the payload the provider receives.
+    /// </summary>
+    [Theory]
+    [InlineData((int)UpstreamType.LlamaCpp)]
+    [InlineData((int)UpstreamType.OpenAI)]
+    public void UpstreamTypeSurvivesASaveAndReload(int upstreamTypeValue)
+    {
+        UpstreamType upstreamType = (UpstreamType)upstreamTypeValue;
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = new(new LoggingSettings { ApplicationDatabasePath = path }))
+        {
+            AppSettings settings = new();
+            ModelMapping mapping = new()
+            {
+                ProxyName = "dialect-model",
+                ModelName = "dialect-upstream",
+                UpstreamUrl = "http://localhost:8080",
+                UpstreamType = upstreamType,
+            };
+            mapping.EnsureId();
+
+            settings.ModelMappings.Add(mapping);
+            setup.SaveModelMappings(settings.ModelMappings);
+        }
+
+        using AppDatabase database = new(new LoggingSettings { ApplicationDatabasePath = path });
+        ModelMapping reloaded = Assert.Single(database.LoadModelMappings());
+
+        Assert.Equal(upstreamType, reloaded.UpstreamType);
+    }
+
+    [Fact]
+    public void CloneCarriesTheUpstreamDialect()
+    {
+        // A clone that dropped the dialect would silently change the payload shape on a grid commit.
+        ModelMapping original = new()
+        {
+            ProxyName = "dialect-model",
+            UpstreamType = UpstreamType.LlamaCpp,
+        };
+
+        ModelMapping clone = original.Clone();
+
+        Assert.Equal(UpstreamType.LlamaCpp, clone.UpstreamType);
+    }
+
+    /// <summary>
+    /// The settings dialog round-trips the dialect through its display name. Display names are
+    /// therefore only required to be stable (idempotent), not injective: <see cref="UpstreamType.LlamaCpp"/>
+    /// is a legacy persisted value that is deliberately presented as, and parses back as,
+    /// <see cref="UpstreamType.OpenAI"/>, because both speak the same wire dialect. What must hold is
+    /// that once normalised, repeated round-trips never drift.
+    /// </summary>
+    [Fact]
+    public void UpstreamDialectDisplayNameIsStableOnceNormalised()
+    {
+        foreach (UpstreamType upstreamType in Enum.GetValues<UpstreamType>())
+        {
+            string displayName = upstreamType.ToDisplayName();
+            UpstreamType parsed = UpstreamTypeExtensions.FromDisplayName(displayName);
+
+            Assert.Equal(displayName, parsed.ToDisplayName());
+        }
+    }
+
+    /// <summary>
+    /// The lossy step is the display-name path only; the persisted integer must be exact. A mapping
+    /// configured with the legacy dialect must therefore still report it after a save and reload,
+    /// which is what keeps <see cref="UpstreamType.LlamaCpp"/> usable at all.
+    /// </summary>
+    [Fact]
+    public void LegacyUpstreamDialectSurvivesASaveAndReload()
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = new(new LoggingSettings { ApplicationDatabasePath = path }))
+        {
+            AppSettings settings = new();
+            ModelMapping mapping = new()
+            {
+                ProxyName = "legacy-dialect",
+                ModelName = "legacy-upstream",
+                UpstreamUrl = "http://localhost:8080",
+                UpstreamType = UpstreamType.LlamaCpp,
+            };
+            mapping.EnsureId();
+
+            settings.ModelMappings.Add(mapping);
+            setup.SaveModelMappings(settings.ModelMappings);
+        }
+
+        using AppDatabase database = new(new LoggingSettings { ApplicationDatabasePath = path });
+        ModelMapping reloaded = Assert.Single(database.LoadModelMappings());
+
+        Assert.Equal(UpstreamType.LlamaCpp, reloaded.UpstreamType);
+    }
+
     [Fact]
     public void OriginalModelSurvivesASaveAndReload()
     {
