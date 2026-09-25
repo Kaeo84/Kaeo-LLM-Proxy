@@ -2422,7 +2422,6 @@ partial class MainForm
         MinimumSize = new Size(756, 599);
         MaximumSize = new Size(756, 599);
         Name = "MainForm";
-        ShowInTaskbar = false;
         Text = "Kaeo LLM Proxy";
 
         _grpLogging.ResumeLayout(false);

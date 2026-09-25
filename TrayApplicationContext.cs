@@ -11,7 +11,9 @@ namespace Kaeo.LlmProxy;
 
 /// <summary>
 /// Manages the system tray icon, the proxy server lifetime, and the main form visibility.
-/// The application runs entirely from the tray — no taskbar entry is shown.
+/// The main form carries a taskbar entry while it is open so it can be found and switched to
+/// like any other window; closing it with the window's X hides it to the tray instead of exiting,
+/// leaving the tray icon as the single always-present entry point.
 /// </summary>
 internal sealed class TrayApplicationContext : ApplicationContext
 {
