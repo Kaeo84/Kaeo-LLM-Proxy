@@ -325,6 +325,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (!IsContextSummarizeRequest(firstMessageContent))
             return originalModel;
 
+        // The Copilot /compact detection matched on the system prompt's summary signature. Log the
+        // detection itself, separately from the redirect resolution reported by
+        // ResolveManualCompactTarget, so a debug session shows that the signature test fired even
+        // when no mapping or no redirect applies.
+        Log.Debug(
+            "Context-summarize (/compact) system-prompt signature detected for model {Model}; resolving compaction target",
+            originalModel);
+
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
         if (mapping is null)
             return originalModel;
@@ -4151,6 +4159,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(mapping);
 
+        // Log the raw manual-compaction configuration before any gate is applied, so a debug
+        // session shows the requesting model, the compaction model name it is configured with, and
+        // the stored compaction model id even when the redirect does not fire. The id is a
+        // surrogate key and the name is what the user picked, so both are emitted side by side to
+        // make a stale-name/mismatched-id situation visible at a glance.
+        Log.Debug(
+            "Manual compaction target resolution for {Model}: redirect enabled {RedirectEnabled}, "
+            + "configured compaction model name {CompactModelName}, configured compaction model id {CompactModelId}",
+            mapping.ProxyName,
+            mapping.RedirectManualCompaction,
+            string.IsNullOrWhiteSpace(mapping.ContextSummarizeModelName) ? "(none)" : mapping.ContextSummarizeModelName,
+            mapping.ContextSummarizeModelId?.ToString() ?? "(none)");
+
         if (!mapping.RedirectManualCompaction)
             return (mapping, false);
 
@@ -4715,6 +4736,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         }
 
         log.Model = originalModel;
+        Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes",
+            originalModel, log.RequestBytes);
 
         ModelMapping? mapping = _settings.FindModelMapping(originalModel);
         if (mapping is null)

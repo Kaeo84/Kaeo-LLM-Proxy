@@ -819,16 +819,24 @@ flowchart TD
     Core -->|"POST /api/generate"| Gen["HandleGenerateAsync → /v1/completions"]:::proxy
     Core -->|"POST /api/chat"| Chat["HandleChatAsync → /v1/chat/completions"]:::proxy
     Core -->|"POST /api/embeddings"| Emb["HandleEmbeddingsAsync → /v1/embeddings"]:::proxy
-    Core -->|"POST /v1/responses/compact"| C1["HandleCompactAsync"]:::proxy
-    Core -->|"POST /v1/chat/completions/compact"| C2["HandleManualCompactAsync"]:::proxy
+    Core -->|"POST /v1/responses/compact"| C1["HandleCompactAsync<br/>explicit /compact endpoint"]:::proxy
+    Core -->|"POST /v1/chat/completions/compact"| C2["HandleManualCompactAsync<br/>explicit /compact endpoint"]:::proxy
     Core -->|"any other /v1/*"| Pass["PassthroughAsync →<br/>PassthroughCoreAsync"]:::proxy
 
-    C1 --> Fwd["ForwardCompactToUpstreamAsync<br/>bypasses NormalizeRequestBody"]:::proxy
-    C2 --> Fwd
+    C1 --> Detect
+    C2 --> Detect
 
     Pass --> Norm["NormalizeRequestBody<br/>model rewrite, sampling, reasoning effort,<br/>stream_options strip, system-prompt compose"]:::proxy
     Norm --> Comp["SystemPromptComposer.Merge<br/>instructions + leading system msgs<br/>→ exactly one system message"]:::proxy
     Norm --> Proact["TryProactiveOverflowAsync<br/>threshold-based auto-compaction"]:::proxy
+
+    Detect["ResolveEffectiveModel → ResolveManualCompactTarget<br/>manual /compact + Copilot summary-signature detection;<br/>DEBUG logs the requesting model, its configured compaction<br/>model name and id, the redirect flag, and the skip reason"]:::proxy
+    Detect -.->|"matches the Copilot summary system prompt"| Sig["IsContextSummarizeRequest<br/>authoritative summary / ConversationSummary /<br/>ReasoningScratchpad markers"]:::proxy
+    Norm -.->|"copilot summary signature"| Detect
+    Chat -.->|"copilot summary signature"| Detect
+    Gen -.->|"copilot summary signature"| Detect
+
+    Detect --> Fwd["ForwardCompactToUpstreamAsync<br/>bypasses NormalizeRequestBody"]:::proxy
 
     Gen --> Up
     Chat --> Proact
@@ -1184,7 +1192,10 @@ if (typeof mermaid === 'undefined') {
     ['HandleCoreAsync','OllamaProxyHandler.cs','Route','CORS/preflight, health probes, the whole routing table, and the three catch blocks. One try/finally wraps the entire body, so no branch can escape logging.'],
     ['NormalizeRequestBody','OllamaProxyHandler.cs','Transform','Rewrites model, applies sampling and reasoning-effort priorities, strips stream_options under Copilot compatibility, composes the system prompt, applies the /compact redirect. Returns input untouched when nothing needs rewriting.'],
     ['SystemPromptComposer.Merge','SystemPromptComposer.cs','Transform','Folds instruction-set text plus all leading system messages into exactly one system message.'],
-    ['ResolveEffectiveModel','OllamaProxyHandler.cs','Transform','Detects a Copilot /compact summary request and redirects it to the configured compaction model.'],
+    ['ResolveEffectiveModel','OllamaProxyHandler.cs','Transform','Detects a Copilot /compact summary request and redirects it to the configured compaction model. Logs a Debug line when the system-prompt signature matches, before the redirect is resolved.'],
+        ['IsContextSummarizeRequest','OllamaProxyHandler.cs','Transform','Detects a Copilot /compact request from the head of the first message: the session-summary system prompt (authoritative, self-contained summary / ConversationSummary / ReasoningScratchpad markers).'],
+        ['ResolveManualCompactTarget','OllamaProxyHandler.cs','Transform','Shared manual-compaction target resolver for the explicit /compact endpoints and the signature-based chat paths. Logs a Debug line with the requesting model, its configured compaction model name and id, and whether the redirect is enabled.'],
+        ['DescribeCompactSkipReason','OllamaProxyHandler.cs','Transform','Reports which gate stopped a /compact redirect (signature not detected, no mapping, redirect disabled, no target, target unusable). Logged at Debug when a /compact request is not redirected.'],
     ['TryProactiveOverflowAsync','OllamaProxyHandler.cs','Compact','Compacts ahead of the upstream call when the token estimate crosses the mapping threshold.'],
     ['TryReactiveCompactionAsync','OllamaProxyHandler.cs','Compact','Compacts and retries once after the upstream rejects with a context-overflow error.'],
     ['SendUpstreamAsync','OllamaProxyHandler.cs','Upstream','The single upstream call site. Applies the per-mapping timeout via a linked CancellationTokenSource and attaches the API key.'],

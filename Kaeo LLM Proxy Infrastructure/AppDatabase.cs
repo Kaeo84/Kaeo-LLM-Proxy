@@ -2388,59 +2388,90 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$enableCopilotCompatibility", ToSqliteBoolean(mapping.EnableCopilotCompatibility));
     }
 
-    private static ModelMapping ReadModelMapping(SqliteDataReader reader) => new()
+    /// <summary>
+    /// Materialises one <c>model_mappings</c> row. Written as a sequence of single-property
+    /// assignments rather than a single object initializer so each column read is its own
+    /// operation: a debugger can step and breakpoint on any field (notably the compaction
+    /// columns) instead of landing inside one opaque initializer expression.
+    /// </summary>
+    private static ModelMapping ReadModelMapping(SqliteDataReader reader)
     {
-        Id = reader.GetInt32(0),
-        IsEnabled = ReadBoolean(reader, 1),
-        Hidden = ReadBoolean(reader, 2),
-        ProxyName = reader.GetString(3),
-        ModelName = reader.GetString(4),
-        EnableThinkingCompatibility = ReadBoolean(reader, 5),
-        Capabilities = reader.IsDBNull(6)
+        ModelMapping mapping = new();
+
+        mapping.Id = reader.GetInt32(0);
+        mapping.IsEnabled = ReadBoolean(reader, 1);
+        mapping.Hidden = ReadBoolean(reader, 2);
+        mapping.ProxyName = reader.GetString(3);
+        mapping.ModelName = reader.GetString(4);
+        mapping.EnableThinkingCompatibility = ReadBoolean(reader, 5);
+        mapping.Capabilities = reader.IsDBNull(6)
             ? []
-            : [.. reader.GetString(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        EnableSseKeepAlive = ReadBoolean(reader, 7),
-        UpstreamType = Enum.IsDefined(typeof(UpstreamType), reader.GetInt32(8))
-            ? (UpstreamType)reader.GetInt32(8)
-            : UpstreamType.OpenAI,
-        UpstreamUrl = reader.GetString(9),
-        UpstreamTimeoutSeconds = reader.GetInt32(10),
-        RepeatPenalty = reader.GetDouble(11),
-        Temperature = reader.GetDouble(12),
-        InstructionSetName = reader.IsDBNull(13) ? null : reader.GetString(13),
-        RedactRequestBodies = ReadBoolean(reader, 14),
-        RedactResponseBodies = ReadBoolean(reader, 15),
-        RedactSensitiveJsonFields = ReadBoolean(reader, 16),
-        CredentialName = reader.IsDBNull(17) ? null : reader.GetString(17),
-        ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), reader.GetInt32(18))
-            ? (ThinkingMode)reader.GetInt32(18)
-            : ThinkingMode.Off,
-        ContextWindowTokens = reader.GetInt32(19),
-        TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(20))
-            ? (SamplingPriority)reader.GetInt32(20)
-            : SamplingPriority.ClientApp,
-        RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(21))
-            ? (SamplingPriority)reader.GetInt32(21)
-            : SamplingPriority.ClientApp,
-        ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reader.GetInt32(22))
-            ? (SamplingPriority)reader.GetInt32(22)
-            : SamplingPriority.ClientApp,
-        ReasoningEffort = reader.IsDBNull(23) ? null : reader.GetString(23),
-        ReasoningEffortValues = reader.IsDBNull(24)
+            : [.. reader.GetString(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        mapping.EnableSseKeepAlive = ReadBoolean(reader, 7);
+
+        int upstreamType = reader.GetInt32(8);
+        mapping.UpstreamType = Enum.IsDefined(typeof(UpstreamType), upstreamType)
+            ? (UpstreamType)upstreamType
+            : UpstreamType.OpenAI;
+
+        mapping.UpstreamUrl = reader.GetString(9);
+        mapping.UpstreamTimeoutSeconds = reader.GetInt32(10);
+        mapping.RepeatPenalty = reader.GetDouble(11);
+        mapping.Temperature = reader.GetDouble(12);
+        mapping.InstructionSetName = reader.IsDBNull(13) ? null : reader.GetString(13);
+        mapping.RedactRequestBodies = ReadBoolean(reader, 14);
+        mapping.RedactResponseBodies = ReadBoolean(reader, 15);
+        mapping.RedactSensitiveJsonFields = ReadBoolean(reader, 16);
+        mapping.CredentialName = reader.IsDBNull(17) ? null : reader.GetString(17);
+
+        int thinkingMode = reader.GetInt32(18);
+        mapping.ThinkingMode = Enum.IsDefined(typeof(ThinkingMode), thinkingMode)
+            ? (ThinkingMode)thinkingMode
+            : ThinkingMode.Off;
+
+        mapping.ContextWindowTokens = reader.GetInt32(19);
+
+        int temperaturePriority = reader.GetInt32(20);
+        mapping.TemperaturePriority = Enum.IsDefined(typeof(SamplingPriority), temperaturePriority)
+            ? (SamplingPriority)temperaturePriority
+            : SamplingPriority.ClientApp;
+
+        int repeatPenaltyPriority = reader.GetInt32(21);
+        mapping.RepeatPenaltyPriority = Enum.IsDefined(typeof(SamplingPriority), repeatPenaltyPriority)
+            ? (SamplingPriority)repeatPenaltyPriority
+            : SamplingPriority.ClientApp;
+
+        int reasoningEffortPriority = reader.GetInt32(22);
+        mapping.ReasoningEffortPriority = Enum.IsDefined(typeof(SamplingPriority), reasoningEffortPriority)
+            ? (SamplingPriority)reasoningEffortPriority
+            : SamplingPriority.ClientApp;
+
+        mapping.ReasoningEffort = reader.IsDBNull(23) ? null : reader.GetString(23);
+        mapping.ReasoningEffortValues = reader.IsDBNull(24)
             ? []
-            : [.. reader.GetString(24).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
-        ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(25)),
-        ProactiveOverflowPercent = reader.GetInt32(26),
-        ProactiveOverflowTokens = reader.GetInt32(27),
-        ContextSummarizeModelId = reader.IsDBNull(28) ? null : reader.GetInt32(28),
-        ContextSummarizeModelName = reader.IsDBNull(29) ? null : reader.GetString(29),
-        AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), reader.GetInt32(30))
-            ? (AutoCompactPaths)reader.GetInt32(30)
-            : AutoCompactPaths.None,
-        RedirectManualCompaction = ReadBoolean(reader, 31),
-        EnableHeartbeats = ReadBoolean(reader, 32),
-        EnableCopilotCompatibility = ReadBoolean(reader, 33),
-    };
+            : [.. reader.GetString(24).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        mapping.ReasoningEffortFormat = ToReasoningEffortFormat(reader.GetInt32(25));
+        mapping.ProactiveOverflowPercent = reader.GetInt32(26);
+        mapping.ProactiveOverflowTokens = reader.GetInt32(27);
+
+        // Compaction configuration. Read into named locals so the stored name and id can be
+        // inspected side by side while debugging a manual-compaction redirect decision.
+        int? contextSummarizeModelId = reader.IsDBNull(28) ? null : reader.GetInt32(28);
+        string? contextSummarizeModelName = reader.IsDBNull(29) ? null : reader.GetString(29);
+        mapping.ContextSummarizeModelId = contextSummarizeModelId;
+        mapping.ContextSummarizeModelName = contextSummarizeModelName;
+
+        int autoCompactPaths = reader.GetInt32(30);
+        mapping.AutoCompactPaths = Enum.IsDefined(typeof(AutoCompactPaths), autoCompactPaths)
+            ? (AutoCompactPaths)autoCompactPaths
+            : AutoCompactPaths.None;
+
+        mapping.RedirectManualCompaction = ReadBoolean(reader, 31);
+        mapping.EnableHeartbeats = ReadBoolean(reader, 32);
+        mapping.EnableCopilotCompatibility = ReadBoolean(reader, 33);
+
+        return mapping;
+    }
 
     /// <summary>
     /// Interprets the stored bitmask as a <see cref="ReasoningEffortFormat"/>, discarding unknown
