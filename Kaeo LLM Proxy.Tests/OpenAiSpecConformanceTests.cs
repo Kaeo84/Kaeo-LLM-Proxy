@@ -36,7 +36,7 @@ public class OpenAiSpecConformanceTests
         private static JsonObject Chunk(string json) => JsonNode.Parse(json)!.AsObject();
 
         /// <summary>Builds a full chunk envelope around a delta, as an upstream would emit it.</summary>
-    private static JsonObject Frame(JsonObject delta, string? finishReason = null)
+        private static JsonObject Frame(JsonObject delta, string? finishReason = null)
         => new()
         {
             ["id"] = "chatcmpl-conformance",
