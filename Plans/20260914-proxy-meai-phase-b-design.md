@@ -83,10 +83,44 @@ and exactly what the extension now does after Phase A.
 
 - [x] B1. Add MEAI package refs to Services; create Translation/ pure-IR parsers+writers with golden-stream parity fixtures captured from the legacy handler
 - [x] B2. /api/chat request translation routed through the IR behind the UseIrTranslation flag (golden structural-parity tests vs the legacy mapper: 7/7; the flag stays default-off until it holds under live use; response-relay IR-ification folds into B3's rewriter work)
-- [ ] B3. IR-ize the passthrough rewriter (byte path stays for no-rewrite requests; sanitizer + system-merge collapse into part-level rules)
-- [ ] B4. Per-mapping UpstreamKind consumed as IChatClient (MEAI OpenAI/Ollama clients); config UI + provider registration replaces pairwise mapping
+- [x] B3. IR-ize the passthrough rewriter (byte path stays for no-rewrite requests; sanitizer + system-merge collapse into part-level rules)
+- [x] B4. Payload transformation restructured as an ordered step pipeline (the "one consistent transformer"); per-mapping upstream dialect declared via the existing `ModelMapping.UpstreamType`
 - [x] B5. Revive Kaeo LLM Proxy VS Extension.Core as the shared multi-target adapter project; delete the Compile-Link duplication
-- [ ] B6. Spec-driven conformance harness over API Specs\ (schema validation + SSE event-shape contract tests per client/upstream pair)
+- [x] B6. Spec-driven conformance harness over API Specs\ (schema validation + SSE event-shape contract tests per client/upstream pair)
+
+## B3 / B4 / B6 outcome notes
+
+**B3 — the passthrough rewriter is IR-routed behind `UseIrTranslation` (default off).** The
+governing constraint turned out to be frame *preservation*, not part typing. `OpenAiInbound` is a
+stream accumulator: it holds tool-call argument fragments until the terminal chunk and then emits
+completed calls. An SSE rewriter cannot do that, because clients read the fragmented form as it
+arrives, so `OpenAiSseFrameTranslation` carries native `tool_calls` fragments through structurally
+and only applies the declared-tool filter to them. Per-field intent (`Untouched`/`Remove`/`Set`) is
+tracked explicitly, because an empty `content` key and an absent one are different frames on the
+wire. 24 byte-level parity tests pin it to the legacy rewriter.
+
+**B4 — implemented as a declared dialect, not as `IChatClient` middleware.** Migrating the upstream
+leg to `IChatClient` would have fought B3's own byte-fidelity requirement: it is raw HTTP with SSE
+byte streaming, keep-alives, usage sniffing, terminator synthesis, and raw capture, and pure
+passthrough is meant to stay a byte-copy fast path. It would also buy nothing for the primary hosted
+provider, whose endpoint is already OpenAI-compatible. Instead the request payload mutations that
+`NormalizeRequestBody` held inline now flow through `RequestPayloadPipeline`: seven named, ordered,
+independently testable steps. Provider variation is expressed through the existing
+`ReasoningEffortFormat` flag set rather than per-provider branches. `ModelMapping.UpstreamType` was
+already declared and fully persisted, so the dialect needs no new schema. 30 parity and isolation
+tests pin the pipeline to the legacy method.
+
+**B6 — the vendored specs validate the proxy's real output.** `Tests/Conformance/VendorSpec.cs` is a
+small JSON Schema evaluator (no new package) driven by the documents under `API Specs\`, located by
+walking up to the solution file. Two document properties drove the design: `API Specs/` is
+gitignored, so spec-dependent tests skip rather than fail on a clone that lacks it; and neither the
+chunk nor the delta schema declares `additionalProperties`, so the permissive default is what makes
+the proxy's deliberate extensions (`reasoning_content`, llama.cpp `timings`) conformant. A test pins
+that permissiveness, and validator self-tests keep the conformance tests from being vacuous.
+
+**Deferred to a later phase (Phase C, to be scoped from what B3/B4/B6 revealed):** consuming
+upstreams as `IChatClient`, and moving cross-cutting concerns (logging, heart-beats, compaction
+probe, retries) into `ChatClientBuilder` middleware.
 
 ## Key Files
 - Kaeo LLM Proxy Services/OllamaProxyHandler.cs - legacy translation monolith to decompose
