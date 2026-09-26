@@ -366,7 +366,28 @@ internal sealed class RuntimeSettings
     /// to, or null when none is selected. Stored in the application database beside the other
     /// runtime settings because it is a single installation-wide choice.
     /// </summary>
+    /// <remarks>
+    /// Copilot does not honor a per-model compaction choice: it dispatches a compaction turn against
+    /// whichever of its enabled models it likes, so a per-mapping target only ever catches the model
+    /// Copilot happens to pick. Acting globally is therefore the only reliable way to control which
+    /// model performs Copilot's compaction, and it is why the target lives here rather than on
+    /// <see cref="ModelMapping"/>. Read through <see cref="FindCopilotCompactionTarget"/>.
+    /// </remarks>
     public string? CopilotCompactionModelName { get; set; }
+
+    /// <summary>
+    /// When true (default), a request detected as GitHub Copilot's own context summarization —
+    /// recognized by the distinctive session-summary system prompt — is routed to the single global
+    /// <see cref="CopilotCompactionModelName"/>.
+    /// </summary>
+    /// <remarks>
+    /// This is an installation-wide switch rather than a per-mapping flag, because Copilot picks the
+    /// model for its compaction turn itself and cannot be steered per model. Turning it off makes the
+    /// proxy treat a detected Copilot summarization like any other client's request, which means
+    /// falling through to the per-mapping <see cref="ModelMapping.RedirectManualCompaction"/> path.
+    /// Has no effect when no global target is selected.
+    /// </remarks>
+    public bool EnableCopilotCompactionRouting { get; set; } = true;
 
     public bool EnablePerformanceSampling { get; set; } = true;
 
@@ -699,20 +720,6 @@ internal sealed class ModelMapping
     public bool RedirectManualCompaction { get; set; }
 
     /// <summary>
-    /// When true (default), a request detected as GitHub Copilot's own context summarization —
-    /// recognized by the distinctive session-summary system prompt — is routed to the single
-    /// global <see cref="AppSettings.CopilotCompactionModelName"/> instead of this mapping's
-    /// per-model compaction target. This exists because Copilot does not honor a per-model
-    /// compaction choice: it can dispatch a compaction turn against any of its enabled models,
-    /// so a per-mapping target only catches the model Copilot happens to pick. One global target
-    /// makes Copilot's compaction deterministic while the per-mapping
-    /// <see cref="RedirectManualCompaction"/> keeps serving other tools that address a specific
-    /// model. When false, Copilot compactions fall through to the per-mapping redirect, so this
-    /// model behaves like any other client.
-    /// </summary>
-    public bool CopilotCompatibleCompaction { get; set; } = true;
-
-    /// <summary>
     /// When true, the proxy makes OpenAI-compatible streaming responses strictly well-formed for
     /// clients built on Microsoft.Extensions.AI (e.g. Visual Studio Copilot): it strips the
     /// <c>stream_options</c> block from the upstream-bound request, guarantees the stream ends with
@@ -810,10 +817,9 @@ internal sealed class ModelMapping
             AutoCompactPaths = AutoCompactPaths,
             RedirectManualCompaction = RedirectManualCompaction,
             EnableCopilotCompatibility = EnableCopilotCompatibility,
-            CopilotCompatibleCompaction = CopilotCompatibleCompaction,
-        };
-        clone.EnsureId();
-        return clone;
+                    };
+                    clone.EnsureId();
+                    return clone;
     }
 
     /// <summary>
@@ -1089,12 +1095,20 @@ internal sealed class AppSettings
     /// to, or null when none is selected. Chosen once on the Settings tab rather than per mapping,
     /// because Copilot does not honor a per-model compaction choice: it dispatches a compaction turn
     /// against whichever of its enabled models it happens to use, so a per-mapping target only catches
-    /// some of them. A per-mapping <see cref="ModelMapping.CopilotCompatibleCompaction"/> flag opts a
-    /// model into this global target. Resolve through <see cref="FindCopilotCompactionTarget"/>;
-    /// a name that no longer matches an enabled mapping with an upstream is treated as no target.
+    /// some of them. Resolve through <see cref="FindCopilotCompactionTarget"/>; a name that no longer
+    /// matches an enabled mapping with an upstream is treated as no target.
     /// </summary>
     [JsonIgnore]
     public string? CopilotCompactionModelName { get; set; }
+
+    /// <summary>
+    /// When true (default), a detected Copilot context summarization is routed to this single global
+    /// target rather than to any mapping's per-model compaction target. Installation-wide for the
+    /// same reason the target is: Copilot chooses the model itself, so the only meaningful control is
+    /// global.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableCopilotCompactionRouting { get; set; } = true;
 
     /// <summary>Lower bound accepted for <see cref="SseKeepAliveIntervalSeconds"/>.</summary>
     public const int MinSseKeepAliveIntervalSeconds = 5;
@@ -1292,6 +1306,7 @@ internal sealed class AppSettings
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         CopilotCompactionModelName = CopilotCompactionModelName,
+        EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -1315,6 +1330,7 @@ internal sealed class AppSettings
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
+        EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }
@@ -1423,9 +1439,17 @@ internal sealed class AppSettings
     /// Resolution is by proxy name only: the global target is picked in one place and there is no
     /// surrogate-ID indirection that could drift to a different model, so a name that no longer
     /// matches anything simply means "no target" and the caller falls back to normal handling.
+    /// <para>
+    /// Returns null when <see cref="EnableCopilotCompactionRouting"/> is off. Honoring the switch here
+    /// rather than at each call site means the redirect, the diagnostic reason, and the manual
+    /// compaction resolver cannot disagree about whether a global target applies.
+    /// </para>
     /// </remarks>
     public ModelMapping? FindCopilotCompactionTarget()
     {
+        if (!EnableCopilotCompactionRouting)
+            return null;
+
         if (string.IsNullOrWhiteSpace(CopilotCompactionModelName)
             || FindModelMapping(CopilotCompactionModelName) is not { } target)
         {

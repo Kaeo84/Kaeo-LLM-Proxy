@@ -130,6 +130,7 @@ internal partial class MainForm : Form
         _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
         _txtCompactionFallback.Validated += (_, _) => SaveGeneralSettings();
         _cmbCopilotCompactionModel.SelectedIndexChanged += (_, _) => SaveGeneralSettings();
+        _chkCopilotCompactionRouting.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1724,6 +1725,7 @@ internal partial class MainForm : Form
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _txtCompactionFallback.Text = _settings.CompactionFallbackContextTokens.ToString();
         PopulateCopilotCompactionModels();
+        _chkCopilotCompactionRouting.Checked = _settings.EnableCopilotCompactionRouting;
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
@@ -1894,6 +1896,7 @@ internal partial class MainForm : Form
         _settings.MaxLogEntries = maxLogs;
         _settings.CompactionFallbackContextTokens = compactionFallback;
         _settings.CopilotCompactionModelName = CopilotCompactionModelName;
+        _settings.EnableCopilotCompactionRouting = _chkCopilotCompactionRouting.Checked;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;

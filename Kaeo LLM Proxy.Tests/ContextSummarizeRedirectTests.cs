@@ -28,15 +28,15 @@ public class ContextSummarizeRedirectTests
     /// false to verify the mapping's own model handles the request instead.
     /// </para>
     /// <para>
-    /// The main mapping opts OUT of <see cref="ModelMapping.CopilotCompatibleCompaction"/> so these
-    /// tests exercise the per-mapping redirect path. The Copilot-compatible global path is covered
-    /// separately in <c>CopilotCompactionTests</c>, since it defaults on and would otherwise mask
-    /// the per-mapping behavior these tests assert.
+    /// Global Copilot compaction routing is disabled in these settings so these tests exercise the
+    /// per-mapping redirect path. The global path wins for any detected Copilot summarization and is
+    /// covered separately in <c>CopilotCompactionTests</c>; leaving it on here would mask the
+    /// per-mapping behavior these tests assert.
     /// </para>
     /// </remarks>
     private static AppSettings CreateSettings(int? compactModelId = -1, bool redirectEnabled = true)
     {
-        AppSettings settings = new();
+        AppSettings settings = new() { EnableCopilotCompactionRouting = false };
 
         ModelMapping compactMapping = new()
         {
@@ -53,7 +53,6 @@ public class ContextSummarizeRedirectTests
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = compactModelId == -1 ? compactMapping.Id : compactModelId,
             RedirectManualCompaction = redirectEnabled,
-            CopilotCompatibleCompaction = false,
         };
         mainMapping.EnsureId();
 

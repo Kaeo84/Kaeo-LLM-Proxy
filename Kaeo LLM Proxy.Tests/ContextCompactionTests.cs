@@ -113,10 +113,7 @@ public class ContextCompactionTests
             ModelName = "main-upstream",
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = target.Id,
-            RedirectManualCompaction = redirectEnabled,
-            // Opt out of the Copilot-compatible global path (which defaults on) so these tests
-            // exercise the per-mapping redirect gate exclusively.
-            CopilotCompatibleCompaction = false
+            RedirectManualCompaction = redirectEnabled
         };
         main.EnsureId();
 
@@ -254,6 +251,10 @@ public class ContextCompactionTests
     public void SignatureRedirect_WithRedirectAndTarget_UsesCompactionModel()
     {
         (AppSettings settings, ModelMapping main, ModelMapping target) = BuildRedirectFixture(redirectEnabled: true);
+
+        // Global Copilot routing off so this exercises the per-mapping redirect; it would otherwise
+        // win for any detected Copilot summarization and mask the behavior under test.
+        settings.EnableCopilotCompactionRouting = false;
 
         string effective = OllamaProxyHandler.ResolveEffectiveModel(settings, main.ProxyName, CompactSignature);
 

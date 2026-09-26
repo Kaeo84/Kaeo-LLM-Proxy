@@ -34,7 +34,6 @@ public class ModelMappingCloneTests
             ContextSummarizeModelId = 42,
             AutoCompactPaths = AutoCompactPaths.ProxyOnly,
             RedirectManualCompaction = true,
-            CopilotCompatibleCompaction = false,
             ProactiveOverflowPercent = 85,
             ProactiveOverflowTokens = 12000,
             ContextWindowTokens = 65536
@@ -46,7 +45,6 @@ public class ModelMappingCloneTests
         Assert.Equal(42, clone.ContextSummarizeModelId);
         Assert.Equal(AutoCompactPaths.ProxyOnly, clone.AutoCompactPaths);
         Assert.True(clone.RedirectManualCompaction);
-        Assert.False(clone.CopilotCompatibleCompaction);
         Assert.Equal(85, clone.ProactiveOverflowPercent);
         Assert.Equal(12000, clone.ProactiveOverflowTokens);
         Assert.Equal(65536, clone.ContextWindowTokens);

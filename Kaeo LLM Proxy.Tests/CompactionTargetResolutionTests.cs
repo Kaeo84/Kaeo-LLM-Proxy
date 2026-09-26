@@ -27,7 +27,9 @@ public class CompactionTargetResolutionTests
     /// </summary>
     private static AppSettings CreateSettings(out ModelMapping main, out ModelMapping target)
     {
-        AppSettings settings = new();
+        // These tests cover the per-mapping redirect, so global Copilot compaction routing is off.
+        // Left on it would win for any detected Copilot summarization and mask the behavior here.
+        AppSettings settings = new() { EnableCopilotCompactionRouting = false };
 
         ModelMapping decoy = new()
         {

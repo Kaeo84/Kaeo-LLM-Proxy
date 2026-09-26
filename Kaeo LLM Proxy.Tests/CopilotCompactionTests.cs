@@ -5,10 +5,11 @@ using Xunit;
 namespace Kaeo.LlmProxy.Tests;
 
 /// <summary>
-/// Verifies the Copilot-compatible compaction path: when a mapping opts in via
-/// <see cref="ModelMapping.CopilotCompatibleCompaction"/>, a Copilot-detected summarization is
-/// routed to the single global <see cref="AppSettings.CopilotCompactionModelName"/> instead of
-/// the mapping's own compaction target, while opted-out mappings keep the per-mapping redirect.
+/// Verifies the global Copilot compaction path: a Copilot-detected summarization is routed to the
+/// single installation-wide <see cref="AppSettings.CopilotCompactionModelName"/> for every model,
+/// because Copilot picks the model for its compaction turn itself and cannot be steered per model.
+/// When routing is off or no usable global target exists, resolution falls back to the per-mapping
+/// redirect.
 /// </summary>
 public class CopilotCompactionTests
 {
@@ -18,11 +19,12 @@ public class CopilotCompactionTests
 
     /// <summary>
     /// Settings with a "main" model and two possible compaction targets: a per-mapping "per-model"
-    /// target and a global "global-compact" target. The main mapping is Copilot-compatible by
-    /// default; pass <c>copilotCompatible: false</c> to exercise the per-mapping redirect instead.
+    /// target and a global "global-compact" target. Global routing is <b>on by default</b> for every
+    /// model, so the global target wins; pass <c>copilotRouting: false</c> to exercise the
+    /// per-mapping redirect instead.
     /// </summary>
     private static AppSettings CreateSettings(
-        bool copilotCompatible = true,
+        bool copilotRouting = true,
         bool redirectEnabled = true,
         string? globalModelName = "global-compact")
     {
@@ -51,7 +53,6 @@ public class CopilotCompactionTests
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = perModelTarget.Id,
             RedirectManualCompaction = redirectEnabled,
-            CopilotCompatibleCompaction = copilotCompatible,
         };
         mainMapping.EnsureId();
 
@@ -59,41 +60,54 @@ public class CopilotCompactionTests
         settings.ModelMappings.Add(globalTarget);
         settings.ModelMappings.Add(mainMapping);
         settings.CopilotCompactionModelName = globalModelName;
+        settings.EnableCopilotCompactionRouting = copilotRouting;
 
         return settings;
     }
 
-    // ── ModelMapping.CopilotCompatibleCompaction ───────────────────────────
+    // ── AppSettings.EnableCopilotCompactionRouting ─────────────────────────
 
     [Fact]
-    public void CopilotCompatibleCompaction_DefaultsToTrue()
+    public void CopilotCompactionRouting_DefaultsToTrue()
     {
-        ModelMapping mapping = new()
-        {
-            ProxyName = "test-model",
-            ModelName = "test-upstream",
-            UpstreamUrl = "http://localhost:8080"
-        };
+        AppSettings settings = new();
 
-        Assert.True(mapping.CopilotCompatibleCompaction);
+        Assert.True(settings.EnableCopilotCompactionRouting);
     }
 
     [Fact]
-    public void CopilotCompatibleCompaction_IsPreservedOnClone()
+    public void FindCopilotCompactionTarget_ReturnsNullWhenRoutingIsOff()
     {
-        ModelMapping mapping = new()
-        {
-            ProxyName = "test-model",
-            ModelName = "test-upstream",
-            UpstreamUrl = "http://localhost:8080",
-            CopilotCompatibleCompaction = false
-        };
-        mapping.EnsureId();
+        // The switch has to be honored by the finder rather than each call site, so the redirect,
+        // the diagnostic reason and the manual resolver cannot disagree about whether a global
+        // target applies.
+        AppSettings settings = CreateSettings(copilotRouting: false);
 
-        ModelMapping clone = mapping.Clone();
+        Assert.Null(settings.FindCopilotCompactionTarget());
+    }
 
-        Assert.False(clone.CopilotCompatibleCompaction);
-        Assert.Equal(mapping.Id, clone.Id);
+    [Fact]
+    public void RoutingOff_FallsBackToThePerMappingRedirect()
+    {
+        AppSettings settings = CreateSettings(copilotRouting: false);
+
+        string effective = OllamaProxyHandler.ResolveEffectiveModel(
+            settings, "main", CompactSignature);
+
+        Assert.Equal("per-model", effective);
+    }
+
+    [Fact]
+    public void RoutingOn_AppliesToAModelThatConfiguredNothingPerMapping()
+    {
+        // The point of acting globally: Copilot picks the model itself, so a model with no
+        // per-mapping compaction configuration at all must still be routed to the global target.
+        AppSettings settings = CreateSettings();
+
+        string effective = OllamaProxyHandler.ResolveEffectiveModel(
+            settings, "global-compact", CompactSignature);
+
+        Assert.Equal("global-compact", effective);
     }
 
     // ── AppSettings.FindCopilotCompactionTarget ────────────────────────────
@@ -181,10 +195,10 @@ public class CopilotCompactionTests
     }
 
     [Fact]
-    public void SignatureRedirect_CopilotCompatible_Off_UsesPerMappingRedirect()
+    public void SignatureRedirect_RoutingOff_UsesPerMappingRedirect()
     {
-        // Opted out: the mapping's own compaction target applies, so other tools still work.
-        AppSettings settings = CreateSettings(copilotCompatible: false, redirectEnabled: true);
+        // Global routing off: the mapping's own compaction target applies, so other tools still work.
+        AppSettings settings = CreateSettings(copilotRouting: false, redirectEnabled: true);
 
         string effective = OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactSignature);
 
@@ -192,9 +206,9 @@ public class CopilotCompactionTests
     }
 
     [Fact]
-    public void SignatureRedirect_CopilotCompatible_OffWithoutRedirect_DoesNotRedirect()
+    public void SignatureRedirect_RoutingOffWithoutRedirect_DoesNotRedirect()
     {
-        AppSettings settings = CreateSettings(copilotCompatible: false, redirectEnabled: false);
+        AppSettings settings = CreateSettings(copilotRouting: false, redirectEnabled: false);
 
         string effective = OllamaProxyHandler.ResolveEffectiveModel(settings, "main", CompactSignature);
 

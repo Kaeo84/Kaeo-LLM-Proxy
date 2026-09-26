@@ -186,6 +186,7 @@ partial class MainForm
         _txtCompactionFallback = new TextBox();
         _lblCopilotCompactionModel = new Label();
         _cmbCopilotCompactionModel = new ComboBox();
+        _chkCopilotCompactionRouting = new CheckBox();
         _lblMappings = new Label();
         _dgvMappings = new DataGridView();
         _colMappingEnabled = new DataGridViewTextBoxColumn();
@@ -1158,7 +1159,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 21;
+        _tlpSettings.RowCount = 22;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1201,8 +1202,10 @@ partial class MainForm
         _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
         _tlpSettings.Controls.Add(_grpLogging, 0, 19);
-        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 20);
-        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 20);
+        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 20);
+        _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 21);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 21);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1276,6 +1279,11 @@ partial class MainForm
         _lblCopilotCompactionModel.Margin = new Padding(4, 8, 8, 4);
         _lblCopilotCompactionModel.Name = "_lblCopilotCompactionModel";
         _lblCopilotCompactionModel.Text = "Global Copilot Compaction Model:";
+
+        _chkCopilotCompactionRouting.AutoSize = true;
+        _chkCopilotCompactionRouting.Margin = new Padding(4, 8, 4, 4);
+        _chkCopilotCompactionRouting.Name = "_chkCopilotCompactionRouting";
+        _chkCopilotCompactionRouting.Text = "Route Copilot's context compaction to the model below";
 
         _cmbCopilotCompactionModel.Dock = DockStyle.Fill;
         _cmbCopilotCompactionModel.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -2665,6 +2673,7 @@ partial class MainForm
     private TextBox _txtCompactionFallback;
     private Label _lblCopilotCompactionModel;
     private ComboBox _cmbCopilotCompactionModel;
+    private CheckBox _chkCopilotCompactionRouting;
     private Label _lblMappings;
     private DataGridView _dgvMappings;
     private DataGridViewTextBoxColumn _colMappingEnabled;

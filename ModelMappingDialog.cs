@@ -54,8 +54,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly Label _lblAutoCompactPaths = new();
     private readonly ComboBox _cmbAutoCompactPaths = new();
     private readonly CheckBox _chkRedirectManualCompaction = new();
-        private readonly CheckBox _chkCopilotCompatibleCompaction = new();
-    // The status text describes the effective compaction behavior in a couple of sentences, so
+        // The status text describes the effective compaction behavior in a couple of sentences, so
     // the label needs to wrap inside the dialog rather than grow sideways: AutoSize combined with
     // a MaximumSize width is the WinForms pattern for a wrapping, self-sizing label.
     private readonly Label _lblCompactionStatus = new()
@@ -145,7 +144,6 @@ internal sealed class ModelMappingDialog : Form
         // auto-compact path selection, and both threshold nudges.
         _cmbContextSummarizeModel.SelectedIndexChanged += (_, _) => UpdateCompactionStatus();
         _chkRedirectManualCompaction.CheckedChanged += (_, _) => UpdateCompactionStatus();
-                _chkCopilotCompatibleCompaction.CheckedChanged += (_, _) => UpdateCompactionStatus();
         _cmbAutoCompactPaths.SelectedIndexChanged += (_, _) => UpdateCompactionStatus();
         _nudProactiveOverflowPercent.ValueChanged += (_, _) => UpdateCompactionStatus();
         _nudProactiveOverflowTokens.ValueChanged += (_, _) => UpdateCompactionStatus();
@@ -182,17 +180,17 @@ internal sealed class ModelMappingDialog : Form
             _ => $"Automatic compaction: ON for {DescribePaths(paths)}, above ~{threshold:N0} tokens, using {_cmbContextSummarizeModel.SelectedItem}.",
         };
 
-        // Manual compaction always reaches a model; the checkbox only decides which one. When
-        // the Copilot-compatible checkbox is on, a Copilot-detected summarization goes to the global
-        // target instead, so the per-mapping redirect wording has to say so rather than imply it wins.
-        string manualState = CopilotCompatibleCompaction
-            ? $"Manual /compact (Copilot detected): routed to the global Copilot compaction model, "
-              + $"falling back to the model named in the request when no global model is selected."
-            : hasTarget && RedirectManualCompaction
-                ? $"Manual /compact: redirected to the compaction model ({_cmbContextSummarizeModel.SelectedItem})."
+        // Manual compaction always reaches a model. A Copilot-detected summarization is routed by the
+        // Settings tab's global Copilot compaction switch instead of anything on this dialog, so the
+        // per-mapping redirect wording has to say so rather than imply it wins for Copilot.
+        string manualState =
+            $"Manual /compact (Copilot detected): controlled by the global Copilot compaction settings on "
+            + $"the Settings tab, not by this dialog.\n"
+            + (hasTarget && RedirectManualCompaction
+                ? $"Manual /compact from other tools: redirected to the compaction model ({_cmbContextSummarizeModel.SelectedItem})."
                 : hasTarget
-                    ? "Manual /compact: forwarded to the model named in the request (redirect unchecked). Select 'Redirect manual compaction' to use the compaction model instead."
-                    : "Manual /compact: forwarded to the model named in the request — no compaction model is selected.";
+                    ? "Manual /compact from other tools: forwarded to the model named in the request (redirect unchecked). Select 'Redirect manual compaction' to use the compaction model instead."
+                    : "Manual /compact from other tools: forwarded to the model named in the request — no compaction model is selected.");
 
         _lblCompactionStatus.Text = $"{autoState}{Environment.NewLine}{manualState}";
     }
@@ -562,17 +560,6 @@ internal sealed class ModelMappingDialog : Form
     {
         get => _chkRedirectManualCompaction.Checked;
         set => _chkRedirectManualCompaction.Checked = value;
-    }
-
-    /// <summary>
-    /// Whether a Copilot-detected summarization for this mapping goes to the single global Copilot
-    /// compaction model instead of this mapping's own compaction target. Defaults to true.
-    /// </summary>
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    private bool CopilotCompatibleCompaction
-    {
-        get => _chkCopilotCompatibleCompaction.Checked;
-        set => _chkCopilotCompatibleCompaction.Checked = value;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -1148,29 +1135,12 @@ internal sealed class ModelMappingDialog : Form
             + "Has no effect unless a Compaction Model is selected: with (None) the request always\n"
             + "goes to the model the client asked for.");
 
-        _chkCopilotCompatibleCompaction.AutoSize = true;
-        _chkCopilotCompatibleCompaction.Margin = new Padding(0, 4, 0, 4);
-        _chkCopilotCompatibleCompaction.Text = "Copilot-compatible compaction (use the global Copilot compaction model)";
-        _toolTip.SetToolTip(
-            _chkCopilotCompatibleCompaction,
-            "Controls where GitHub Copilot's own context summarization goes. Copilot detects its\n"
-            + "summarization by a distinctive system prompt (not by a specific endpoint) and does\n"
-            + "not honor a per-model compaction choice, so it can dispatch a compaction turn against\n"
-            + "any of its enabled models.\n\n"
-            + "Checked (default) - route a detected Copilot summarization to the single Global\n"
-            + "Copilot Compaction Model chosen on the Settings tab, so Copilot always compacts with\n"
-            + "the model you picked no matter which model it addressed the request to.\n"
-            + "Unchecked - fall through to this mapping's own /compact redirect above, so this model\n"
-            + "behaves like any other client.\n\n"
-            + "Has no effect when no Global Copilot Compaction Model is selected: the request then\n"
-            + "goes to the model the client asked for. Other tools keep using this mapping's\n"
-            + "Compaction Model and redirect setting regardless of this checkbox.");
-
         // Add the compaction-related controls into the compaction table so they
         // are visually grouped inside the _grpCompaction GroupBox.
         // Order: Auto-Compact Paths, the two proactive overflow thresholds, the
-        // compaction model target, the manual-redirect checkbox, the Copilot-compatible
-        // checkbox, then the status label.
+        // compaction model target, the manual-redirect checkbox, then the status label.
+        // Copilot-detected summarization is routed by the Settings tab's global switch, so it has no
+        // control here.
         _tlpCompaction.Controls.Add(_lblAutoCompactPaths, 0, 0);
         _tlpCompaction.Controls.Add(_cmbAutoCompactPaths, 1, 0);
         _tlpCompaction.Controls.Add(_lblProactiveOverflowPercent, 0, 1);
@@ -1181,9 +1151,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpCompaction.Controls.Add(_cmbContextSummarizeModel, 1, 3);
         _tlpCompaction.Controls.Add(_chkRedirectManualCompaction, 0, 4);
         _tlpCompaction.SetColumnSpan(_chkRedirectManualCompaction, 2);
-        _tlpCompaction.Controls.Add(_chkCopilotCompatibleCompaction, 0, 5);
-        _tlpCompaction.SetColumnSpan(_chkCopilotCompatibleCompaction, 2);
-        _tlpCompaction.Controls.Add(_lblCompactionStatus, 0, 6);
+        _tlpCompaction.Controls.Add(_lblCompactionStatus, 0, 5);
         _tlpCompaction.SetColumnSpan(_lblCompactionStatus, 2);
 
         _grpCompaction.Controls.Add(_tlpCompaction);
@@ -2225,7 +2193,6 @@ internal sealed class ModelMappingDialog : Form
         dlg.ProactiveOverflowTokens = mapping.ProactiveOverflowTokens;
         dlg.AutoCompactPaths = mapping.AutoCompactPaths;
         dlg.RedirectManualCompaction = mapping.RedirectManualCompaction;
-        dlg.CopilotCompatibleCompaction = mapping.CopilotCompatibleCompaction;
         dlg.Temperature = mapping.Temperature;
         dlg.RepeatPenalty = mapping.RepeatPenalty;
         dlg.ReasoningEffortPriority = mapping.ReasoningEffortPriority;
@@ -2274,7 +2241,6 @@ internal sealed class ModelMappingDialog : Form
         mapping.ProactiveOverflowTokens = dlg.ProactiveOverflowTokens;
         mapping.AutoCompactPaths = dlg.AutoCompactPaths;
         mapping.RedirectManualCompaction = dlg.RedirectManualCompaction;
-        mapping.CopilotCompatibleCompaction = dlg.CopilotCompatibleCompaction;
         mapping.Temperature = dlg.Temperature;
         mapping.RepeatPenalty = dlg.RepeatPenalty;
         mapping.ReasoningEffortPriority = dlg.ReasoningEffortPriority;
