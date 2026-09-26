@@ -1684,10 +1684,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // Captured upstream-bound JSON body so an overflow rejection can be compacted and retried.
         string? passthroughBody = null;
         string? consumedErrorBody = null;
-        // Set when the signature-based /compact redirect already retargeted this request, which
-        // means the request IS a compaction request. Neither the proactive nor the reactive
-        // auto-compaction may run on top of it (that would summarize a summary), so both gates
-        // read this single flag.
+        // Set when the signature-based /compact redirect already retargeted this request to the
+        // mapping's compaction model, which means the client is asking for a summary and the body
+        // it sent is the oversized conversation to summarize. The reactive path treats that as
+        // terminal: on an exceeded-context error there is nothing left to summarize (the response
+        // of a summarize request IS a summary), so it times out instead of compacting the summary.
+        // The proactive path still runs — bounding the body to the target's window is exactly what
+        // makes the summarize request succeed, and skipping it is what let an oversized body reach
+        // the compaction model and fail with a raw upstream 400.
         bool alreadyRedirectedForCompaction = false;
         // Function names the client declared in its "tools" array. Null = unknown/unrestricted;
         // an empty set means the client (e.g. the Copilot Help surface) cannot execute ANY tool
@@ -1749,19 +1753,38 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
                 // Proactive context-overflow check for OpenAI-native passthrough requests.
                 //
-                // Only ONE compaction may act on a request. NormalizeRequestBody already applies
-                // the signature-based /compact redirect, and it records that in log.OriginalModel,
-                // so a non-empty OriginalModel means this request is itself a compaction request.
-                // Running threshold-based auto-compaction on top of it would summarize a summary.
+                // A signature-redirected /compact request takes a different route. It is a request
+                // for a summary whose body is the oversized conversation, and the compaction target
+                // cannot summarize a conversation larger than its own window, so the body is bounded
+                // to that target's window before forwarding. This cannot go through
+                // TryProactiveOverflowAsync below: that method resolves the mapping's *own*
+                // compaction target, which a redirected request has already been redirected to, so
+                // it would look for the target's own target and silently do nothing.
                 alreadyRedirectedForCompaction = !string.IsNullOrEmpty(log.OriginalModel);
-                if (alreadyRedirectedForCompaction)
+                if (alreadyRedirectedForCompaction
+                    && _settings.FindModelMapping(originalModel) is { } redirectTarget)
                 {
-                    Log.Debug(
-                        "Skipping proactive auto-compaction for {Model}: the request is already a compaction request redirected from {OriginalModel} (OpenAI passthrough)",
-                        originalModel, log.OriginalModel);
-                }
-                else
-                {
+                    Stream? redirectedOutputStream = null;
+                    if (isStreamingRequest)
+                    {
+                        await CommitSseHeadersAsync();
+                        redirectedOutputStream = resp.OutputStream;
+                    }
+
+                    string beforeBounding = rewritten;
+                                        rewritten = await BoundRedirectedCompactBodyAsync(
+                                            redirectTarget,
+                                            rewritten,
+                                            originalModel,
+                                            AutoCompactPaths.OpenAI,
+                                            CompactionFormat.Proxy,
+                                            redirectedOutputStream,
+                                            ct);
+
+                                        contextCompacted = !ReferenceEquals(rewritten, beforeBounding);
+                                    }
+                                    else
+                                    {
                     // For streaming requests, commit SSE headers before compaction so progress
                     // comments can be written. CommitSseHeadersAsync also flushes the initial
                     // keep-alive frame, which is what actually puts the headers on the wire.
@@ -1871,7 +1894,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // configured as well as cases where the proxy's token estimate undershot.
         //
         // Gated on the same per-mapping AutoCompactPaths setting as the proactive path (inside
-        // TryReactiveCompactionAsync) and skipped when the request is itself a compaction request.
+        // TryReactiveCompactionAsync). A signature-redirected /compact request is excluded for a
+        // different reason than the proactive path: an overflow on a summarize request means the
+        // model could not even read the conversation, and the response it would produce IS a
+        // summary, so there is nothing left to summarize. The bounded path above is the attempt
+        // that matters for those requests; a failure there surfaces the upstream error rather than
+        // triggering a second round of summarization.
         if (!upstreamResp.IsSuccessStatusCode
             && passthroughBody is not null
             && !contextCompacted
@@ -4674,6 +4702,120 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         return compacted;
     }
 
+    /// <summary>
+    /// Bounds a signature-redirected Copilot <c>/compact</c> body to the compaction target's own
+    /// context window before it is forwarded, using the same chunked map-reduce summarizer the rest
+    /// of the pipeline uses.
+    /// </summary>
+    /// <remarks>
+    /// A redirected request is a request for a summary whose body is the oversized conversation, and
+    /// the target cannot summarize a conversation larger than its own window. Previously the
+    /// redirect suppressed every compaction gate on the theory that compacting a compaction request
+    /// would summarize a summary; the result was that an oversized body reached the target verbatim
+    /// and the upstream rejected it with a raw <c>exceed_context_size_error</c>.
+    /// <para>
+    /// This is deliberately not routed through <see cref="TryProactiveOverflowAsync"/>: that method
+    /// resolves the mapping's <em>own</em> configured compaction target, and a redirected request has
+    /// already been redirected — re-resolving would find the target's own target (usually none) and
+    /// silently do nothing. Here the target is known, so the work is done directly against it.
+    /// </para>
+    /// <para>
+    /// Summarization runs only when the target has automatic compaction enabled for the path it will
+    /// serve; the proxy never compacts a mapping's requests behind its back. When the body already
+    /// fits, the original text is returned unchanged so nothing is rewritten unnecessarily.
+    /// </para>
+    /// </remarks>
+    /// <param name="targetMapping">The compaction target that will serve the redirected request.</param>
+    /// <param name="bodyText">The upstream-bound request body.</param>
+    /// <param name="originalModel">The model the client asked for, for logging.</param>
+    /// <param name="requestPath">The compaction paths gate to honor (OpenAI or Ollama).</param>
+    /// <param name="format">The compacted-body format matching that path.</param>
+    /// <param name="outputStream">
+    /// Optional SSE stream for compaction progress notifications; null on the Ollama path, whose
+    /// output is NDJSON and carries no SSE comments.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The body to forward, either compacted or unchanged.</returns>
+    private async Task<string> BoundRedirectedCompactBodyAsync(
+        ModelMapping targetMapping,
+        string bodyText,
+        string originalModel,
+        AutoCompactPaths requestPath,
+        CompactionFormat format,
+        Stream? outputStream,
+        CancellationToken ct)
+    {
+        int compactionWindow = targetMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
+        int budget = AutoCompactionService.GetSummaryPromptBudget(compactionWindow);
+        int estimated = EstimateTokenCount(bodyText);
+
+        if (estimated <= budget)
+            return bodyText;
+
+        if (!targetMapping.IsAutoCompactActiveFor(requestPath))
+        {
+            Log.Warning(
+                "Redirected compaction for {OriginalModel} needs ~{Estimated} tokens but compaction model "
+                + "{Target} has a {Budget} token budget and automatic compaction is not enabled for that path. "
+                + "Forwarding unchanged; the upstream will reject the request if the body exceeds its window.",
+                originalModel, estimated, targetMapping.ProxyName, budget);
+            return bodyText;
+        }
+
+        var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
+        string compactModelName = string.IsNullOrWhiteSpace(targetMapping.ModelName)
+            ? targetMapping.ProxyName
+            : targetMapping.ModelName;
+
+        Log.Information(
+            "Redirected compaction for {OriginalModel} exceeds compaction model {Target}'s {Budget} token budget "
+            + "(~{Estimated} tokens); running chunked map-reduce summarization before forwarding",
+            originalModel, targetMapping.ProxyName, budget, estimated);
+
+        if (outputStream is not null)
+        {
+            string notification =
+                $": <ignorethis>kaeo-compaction-needed: Context size (~{estimated} tokens) exceeds the compaction model's budget ({budget} tokens). Starting compaction...</ignorethis>\n\n";
+            byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
+            await outputStream.WriteAsync(notificationBytes, ct);
+            await outputStream.FlushAsync(ct);
+        }
+
+        // The circuit breaker counts attempts before doing any work, so it is keyed per
+        // conversation: a request that keeps overflowing backs off instead of re-summarizing
+        // forever.
+        string sessionKey = $"redirected:{targetMapping.ProxyName}:{bodyText.GetHashCode():X8}";
+
+        string? compacted = await _autoCompactionService.CompactAsync(
+            targetMapping,
+            bodyText,
+            sessionKey,
+            baseUrl,
+            apiKey,
+            timeout,
+            budget,
+            compactModelName,
+            compactionWindow,
+            compactionWindow,
+            ct,
+            format);
+
+        if (compacted is null)
+        {
+            Log.Warning(
+                "Redirected compaction for {OriginalModel} could not reduce the body below {Target}'s "
+                + "{Budget} token budget; forwarding unchanged and letting the upstream report the overflow",
+                originalModel, targetMapping.ProxyName, budget);
+            return bodyText;
+        }
+
+        _autoCompactionService.RecordSuccess(sessionKey);
+        Log.Information(
+            "Redirected compaction for {OriginalModel} compacted ~{Original} → ~{Compacted} est. tokens",
+            originalModel, estimated, EstimateTokenCount(compacted));
+        return compacted;
+    }
+
     // ── POST /v1/responses/compact → OpenAI-compatible conversation compaction ──
 
     /// <summary>
@@ -5393,14 +5535,23 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // configured threshold, compact the conversation before forwarding so we do not pay for
         // an upstream round-trip that is guaranteed to overflow.
         //
-        // Only ONE compaction may act on a request. When the signature-based /compact redirect
-        // already fired this request IS a compaction request, so compacting it again would
-        // summarize a summary (and `mapping` is now the compaction target, not the client's model).
+        // A signature-redirected /compact request takes a different route. It is a request for a
+        // summary whose body is the oversized conversation, and `mapping` here is already the
+        // compaction target, which cannot summarize a conversation larger than its own window. The
+        // body is bounded to that target's window before forwarding. This cannot go through
+        // TryProactiveOverflowAsync below: that method resolves the mapping's *own* compaction
+        // target, which a redirected request has already been redirected to, so it would look for
+        // the target's own target and silently do nothing.
         if (compactRedirected)
         {
-            Log.Debug(
-                "Skipping proactive auto-compaction for {Model}: the request is already a compaction request redirected from {OriginalModel} (Ollama path)",
-                effectiveModel, ollamaReq.Model);
+            upstreamBody = await BoundRedirectedCompactBodyAsync(
+                mapping,
+                upstreamBody,
+                ollamaReq.Model,
+                AutoCompactPaths.Ollama,
+                CompactionFormat.Ollama,
+                outputStream: null,
+                ct);
         }
         else
         {
