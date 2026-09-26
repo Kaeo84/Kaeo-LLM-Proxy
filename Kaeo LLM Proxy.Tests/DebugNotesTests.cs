@@ -190,7 +190,9 @@ public class DebugNotesTests
     [Fact]
     public void NormalizeRequestBodyDebugSummaryIncludesCompactRedirect()
     {
-        AppSettings settings = new();
+        // Global Copilot routing off so this exercises the per-mapping redirect; it would otherwise
+        // win for any detected Copilot summarization and this note would never be produced.
+        AppSettings settings = new() { EnableCopilotCompactionRouting = false };
         settings.DebugMode = true;
 
         ModelMapping mainMapping = new()

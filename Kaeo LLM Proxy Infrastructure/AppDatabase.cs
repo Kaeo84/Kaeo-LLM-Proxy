@@ -1109,6 +1109,16 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Creates the application schema and verifies it, on every startup.
+    /// </summary>
+    /// <remarks>
+    /// This is the sole schema authority: a single baseline DDL that creates the complete current
+    /// schema. Every statement is <c>IF NOT EXISTS</c>, so opening an existing database is a no-op
+    /// and its data is preserved. There are deliberately no incremental migrations — the schema was
+    /// rebaselined, and a file written before that rebaseline is reported by
+    /// <see cref="VerifyBaselineSchema"/> instead of being patched.
+    /// </remarks>
     private void InitializeDatabase()
     {
         lock (_lock)
@@ -1116,8 +1126,6 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
 
             EnsureWalJournalMode(connection);
-
-            MigrateLegacyModelMappingsTable(connection);
 
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
@@ -1260,8 +1268,6 @@ internal sealed class AppDatabase : IDisposable
                     model_name TEXT NOT NULL,
                     enable_thinking_compatibility INTEGER NOT NULL,
                     capabilities TEXT NULL,
-                    supports_reasoning_effort INTEGER NULL,
-                    adaptive_thinking TEXT NULL,
                     enable_sse_keep_alive INTEGER NOT NULL,
                     upstream_type INTEGER NOT NULL,
                     upstream_url TEXT NOT NULL,
@@ -1288,8 +1294,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_compact_paths INTEGER NOT NULL DEFAULT 0,
                     redirect_manual_compaction INTEGER NOT NULL DEFAULT 0,
                     enable_heartbeats INTEGER NOT NULL DEFAULT 1,
-                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1,
-                    copilot_compatible_compaction INTEGER NOT NULL DEFAULT 1
+                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1331,11 +1336,12 @@ internal sealed class AppDatabase : IDisposable
                     run_as_administrator INTEGER NOT NULL DEFAULT 0,
                     collect_all_traffic INTEGER NOT NULL DEFAULT 0,
                     heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
-                                compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
-                                collect_non_proxied_categories TEXT NULL,
-                                enable_ir_translation INTEGER NOT NULL DEFAULT 0,
-                                copilot_compaction_model_name TEXT NULL
-                            );
+                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
+                    collect_non_proxied_categories TEXT NULL,
+                    enable_ir_translation INTEGER NOT NULL DEFAULT 0,
+                    copilot_compaction_model_name TEXT NULL,
+                    enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1
+                );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1367,14 +1373,9 @@ internal sealed class AppDatabase : IDisposable
                 """;
             command.ExecuteNonQuery();
 
-            MigrateSseKeepAliveRename(connection);
-            MigrateMcpRequestPathRename(connection);
-            MigrateRuntimeSettingsTable(connection);
-            MigrateModelMappingsTable(connection);
-            MigrateRequestsTable(connection);
-            MigrateCredentialsTable(connection);
-        }
-    }
+                        VerifyBaselineSchema(connection);
+                    }
+                }
 
     /// <summary>
     /// Writes <see cref="SeedData"/>'s default model mappings and placeholder credential into a
@@ -1442,811 +1443,49 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Renames the streaming-heartbeat schema onto the SSE keep-alive names, preserving data.
-    /// Runs before the other migrations so every later step sees a consistent column set.
-    /// </summary>
-    /// <remarks>
-    /// The renamed columns were declared <c>NOT NULL</c> with no default, so the rename cannot be a
-    /// plain <c>ALTER TABLE ... RENAME COLUMN</c> on every provider. Instead each column is added
-    /// with an explicit default, back-filled from the old column, and then the old column is
-    /// dropped. <c>ALTER TABLE ... DROP COLUMN</c> requires SQLite 3.35+, which the pinned
-    /// SQLitePCLRaw bundle provides.
-    /// <para>
-    /// Failures are logged and skipped rather than thrown: when multiple proxy instances run
-    /// concurrently (<c>AllowMultipleInstances</c>) another process may hold the file, and a
-    /// sharing violation here must degrade gracefully instead of preventing startup.
-    /// </para>
-    /// </remarks>
-    private static void MigrateSseKeepAliveRename(SqliteConnection connection)
-    {
-        RenameColumnIfPresent(connection, "runtime_settings",
-            "enable_streaming_heartbeats", "enable_sse_keep_alive",
-            "INTEGER NOT NULL DEFAULT 1");
-        RenameColumnIfPresent(connection, "runtime_settings",
-            "streaming_heartbeat_interval_seconds", "sse_keep_alive_interval_seconds",
-            "INTEGER NOT NULL DEFAULT 15");
-        RenameColumnIfPresent(connection, "model_mappings",
-            "enable_heartbeats", "enable_sse_keep_alive",
-            "INTEGER NOT NULL DEFAULT 1");
-
-        // The baseline DDL above has already created an empty sse_keep_alive table, so an existing
-        // heartbeats table must be copied across and then dropped rather than renamed in place.
-        if (!TableExists(connection, "heartbeats"))
-            return;
-
-        try
+        /// Detects a database written before the schema rebaseline and reports it clearly.
+        /// </summary>
+        /// <remarks>
+        /// This is a detector, not a migration: it never alters the schema and never throws. Because the
+        /// baseline DDL is entirely <c>IF NOT EXISTS</c>, opening a file from an older build leaves its
+        /// older tables untouched, and the failure would otherwise surface much later as a confusing
+        /// "no such column" from whichever query happened to run first. Logging it here names the real
+        /// problem at the point it is discovered.
+        /// <para>
+        /// The probe columns are ones introduced by the rebaseline itself, so their absence is
+        /// unambiguous evidence of a pre-rebaseline file rather than a transient schema quirk.
+        /// </para>
+        /// </remarks>
+        private void VerifyBaselineSchema(SqliteConnection connection)
         {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                """
-                INSERT OR IGNORE INTO sse_keep_alive (model, count, last_sent_utc)
-                SELECT model, count, last_sent_utc FROM heartbeats;
-                """;
-            int copied = command.ExecuteNonQuery();
+            List<string> missing = [];
 
-            using SqliteCommand drop = connection.CreateCommand();
-            drop.CommandText = "DROP TABLE heartbeats;";
-            drop.ExecuteNonQuery();
+            if (!TableExists(connection, "runtime_settings"))
+                missing.Add("runtime_settings (table)");
 
-            Log.Information(
-                "Migrated heartbeats table into sse_keep_alive: {Count} row(s) preserved.", copied);
-        }
-        catch (SqliteException ex)
-        {
-            Log.Warning(ex, "Failed to migrate the heartbeats table to sse_keep_alive; leaving it in place.");
-        }
-        catch (IOException ex)
-        {
-            // Another proxy instance is holding the database file. Skip and retry on next start.
-            Log.Warning(ex, "Skipped heartbeats table migration: the database file is in use.");
-        }
-    }
-
-    /// <summary>
-    /// Renames <paramref name="oldColumn"/> to <paramref name="newColumn"/> on
-    /// <paramref name="table"/>, preserving existing values. Does nothing when the old column is
-    /// already absent, or when the new column already exists, which makes the migration idempotent
-    /// across restarts and safe when a column name is later recycled for a different purpose.
-    /// </summary>
-    private static void RenameColumnIfPresent(
-        SqliteConnection connection,
-        string table,
-        string oldColumn,
-        string newColumn,
-        string newColumnDeclaration)
-    {
-        if (!TableExists(connection, table) || !ColumnExists(connection, table, oldColumn))
-            return;
-
-        // The target already existing means this rename has been applied before, so the surviving
-        // <paramref name="oldColumn"/> is a *different* column that happens to reuse the name rather
-        // than the legacy one. Copying it across would overwrite migrated data with unrelated values
-        // on every launch — which is exactly what would happen for model_mappings.enable_heartbeats,
-        // retired by this rename and later re-introduced as the liveness-ping flag.
-        if (ColumnExists(connection, table, newColumn))
-            return;
-
-        try
-        {
-            using (SqliteCommand add = connection.CreateCommand())
+            foreach ((string Table, string Column) probe in new[]
             {
-                if (!ColumnExists(connection, table, newColumn))
-                {
-                    add.CommandText =
-                        $"ALTER TABLE {table} ADD COLUMN {newColumn} {newColumnDeclaration};";
-                    add.ExecuteNonQuery();
-                }
+                ("runtime_settings", "enable_copilot_compaction_routing"),
+                ("model_mappings", "hidden"),
+            })
+            {
+                if (TableExists(connection, probe.Table) && !ColumnExists(connection, probe.Table, probe.Column))
+                    missing.Add($"{probe.Table}.{probe.Column}");
             }
 
-            using (SqliteCommand copy = connection.CreateCommand())
-            {
-                copy.CommandText = $"UPDATE {table} SET {newColumn} = {oldColumn};";
-                copy.ExecuteNonQuery();
-            }
+            if (missing.Count == 0)
+                return;
 
-            using (SqliteCommand drop = connection.CreateCommand())
-            {
-                drop.CommandText = $"ALTER TABLE {table} DROP COLUMN {oldColumn};";
-                drop.ExecuteNonQuery();
-            }
-
-            Log.Information(
-                "Migrated {Table} table: renamed {OldColumn} to {NewColumn}.",
-                table, oldColumn, newColumn);
-        }
-        catch (SqliteException ex)
-        {
-            Log.Warning(ex, "Failed to rename {Table}.{OldColumn} to {NewColumn}.", table, oldColumn, newColumn);
-        }
-        catch (IOException ex)
-        {
-            Log.Warning(ex, "Skipped {Table}.{OldColumn} rename: the database file is in use.", table, oldColumn);
-        }
-    }
-
-    /// <summary>
-    /// Adds the token-detail columns to pre-existing <c>requests</c> tables that were created
-    /// before they were introduced: <c>total_tokens</c>, <c>cached_prompt_tokens</c>, and
-    /// <c>reasoning_tokens</c>.
-    /// </summary>
-    private static void MigrateRequestsTable(SqliteConnection connection)
-    {
-        if (!TableExists(connection, "requests"))
-            return;
-
-        if (!ColumnExists(connection, "requests", "total_tokens"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE requests ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated requests table: added total_tokens column.");
+            Log.Error(
+                "The application database at {Path} predates the schema rebaseline and is missing {Missing}. "
+                + "Schema migrations are no longer applied, so this file cannot be upgraded in place. "
+                + "Delete or rename the database file to let a fresh one be created; model mappings, "
+                + "credentials, and instruction sets will need to be re-entered.",
+                _configuredDbPath,
+                string.Join(", ", missing));
         }
 
-        if (!ColumnExists(connection, "requests", "cached_prompt_tokens"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE requests ADD COLUMN cached_prompt_tokens INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated requests table: added cached_prompt_tokens column.");
-        }
-
-        if (!ColumnExists(connection, "requests", "reasoning_tokens"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE requests ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated requests table: added reasoning_tokens column.");
-        }
-
-        AddColumnIfMissing(connection, "requests", "upstream_request_body",
-            "ALTER TABLE requests ADD COLUMN upstream_request_body TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "upstream_request_body",
-            "ALTER TABLE mcp_requests ADD COLUMN upstream_request_body TEXT NULL;");
-        AddColumnIfMissing(connection, "requests", "draft_n",
-            "ALTER TABLE requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
-        AddColumnIfMissing(connection, "requests", "draft_n_accepted",
-            "ALTER TABLE requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
-        AddColumnIfMissing(connection, "mcp_requests", "draft_n",
-            "ALTER TABLE mcp_requests ADD COLUMN draft_n INTEGER NOT NULL DEFAULT 0;");
-        AddColumnIfMissing(connection, "mcp_requests", "draft_n_accepted",
-            "ALTER TABLE mcp_requests ADD COLUMN draft_n_accepted INTEGER NOT NULL DEFAULT 0;");
-        AddColumnIfMissing(connection, "requests", "debug_summary",
-            "ALTER TABLE requests ADD COLUMN debug_summary TEXT NULL;");
-        AddColumnIfMissing(connection, "requests", "upstream_response_body",
-            "ALTER TABLE requests ADD COLUMN upstream_response_body TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "debug_summary",
-            "ALTER TABLE mcp_requests ADD COLUMN debug_summary TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "upstream_response_body",
-            "ALTER TABLE mcp_requests ADD COLUMN upstream_response_body TEXT NULL;");
-        AddColumnIfMissing(connection, "requests", "stop_reason",
-            "ALTER TABLE requests ADD COLUMN stop_reason TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "stop_reason",
-            "ALTER TABLE mcp_requests ADD COLUMN stop_reason TEXT NULL;");
-
-        // Records the model the client actually asked for when the proxy rewrote it for a
-        // compaction redirect. Without it the redirect is only visible in the in-memory entry
-        // and the log detail view loses the source model after a restart.
-        AddColumnIfMissing(connection, "requests", "original_model",
-            "ALTER TABLE requests ADD COLUMN original_model TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "original_model",
-            "ALTER TABLE mcp_requests ADD COLUMN original_model TEXT NULL;");
-
-        // Caller identity captured for every request so a row that carries no model or meaningful
-        // path (a health probe, an unknown endpoint, a malformed call) can still be traced to its
-        // source. Existing databases predate these columns, so CREATE TABLE IF NOT EXISTS leaves
-        // them absent; the reads would then fail with "no such column".
-        AddColumnIfMissing(connection, "requests", "client_address",
-            "ALTER TABLE requests ADD COLUMN client_address TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "client_address",
-            "ALTER TABLE mcp_requests ADD COLUMN client_address TEXT NULL;");
-        AddColumnIfMissing(connection, "requests", "user_agent",
-            "ALTER TABLE requests ADD COLUMN user_agent TEXT NULL;");
-        AddColumnIfMissing(connection, "mcp_requests", "user_agent",
-            "ALTER TABLE mcp_requests ADD COLUMN user_agent TEXT NULL;");
-
-        // Full request/response header blocks, captured for every log source. Existing databases
-        // predate these columns, so CREATE TABLE IF NOT EXISTS leaves them absent and the reads
-        // would fail with "no such column" on the next start.
-        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
-        {
-            AddColumnIfMissing(connection, table, "request_headers",
-                $"ALTER TABLE {table} ADD COLUMN request_headers TEXT NULL;");
-            AddColumnIfMissing(connection, table, "response_headers",
-                $"ALTER TABLE {table} ADD COLUMN response_headers TEXT NULL;");
-        }
-    }
-
-    /// <summary>
-    /// Renames the <c>mcp_requests.path</c> column onto the <c>upstream_path</c> name used by the
-    /// baseline DDL and by every read/write query, preserving data.
-    /// </summary>
-    /// <remarks>
-    /// A database created while the MCP baseline briefly declared the column as <c>path</c> is left
-    /// with that name on disk, because <c>CREATE TABLE IF NOT EXISTS</c> never revisits an existing
-    /// table. Every query still names <c>upstream_path</c>, so such a database fails at startup with
-    /// "no such column: upstream_path". The rename is idempotent and degrades to a warning when the
-    /// file is held by a concurrent instance.
-    /// </remarks>
-    private static void MigrateMcpRequestPathRename(SqliteConnection connection)
-    {
-        RenameColumnIfPresent(connection, "mcp_requests",
-            "path", "upstream_path", "TEXT NOT NULL DEFAULT ''");
-    }
-
-    /// <summary>Adds a column to a table when it does not exist yet, logging the migration.</summary>
-    private static void AddColumnIfMissing(SqliteConnection connection, string tableName, string columnName, string alterStatement)
-    {
-        if (!TableExists(connection, tableName) || ColumnExists(connection, tableName, columnName))
-            return;
-
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = alterStatement;
-        command.ExecuteNonQuery();
-
-        Log.Information("Migrated {Table} table: added {Column} column.", tableName, columnName);
-    }
-
-    /// <summary>
-    /// Adds the SSH-style credential columns to pre-existing <c>credentials</c> tables that were
-    /// created before they were introduced: <c>username</c>, <c>private_key</c>, and
-    /// <c>certificate</c>.
-    /// </summary>
-    private static void MigrateCredentialsTable(SqliteConnection connection)
-    {
-        if (!TableExists(connection, "credentials"))
-            return;
-
-        if (!ColumnExists(connection, "credentials", "username"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE credentials ADD COLUMN username TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated credentials table: added username column.");
-        }
-
-        if (!ColumnExists(connection, "credentials", "private_key"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE credentials ADD COLUMN private_key TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated credentials table: added private_key column.");
-        }
-
-        if (!ColumnExists(connection, "credentials", "certificate"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE credentials ADD COLUMN certificate TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated credentials table: added certificate column.");
-        }
-    }
-
-    /// <summary>
-    /// Adds columns to pre-existing runtime_settings tables that were created before they
-    /// were introduced: <c>enable_performance_sampling</c>, <c>enable_api_explorer</c>,
-    /// <c>run_as_administrator</c>, and <c>enable_ir_translation</c>.
-    /// </summary>
-    private static void MigrateRuntimeSettingsTable(SqliteConnection connection)
-    {
-        if (!TableExists(connection, "runtime_settings"))
-            return;
-
-        if (!ColumnExists(connection, "runtime_settings", "enable_performance_sampling"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN enable_performance_sampling INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added enable_performance_sampling column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "enable_api_explorer"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN enable_api_explorer INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added enable_api_explorer column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "run_as_administrator"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN run_as_administrator INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added run_as_administrator column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "debug_mode"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN debug_mode INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added debug_mode column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "collect_all_traffic"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN collect_all_traffic INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added collect_all_traffic column.");
-        }
-
-        // Replaces the single collect_all_traffic switch with a per-category set. The legacy column
-        // is left in place (its ordinal is still read) but no longer written, so an older build can
-        // still open the same file. An existing "log all traffic" choice migrates to every category,
-        // preserving what that user had; a blank value falls back to the default set on load.
-        if (!ColumnExists(connection, "runtime_settings", "collect_non_proxied_categories"))
-        {
-            using (SqliteCommand addColumn = connection.CreateCommand())
-            {
-                addColumn.CommandText =
-                    "ALTER TABLE runtime_settings ADD COLUMN collect_non_proxied_categories TEXT NULL;";
-                addColumn.ExecuteNonQuery();
-            }
-
-            using (SqliteCommand seedFromLegacy = connection.CreateCommand())
-            {
-                seedFromLegacy.CommandText =
-                    "UPDATE runtime_settings SET collect_non_proxied_categories = $all " +
-                    "WHERE collect_all_traffic = 1 AND collect_non_proxied_categories IS NULL;";
-                seedFromLegacy.Parameters.AddWithValue(
-                    "$all", NonProxiedCategorySet.Format(NonProxiedCategorySet.All));
-                seedFromLegacy.ExecuteNonQuery();
-            }
-
-            Log.Information(
-                "Migrated runtime_settings table: added collect_non_proxied_categories column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "heartbeat_interval_seconds"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added heartbeat_interval_seconds column.");
-
-            RaiseLegacyKeepAliveInterval(connection);
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "compaction_fallback_context_tokens"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added compaction_fallback_context_tokens column.");
-        }
-
-        if (!ColumnExists(connection, "runtime_settings", "enable_ir_translation"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN enable_ir_translation INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added enable_ir_translation column.");
-        }
-
-        // The single global Copilot compaction target. Null means "no target", which is the correct
-        // default: with no target selected a detected Copilot compaction is left with the model the
-        // client asked for.
-        if (!ColumnExists(connection, "runtime_settings", "copilot_compaction_model_name"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN copilot_compaction_model_name TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added copilot_compaction_model_name column.");
-        }
-
-        // Defaults to enabled so an upgraded installation keeps routing Copilot's compaction to the
-        // selected global target, matching the pre-existing behavior where every mapping opted in by
-        // default. This is the installation-wide replacement for the retired per-mapping flag.
-        if (!ColumnExists(connection, "runtime_settings", "enable_copilot_compaction_routing"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                "ALTER TABLE runtime_settings ADD COLUMN enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated runtime_settings table: added enable_copilot_compaction_routing column.");
-        }
-    }
-
-    /// <summary>
-    /// Raises a stored keep-alive interval that is still exactly the legacy 15-second default up to
-    /// the new 60-second default.
-    /// </summary>
-    /// <remarks>
-    /// Called only from the one-shot branch that adds <c>heartbeat_interval_seconds</c>, so it runs
-    /// once per database on the first launch after the ping and keep-alive were separated. Running it
-    /// on every launch would keep resetting a 15-second interval the user deliberately chose later.
-    /// Only the exact old default is touched, so any other customized value survives untouched.
-    /// </remarks>
-    private static void RaiseLegacyKeepAliveInterval(SqliteConnection connection)
-    {
-        const string column = "sse_keep_alive_interval_seconds";
-        const int legacyDefault = 15;
-        const int newDefault = 60;
-
-        // The rename migration normally creates this column first, but it logs and skips when the file
-        // is held by a concurrent instance, so guard rather than let the UPDATE abort startup.
-        if (!ColumnExists(connection, "runtime_settings", column))
-            return;
-
-        try
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                $"UPDATE runtime_settings SET {column} = $new WHERE {column} = $old;";
-            command.Parameters.AddWithValue("$new", newDefault);
-            command.Parameters.AddWithValue("$old", legacyDefault);
-            int raised = command.ExecuteNonQuery();
-
-            if (raised > 0)
-                Log.Information(
-                    "Migrated runtime_settings table: raised the keep-alive interval from the legacy {Old} second default to {New} seconds.",
-                    legacyDefault, newDefault);
-        }
-        catch (SqliteException ex)
-        {
-            Log.Warning(ex, "Failed to raise the legacy keep-alive interval default.");
-        }
-        catch (IOException ex)
-        {
-            Log.Warning(ex, "Skipped raising the legacy keep-alive interval: the database file is in use.");
-        }
-    }
-
-    /// <summary>
-    /// Adds columns to pre-existing <c>model_mappings</c> tables that were created before they
-    /// were introduced: <c>capabilities</c>, <c>credential_name</c>, <c>thinking_mode</c>,
-    /// <c>context_window_tokens</c>,
-    /// <c>temperature_priority</c>, <c>repeat_penalty_priority</c>,
-    /// <c>reasoning_effort_priority</c>, <c>reasoning_effort</c>,
-    /// <c>reasoning_effort_values</c>, <c>reasoning_effort_format</c>,
-    /// <c>context_summarize_model_name</c>, <c>enable_heartbeats</c>,
-    /// <c>enable_copilot_compatibility</c>, and <c>hidden</c>.
-    /// </summary>
-    private static void MigrateModelMappingsTable(SqliteConnection connection)
-    {
-        if (!TableExists(connection, "model_mappings"))
-            return;
-
-        if (!ColumnExists(connection, "model_mappings", "capabilities"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN capabilities TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added capabilities column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "supports_reasoning_effort"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN supports_reasoning_effort INTEGER NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added supports_reasoning_effort column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "adaptive_thinking"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN adaptive_thinking TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added adaptive_thinking column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "credential_name"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN credential_name TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added credential_name column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "thinking_mode"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN thinking_mode INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added thinking_mode column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "context_window_tokens"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_window_tokens INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added context_window_tokens column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "temperature_priority"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN temperature_priority INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added temperature_priority column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "repeat_penalty_priority"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN repeat_penalty_priority INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added repeat_penalty_priority column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_priority"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_priority INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added reasoning_effort_priority column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "reasoning_effort"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added reasoning_effort column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_values"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_values TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added reasoning_effort_values column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "reasoning_effort_format"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN reasoning_effort_format INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added reasoning_effort_format column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "context_summarize_model_name"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_summarize_model_name TEXT NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added context_summarize_model_name column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "id"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN id INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added id column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "context_summarize_model_id"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN context_summarize_model_id INTEGER NULL;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added context_summarize_model_id column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "auto_compact_paths"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN auto_compact_paths INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added auto_compact_paths column.");
-        }
-
-        if (!ColumnExists(connection, "model_mappings", "redirect_manual_compaction"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN redirect_manual_compaction INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added redirect_manual_compaction column.");
-        }
-
-        // Defaults to enabled so existing mappings keep being pinged. This must run after
-        // MigrateSseKeepAliveRename: that migration retires the older enable_heartbeats column (which
-        // used to mean the keep-alive) and this one re-introduces the name for the liveness ping.
-        if (!ColumnExists(connection, "model_mappings", "enable_heartbeats"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN enable_heartbeats INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added enable_heartbeats column.");
-        }
-
-        // Defaults to enabled so existing mappings keep producing well-formed streams for
-        // Microsoft.Extensions.AI clients (e.g. Visual Studio Copilot), which hang indefinitely
-        // when an SSE response never reaches its terminal [DONE] event.
-        if (!ColumnExists(connection, "model_mappings", "enable_copilot_compatibility"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added enable_copilot_compatibility column.");
-        }
-
-        // Defaults to enabled so the global Copilot compaction target applies to existing mappings
-        // without requiring the user to visit every model after upgrading. A mapping that never
-        // served Copilot compaction is unaffected because the redirect also needs a global target.
-        if (!ColumnExists(connection, "model_mappings", "copilot_compatible_compaction"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN copilot_compatible_compaction INTEGER NOT NULL DEFAULT 1;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added copilot_compatible_compaction column.");
-        }
-
-        // Defaults to hidden=false so existing mappings remain visible in discovery endpoints.
-        // The Hidden flag is discovery-only: it filters /v1/models and /api/tags but does not
-        // affect routing, heartbeats, or eligibility as a compaction target.
-        if (!ColumnExists(connection, "model_mappings", "hidden"))
-        {
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;";
-            command.ExecuteNonQuery();
-
-            Log.Information("Migrated model_mappings table: added hidden column.");
-        }
-
-        // Post-migration: assign IDs to any mappings that don't have one yet, and convert
-        // legacy string-based context_summarize_model_name references to integer IDs.
-        MigrateMappingIds(connection);
-    }
-
-    /// <summary>
-    /// Assigns unique IDs to any model mapping that doesn't have one, repairs IDs that collide
-    /// with another mapping's, and converts legacy <c>context_summarize_model_name</c> string
-    /// references to <c>context_summarize_model_id</c> integer references by matching proxy names.
-    /// Runs once after the schema migration so existing data is upgraded transparently.
-    /// </summary>
-    private static void MigrateMappingIds(SqliteConnection connection)
-    {
-        // Read all mappings with their current id, proxy_name, and context_summarize_model_name.
-        using SqliteCommand readCmd = connection.CreateCommand();
-        readCmd.CommandText = "SELECT proxy_name, id, context_summarize_model_name, context_summarize_model_id FROM model_mappings;";
-        using SqliteDataReader reader = readCmd.ExecuteReader();
-
-        List<(string ProxyName, int Id, string? LegacyName, int? CurrentId)> rows = [];
-        while (reader.Read())
-        {
-            rows.Add((
-                reader.GetString(0),
-                reader.GetInt32(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetInt32(3)
-            ));
-        }
-        reader.Close();
-
-        if (rows.Count == 0)
-            return;
-
-        // Build a proxy-name → id lookup from existing non-zero IDs.
-        Dictionary<string, int> nameToId = new(StringComparer.OrdinalIgnoreCase);
-        int nextId = 1;
-        foreach ((string proxyName, int id, _, _) in rows)
-        {
-            if (id > 0)
-            {
-                nameToId[proxyName] = id;
-                if (id >= nextId)
-                    nextId = id + 1;
-            }
-        }
-
-        // Assign IDs to rows that don't have one yet.
-        foreach ((string proxyName, int id0, _, _) in rows)
-        {
-            if (id0 == 0 && !nameToId.ContainsKey(proxyName))
-            {
-                int id = nextId++;
-                nameToId[proxyName] = id;
-
-                using SqliteCommand updateCmd = connection.CreateCommand();
-                updateCmd.CommandText = "UPDATE model_mappings SET id = $id WHERE proxy_name = $proxyName;";
-                updateCmd.Parameters.AddWithValue("$id", id);
-                updateCmd.Parameters.AddWithValue("$proxyName", proxyName);
-                updateCmd.ExecuteNonQuery();
-            }
-        }
-
-        // Convert legacy string references to integer IDs. Rows that already carry an ID are left
-        // alone: when the two disagree, AppSettings.FindContextSummarizeTarget resolves by name on
-        // load and repairs the ID there, so doing it here as well would be redundant.
-        foreach ((string proxyName, _, string? legacyName, int? currentId) in rows)
-        {
-            if (!string.IsNullOrWhiteSpace(legacyName) && currentId is null)
-            {
-                if (nameToId.TryGetValue(legacyName.Trim(), out int targetId))
-                {
-                    using SqliteCommand updateCmd = connection.CreateCommand();
-                    updateCmd.CommandText = "UPDATE model_mappings SET context_summarize_model_id = $id WHERE proxy_name = $proxyName;";
-                    updateCmd.Parameters.AddWithValue("$id", targetId);
-                    updateCmd.Parameters.AddWithValue("$proxyName", proxyName);
-                    updateCmd.ExecuteNonQuery();
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Handles pre-existing <c>model_mappings</c> tables from older database schemas that
-    /// predate the <c>proxy_name</c> primary key column. Rather than silently losing the
-    /// old data, the legacy table is renamed out of the way so a fresh, up-to-date
-    /// <c>model_mappings</c> table can be created by the schema script.
-    /// </summary>
-    private static void MigrateLegacyModelMappingsTable(SqliteConnection connection)
-    {
-        const string tableName = "model_mappings";
-
-        if (!TableExists(connection, tableName))
-            return;
-
-        if (ColumnExists(connection, tableName, "proxy_name"))
-            return;
-
-        string legacyTableName = $"{tableName}_legacy_{DateTime.UtcNow:yyyyMMddHHmmss}";
-
-        using SqliteCommand renameCommand = connection.CreateCommand();
-        renameCommand.CommandText = $"ALTER TABLE {tableName} RENAME TO {legacyTableName};";
-        renameCommand.ExecuteNonQuery();
-
-        Log.Warning(
-            "The existing {Table} table used an outdated schema without a {Column} column. " +
-            "It was renamed to {LegacyTable} and a new {Table} table will be created. " +
-            "Model mappings must be re-entered.",
-            tableName,
-            "proxy_name",
-            legacyTableName);
-    }
-
-    private static bool TableExists(SqliteConnection connection, string tableName)
+        private static bool TableExists(SqliteConnection connection, string tableName)
     {
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = $name;";
