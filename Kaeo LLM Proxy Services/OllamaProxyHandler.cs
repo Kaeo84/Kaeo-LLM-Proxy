@@ -669,6 +669,66 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
+    /// Extracts the context window an upstream says it actually loaded, from a
+    /// <c>exceed_context_size_error</c> body. llama.cpp reports a structured <c>n_ctx</c>; providers
+    /// that only describe the limit in prose ("available context size (256000 tokens)") are covered
+    /// by pattern-matching the message. Returns 0 when the body carries no usable figure.
+    /// </summary>
+    /// <remarks>
+    /// The mapping's configured Context Window is a declaration of intent, not a measurement: it can
+    /// be larger than what the server actually loaded (a server started with a smaller <c>-c</c>, or
+    /// a value the operator has not reconciled). Compaction sized against the declared figure then
+    /// concludes an oversized body "fits" and forwards it untouched, which is why this value has to
+    /// be read back from the server's own rejection.
+    /// </remarks>
+    /// <param name="body">The upstream error body.</param>
+    /// <returns>The reported window in tokens, or 0 when the body reports none.</returns>
+    internal static int ExtractReportedContextWindow(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return 0;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                // llama.cpp puts n_ctx beside the message inside the error object; tolerate it at
+                // the root too, since a wrapper may hoist it.
+                if (doc.RootElement.TryGetProperty("n_ctx", out JsonElement rootCtx)
+                    && rootCtx.ValueKind == JsonValueKind.Number
+                    && rootCtx.TryGetInt32(out int rootValue) && rootValue > 0)
+                {
+                    return rootValue;
+                }
+
+                if (doc.RootElement.TryGetProperty("error", out JsonElement error)
+                    && error.ValueKind == JsonValueKind.Object
+                    && error.TryGetProperty("n_ctx", out JsonElement nestedCtx)
+                    && nestedCtx.ValueKind == JsonValueKind.Number
+                    && nestedCtx.TryGetInt32(out int nestedValue) && nestedValue > 0)
+                {
+                    return nestedValue;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Not JSON; fall through to the prose scan below.
+        }
+
+        // Prose fallback for providers that only describe the limit in the message. Covers
+        // llama.cpp's "available context size (256000 tokens)" and the "maximum context length is
+        // 128000 tokens" phrasing used by OpenAI-style services.
+        Match match = Regex.Match(body, @"context\s+(?:size|length|window)[^0-9]{0,30}(\d+)", RegexOptions.IgnoreCase);
+        return match.Success
+            && int.TryParse(match.Groups[1].Value, out int parsed)
+            && parsed > 0
+            ? parsed
+            : 0;
+    }
+
+    /// <summary>
     /// Estimates the token count of a serialized request body using a ~4 chars/token heuristic.
     /// Intentionally conservative (overestimates) so compaction thresholds favor compacting
     /// early rather than missing an overflow. Delegates to the shared estimator so the gate in
@@ -838,14 +898,22 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// Attempts local context compaction after the upstream rejected the prompt with a
     /// context-size overflow error. The caller retries the original request once with the
     /// returned compacted body. This self-heals oversized prompts even when no proactive
-    /// threshold was configured for the mapping, but it is still governed by the same
-    /// per-mapping <see cref="ModelMapping.AutoCompactPaths"/> setting and the same compaction
-    /// target requirement as the proactive path, so a mapping left on "Disabled" never
-    /// compacts and simply surfaces the upstream error.
+    /// threshold was configured for the mapping.
     /// </summary>
+    /// <remarks>
+    /// The rescue is gated by the compaction TARGET's opt-in rather than the overflowing mapping's,
+    /// because the target is the model doing the summarizing. A mapping that declined proactive
+    /// compaction still gets a rescue, provided it has a usable compaction model that has agreed to
+    /// be used for this path.
+    /// </remarks>
     /// <param name="requestPath">
     /// The path the request arrived on, used to consult
-    /// <see cref="ModelMapping.IsAutoCompactActiveFor"/>.
+    /// <see cref="ModelMapping.IsAutoCompactActiveFor"/> on the compaction target.
+    /// </param>
+    /// <param name="reportedContextWindow">
+    /// The context window the upstream said it actually loaded, when it reported one. Preferred over
+    /// the mapping's declared window for the post-compaction fit check, because a declaration can be
+    /// larger than what the server really has and would let an oversized result through.
     /// </param>
     private async Task<string?> TryReactiveCompactionAsync(
         string body,
@@ -853,33 +921,51 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         AutoCompactPaths requestPath,
         HttpListenerResponse resp,
         bool streamAlreadyOpen,
-        CancellationToken ct)
+        CancellationToken ct,
+        int reportedContextWindow = 0)
     {
         ModelMapping? mapping = _settings.FindModelMapping(model);
         if (mapping is null)
             return null;
 
-        if (!mapping.IsAutoCompactActiveFor(requestPath))
-        {
-            Log.Debug(
-                "Reactive auto-compaction for model {Model} skipped: auto-compaction is disabled for this path (AutoCompactPaths={Paths})",
-                model, mapping.AutoCompactPaths);
-            return null;
-        }
+        // The reactive path deliberately does NOT require AutoCompactPaths for the mapping the
+        // overflow was reported against. That setting opts into *proactive* compaction — summarizing
+        // before the request is sent — and a mapping can reasonably decline proactive work while
+        // still wanting its configured compaction model used to rescue a rejection. Requiring it
+        // here meant a mapping with a compaction model configured but proactive compaction disabled
+        // got no rescue at all: the proxy forwarded an oversized body, the upstream rejected it, and
+        // nothing summarized despite a compaction model being selected.
+        //
+        // What still gates the rescue is that a usable compaction target exists and that the TARGET
+        // has opted in to being used for this path (checked below), so the proxy never summarizes
+        // with a model whose operator has not agreed to it.
 
         try
         {
-            // Resolve the compaction target through FindContextSummarizeTarget, which prefers the
-            // stored proxy name and falls back to the stored ID.
-            // Reactive compaction requires a resolved target — with none configured it does
-            // nothing and surfaces the upstream overflow error.
-            ModelMapping? compactMapping = _settings.FindContextSummarizeTarget(mapping);
+            // Resolve the compaction target the same way the /compact redirect did, so the rescue uses the
+            // model the request was actually routed to. A Copilot-compatible mapping is routed to the
+            // single global Copilot compaction model, not its per-mapping target; resolving the
+            // per-mapping target here would summarize with a model the client never reached.
+            ModelMapping? compactMapping = mapping.CopilotCompatibleCompaction
+                ? _settings.FindCopilotCompactionTarget() ?? _settings.FindContextSummarizeTarget(mapping)
+                : _settings.FindContextSummarizeTarget(mapping);
             if (compactMapping is not null && (!compactMapping.IsEnabled || string.IsNullOrWhiteSpace(compactMapping.UpstreamUrl)))
                 compactMapping = null;
 
             if (compactMapping is null)
             {
                 Log.Debug("Reactive auto-compaction for model {Model} skipped: no compaction model selected", model);
+                return null;
+            }
+
+            // The target is the model that will do the summarizing, so it is its own opt-in that
+            // matters — the same rule the proactive, redirected and manual-compaction paths use.
+            if (!compactMapping.IsAutoCompactActiveFor(requestPath))
+            {
+                Log.Warning(
+                    "Reactive auto-compaction for model {Model} skipped: compaction model {Target} has not enabled "
+                    + "auto-compaction for this path (AutoCompactPaths={Paths}), so the proxy will not summarize with it",
+                    model, compactMapping.ProxyName, compactMapping.AutoCompactPaths);
                 return null;
             }
 
@@ -897,6 +983,25 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 _settings.CompactionFallbackContextTokens);
             int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(compactModelContext);
 
+            // The oversized request is being compacted because its destination model rejected it. The
+            // destination is `mapping` when no redirect fired, but under a /compact redirect the
+            // request was routed to the compaction model itself, so that is the window the result
+            // must fit. The server's reported figure wins over the mapping's declaration when the
+            // upstream supplied one, so a window the operator has not reconciled cannot let an
+            // oversized result through.
+            int destinationWindow = compactMapping.Id == mapping.Id
+                ? mapping.GetEffectiveContextWindow()
+                : compactMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
+            if (reportedContextWindow > 0 && reportedContextWindow < destinationWindow)
+            {
+                Log.Warning(
+                    "Upstream reported a {Reported} token context window for model {Model}, smaller than the "
+                    + "{Declared} tokens configured on the mapping. Using the reported figure for this request; "
+                    + "reconcile the mapping's Context Window to avoid repeated overflows.",
+                    reportedContextWindow, model, destinationWindow);
+                destinationWindow = reportedContextWindow;
+            }
+
             Log.Information("Reactive auto-compaction triggered for model {Model} after upstream context overflow", model);
 
             string? compacted = await _autoCompactionService.CompactAsync(
@@ -908,7 +1013,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 timeout,
                 maxTokensPerChunk,
                 compactModelName,
-                mapping.GetEffectiveContextWindow(),
+                destinationWindow,
                 compactModelContext,
                 ct);
 
@@ -1893,21 +1998,26 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // the upstream call once. This covers mappings where the proactive threshold is not
         // configured as well as cases where the proxy's token estimate undershot.
         //
-        // Gated on the same per-mapping AutoCompactPaths setting as the proactive path (inside
-        // TryReactiveCompactionAsync). A signature-redirected /compact request is excluded for a
-        // different reason than the proactive path: an overflow on a summarize request means the
-        // model could not even read the conversation, and the response it would produce IS a
-        // summary, so there is nothing left to summarize. The bounded path above is the attempt
-        // that matters for those requests; a failure there surfaces the upstream error rather than
-        // triggering a second round of summarization.
+        // Same gate the generic path above uses: only once, never when nothing can summarize.
+        // A redirected /compact request IS allowed through here, because the redirect target is a
+        // normal model that can itself overflow: when that happens there IS still work to do —
+        // chunking the conversation down so the compaction model can read it. What must stay
+        // impossible is recursive summarization, and that is prevented structurally rather than by
+        // this flag: the compacted body the retry carries no longer matches the /compact signature
+        // only when a redirect to a *different* model fired, and when target and declared model are
+        // the same the reactive path resolves that model's own compaction target, which is a
+        // different model by construction (ResolveManualCompactTarget rejects a self-reference).
         if (!upstreamResp.IsSuccessStatusCode
             && passthroughBody is not null
-            && !contextCompacted
-            && !alreadyRedirectedForCompaction)
+            && !contextCompacted)
         {
             string probe = await upstreamResp.Content.ReadAsStringAsync(ct);
             if (IsContextOverflowBody(probe))
             {
+                // The upstream tells us the window it actually loaded. Trust it over the mapping's
+                // declaration for this request: that disagreement is precisely what makes compaction
+                // forward an oversized body in the belief that it fits.
+                int reportedWindow = ExtractReportedContextWindow(probe);
                 // The retry path is the longest silent window in the whole request: the proxy
                 // re-summarizes the conversation locally and then waits again for upstream headers,
                 // all while the client sees nothing. Headers may already be committed by this point
@@ -1930,7 +2040,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 try
                 {
                     reactive = await TryReactiveCompactionAsync(
-                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, state.HeadersCommitted, ct);
+                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, state.HeadersCommitted, ct, reportedWindow);
                     if (reactive is not null)
                     {
                         contextCompacted = true;
