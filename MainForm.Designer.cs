@@ -184,6 +184,8 @@ partial class MainForm
         _txtMaxLogs = new TextBox();
         _lblCompactionFallback = new Label();
         _txtCompactionFallback = new TextBox();
+        _lblCopilotCompactionModel = new Label();
+        _cmbCopilotCompactionModel = new ComboBox();
         _lblMappings = new Label();
         _dgvMappings = new DataGridView();
         _colMappingEnabled = new DataGridViewTextBoxColumn();
@@ -1156,7 +1158,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 20;
+        _tlpSettings.RowCount = 21;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1199,6 +1201,8 @@ partial class MainForm
         _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
         _tlpSettings.Controls.Add(_grpLogging, 0, 19);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 20);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 20);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1266,6 +1270,17 @@ partial class MainForm
         _txtCompactionFallback.Margin = new Padding(4, 6, 4, 4);
         _txtCompactionFallback.Name = "_txtCompactionFallback";
         _txtMaxLogs.Name = "_txtMaxLogs";
+
+        _lblCopilotCompactionModel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblCopilotCompactionModel.AutoSize = true;
+        _lblCopilotCompactionModel.Margin = new Padding(4, 8, 8, 4);
+        _lblCopilotCompactionModel.Name = "_lblCopilotCompactionModel";
+        _lblCopilotCompactionModel.Text = "Global Copilot Compaction Model:";
+
+        _cmbCopilotCompactionModel.Dock = DockStyle.Fill;
+        _cmbCopilotCompactionModel.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbCopilotCompactionModel.Margin = new Padding(4, 6, 4, 4);
+        _cmbCopilotCompactionModel.Name = "_cmbCopilotCompactionModel";
 
         _chkAutoStart.AutoSize = true;
         _chkAutoStart.Margin = new Padding(4, 8, 4, 4);
@@ -2648,6 +2663,8 @@ partial class MainForm
     private TextBox _txtMaxLogs;
     private Label _lblCompactionFallback;
     private TextBox _txtCompactionFallback;
+    private Label _lblCopilotCompactionModel;
+    private ComboBox _cmbCopilotCompactionModel;
     private Label _lblMappings;
     private DataGridView _dgvMappings;
     private DataGridViewTextBoxColumn _colMappingEnabled;

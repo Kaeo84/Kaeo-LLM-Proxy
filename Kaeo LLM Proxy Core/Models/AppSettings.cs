@@ -361,6 +361,13 @@ internal sealed class RuntimeSettings
     /// </summary>
     public int CompactionFallbackContextTokens { get; set; } = 8192;
 
+    /// <summary>
+    /// Proxy name of the single global model every Copilot-detected context summarization is routed
+    /// to, or null when none is selected. Stored in the application database beside the other
+    /// runtime settings because it is a single installation-wide choice.
+    /// </summary>
+    public string? CopilotCompactionModelName { get; set; }
+
     public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
@@ -692,6 +699,20 @@ internal sealed class ModelMapping
     public bool RedirectManualCompaction { get; set; }
 
     /// <summary>
+    /// When true (default), a request detected as GitHub Copilot's own context summarization —
+    /// recognized by the distinctive session-summary system prompt — is routed to the single
+    /// global <see cref="AppSettings.CopilotCompactionModelName"/> instead of this mapping's
+    /// per-model compaction target. This exists because Copilot does not honor a per-model
+    /// compaction choice: it can dispatch a compaction turn against any of its enabled models,
+    /// so a per-mapping target only catches the model Copilot happens to pick. One global target
+    /// makes Copilot's compaction deterministic while the per-mapping
+    /// <see cref="RedirectManualCompaction"/> keeps serving other tools that address a specific
+    /// model. When false, Copilot compactions fall through to the per-mapping redirect, so this
+    /// model behaves like any other client.
+    /// </summary>
+    public bool CopilotCompatibleCompaction { get; set; } = true;
+
+    /// <summary>
     /// When true, the proxy makes OpenAI-compatible streaming responses strictly well-formed for
     /// clients built on Microsoft.Extensions.AI (e.g. Visual Studio Copilot): it strips the
     /// <c>stream_options</c> block from the upstream-bound request, guarantees the stream ends with
@@ -789,6 +810,7 @@ internal sealed class ModelMapping
             AutoCompactPaths = AutoCompactPaths,
             RedirectManualCompaction = RedirectManualCompaction,
             EnableCopilotCompatibility = EnableCopilotCompatibility,
+            CopilotCompatibleCompaction = CopilotCompatibleCompaction,
         };
         clone.EnsureId();
         return clone;
@@ -1062,6 +1084,18 @@ internal sealed class AppSettings
     [JsonIgnore]
     public int CompactionFallbackContextTokens { get; set; } = DefaultCompactionFallbackContextTokens;
 
+    /// <summary>
+    /// Proxy name of the single global model every Copilot-detected context summarization is routed
+    /// to, or null when none is selected. Chosen once on the Settings tab rather than per mapping,
+    /// because Copilot does not honor a per-model compaction choice: it dispatches a compaction turn
+    /// against whichever of its enabled models it happens to use, so a per-mapping target only catches
+    /// some of them. A per-mapping <see cref="ModelMapping.CopilotCompatibleCompaction"/> flag opts a
+    /// model into this global target. Resolve through <see cref="FindCopilotCompactionTarget"/>;
+    /// a name that no longer matches an enabled mapping with an upstream is treated as no target.
+    /// </summary>
+    [JsonIgnore]
+    public string? CopilotCompactionModelName { get; set; }
+
     /// <summary>Lower bound accepted for <see cref="SseKeepAliveIntervalSeconds"/>.</summary>
     public const int MinSseKeepAliveIntervalSeconds = 5;
 
@@ -1214,6 +1248,13 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = Math.Clamp(
             CompactionFallbackContextTokens, MinCompactionFallbackContextTokens, MaxCompactionFallbackContextTokens);
 
+        // An all-whitespace selection means "no target", so store null rather than a blank name that
+        // FindCopilotCompactionTarget would have to special-case at request time.
+        if (string.IsNullOrWhiteSpace(CopilotCompactionModelName))
+            CopilotCompactionModelName = null;
+        else
+            CopilotCompactionModelName = CopilotCompactionModelName.Trim();
+
         foreach (ModelMapping mapping in ModelMappings)
         {
             if (mapping.UpstreamTimeoutSeconds <= 0)
@@ -1250,6 +1291,7 @@ internal sealed class AppSettings
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
+        CopilotCompactionModelName = CopilotCompactionModelName,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -1272,6 +1314,7 @@ internal sealed class AppSettings
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
+        CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }
@@ -1367,6 +1410,30 @@ internal sealed class AppSettings
 
         return source.ContextSummarizeModelId is > 0 and int id
             ? FindModelMappingById(id)
+            : null;
+    }
+
+    /// <summary>
+    /// Returns the mapping selected as the global Copilot compaction target, or null when none is
+    /// selected or the selection is not usable. Usable means the name resolves to an enabled mapping
+    /// that has an upstream URL — the same bar <see cref="FindContextSummarizeTarget"/> targets must
+    /// clear — so the redirect gate cannot send a Copilot compaction to a disabled or unroutable model.
+    /// </summary>
+    /// <remarks>
+    /// Resolution is by proxy name only: the global target is picked in one place and there is no
+    /// surrogate-ID indirection that could drift to a different model, so a name that no longer
+    /// matches anything simply means "no target" and the caller falls back to normal handling.
+    /// </remarks>
+    public ModelMapping? FindCopilotCompactionTarget()
+    {
+        if (string.IsNullOrWhiteSpace(CopilotCompactionModelName)
+            || FindModelMapping(CopilotCompactionModelName) is not { } target)
+        {
+            return null;
+        }
+
+        return target.IsEnabled && !string.IsNullOrWhiteSpace(target.UpstreamUrl)
+            ? target
             : null;
     }
 

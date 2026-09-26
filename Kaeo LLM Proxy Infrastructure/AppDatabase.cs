@@ -206,7 +206,8 @@ internal sealed class AppDatabase : IDisposable
                     auto_compact_paths,
                     redirect_manual_compaction,
                     enable_heartbeats,
-                    enable_copilot_compatibility
+                    enable_copilot_compatibility,
+                    copilot_compatible_compaction
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -285,7 +286,8 @@ internal sealed class AppDatabase : IDisposable
                         auto_compact_paths,
                         redirect_manual_compaction,
                         enable_heartbeats,
-                        enable_copilot_compatibility
+                        enable_copilot_compatibility,
+                        copilot_compatible_compaction
                     )
                     VALUES (
                         $id,
@@ -321,7 +323,8 @@ internal sealed class AppDatabase : IDisposable
                         $autoCompactPaths,
                         $redirectManualCompaction,
                         $enableHeartbeats,
-                        $enableCopilotCompatibility
+                        $enableCopilotCompatibility,
+                        $copilotCompatibleCompaction
                     );
                     """;
 
@@ -569,7 +572,8 @@ internal sealed class AppDatabase : IDisposable
                     heartbeat_interval_seconds,
                     compaction_fallback_context_tokens,
                     collect_non_proxied_categories,
-                    enable_ir_translation
+                    enable_ir_translation,
+                    copilot_compaction_model_name
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -602,6 +606,7 @@ internal sealed class AppDatabase : IDisposable
                     reader.IsDBNull(15) ? null : reader.GetString(15)),
                 // Appended last so every existing ordinal above stays stable.
                 EnableIrTranslation = ReadBoolean(reader, 16),
+                CopilotCompactionModelName = reader.IsDBNull(17) ? null : reader.GetString(17),
             };
         }
     }
@@ -634,7 +639,8 @@ internal sealed class AppDatabase : IDisposable
                     heartbeat_interval_seconds,
                     compaction_fallback_context_tokens,
                     collect_non_proxied_categories,
-                    enable_ir_translation
+                    enable_ir_translation,
+                    copilot_compaction_model_name
                 )
                 VALUES (
                     $id,
@@ -654,7 +660,8 @@ internal sealed class AppDatabase : IDisposable
                     $heartbeatIntervalSeconds,
                     $compactionFallbackContextTokens,
                     $collectNonProxiedCategories,
-                    $enableIrTranslation
+                    $enableIrTranslation,
+                    $copilotCompactionModelName
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -673,7 +680,8 @@ internal sealed class AppDatabase : IDisposable
                     heartbeat_interval_seconds = excluded.heartbeat_interval_seconds,
                     compaction_fallback_context_tokens = excluded.compaction_fallback_context_tokens,
                     collect_non_proxied_categories = excluded.collect_non_proxied_categories,
-                    enable_ir_translation = excluded.enable_ir_translation;
+                    enable_ir_translation = excluded.enable_ir_translation,
+                    copilot_compaction_model_name = excluded.copilot_compaction_model_name;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -698,6 +706,7 @@ internal sealed class AppDatabase : IDisposable
                 "$collectNonProxiedCategories",
                 NonProxiedCategorySet.Format(settings.CollectNonProxiedCategories));
             command.Parameters.AddWithValue("$enableIrTranslation", ToSqliteBoolean(settings.EnableIrTranslation));
+            command.Parameters.AddWithValue("$copilotCompactionModelName", DbValue(settings.CopilotCompactionModelName));
             command.ExecuteNonQuery();
         }
     }
@@ -1276,7 +1285,8 @@ internal sealed class AppDatabase : IDisposable
                     auto_compact_paths INTEGER NOT NULL DEFAULT 0,
                     redirect_manual_compaction INTEGER NOT NULL DEFAULT 0,
                     enable_heartbeats INTEGER NOT NULL DEFAULT 1,
-                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1
+                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1,
+                    copilot_compatible_compaction INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1320,7 +1330,8 @@ internal sealed class AppDatabase : IDisposable
                     heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
                                 compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
                                 collect_non_proxied_categories TEXT NULL,
-                                enable_ir_translation INTEGER NOT NULL DEFAULT 0
+                                enable_ir_translation INTEGER NOT NULL DEFAULT 0,
+                                copilot_compaction_model_name TEXT NULL
                             );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1831,6 +1842,19 @@ internal sealed class AppDatabase : IDisposable
 
             Log.Information("Migrated runtime_settings table: added enable_ir_translation column.");
         }
+
+        // The single global Copilot compaction target. Null means "no target", which is the correct
+        // default: with no target selected a detected Copilot compaction is left with the model the
+        // client asked for.
+        if (!ColumnExists(connection, "runtime_settings", "copilot_compaction_model_name"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "ALTER TABLE runtime_settings ADD COLUMN copilot_compaction_model_name TEXT NULL;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated runtime_settings table: added copilot_compaction_model_name column.");
+        }
     }
 
     /// <summary>
@@ -2068,6 +2092,18 @@ internal sealed class AppDatabase : IDisposable
             command.ExecuteNonQuery();
 
             Log.Information("Migrated model_mappings table: added enable_copilot_compatibility column.");
+        }
+
+        // Defaults to enabled so the global Copilot compaction target applies to existing mappings
+        // without requiring the user to visit every model after upgrading. A mapping that never
+        // served Copilot compaction is unaffected because the redirect also needs a global target.
+        if (!ColumnExists(connection, "model_mappings", "copilot_compatible_compaction"))
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE model_mappings ADD COLUMN copilot_compatible_compaction INTEGER NOT NULL DEFAULT 1;";
+            command.ExecuteNonQuery();
+
+            Log.Information("Migrated model_mappings table: added copilot_compatible_compaction column.");
         }
 
         // Defaults to hidden=false so existing mappings remain visible in discovery endpoints.
@@ -2386,6 +2422,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$redirectManualCompaction", ToSqliteBoolean(mapping.RedirectManualCompaction));
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$enableCopilotCompatibility", ToSqliteBoolean(mapping.EnableCopilotCompatibility));
+        command.Parameters.AddWithValue("$copilotCompatibleCompaction", ToSqliteBoolean(mapping.CopilotCompatibleCompaction));
     }
 
     /// <summary>
@@ -2469,6 +2506,7 @@ internal sealed class AppDatabase : IDisposable
         mapping.RedirectManualCompaction = ReadBoolean(reader, 31);
         mapping.EnableHeartbeats = ReadBoolean(reader, 32);
         mapping.EnableCopilotCompatibility = ReadBoolean(reader, 33);
+        mapping.CopilotCompatibleCompaction = ReadBoolean(reader, 34);
 
         return mapping;
     }

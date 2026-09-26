@@ -316,9 +316,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// handled by the model the client asked for.
     /// </summary>
     /// <remarks>
-    /// Target resolution is delegated to <see cref="ResolveManualCompactTarget(AppSettings, ModelMapping)"/>
-    /// so the signature-based redirect on the chat paths and the explicit <c>/compact</c>
-    /// endpoints always agree on where a compaction request goes.
+    /// Copilot-detected summarizations have a dedicated path: when the mapping opts in via
+    /// <see cref="ModelMapping.CopilotCompatibleCompaction"/> the request is routed to the single
+    /// global <see cref="AppSettings.CopilotCompactionModelName"/>. That global target wins over the
+    /// per-mapping target because Copilot does not honor a per-model compaction choice, so a
+    /// per-mapping target only catches whichever model Copilot happens to compact with. When the
+    /// mapping opts out, or no usable global target is selected, resolution falls back to the
+    /// per-mapping <see cref="ResolveManualCompactTarget(AppSettings, ModelMapping)"/> redirect so
+    /// other tools keep getting their configured target.
     /// </remarks>
     internal static string ResolveEffectiveModel(AppSettings settings, string originalModel, string? firstMessageContent)
     {
@@ -336,6 +341,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
         if (mapping is null)
             return originalModel;
+
+        // Copilot-compatible path: one global target for every model that opts in. Copilot ignores
+        // the per-model compaction choice, so this is what makes its compaction deterministic.
+        if (mapping.CopilotCompatibleCompaction)
+        {
+            ModelMapping? globalTarget = settings.FindCopilotCompactionTarget();
+            Log.Debug(
+                "Copilot-compatible compaction for {Model}: global compaction model {GlobalModel}",
+                mapping.ProxyName,
+                globalTarget?.ProxyName ?? "(none)");
+
+            return globalTarget?.ProxyName ?? originalModel;
+        }
 
         (ModelMapping target, bool redirected) = ResolveManualCompactTarget(settings, mapping);
         return redirected ? target.ProxyName : originalModel;
@@ -431,6 +449,17 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ModelMapping? mapping = settings.FindModelMapping(originalModel);
         if (mapping is null)
             return $"no mapping found for model '{originalModel}'";
+
+        // Copilot-compatible mappings route to the single global target, not the per-mapping one, so
+        // the reason must be reported against that path or a missing global target would be blamed on
+        // the per-mapping redirect checkbox.
+        if (mapping.CopilotCompatibleCompaction)
+        {
+            return settings.FindCopilotCompactionTarget() is null
+                ? "copilot-compatible compaction is enabled but no usable global Copilot compaction model is selected"
+                : "unknown (redirect should have fired)";
+        }
+
         if (!mapping.RedirectManualCompaction)
             return "'Redirect manual compaction' is not enabled on the mapping, so the model handles its own compaction";
 

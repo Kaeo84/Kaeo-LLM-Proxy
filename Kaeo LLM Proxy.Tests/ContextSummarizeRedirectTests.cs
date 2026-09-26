@@ -27,6 +27,12 @@ public class ContextSummarizeRedirectTests
     /// defaults to true because most tests here assert that a configured redirect fires; pass
     /// false to verify the mapping's own model handles the request instead.
     /// </para>
+    /// <para>
+    /// The main mapping opts OUT of <see cref="ModelMapping.CopilotCompatibleCompaction"/> so these
+    /// tests exercise the per-mapping redirect path. The Copilot-compatible global path is covered
+    /// separately in <c>CopilotCompactionTests</c>, since it defaults on and would otherwise mask
+    /// the per-mapping behavior these tests assert.
+    /// </para>
     /// </remarks>
     private static AppSettings CreateSettings(int? compactModelId = -1, bool redirectEnabled = true)
     {
@@ -47,6 +53,7 @@ public class ContextSummarizeRedirectTests
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = compactModelId == -1 ? compactMapping.Id : compactModelId,
             RedirectManualCompaction = redirectEnabled,
+            CopilotCompatibleCompaction = false,
         };
         mainMapping.EnsureId();
 

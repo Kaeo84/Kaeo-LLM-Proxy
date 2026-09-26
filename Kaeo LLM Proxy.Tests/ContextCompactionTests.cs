@@ -113,7 +113,10 @@ public class ContextCompactionTests
             ModelName = "main-upstream",
             UpstreamUrl = "http://localhost:8080",
             ContextSummarizeModelId = target.Id,
-            RedirectManualCompaction = redirectEnabled
+            RedirectManualCompaction = redirectEnabled,
+            // Opt out of the Copilot-compatible global path (which defaults on) so these tests
+            // exercise the per-mapping redirect gate exclusively.
+            CopilotCompatibleCompaction = false
         };
         main.EnsureId();
 

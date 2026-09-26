@@ -129,6 +129,7 @@ internal partial class MainForm : Form
         // group (port/address) requires an explicit save because it needs a proxy restart.
         _txtMaxLogs.Validated += (_, _) => SaveGeneralSettings();
         _txtCompactionFallback.Validated += (_, _) => SaveGeneralSettings();
+        _cmbCopilotCompactionModel.SelectedIndexChanged += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1722,6 +1723,7 @@ internal partial class MainForm : Form
         PopulateListenAddressOptions();
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _txtCompactionFallback.Text = _settings.CompactionFallbackContextTokens.ToString();
+        PopulateCopilotCompactionModels();
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
@@ -1803,6 +1805,50 @@ internal partial class MainForm : Form
         return target is null || target.Id == mapping.Id ? string.Empty : target.ProxyName;
     }
 
+    /// <summary>Placeholder shown in the Global Copilot Compaction Model dropdown for "no target".</summary>
+    private const string NoCopilotCompactionModelLabel = "(None)";
+
+    /// <summary>
+    /// Fills the Global Copilot Compaction Model dropdown with "(None)" plus every configured
+    /// mapping's proxy name, then selects the stored selection. Names are addressed by proxy name,
+    /// the same convention the mapping dialog uses for its compaction target.
+    /// </summary>
+    private void PopulateCopilotCompactionModels()
+    {
+        string? current = _settings.CopilotCompactionModelName;
+
+        _cmbCopilotCompactionModel.Items.Clear();
+        _cmbCopilotCompactionModel.Items.Add(NoCopilotCompactionModelLabel);
+        foreach (ModelMapping mapping in _settings.ModelMappings)
+        {
+            if (mapping.IsEnabled && !string.IsNullOrWhiteSpace(mapping.ProxyName))
+                _cmbCopilotCompactionModel.Items.Add(mapping.ProxyName);
+        }
+
+        // A stored name whose mapping no longer exists still appears so the selection is visible
+        // rather than silently collapsing to "(None)".
+        if (!string.IsNullOrWhiteSpace(current) && !_cmbCopilotCompactionModel.Items.Contains(current))
+            _cmbCopilotCompactionModel.Items.Add(current);
+
+        string target = string.IsNullOrWhiteSpace(current) ? NoCopilotCompactionModelLabel : current;
+        int idx = _cmbCopilotCompactionModel.FindStringExact(target);
+        _cmbCopilotCompactionModel.SelectedIndex = idx >= 0 ? idx : 0;
+    }
+
+    /// <summary>
+    /// The Global Copilot Compaction Model dropdown value as a proxy name, or null when "(None)".
+    /// </summary>
+    private string? CopilotCompactionModelName
+    {
+        get
+        {
+            string? value = _cmbCopilotCompactionModel.SelectedItem?.ToString();
+            return string.Equals(value, NoCopilotCompactionModelLabel, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
+        }
+    }
+
     /// <summary>
     /// Saves the Listener group (port/address). These settings need an explicit save because a
     /// proxy restart is required for them to take effect; everything else on the Settings tab
@@ -1847,6 +1893,7 @@ internal partial class MainForm : Form
 
         _settings.MaxLogEntries = maxLogs;
         _settings.CompactionFallbackContextTokens = compactionFallback;
+        _settings.CopilotCompactionModelName = CopilotCompactionModelName;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
@@ -2015,6 +2062,10 @@ internal partial class MainForm : Form
         // name, which would silently disable their redirect. Re-point those references at the
         // renamed model, which the still-stable ID identifies.
         _settings.RefreshCompactionTargetNames();
+
+        // The global Copilot compaction dropdown is populated from the committed names, so a rename,
+        // add, remove, or enable change has to rebuild it or it would offer a stale name.
+        PopulateCopilotCompactionModels();
         return true;
     }
 

@@ -173,6 +173,137 @@ public class AppDatabaseMigrationTests
         Assert.Equal(enabled, app.UseIrTranslation);
     }
 
+    // ── runtime_settings: copilot_compaction_model_name ───────────────────
+    //
+    // The global Copilot compaction target is likewise appended last, so it too must be proven not
+    // to shift the neighbours it was appended past, and to survive a save/reload.
+
+    [Fact]
+    public void ExistingDatabaseGainsTheCopilotCompactionModelNameColumn()
+    {
+        string path = NewDatabasePath();
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand create = connection.CreateCommand();
+            create.CommandText =
+                """
+                CREATE TABLE runtime_settings (
+                    id TEXT PRIMARY KEY,
+                    auto_start_proxy INTEGER NOT NULL,
+                    start_with_dashboard_open INTEGER NOT NULL,
+                    allow_multiple_instances INTEGER NOT NULL,
+                    show_close_to_tray_notification INTEGER NOT NULL,
+                    collect_request_details INTEGER NOT NULL,
+                    collect_response_details INTEGER NOT NULL,
+                    debug_mode INTEGER NOT NULL DEFAULT 0,
+                    enable_sse_keep_alive INTEGER NOT NULL,
+                    sse_keep_alive_interval_seconds INTEGER NOT NULL,
+                    enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
+                    enable_api_explorer INTEGER NOT NULL DEFAULT 0,
+                    run_as_administrator INTEGER NOT NULL DEFAULT 0,
+                    collect_all_traffic INTEGER NOT NULL DEFAULT 0,
+                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
+                    collect_non_proxied_categories TEXT NULL,
+                    enable_ir_translation INTEGER NOT NULL DEFAULT 0
+                );
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        Assert.DoesNotContain("copilot_compaction_model_name", ReadColumnNames(path, "runtime_settings"));
+
+        using (AppDatabase database = OpenDatabase(path))
+        {
+            List<string> columns = ReadColumnNames(path, "runtime_settings");
+
+            Assert.Contains("copilot_compaction_model_name", columns);
+            Assert.Contains("enable_ir_translation", columns);
+        }
+    }
+
+    [Fact]
+    public void CopilotCompactionModelNameDefaultsToNullForADatabaseThatPredatesTheColumn()
+    {
+        string path = NewDatabasePath();
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand create = connection.CreateCommand();
+            create.CommandText =
+                """
+                CREATE TABLE runtime_settings (
+                    id TEXT PRIMARY KEY,
+                    auto_start_proxy INTEGER NOT NULL,
+                    start_with_dashboard_open INTEGER NOT NULL,
+                    allow_multiple_instances INTEGER NOT NULL,
+                    show_close_to_tray_notification INTEGER NOT NULL,
+                    collect_request_details INTEGER NOT NULL,
+                    collect_response_details INTEGER NOT NULL,
+                    debug_mode INTEGER NOT NULL DEFAULT 0,
+                    enable_sse_keep_alive INTEGER NOT NULL,
+                    sse_keep_alive_interval_seconds INTEGER NOT NULL,
+                    enable_performance_sampling INTEGER NOT NULL DEFAULT 1,
+                    enable_api_explorer INTEGER NOT NULL DEFAULT 0,
+                    run_as_administrator INTEGER NOT NULL DEFAULT 0,
+                    collect_all_traffic INTEGER NOT NULL DEFAULT 0,
+                    heartbeat_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                    compaction_fallback_context_tokens INTEGER NOT NULL DEFAULT 8192,
+                    collect_non_proxied_categories TEXT NULL,
+                    enable_ir_translation INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO runtime_settings (
+                    id, auto_start_proxy, start_with_dashboard_open, allow_multiple_instances,
+                    show_close_to_tray_notification, collect_request_details, collect_response_details,
+                    debug_mode, enable_sse_keep_alive, sse_keep_alive_interval_seconds,
+                    enable_performance_sampling, enable_api_explorer, run_as_administrator,
+                    collect_all_traffic, heartbeat_interval_seconds, compaction_fallback_context_tokens,
+                    collect_non_proxied_categories, enable_ir_translation)
+                VALUES (
+                    'current', 1, 0, 0, 1, 1, 0, 1, 1, 45, 1, 0, 1, 0, 333, 4096, NULL, 0);
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        RuntimeSettings loaded = database.LoadRuntimeSettings();
+
+        // No global target: a detected Copilot compaction is left with the model the client asked for.
+        Assert.Null(loaded.CopilotCompactionModelName);
+
+        // The neighbours must still read correctly, which is what catches an ordinal shift.
+        Assert.Equal(4096, loaded.CompactionFallbackContextTokens);
+        Assert.False(loaded.EnableIrTranslation);
+    }
+
+    [Fact]
+    public void CopilotCompactionModelNameSurvivesASaveAndReload()
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            RuntimeSettings settings = new()
+            {
+                CompactionFallbackContextTokens = 4096,
+                CopilotCompactionModelName = "global-compact",
+            };
+            setup.SaveRuntimeSettings(settings);
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        RuntimeSettings reloaded = database.LoadRuntimeSettings();
+
+        Assert.Equal("global-compact", reloaded.CopilotCompactionModelName);
+
+        AppSettings app = new();
+        app.ApplyRuntimeSettings(reloaded);
+        Assert.Equal("global-compact", app.CopilotCompactionModelName);
+    }
+
     private static List<string> ReadColumnNames(string path, string table)
     {
         using SqliteConnection connection = new($"Data Source={path}");
