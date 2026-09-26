@@ -1110,14 +1110,20 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
-    /// Creates the application schema and verifies it, on every startup.
+    /// Creates the application schema on every startup, reconciling existing tables with it.
     /// </summary>
     /// <remarks>
-    /// This is the sole schema authority: a single baseline DDL that creates the complete current
-    /// schema. Every statement is <c>IF NOT EXISTS</c>, so opening an existing database is a no-op
-    /// and its data is preserved. There are deliberately no incremental migrations — the schema was
-    /// rebaselined, and a file written before that rebaseline is reported by
-    /// <see cref="VerifyBaselineSchema"/> instead of being patched.
+    /// This is the sole schema authority: one baseline DDL that describes the complete current
+    /// schema. There are deliberately no dated migration scripts — the schema was rebaselined, and
+    /// <see cref="ReconcileExistingTables"/> brings a table that predates a column up to the
+    /// baseline instead.
+    /// <para>
+    /// Reconciliation is required, not optional. <c>CREATE TABLE IF NOT EXISTS</c> never revisits a
+    /// table that already exists, so without it a database written by an earlier build keeps its
+    /// older columns and the readers fail much later with "no such column" from whichever query
+    /// runs first — the reported symptom was a crash in <see cref="LoadRuntimeSettings"/>. Adding
+    /// the missing columns is additive and preserves every existing row.
+    /// </para>
     /// </remarks>
     private void InitializeDatabase()
     {
@@ -1373,7 +1379,266 @@ internal sealed class AppDatabase : IDisposable
                 """;
             command.ExecuteNonQuery();
 
-                        VerifyBaselineSchema(connection);
+                        ReconcileExistingTables(connection);
+                    }
+                }
+
+                /// <summary>
+                /// Adds any baseline column that is missing from a table that already exists.
+                /// </summary>
+                /// <remarks>
+                /// <c>CREATE TABLE IF NOT EXISTS</c> cannot add a column to a table that exists, so a database
+                /// written by an earlier build would keep a short column set and the readers that name those
+                /// columns would throw "no such column" at runtime. This closes that gap without dated
+                /// migration scripts: the baseline column list below is the single declaration of what each
+                /// table must contain, and anything absent is added.
+                /// <para>
+                /// Everything here is additive and preserves existing rows. It is idempotent — a table already
+                /// at the baseline is untouched — and it never drops or renames a column, so a database cannot
+                /// lose data by being opened. A failure on one column is logged and skipped rather than thrown,
+                /// matching the rest of the startup path under a concurrent instance.
+                /// </para>
+                /// </remarks>
+                private static void ReconcileExistingTables(SqliteConnection connection)
+                {
+                    // Every column the baseline DDL declares, with the exact declaration used when adding it to an
+                            // existing table. Kept beside the DDL above so the two are read together, and deliberately
+                            // complete rather than a list of only the columns some past build happened to add: a column
+                            // that has always existed in the baseline is just as absent from a table created before it
+                            // was introduced, and omitting it here would reproduce the very bug this method fixes.
+                            //
+                            // A NOT NULL column with no default in the DDL is given one here, because SQLite refuses to
+                            // add a NOT NULL column without a default to a table that already has rows. The default is
+                            // the zero value for the type, so existing rows read as "unset" rather than crashing.
+                            //
+                            // Primary keys are omitted: a table missing its own primary key is a different shape of
+                            // problem that ALTER TABLE cannot express.
+                            (string Table, string Column, string Declaration)[] columns =
+                            [
+                                // ── requests ──────────────────────────────────────────────────
+                                ("requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("requests", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("requests", "ollama_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("requests", "upstream_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("requests", "model", "TEXT NOT NULL DEFAULT ''"),
+                                ("requests", "original_model", "TEXT NULL"),
+                                ("requests", "streaming", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "status", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "error_message", "TEXT NULL"),
+                                ("requests", "status_code", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "duration_ms", "REAL NOT NULL DEFAULT 0"),
+                                ("requests", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "tokens_per_second", "REAL NOT NULL DEFAULT 0"),
+                                ("requests", "exception_id", "INTEGER NULL"),
+                                ("requests", "request_body", "TEXT NULL"),
+                                ("requests", "upstream_request_body", "TEXT NULL"),
+                                ("requests", "response_body", "TEXT NULL"),
+                                ("requests", "request_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "draft_n", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "draft_n_accepted", "INTEGER NOT NULL DEFAULT 0"),
+                                ("requests", "debug_summary", "TEXT NULL"),
+                                ("requests", "upstream_response_body", "TEXT NULL"),
+                                ("requests", "stop_reason", "TEXT NULL"),
+                                ("requests", "client_address", "TEXT NULL"),
+                                ("requests", "user_agent", "TEXT NULL"),
+                                ("requests", "request_headers", "TEXT NULL"),
+                                ("requests", "response_headers", "TEXT NULL"),
+
+                                // ── mcp_requests: the same log schema ─────────────────────────
+                                ("mcp_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("mcp_requests", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("mcp_requests", "ollama_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("mcp_requests", "upstream_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("mcp_requests", "model", "TEXT NOT NULL DEFAULT ''"),
+                                ("mcp_requests", "original_model", "TEXT NULL"),
+                                ("mcp_requests", "streaming", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "status", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "error_message", "TEXT NULL"),
+                                ("mcp_requests", "status_code", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "duration_ms", "REAL NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "tokens_per_second", "REAL NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "exception_id", "INTEGER NULL"),
+                                ("mcp_requests", "request_body", "TEXT NULL"),
+                                ("mcp_requests", "upstream_request_body", "TEXT NULL"),
+                                ("mcp_requests", "response_body", "TEXT NULL"),
+                                ("mcp_requests", "request_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "draft_n", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "draft_n_accepted", "INTEGER NOT NULL DEFAULT 0"),
+                                ("mcp_requests", "debug_summary", "TEXT NULL"),
+                                ("mcp_requests", "upstream_response_body", "TEXT NULL"),
+                                ("mcp_requests", "stop_reason", "TEXT NULL"),
+                                ("mcp_requests", "client_address", "TEXT NULL"),
+                                ("mcp_requests", "user_agent", "TEXT NULL"),
+                                ("mcp_requests", "request_headers", "TEXT NULL"),
+                                ("mcp_requests", "response_headers", "TEXT NULL"),
+
+                                // ── non_proxied_requests ──────────────────────────────────────
+                                ("non_proxied_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("non_proxied_requests", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("non_proxied_requests", "ollama_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("non_proxied_requests", "upstream_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("non_proxied_requests", "model", "TEXT NOT NULL DEFAULT ''"),
+                                ("non_proxied_requests", "original_model", "TEXT NULL"),
+                                ("non_proxied_requests", "streaming", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "status", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "error_message", "TEXT NULL"),
+                                ("non_proxied_requests", "status_code", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "duration_ms", "REAL NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "tokens_per_second", "REAL NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "exception_id", "INTEGER NULL"),
+                                ("non_proxied_requests", "request_body", "TEXT NULL"),
+                                ("non_proxied_requests", "upstream_request_body", "TEXT NULL"),
+                                ("non_proxied_requests", "response_body", "TEXT NULL"),
+                                ("non_proxied_requests", "request_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "draft_n", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "draft_n_accepted", "INTEGER NOT NULL DEFAULT 0"),
+                                ("non_proxied_requests", "debug_summary", "TEXT NULL"),
+                                ("non_proxied_requests", "upstream_response_body", "TEXT NULL"),
+                                ("non_proxied_requests", "stop_reason", "TEXT NULL"),
+                                ("non_proxied_requests", "client_address", "TEXT NULL"),
+                                ("non_proxied_requests", "user_agent", "TEXT NULL"),
+                                ("non_proxied_requests", "request_headers", "TEXT NULL"),
+                                ("non_proxied_requests", "response_headers", "TEXT NULL"),
+
+                                // ── model_mappings ────────────────────────────────────────────
+                                ("model_mappings", "id", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "hidden", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "model_name", "TEXT NOT NULL DEFAULT ''"),
+                                ("model_mappings", "enable_thinking_compatibility", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "capabilities", "TEXT NULL"),
+                                ("model_mappings", "enable_sse_keep_alive", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "upstream_type", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "upstream_url", "TEXT NOT NULL DEFAULT ''"),
+                                ("model_mappings", "upstream_timeout_seconds", "INTEGER NOT NULL DEFAULT 300"),
+                                ("model_mappings", "repeat_penalty", "REAL NOT NULL DEFAULT 1"),
+                                ("model_mappings", "temperature", "REAL NOT NULL DEFAULT 0.7"),
+                                ("model_mappings", "instruction_set_name", "TEXT NULL"),
+                                ("model_mappings", "redact_request_bodies", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "redact_response_bodies", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "redact_sensitive_json_fields", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "credential_name", "TEXT NULL"),
+                                ("model_mappings", "thinking_mode", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "context_window_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "temperature_priority", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "repeat_penalty_priority", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "reasoning_effort_priority", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "reasoning_effort", "TEXT NULL"),
+                                ("model_mappings", "reasoning_effort_values", "TEXT NULL"),
+                                ("model_mappings", "reasoning_effort_format", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "proactive_overflow_percent", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "proactive_overflow_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "context_summarize_model_name", "TEXT NULL"),
+                                ("model_mappings", "context_summarize_model_id", "INTEGER NULL"),
+                                ("model_mappings", "auto_compact_paths", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "redirect_manual_compaction", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "enable_heartbeats", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "enable_copilot_compatibility", "INTEGER NOT NULL DEFAULT 1"),
+
+                                // ── runtime_settings ──────────────────────────────────────────
+                                ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "start_with_dashboard_open", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "allow_multiple_instances", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "show_close_to_tray_notification", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "collect_request_details", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "collect_response_details", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "debug_mode", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "enable_sse_keep_alive", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "sse_keep_alive_interval_seconds", "INTEGER NOT NULL DEFAULT 60"),
+                                ("runtime_settings", "enable_performance_sampling", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "enable_api_explorer", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "run_as_administrator", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "collect_all_traffic", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "heartbeat_interval_seconds", "INTEGER NOT NULL DEFAULT 300"),
+                                ("runtime_settings", "compaction_fallback_context_tokens", "INTEGER NOT NULL DEFAULT 8192"),
+                                ("runtime_settings", "collect_non_proxied_categories", "TEXT NULL"),
+                                ("runtime_settings", "enable_ir_translation", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "copilot_compaction_model_name", "TEXT NULL"),
+                                ("runtime_settings", "enable_copilot_compaction_routing", "INTEGER NOT NULL DEFAULT 1"),
+
+                                // ── credentials ───────────────────────────────────────────────
+                                ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),
+                                ("credentials", "description", "TEXT NULL"),
+                                ("credentials", "username", "TEXT NULL"),
+                                ("credentials", "private_key", "TEXT NULL"),
+                                ("credentials", "certificate", "TEXT NULL"),
+
+                                // ── sse_keep_alive ────────────────────────────────────────────
+                                ("sse_keep_alive", "count", "INTEGER NOT NULL DEFAULT 0"),
+                                ("sse_keep_alive", "last_sent_utc", "TEXT NOT NULL DEFAULT ''"),
+
+                                // ── instruction_sets / system_logs ────────────────────────────
+                                ("instruction_sets", "instructions", "TEXT NOT NULL DEFAULT ''"),
+                                ("instruction_sets", "description", "TEXT NULL"),
+
+                                ("system_logs", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("system_logs", "level", "TEXT NOT NULL DEFAULT ''"),
+                                ("system_logs", "message", "TEXT NOT NULL DEFAULT ''"),
+                                ("system_logs", "exception", "TEXT NULL"),
+                                ("system_logs", "source_context", "TEXT NULL"),
+
+                                // ── exceptions ────────────────────────────────────────────────
+                                ("exceptions", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("exceptions", "exception_type", "TEXT NOT NULL DEFAULT ''"),
+                                ("exceptions", "message", "TEXT NOT NULL DEFAULT ''"),
+                                ("exceptions", "stack_trace", "TEXT NULL"),
+                                ("exceptions", "inner_exceptions_json", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("exceptions", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("exceptions", "path", "TEXT NOT NULL DEFAULT ''"),
+                                ("exceptions", "model", "TEXT NOT NULL DEFAULT ''"),
+
+                                // ── module_registry / mcp_server_settings ─────────────────────
+                                ("module_registry", "assembly_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("module_registry", "module_id", "TEXT NULL"),
+                                ("module_registry", "name", "TEXT NULL"),
+                                ("module_registry", "version", "TEXT NULL"),
+                                ("module_registry", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                                ("module_registry", "registered_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("module_registry", "last_error", "TEXT NULL"),
+
+                                ("mcp_server_settings", "value", "TEXT NOT NULL DEFAULT ''"),
+                            ];
+
+                    foreach ((string table, string column, string declaration) in columns)
+                    {
+                        if (!TableExists(connection, table) || ColumnExists(connection, table, column))
+                            continue;
+
+                        try
+                        {
+                            using SqliteCommand command = connection.CreateCommand();
+                            command.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {declaration};";
+                            command.ExecuteNonQuery();
+
+                            Log.Information("Reconciled {Table} with the schema baseline: added {Column}.", table, column);
+                        }
+                        catch (SqliteException ex)
+                        {
+                            // A concurrent instance may hold the file. Skipping leaves the table as it was, which
+                            // is no worse than not running at all, and the next start retries.
+                            Log.Warning(ex, "Could not add {Column} to {Table}; continuing with the existing schema.", column, table);
+                        }
+                        catch (IOException ex)
+                        {
+                            Log.Warning(ex, "Skipped adding {Column} to {Table}: the database file is in use.", column, table);
+                        }
                     }
                 }
 
@@ -1442,56 +1707,13 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    /// <summary>
-        /// Detects a database written before the schema rebaseline and reports it clearly.
-        /// </summary>
-        /// <remarks>
-        /// This is a detector, not a migration: it never alters the schema and never throws. Because the
-        /// baseline DDL is entirely <c>IF NOT EXISTS</c>, opening a file from an older build leaves its
-        /// older tables untouched, and the failure would otherwise surface much later as a confusing
-        /// "no such column" from whichever query happened to run first. Logging it here names the real
-        /// problem at the point it is discovered.
-        /// <para>
-        /// The probe columns are ones introduced by the rebaseline itself, so their absence is
-        /// unambiguous evidence of a pre-rebaseline file rather than a transient schema quirk.
-        /// </para>
-        /// </remarks>
-        private void VerifyBaselineSchema(SqliteConnection connection)
+    private static bool TableExists(SqliteConnection connection, string tableName)
         {
-            List<string> missing = [];
-
-            if (!TableExists(connection, "runtime_settings"))
-                missing.Add("runtime_settings (table)");
-
-            foreach ((string Table, string Column) probe in new[]
-            {
-                ("runtime_settings", "enable_copilot_compaction_routing"),
-                ("model_mappings", "hidden"),
-            })
-            {
-                if (TableExists(connection, probe.Table) && !ColumnExists(connection, probe.Table, probe.Column))
-                    missing.Add($"{probe.Table}.{probe.Column}");
-            }
-
-            if (missing.Count == 0)
-                return;
-
-            Log.Error(
-                "The application database at {Path} predates the schema rebaseline and is missing {Missing}. "
-                + "Schema migrations are no longer applied, so this file cannot be upgraded in place. "
-                + "Delete or rename the database file to let a fresh one be created; model mappings, "
-                + "credentials, and instruction sets will need to be re-entered.",
-                _configuredDbPath,
-                string.Join(", ", missing));
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = $name;";
+            command.Parameters.AddWithValue("$name", tableName);
+            return command.ExecuteScalar() is not null;
         }
-
-        private static bool TableExists(SqliteConnection connection, string tableName)
-    {
-        using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = $name;";
-        command.Parameters.AddWithValue("$name", tableName);
-        return command.ExecuteScalar() is not null;
-    }
 
     private static bool ColumnExists(SqliteConnection connection, string tableName, string columnName)
     {

@@ -257,39 +257,86 @@ public class AppDatabaseSchemaTests
         Assert.Equal("persisted", reloaded.ProxyName);
     }
 
-    // ── A pre-rebaseline database is reported, not patched ────────────────
+    // ── A table that predates a column is brought up to the baseline ──────
 
-    [Fact]
-    public void APreRebaselineDatabaseIsLeftAloneRatherThanMigrated()
-    {
-        // With migrations gone, opening an older file must not attempt to repair it: every baseline
-        // statement is IF NOT EXISTS, so the old table survives untouched and VerifyBaselineSchema
-        // is what reports the problem. This pins that no column is silently added.
-        string path = NewDatabasePath();
-
-        using (SqliteConnection connection = new($"Data Source={path}"))
+        [Fact]
+        public void ATableMissingBaselineColumnsGainsThemOnOpen()
         {
-            connection.Open();
-            using SqliteCommand create = connection.CreateCommand();
-            create.CommandText =
-                """
-                CREATE TABLE model_mappings (
-                    id INTEGER NOT NULL DEFAULT 0,
-                    proxy_name TEXT PRIMARY KEY,
-                    is_enabled INTEGER NOT NULL,
-                    model_name TEXT NOT NULL
-                );
-                """;
-            create.ExecuteNonQuery();
+            // The reported crash: a database whose runtime_settings ended before
+            // copilot_compaction_model_name made LoadRuntimeSettings throw "no such column", because
+            // CREATE TABLE IF NOT EXISTS never revisits an existing table. Reconciliation must add the
+            // missing columns rather than leaving the file unusable.
+            string path = NewDatabasePath();
+
+            using (SqliteConnection connection = new($"Data Source={path}"))
+            {
+                connection.Open();
+                using SqliteCommand create = connection.CreateCommand();
+                create.CommandText =
+                    """
+                    CREATE TABLE runtime_settings (
+                        id TEXT PRIMARY KEY,
+                        auto_start_proxy INTEGER NOT NULL,
+                        enable_ir_translation INTEGER NOT NULL DEFAULT 0
+                    );
+                    INSERT INTO runtime_settings (id, auto_start_proxy, enable_ir_translation) VALUES ('current', 1, 1);
+                    """;
+                create.ExecuteNonQuery();
+            }
+
+            using AppDatabase database = OpenDatabase(path);
+
+            List<string> columns = ReadColumnNames(path, "runtime_settings");
+            Assert.Contains("enable_copilot_compaction_routing", columns);
+            Assert.Contains("copilot_compaction_model_name", columns);
+
+            // And the reader that used to throw now succeeds, preserving the value it did have.
+            RuntimeSettings loaded = database.LoadRuntimeSettings();
+            Assert.True(loaded.EnableIrTranslation);
         }
 
-        using AppDatabase database = OpenDatabase(path);
+        [Fact]
+        public void ReconciliationAddsOnlyMissingColumnsAndPreservesRows()
+        {
+            string path = NewDatabasePath();
 
-        List<string> columns = ReadColumnNames(path, "model_mappings");
+            using (SqliteConnection connection = new($"Data Source={path}"))
+            {
+                connection.Open();
+                using SqliteCommand create = connection.CreateCommand();
+                create.CommandText =
+                    """
+                    CREATE TABLE model_mappings (
+                        id INTEGER NOT NULL DEFAULT 0,
+                        proxy_name TEXT PRIMARY KEY,
+                        is_enabled INTEGER NOT NULL,
+                        model_name TEXT NOT NULL
+                    );
+                    INSERT INTO model_mappings (id, proxy_name, is_enabled, model_name) VALUES (7, 'keepme', 1, 'kept-upstream');
+                    """;
+                create.ExecuteNonQuery();
+            }
 
-        // Still the old shape: no repair happened.
-        Assert.Contains("proxy_name", columns);
-        Assert.DoesNotContain("hidden", columns);
-        Assert.DoesNotContain("context_window_tokens", columns);
-    }
-}
+            using AppDatabase database = OpenDatabase(path);
+
+            ModelMapping reloaded = Assert.Single(database.LoadModelMappings());
+            Assert.Equal("keepme", reloaded.ProxyName);
+            Assert.Equal("kept-upstream", reloaded.ModelName);
+            Assert.Equal(7, reloaded.Id);
+        }
+
+        [Fact]
+        public void ReconciliationIsIdempotentAcrossReopens()
+        {
+            string path = NewDatabasePath();
+
+            // Open twice so the second pass sees a table already at the baseline.
+            using (AppDatabase first = OpenDatabase(path))
+                Assert.NotEmpty(ReadColumnNames(path, "runtime_settings"));
+
+            using AppDatabase second = OpenDatabase(path);
+                    RuntimeSettings loaded = second.LoadRuntimeSettings();
+
+                    Assert.True(loaded.EnableCopilotCompactionRouting);
+                }
+            }
