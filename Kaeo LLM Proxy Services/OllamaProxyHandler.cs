@@ -908,15 +908,13 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// threshold was configured for the mapping.
     /// </summary>
     /// <remarks>
-    /// The rescue is gated by the compaction TARGET's opt-in rather than the overflowing mapping's,
-    /// because the target is the model doing the summarizing. A mapping that declined proactive
-    /// compaction still gets a rescue, provided it has a usable compaction model that has agreed to
-    /// be used for this path.
+    /// The rescue needs only a usable compaction target — either a selected global Copilot compaction
+    /// model or the overflowed mapping's own configured target. Nothing else gates it: the request has
+    /// just been rejected for exceeding a window, so summarizing with the chosen target is exactly the
+    /// outcome the target exists for. Requiring the target's <see cref="ModelMapping.AutoCompactPaths"/>
+    /// as well was a redundant second opt-in that turned a recoverable overflow into a raw upstream
+    /// error.
     /// </remarks>
-    /// <param name="requestPath">
-    /// The path the request arrived on, used to consult
-    /// <see cref="ModelMapping.IsAutoCompactActiveFor"/> on the compaction target.
-    /// </param>
     /// <param name="reportedContextWindow">
     /// The context window the upstream said it actually loaded, when it reported one. Preferred over
     /// the mapping's declared window for the post-compaction fit check, because a declaration can be
@@ -925,7 +923,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     private async Task<string?> TryReactiveCompactionAsync(
         string body,
         string model,
-        AutoCompactPaths requestPath,
         HttpListenerResponse resp,
         bool streamAlreadyOpen,
         CancellationToken ct,
@@ -934,18 +931,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ModelMapping? mapping = _settings.FindModelMapping(model);
         if (mapping is null)
             return null;
-
-        // The reactive path deliberately does NOT require AutoCompactPaths for the mapping the
-        // overflow was reported against. That setting opts into *proactive* compaction — summarizing
-        // before the request is sent — and a mapping can reasonably decline proactive work while
-        // still wanting its configured compaction model used to rescue a rejection. Requiring it
-        // here meant a mapping with a compaction model configured but proactive compaction disabled
-        // got no rescue at all: the proxy forwarded an oversized body, the upstream rejected it, and
-        // nothing summarized despite a compaction model being selected.
-        //
-        // What still gates the rescue is that a usable compaction target exists and that the TARGET
-        // has opted in to being used for this path (checked below), so the proxy never summarizes
-        // with a model whose operator has not agreed to it.
 
         try
         {
@@ -966,16 +951,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 return null;
             }
 
-            // The target is the model that will do the summarizing, so it is its own opt-in that
-            // matters — the same rule the proactive, redirected and manual-compaction paths use.
-            if (!compactMapping.IsAutoCompactActiveFor(requestPath))
-            {
-                Log.Warning(
-                    "Reactive auto-compaction for model {Model} skipped: compaction model {Target} has not enabled "
-                    + "auto-compaction for this path (AutoCompactPaths={Paths}), so the proxy will not summarize with it",
-                    model, compactMapping.ProxyName, compactMapping.AutoCompactPaths);
-                return null;
-            }
+            // No further gate. A resolved compaction target is already a deliberate choice — either a
+            // selected global Copilot compaction model or a mapping's configured target — and the
+            // request has just been rejected for exceeding the window, so summarizing is exactly what
+            // the target exists for. Requiring AutoCompactPaths here too was a redundant second opt-in
+            // that turned a recoverable overflow into a raw upstream error.
 
             if (streamAlreadyOpen)
             {
@@ -1886,13 +1866,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
                     string beforeBounding = rewritten;
                                         rewritten = await BoundRedirectedCompactBodyAsync(
-                                            redirectTarget,
-                                            rewritten,
-                                            originalModel,
-                                            AutoCompactPaths.OpenAI,
-                                            CompactionFormat.Proxy,
-                                            redirectedOutputStream,
-                                            ct);
+                                                                redirectTarget,
+                                                                rewritten,
+                                                                originalModel,
+                                                                CompactionFormat.Proxy,
+                                                                redirectedOutputStream,
+                                                                ct);
 
                                         contextCompacted = !ReferenceEquals(rewritten, beforeBounding);
                                     }
@@ -2048,7 +2027,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 try
                 {
                     reactive = await TryReactiveCompactionAsync(
-                        passthroughBody, originalModel, AutoCompactPaths.OpenAI, resp, state.HeadersCommitted, ct, reportedWindow);
+                        passthroughBody, originalModel, resp, state.HeadersCommitted, ct, reportedWindow);
                     if (reactive is not null)
                     {
                         contextCompacted = true;
@@ -4692,21 +4671,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
-    /// Ensures a manual compaction body will actually fit in the target model's context before it is
-    /// forwarded. The manual <c>/compact</c> endpoints relay the body verbatim, so — unlike the
-    /// proactive and reactive paths — nothing has measured it against the target's window, and an
-    /// oversized conversation aimed at a small compaction target (an embeddings model, for example)
-    /// fails upstream with an error the client cannot act on.
+    /// Bounds a manual compaction body to the target model's context window before it is forwarded,
+    /// using the chunked map-reduce summarizer. The manual <c>/compact</c> endpoints relay the body
+    /// verbatim, so — unlike the proactive and reactive paths — nothing else has measured it against
+    /// the target's window, and an oversized conversation aimed at a smaller compaction target fails
+    /// upstream with an error the client cannot act on.
     /// </summary>
     /// <remarks>
-    /// Map-reduce summarization runs only when the <b>target</b> mapping has automatic compaction
-    /// enabled for the OpenAI path; the proxy never compacts behind a mapping's back. Redirection
-    /// itself is decided earlier by <see cref="ResolveManualCompactTarget"/>, so by the time this
-    /// runs the target is already the model that will do the summarizing.
-    /// <para>
-    /// The rejection happens before any SSE headers are committed, so it can still be delivered as a
-    /// real 413 status rather than a frame buried in an open stream.
-    /// </para>
+    /// There is no additional opt-in beyond the redirection already decided by
+    /// <see cref="ResolveManualCompactTarget"/>: reaching this method means the operator either
+    /// selected a global Copilot compaction model or enabled "Redirect manual compaction" with a
+    /// chosen target, so the target is a deliberate choice. When the body fits, it is returned
+    /// unchanged so nothing is rewritten unnecessarily; a failure to reduce it is reported as a 413
+    /// with the reason rather than forwarding a body the upstream is known to reject.
     /// </remarks>
     /// <param name="targetMapping">The mapping whose upstream will receive the compaction request.</param>
     /// <param name="bodyText">The upstream-bound compaction body.</param>
@@ -4735,39 +4712,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         int budget = AutoCompactionService.GetSummaryPromptBudget(compactionWindow);
         if (estimated <= budget)
             return bodyText;
-
-        if (!targetMapping.IsAutoCompactActiveFor(AutoCompactPaths.OpenAI))
-        {
-            string message =
-                $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens but that model's "
-                + $"compaction budget is {budget} tokens (context window {compactionWindow}, less the room "
-                + "reserved for the summary reply). "
-                + "Enable Auto-Compact Paths for this model so the proxy can summarize the conversation in "
-                + "chunks, or select a Compaction Model with a larger context window on the model that owns "
-                + "the conversation.";
-
-            Log.Warning(
-                "Manual compaction rejected for model {Model}: ~{Estimated} tokens exceeds the {Budget} token budget "
-                + "for a {Window} token context window, and automatic compaction is not enabled for this path.",
-                targetMapping.ProxyName, estimated, budget, compactionWindow);
-
-            log.StatusCode = 413;
-            log.Status = RequestStatus.Error;
-            log.ErrorMessage = message;
-
-            resp.StatusCode = 413;
-            await WriteJsonAsync(resp, new
-            {
-                error = new
-                {
-                    message,
-                    type = "context_length_exceeded",
-                    param = "model",
-                    code = "compaction_context_too_large",
-                },
-            }, ct);
-            return null;
-        }
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
         string compactModelName = string.IsNullOrWhiteSpace(targetMapping.ModelName)
@@ -4821,16 +4765,16 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
-    /// Bounds a signature-redirected Copilot <c>/compact</c> body to the compaction target's own
-    /// context window before it is forwarded, using the same chunked map-reduce summarizer the rest
-    /// of the pipeline uses.
+    /// Bounds a redirected Copilot <c>/compact</c> body to the compaction target's own context window
+    /// before it is forwarded, using the same chunked map-reduce summarizer the rest of the pipeline
+    /// uses.
     /// </summary>
     /// <remarks>
     /// A redirected request is a request for a summary whose body is the oversized conversation, and
-    /// the target cannot summarize a conversation larger than its own window. Previously the
-    /// redirect suppressed every compaction gate on the theory that compacting a compaction request
-    /// would summarize a summary; the result was that an oversized body reached the target verbatim
-    /// and the upstream rejected it with a raw <c>exceed_context_size_error</c>.
+    /// the target cannot summarize a conversation larger than its own window. Previously the redirect
+    /// suppressed every compaction gate on the theory that compacting a compaction request would
+    /// summarize a summary; the result was that an oversized body reached the target verbatim and the
+    /// upstream rejected it with a raw <c>exceed_context_size_error</c>.
     /// <para>
     /// This is deliberately not routed through <see cref="TryProactiveOverflowAsync"/>: that method
     /// resolves the mapping's <em>own</em> configured compaction target, and a redirected request has
@@ -4838,16 +4782,23 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// silently do nothing. Here the target is known, so the work is done directly against it.
     /// </para>
     /// <para>
-    /// Summarization runs only when the target has automatic compaction enabled for the path it will
-    /// serve; the proxy never compacts a mapping's requests behind its back. When the body already
-    /// fits, the original text is returned unchanged so nothing is rewritten unnecessarily.
+    /// There are no further conditions. A redirect only happens because the operator turned Copilot
+    /// compaction routing on and selected this target (or, for other clients, because the mapping
+    /// opted into manual redirect), so the target is already a deliberate choice. Requiring
+    /// <see cref="ModelMapping.AutoCompactPaths"/> on top of that was a redundant second opt-in that
+    /// silently did nothing but forward the oversized body — the exact failure the redirect exists to
+    /// prevent. <see cref="ModelMapping.AutoCompactPaths"/> still governs proactive compaction of a
+    /// mapping's own traffic; it is not consulted here.
+    /// </para>
+    /// <para>
+    /// When the body already fits, the original text is returned unchanged so nothing is rewritten
+    /// unnecessarily.
     /// </para>
     /// </remarks>
     /// <param name="targetMapping">The compaction target that will serve the redirected request.</param>
     /// <param name="bodyText">The upstream-bound request body.</param>
     /// <param name="originalModel">The model the client asked for, for logging.</param>
-    /// <param name="requestPath">The compaction paths gate to honor (OpenAI or Ollama).</param>
-    /// <param name="format">The compacted-body format matching that path.</param>
+    /// <param name="format">The compacted-body format matching the path being served.</param>
     /// <param name="outputStream">
     /// Optional SSE stream for compaction progress notifications; null on the Ollama path, whose
     /// output is NDJSON and carries no SSE comments.
@@ -4858,7 +4809,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ModelMapping targetMapping,
         string bodyText,
         string originalModel,
-        AutoCompactPaths requestPath,
         CompactionFormat format,
         Stream? outputStream,
         CancellationToken ct)
@@ -4869,16 +4819,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
         if (estimated <= budget)
             return bodyText;
-
-        if (!targetMapping.IsAutoCompactActiveFor(requestPath))
-        {
-            Log.Warning(
-                "Redirected compaction for {OriginalModel} needs ~{Estimated} tokens but compaction model "
-                + "{Target} has a {Budget} token budget and automatic compaction is not enabled for that path. "
-                + "Forwarding unchanged; the upstream will reject the request if the body exceeds its window.",
-                originalModel, estimated, targetMapping.ProxyName, budget);
-            return bodyText;
-        }
 
         var (baseUrl, timeout, apiKey) = ResolveUpstream(targetMapping.ProxyName);
         string compactModelName = string.IsNullOrWhiteSpace(targetMapping.ModelName)
@@ -5660,13 +5600,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // TryProactiveOverflowAsync below: that method resolves the mapping's *own* compaction
         // target, which a redirected request has already been redirected to, so it would look for
         // the target's own target and silently do nothing.
-        if (compactRedirected)
+        if (compactRedirected && mapping is not null)
         {
             upstreamBody = await BoundRedirectedCompactBodyAsync(
                 mapping,
                 upstreamBody,
                 ollamaReq.Model,
-                AutoCompactPaths.Ollama,
                 CompactionFormat.Ollama,
                 outputStream: null,
                 ct);
