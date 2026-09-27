@@ -52,14 +52,46 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     private readonly ModuleHost _moduleHost = moduleHost;
     private readonly McpServerService _mcpServer = mcpServer;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
-    private readonly AutoCompactionService _autoCompactionService = new(BuildHttpClient());
+    private readonly AutoCompactionService _autoCompactionService = CreateAutoCompactionService(settings);
 
-    /// <summary>Called from the Settings UI after the user saves new settings.</summary>
-    public void UpdateSettings(AppSettings settings)
-    {
-        _settings = settings;
-        HttpClient old = _httpClient;
-        _httpClient = BuildHttpClient();
+        /// <summary>
+        /// Builds the compaction service and applies the installation-wide compaction settings to it.
+        /// </summary>
+        /// <remarks>
+        /// A static factory rather than a field initializer that configures the service afterwards,
+        /// because this handler uses a primary constructor: there is no constructor body to run the
+        /// configuration in, and the service must never be reachable in an unconfigured state. Mirrors
+        /// the same call made from <see cref="UpdateSettings"/>, so a running proxy and a starting one
+        /// compact with the same instructions and ceiling.
+        /// </remarks>
+        private static AutoCompactionService CreateAutoCompactionService(AppSettings settings)
+        {
+            AutoCompactionService service = new(BuildHttpClient());
+            service.Configure(settings.ResolveCompactionInstructions(), settings.CompactionTargetTokens);
+            return service;
+        }
+
+        /// <summary>
+        /// Pushes the installation-wide compaction settings into <see cref="_autoCompactionService"/>.
+        /// </summary>
+        /// <remarks>
+        /// The service takes its instructions and advisory ceiling as parameters rather than reading
+        /// settings itself, so this is the one place that supplies them. Called from the constructor for
+        /// the initial configuration and again from <see cref="UpdateSettings"/> so a change on the
+        /// Settings tab takes effect without restarting the proxy.
+        /// </remarks>
+        private void ApplyCompactionSettings() =>
+            _autoCompactionService.Configure(
+                _settings.ResolveCompactionInstructions(),
+                _settings.CompactionTargetTokens);
+
+        /// <summary>Called from the Settings UI after the user saves new settings.</summary>
+        public void UpdateSettings(AppSettings settings)
+        {
+            _settings = settings;
+            ApplyCompactionSettings();
+            HttpClient old = _httpClient;
+            _httpClient = BuildHttpClient();
 
         // Dispose the superseded client only once no in-flight requests remain that could still
         // be using it. A fixed delay is unsafe because requests can run up to the per-mapping
@@ -831,7 +863,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 // every attempt; the advertised value stays authoritative for /v1/models.
                 int compactModelContext = compactMapping.GetCompactionContextWindow(
                     _settings.CompactionFallbackContextTokens);
-                int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(compactModelContext);
+                int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(
+                    compactModelContext,
+                    AutoCompactionService.EffectiveSummaryMaxTokensFor(_settings.CompactionTargetTokens));
                 int targetModelContextWindow = mapping.GetEffectiveContextWindow();
 
                 // Stream notification: compaction starting
@@ -969,7 +1003,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             string compactModelName = compactMapping.ModelName ?? model;
             int compactModelContext = compactMapping.GetCompactionContextWindow(
                 _settings.CompactionFallbackContextTokens);
-            int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(compactModelContext);
+            int maxTokensPerChunk = AutoCompactionService.GetSummaryPromptBudget(
+                    compactModelContext,
+                    AutoCompactionService.EffectiveSummaryMaxTokensFor(_settings.CompactionTargetTokens));
 
             // The oversized request is being compacted because its destination model rejected it. The
             // destination is `mapping` when no redirect fired, but under a /compact redirect the
@@ -4709,7 +4745,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
         // Same budget the map-reduce path chunks against, so a body measured as fitting here is a
         // body the summarizer can actually accept.
-        int budget = AutoCompactionService.GetSummaryPromptBudget(compactionWindow);
+        int budget = AutoCompactionService.GetSummaryPromptBudget(
+            compactionWindow,
+            AutoCompactionService.EffectiveSummaryMaxTokensFor(_settings.CompactionTargetTokens));
         if (estimated <= budget)
             return bodyText;
 
@@ -4814,7 +4852,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         CancellationToken ct)
     {
         int compactionWindow = targetMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
-        int budget = AutoCompactionService.GetSummaryPromptBudget(compactionWindow);
+        int budget = AutoCompactionService.GetSummaryPromptBudget(
+            compactionWindow,
+            AutoCompactionService.EffectiveSummaryMaxTokensFor(_settings.CompactionTargetTokens));
         int estimated = EstimateTokenCount(bodyText);
 
         if (estimated <= budget)

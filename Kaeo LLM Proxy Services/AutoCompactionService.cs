@@ -55,14 +55,15 @@ internal sealed class AutoCompactionService
     private const int MaxKeptSuffixTokens = 8000;
 
     /// <summary>
-    /// Maximum tokens to request from the summarizer model per chunk/sub-chunk. Subtracted from
-    /// the prompt budget so prompt + completion always fits within the compact model's window.
+    /// Default cap on tokens requested from the summarizer per chunk/sub-chunk, used when no advisory
+    /// ceiling is configured. Reserved out of the prompt budget so prompt + completion fits the
+    /// compact model's window.
     /// </summary>
-    internal const int SummaryMaxTokens = 1000;
+    internal const int DefaultSummaryMaxTokens = 1000;
 
     /// <summary>
     /// Maximum tokens requested from the reducer when merging summaries. Larger than
-    /// <see cref="SummaryMaxTokens"/> because the combine step has to carry forward the content of
+    /// <see cref="DefaultSummaryMaxTokens"/> because the combine step has to carry forward the content of
     /// several chunk summaries. Subtracted from the prompt budget for the same reason.
     /// </summary>
     internal const int CombineMaxTokens = 1500;
@@ -87,25 +88,45 @@ internal sealed class AutoCompactionService
     /// </remarks>
     /// <param name="contextWindowTokens">The compact model's context window.</param>
     /// <param name="reserveForReply">
-    /// Tokens held back for the model's own output: <see cref="SummaryMaxTokens"/> when
+    /// Tokens held back for the model's own output: <see cref="EffectiveSummaryMaxTokens"/> when
     /// summarizing a chunk, <see cref="CombineMaxTokens"/> when merging summaries.
     /// </param>
     internal static int GetSummaryPromptBudget(
         int contextWindowTokens,
-        int reserveForReply = SummaryMaxTokens) =>
+        int reserveForReply = DefaultSummaryMaxTokens) =>
         Math.Max(MinSummaryPromptTokens,
             (int)(contextWindowTokens * ContextWindowFraction) - reserveForReply);
 
     /// <summary>
-    /// Shared system prompt for chunk/sub-chunk summarization. Directs the model to keep tool
-    /// activity explicit so compacted requests still record which tools succeeded.
+    /// Output cap that a summarization call will actually request for a given advisory ceiling, and
+    /// therefore the amount that must be reserved out of its prompt budget.
     /// </summary>
-    private const string SummarizerInstructions =
-        "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. " +
-        "Focus on facts and outcomes rather than pleasantries. " +
-        "If the transcript includes a <toolcalls> section, those are tool invocations and their results. You MUST end your summary with a " +
-        "'## Tool activity' section listing each tool called, whether it succeeded or failed, and any important outputs " +
-        "(file paths, command results, errors, and decisions made from them). Never omit tool activity.";
+    /// <remarks>
+    /// Static and shared so the chunking gate and the summarization request cannot disagree about how
+    /// much room the reply needs. When they disagreed the gate under-reserved and a chunk that fitted
+    /// the gate was still over the model's limit before any summary was produced.
+    /// </remarks>
+    /// <param name="targetTokens">Advisory summary ceiling; 0 or less means no ceiling.</param>
+    internal static int EffectiveSummaryMaxTokensFor(int targetTokens) =>
+        targetTokens > 0 ? Math.Max(DefaultSummaryMaxTokens, targetTokens) : DefaultSummaryMaxTokens;
+
+    /// <summary>
+    /// Built-in summarizer prompt, used when no instruction set is selected on the Settings tab.
+    /// Shared with the seeded <c>Compaction</c> instruction set so a fresh install and an install
+    /// with no selection summarize identically.
+    /// </summary>
+    internal const string SummarizerInstructions = SeedData.CompactionSummarizerInstructions;
+
+    /// <summary>
+    /// System prompt for the reduce step that merges chunk summaries into one.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not replaceable by the Settings-tab instruction set: merging and summarizing are
+    /// different instructions, and substituting one for the other would lose the tool-activity
+    /// consolidation this prompt exists to perform.
+    /// </remarks>
+    private const string ReducerInstructions =
+        "You are a conversation summarizer. Combine multiple conversation chunk summaries into a single coherent summary. Preserve all important information, decisions, and context. Remove duplicates and organize chronologically. If the summaries contain '## Tool activity' sections, merge them into a single final '## Tool activity' section that keeps every distinct tool invocation and its outcome.";
 
     /// <summary>
     /// Tracks compaction attempts per conversation key (model + first user message hash).
@@ -115,17 +136,81 @@ internal sealed class AutoCompactionService
 
     private readonly HttpClient _httpClient;
 
-    internal sealed record CompactionState
-    {
-        public int Attempts;
-        public DateTime LastAttemptUtc;
-        public bool CircuitOpen;
-    }
+        /// <summary>
+        /// Summarizer prompt in force, from the global instruction set or the built-in default. Settable
+        /// rather than fixed so the Settings tab can change it without restarting the proxy.
+        /// </summary>
+        private string _summarizerInstructions = SummarizerInstructions;
 
-    public AutoCompactionService(HttpClient httpClient)
-    {
-        _httpClient = httpClient;
-    }
+        /// <summary>
+        /// Advisory ceiling for the summary, in tokens; 0 means no ceiling. Raises the generation cap so
+        /// the ceiling is achievable, which in turn shrinks the prompt budget.
+        /// </summary>
+        private int _targetTokens;
+
+        internal sealed record CompactionState
+        {
+            public int Attempts;
+            public DateTime LastAttemptUtc;
+            public bool CircuitOpen;
+        }
+
+        public AutoCompactionService(HttpClient httpClient)
+        {
+            _httpClient = httpClient;
+        }
+
+        /// <summary>
+        /// Applies the global compaction settings: the instruction set that drives summarization and the
+        /// advisory token ceiling for the summary.
+        /// </summary>
+        /// <remarks>
+        /// Pushed in rather than read from <see cref="AppSettings"/> directly, because this service is
+        /// stateless with respect to configuration today — it takes an <see cref="HttpClient"/> and
+        /// nothing else. Keeping it that way means the settings it compacts with are always the ones the
+        /// handler last observed, rather than a mutable object it might read at a different moment.
+        /// </remarks>
+        /// <param name="summarizerInstructions">
+        /// Instruction text for the summarizer, or null/blank to use the built-in default.
+        /// </param>
+        /// <param name="targetTokens">Advisory summary ceiling in tokens; 0 or less means no ceiling.</param>
+        internal void Configure(string? summarizerInstructions, int targetTokens)
+        {
+            _summarizerInstructions = string.IsNullOrWhiteSpace(summarizerInstructions)
+                ? SummarizerInstructions
+                : summarizerInstructions;
+
+            _targetTokens = Math.Max(0, targetTokens);
+        }
+
+        /// <summary>
+            /// Output cap for a summarization call, and the amount reserved out of its prompt budget.
+            /// </summary>
+            /// <remarks>
+            /// The ceiling has to raise the cap, not merely be stated in the prompt: a request asking for an
+            /// 8000-token summary while <c>max_tokens</c> is 1000 is unachievable, and the model stops mid
+            /// thought rather than obeying. Reserving the raised cap out of the prompt is the honest
+            /// consequence — a longer summary leaves less room for the conversation.
+            /// </remarks>
+            private int EffectiveSummaryMaxTokens => EffectiveSummaryMaxTokensFor(_targetTokens);
+
+        /// <summary>
+        /// Summarizer prompt with the ceiling appended, so the model is told the size it is targeting
+        /// rather than only being capped by <c>max_tokens</c>.
+        /// </summary>
+        private string EffectiveSummarizerInstructions =>
+            _targetTokens > 0
+                ? $"{_summarizerInstructions}\n\nKeep the summary under approximately {_targetTokens:N0} tokens."
+                : _summarizerInstructions;
+
+        /// <summary>
+        /// Reducer prompt with the same ceiling appended. The reducer keeps its own wording, but the
+        /// desired output size applies to the final summary either way.
+        /// </summary>
+        private string EffectiveReducerInstructions =>
+            _targetTokens > 0
+                ? $"{ReducerInstructions}\n\nKeep the combined summary under approximately {_targetTokens:N0} tokens."
+                : ReducerInstructions;
 
     /// <summary>
     /// Determines whether auto-compaction should be attempted for this request.
@@ -619,7 +704,7 @@ internal sealed class AutoCompactionService
         CancellationToken ct)
     {
         // Reserve space for the summary output so prompt + completion fits within the window
-        int maxTokensPerRequest = GetSummaryPromptBudget(compactModelContextWindow);
+        int maxTokensPerRequest = GetSummaryPromptBudget(compactModelContextWindow, EffectiveSummaryMaxTokens);
         // Derive per-message cap from the budget instead of using a hardcoded value
         int maxTokensPerMessage = Math.Max(1000, maxTokensPerRequest / 2);
 
@@ -675,23 +760,23 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                content = SummarizerInstructions
-            },
-            new
-            {
-                role = "user",
-                content = "Please summarize this conversation chunk:"
-            }
-        };
+                        content = EffectiveSummarizerInstructions
+                    },
+                    new
+                    {
+                        role = "user",
+                        content = "Please summarize this conversation chunk:"
+                    }
+                };
 
-        // Add the chunk messages (tool calls flattened into a <toolcalls> section).
-        messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
+                // Add the chunk messages (tool calls flattened into a <toolcalls> section).
+                messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
 
         var request = new
         {
             model,
             messages,
-            max_tokens = SummaryMaxTokens,
+            max_tokens = EffectiveSummaryMaxTokens,
             temperature = 0.3
         };
 
@@ -762,25 +847,25 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                content = SummarizerInstructions
-            },
-            new
-            {
-                role = "user",
-                content = "Please summarize this conversation chunk:"
-            }
-        };
+                        content = EffectiveSummarizerInstructions
+                    },
+                    new
+                    {
+                        role = "user",
+                        content = "Please summarize this conversation chunk:"
+                    }
+                };
 
-        // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
-        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
+                // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
+                        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
 
-        var request = new
-        {
-            model,
-            messages,
-            max_tokens = SummaryMaxTokens,
-            temperature = 0.3
-        };
+                        var request = new
+                        {
+                            model,
+                            messages,
+                            max_tokens = EffectiveSummaryMaxTokens,
+                            temperature = 0.3
+                        };
 
         string requestBody = JsonSerializer.Serialize(request);
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
@@ -1009,7 +1094,7 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                content = "You are a conversation summarizer. Combine multiple conversation chunk summaries into a single coherent summary. Preserve all important information, decisions, and context. Remove duplicates and organize chronologically. If the summaries contain '## Tool activity' sections, merge them into a single final '## Tool activity' section that keeps every distinct tool invocation and its outcome."
+                content = EffectiveReducerInstructions
             },
             new
             {
@@ -1022,7 +1107,7 @@ internal sealed class AutoCompactionService
         {
             model,
             messages,
-            max_tokens = 1500,
+            max_tokens = Math.Max(CombineMaxTokens, _targetTokens > 0 ? _targetTokens : 0),
             temperature = 0.3
         };
 

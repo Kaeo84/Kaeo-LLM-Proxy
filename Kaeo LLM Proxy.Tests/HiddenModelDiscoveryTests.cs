@@ -145,7 +145,7 @@ public class HiddenModelDiscoveryTests
         int budget = AutoCompactionService.GetSummaryPromptBudget(8192);
 
         Assert.True(budget > 0);
-        Assert.True(budget + AutoCompactionService.SummaryMaxTokens <= 8192);
+        Assert.True(budget + AutoCompactionService.DefaultSummaryMaxTokens <= 8192);
     }
 
     [Fact]

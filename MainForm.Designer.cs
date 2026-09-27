@@ -187,6 +187,10 @@ partial class MainForm
         _lblCopilotCompactionModel = new Label();
         _cmbCopilotCompactionModel = new ComboBox();
         _chkCopilotCompactionRouting = new CheckBox();
+        _lblCompactionInstructionSet = new Label();
+        _cmbCompactionInstructionSet = new ComboBox();
+        _lblCompactionTarget = new Label();
+        _txtCompactionTarget = new TextBox();
         _lblMappings = new Label();
         _dgvMappings = new DataGridView();
         _colMappingEnabled = new DataGridViewTextBoxColumn();
@@ -1159,7 +1163,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 22;
+        _tlpSettings.RowCount = 24;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1202,10 +1206,14 @@ partial class MainForm
         _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
         _tlpSettings.Controls.Add(_grpLogging, 0, 19);
-        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 20);
+        _tlpSettings.Controls.Add(_lblCompactionInstructionSet, 0, 20);
+        _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 20);
+        _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 21);
+        _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 21);
+        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 22);
         _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
-        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 21);
-        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 21);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 23);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 23);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1279,6 +1287,27 @@ partial class MainForm
         _lblCopilotCompactionModel.Margin = new Padding(4, 8, 8, 4);
         _lblCopilotCompactionModel.Name = "_lblCopilotCompactionModel";
         _lblCopilotCompactionModel.Text = "Global Copilot Compaction Model:";
+
+        _lblCompactionInstructionSet.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblCompactionInstructionSet.AutoSize = true;
+        _lblCompactionInstructionSet.Margin = new Padding(4, 8, 8, 4);
+        _lblCompactionInstructionSet.Name = "_lblCompactionInstructionSet";
+        _lblCompactionInstructionSet.Text = "Compaction Instructions:";
+
+        _cmbCompactionInstructionSet.Dock = DockStyle.Fill;
+        _cmbCompactionInstructionSet.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbCompactionInstructionSet.Margin = new Padding(4, 6, 4, 4);
+        _cmbCompactionInstructionSet.Name = "_cmbCompactionInstructionSet";
+
+        _lblCompactionTarget.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblCompactionTarget.AutoSize = true;
+        _lblCompactionTarget.Margin = new Padding(4, 8, 8, 4);
+        _lblCompactionTarget.Name = "_lblCompactionTarget";
+        _lblCompactionTarget.Text = "Compaction Size Target (tokens, 0 = no limit):";
+
+        _txtCompactionTarget.Dock = DockStyle.Fill;
+        _txtCompactionTarget.Margin = new Padding(4, 6, 4, 4);
+        _txtCompactionTarget.Name = "_txtCompactionTarget";
 
         _chkCopilotCompactionRouting.AutoSize = true;
         _chkCopilotCompactionRouting.Margin = new Padding(4, 8, 4, 4);
@@ -2674,6 +2703,10 @@ partial class MainForm
     private Label _lblCopilotCompactionModel;
     private ComboBox _cmbCopilotCompactionModel;
     private CheckBox _chkCopilotCompactionRouting;
+    private Label _lblCompactionInstructionSet;
+    private ComboBox _cmbCompactionInstructionSet;
+    private Label _lblCompactionTarget;
+    private TextBox _txtCompactionTarget;
     private Label _lblMappings;
     private DataGridView _dgvMappings;
     private DataGridViewTextBoxColumn _colMappingEnabled;

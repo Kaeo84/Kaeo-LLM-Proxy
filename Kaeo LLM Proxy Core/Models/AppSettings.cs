@@ -389,7 +389,42 @@ internal sealed class RuntimeSettings
     /// </remarks>
     public bool EnableCopilotCompactionRouting { get; set; } = true;
 
-    public bool EnablePerformanceSampling { get; set; } = true;
+        /// <summary>
+        /// Name of the instruction set that drives every compaction summarization, or null to use the
+        /// built-in summarizer prompt. One installation-wide choice, matching
+        /// <see cref="CopilotCompactionModelName"/>: the compaction model is global, so its instructions
+        /// are too. Resolved through <see cref="FindInstructionSet"/>; read the text through
+        /// <see cref="ResolveCompactionInstructions"/> rather than dereferencing this name.
+        /// </summary>
+        /// <remarks>
+        /// This replaces the summarizer prompt only. The reducer that merges chunk summaries keeps its
+        /// own prompt, because merging and summarizing are different instructions — substituting one for
+        /// the other would lose the tool-activity consolidation the reducer exists to perform.
+        /// </remarks>
+        public string? CompactionInstructionSetName { get; set; }
+
+        /// <summary>
+        /// Advisory ceiling, in tokens, for the summary the compaction model produces. 0 (default) means
+        /// no ceiling.
+        /// </summary>
+        /// <remarks>
+        /// Advisory rather than enforced: the figure is stated in the summarizer prompt and the model is
+        /// trusted to respect it. Nothing re-summarizes a result that lands over the line, and the merge
+        /// step is not size-bounded.
+        /// <para>
+        /// It does raise the generation cap. Summarization requests otherwise ask for a fixed small
+        /// number of output tokens, so a ceiling above that would be unachievable and would truncate the
+        /// summary mid-thought; the effective cap is therefore the larger of the two.
+        /// </para>
+        /// <para>
+        /// Because the cap is reserved out of the prompt budget, a large ceiling leaves less room for the
+        /// conversation and makes chunking more aggressive. That is intentional: room for a longer summary
+        /// has to come from somewhere.
+        /// </para>
+        /// </remarks>
+        public int CompactionTargetTokens { get; set; }
+
+        public bool EnablePerformanceSampling { get; set; } = true;
 
     /// <summary>
     /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
@@ -1091,6 +1126,32 @@ internal sealed class AppSettings
     public int CompactionFallbackContextTokens { get; set; } = DefaultCompactionFallbackContextTokens;
 
     /// <summary>
+    /// Name of the instruction set that drives every compaction summarization, or null to use the
+    /// built-in summarizer prompt. Installation-wide, like the compaction model it accompanies.
+    /// </summary>
+    [JsonIgnore]
+    public string? CompactionInstructionSetName { get; set; }
+
+    /// <summary>
+    /// Advisory ceiling, in tokens, for the summary the compaction model produces. Min: 0,
+    /// Max: 1048576. Default: 0 (no ceiling).
+    /// </summary>
+    /// <remarks>
+    /// Advisory: stated in the summarizer prompt and trusted, not enforced by re-summarizing or by
+    /// counting the result. It does raise the generation cap so the ceiling is achievable, and that
+    /// cap is reserved out of the prompt budget, so a large ceiling leaves less room for the
+    /// conversation.
+    /// </remarks>
+    [JsonIgnore]
+    public int CompactionTargetTokens { get; set; }
+
+    /// <summary>Lower bound accepted for <see cref="CompactionTargetTokens"/> (0 = no ceiling).</summary>
+    public const int MinCompactionTargetTokens = 0;
+
+    /// <summary>Upper bound accepted for <see cref="CompactionTargetTokens"/>.</summary>
+    public const int MaxCompactionTargetTokens = 1048576;
+
+    /// <summary>
     /// Proxy name of the single global model every Copilot-detected context summarization is routed
     /// to, or null when none is selected. Chosen once on the Settings tab rather than per mapping,
     /// because Copilot does not honor a per-model compaction choice: it dispatches a compaction turn
@@ -1261,6 +1322,8 @@ internal sealed class AppSettings
             HeartbeatIntervalSeconds, MinHeartbeatIntervalSeconds, MaxHeartbeatIntervalSeconds);
         CompactionFallbackContextTokens = Math.Clamp(
             CompactionFallbackContextTokens, MinCompactionFallbackContextTokens, MaxCompactionFallbackContextTokens);
+        CompactionTargetTokens = Math.Clamp(
+            CompactionTargetTokens, MinCompactionTargetTokens, MaxCompactionTargetTokens);
 
         // An all-whitespace selection means "no target", so store null rather than a blank name that
         // FindCopilotCompactionTarget would have to special-case at request time.
@@ -1268,6 +1331,13 @@ internal sealed class AppSettings
             CopilotCompactionModelName = null;
         else
             CopilotCompactionModelName = CopilotCompactionModelName.Trim();
+
+        // Same treatment for the instructions: a blank name means "use the built-in summarizer
+        // prompt", not an instruction set named " ".
+        if (string.IsNullOrWhiteSpace(CompactionInstructionSetName))
+            CompactionInstructionSetName = null;
+        else
+            CompactionInstructionSetName = CompactionInstructionSetName.Trim();
 
         foreach (ModelMapping mapping in ModelMappings)
         {
@@ -1307,6 +1377,8 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         CopilotCompactionModelName = CopilotCompactionModelName,
         EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
+        CompactionInstructionSetName = CompactionInstructionSetName,
+        CompactionTargetTokens = CompactionTargetTokens,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
     };
@@ -1331,6 +1403,8 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
+        CompactionInstructionSetName = runtimeSettings.CompactionInstructionSetName;
+        CompactionTargetTokens = runtimeSettings.CompactionTargetTokens;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
     }
@@ -1513,6 +1587,23 @@ internal sealed class AppSettings
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns the instruction text that should drive compaction summarization, or null to use the
+    /// built-in summarizer prompt.
+    /// </summary>
+    /// <remarks>
+    /// The single resolution point for <see cref="CompactionInstructionSetName"/>, so the text handed
+    /// to the compaction service and the text the Settings tab reports cannot disagree. A name that
+    /// no longer matches an instruction set — or one whose body is blank — resolves to null rather
+    /// than throwing, which leaves the built-in prompt in place so compaction keeps working after the
+    /// set is deleted.
+    /// </remarks>
+    public string? ResolveCompactionInstructions()
+    {
+        InstructionSet? instructionSet = FindInstructionSet(CompactionInstructionSetName);
+        return string.IsNullOrWhiteSpace(instructionSet?.Instructions) ? null : instructionSet!.Instructions;
     }
 
     /// <summary>

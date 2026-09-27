@@ -131,6 +131,8 @@ internal partial class MainForm : Form
         _txtCompactionFallback.Validated += (_, _) => SaveGeneralSettings();
         _cmbCopilotCompactionModel.SelectedIndexChanged += (_, _) => SaveGeneralSettings();
         _chkCopilotCompactionRouting.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _cmbCompactionInstructionSet.SelectedIndexChanged += (_, _) => SaveGeneralSettings();
+        _txtCompactionTarget.Validated += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1725,6 +1727,10 @@ internal partial class MainForm : Form
         _txtMaxLogs.Text = _settings.MaxLogEntries.ToString();
         _txtCompactionFallback.Text = _settings.CompactionFallbackContextTokens.ToString();
         PopulateCopilotCompactionModels();
+        PopulateCompactionInstructionSets();
+        _txtCompactionTarget.Text = _settings.CompactionTargetTokens > 0
+            ? _settings.CompactionTargetTokens.ToString()
+            : string.Empty;
         _chkCopilotCompactionRouting.Checked = _settings.EnableCopilotCompactionRouting;
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
@@ -1851,6 +1857,55 @@ internal partial class MainForm : Form
         }
     }
 
+    /// <summary>Placeholder shown in the Compaction Instructions dropdown for "use the built-in prompt".</summary>
+    private const string NoCompactionInstructionSetLabel = "(Built-in default)";
+
+    /// <summary>
+    /// Fills the Compaction Instructions dropdown with the built-in default plus every configured
+    /// instruction set, then selects the stored choice.
+    /// </summary>
+    /// <remarks>
+    /// The default option is deliberately labelled rather than blank: an empty dropdown would be
+    /// indistinguishable from "the feature is not wired up", and the built-in prompt is a real,
+    /// working choice, not an absence of one.
+    /// </remarks>
+    private void PopulateCompactionInstructionSets()
+    {
+        string? current = _settings.CompactionInstructionSetName;
+
+        _cmbCompactionInstructionSet.Items.Clear();
+        _cmbCompactionInstructionSet.Items.Add(NoCompactionInstructionSetLabel);
+        foreach (InstructionSet instructionSet in _settings.InstructionSets.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(instructionSet.Name))
+                _cmbCompactionInstructionSet.Items.Add(instructionSet.Name);
+        }
+
+        // A stored name whose set no longer exists still appears, so a deleted-then-renamed set is
+        // visible rather than silently collapsing to the built-in default.
+        if (!string.IsNullOrWhiteSpace(current) && !_cmbCompactionInstructionSet.Items.Contains(current))
+            _cmbCompactionInstructionSet.Items.Add(current);
+
+        string target = string.IsNullOrWhiteSpace(current) ? NoCompactionInstructionSetLabel : current;
+        int idx = _cmbCompactionInstructionSet.FindStringExact(target);
+        _cmbCompactionInstructionSet.SelectedIndex = idx >= 0 ? idx : 0;
+    }
+
+    /// <summary>
+    /// The Compaction Instructions dropdown value as an instruction-set name, or null when the
+    /// built-in default is selected.
+    /// </summary>
+    private string? CompactionInstructionSetName
+    {
+        get
+        {
+            string? value = _cmbCompactionInstructionSet.SelectedItem?.ToString();
+            return string.Equals(value, NoCompactionInstructionSetLabel, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : value;
+        }
+    }
+
     /// <summary>
     /// Saves the Listener group (port/address). These settings need an explicit save because a
     /// proxy restart is required for them to take effect; everything else on the Settings tab
@@ -1893,10 +1948,25 @@ internal partial class MainForm : Form
         if (!int.TryParse(_txtCompactionFallback.Text, out int compactionFallback) || compactionFallback < 1)
             return;
 
+        // 0 is meaningful here (no ceiling), so only a value outside the accepted range is rejected.
+        // An empty or non-numeric box means "leave it alone", not "zero it out".
+        int compactionTargetTokens = _settings.CompactionTargetTokens;
+        if (!string.IsNullOrWhiteSpace(_txtCompactionTarget.Text))
+        {
+            if (!int.TryParse(_txtCompactionTarget.Text, out compactionTargetTokens)
+                || compactionTargetTokens < AppSettings.MinCompactionTargetTokens
+                || compactionTargetTokens > AppSettings.MaxCompactionTargetTokens)
+            {
+                return;
+            }
+        }
+
         _settings.MaxLogEntries = maxLogs;
         _settings.CompactionFallbackContextTokens = compactionFallback;
         _settings.CopilotCompactionModelName = CopilotCompactionModelName;
         _settings.EnableCopilotCompactionRouting = _chkCopilotCompactionRouting.Checked;
+        _settings.CompactionInstructionSetName = CompactionInstructionSetName;
+        _settings.CompactionTargetTokens = compactionTargetTokens;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
@@ -2393,6 +2463,13 @@ internal partial class MainForm : Form
 
         _lstInstructions.EndUpdate();
         RefreshInstructionPreview();
+
+        // The compaction dropdown lists instruction sets, so adding, renaming, editing, or removing
+        // one can change it. Refreshing here keeps a stale entry from lingering until restart.
+        // Guarded because RefreshInstructionsList also runs while settings load, and repopulating the
+        // dropdown mid-load would overwrite the stored selection before it has been read.
+        if (!_loadingSettings)
+            PopulateCompactionInstructionSets();
     }
 
     private void RefreshInstructionPreview()

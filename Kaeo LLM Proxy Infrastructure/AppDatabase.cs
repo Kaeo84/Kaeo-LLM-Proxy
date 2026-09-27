@@ -50,8 +50,65 @@ internal sealed class AppDatabase : IDisposable
 
         InitializeDatabase();
         SeedDefaultsIfEmpty();
+        SeedCompactionInstructionSetIfMissing();
 
         Log.Debug("AppDatabase opened {Path}", _configuredDbPath);
+    }
+
+    /// <summary>
+    /// Ensures the seeded <c>Compaction</c> instruction set exists, so the Settings tab's compaction
+    /// instructions dropdown has a preselected, editable prompt on any install.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately separate from <see cref="SeedDefaultsIfEmpty"/>, which returns early once
+    /// <c>model_mappings</c> holds a row. Riding on that method would mean an existing database never
+    /// received this set, which is exactly the case that matters — a fresh database would have it and
+    /// an established one would show an empty dropdown.
+    /// <para>
+    /// Inserts only when the name is absent, so an edited or renamed set is never overwritten. The
+    /// existence check and the insert share one connection and are not a transaction because the
+    /// worst case is a duplicate-name insert failing a primary-key constraint, which is logged and
+    /// skipped.
+    /// </para>
+    /// </remarks>
+    private void SeedCompactionInstructionSetIfMissing()
+    {
+        try
+        {
+            using SqliteConnection connection = OpenConnection();
+
+            using (SqliteCommand existsCommand = connection.CreateCommand())
+            {
+                existsCommand.CommandText = "SELECT COUNT(*) FROM instruction_sets WHERE name = $name;";
+                existsCommand.Parameters.AddWithValue("$name", SeedData.CompactionInstructionSetName);
+
+                if (Convert.ToInt64(existsCommand.ExecuteScalar()) > 0)
+                    return;
+            }
+
+            InstructionSet instructionSet = SeedData.CreateCompactionInstructionSet();
+
+            using SqliteCommand insertCommand = connection.CreateCommand();
+            insertCommand.CommandText =
+                """
+                INSERT INTO instruction_sets (name, instructions, description)
+                VALUES ($name, $instructions, $description);
+                """;
+            insertCommand.Parameters.AddWithValue("$name", instructionSet.Name);
+            insertCommand.Parameters.AddWithValue("$instructions", instructionSet.Instructions);
+            insertCommand.Parameters.AddWithValue("$description", DbValue(instructionSet.Description));
+            insertCommand.ExecuteNonQuery();
+
+            Log.Information(
+                "Seeded the default compaction instruction set '{Name}' into {Path}",
+                instructionSet.Name, _configuredDbPath);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            // Optional seed data must never prevent startup, and a concurrent instance may hold the
+            // file. The dropdown simply shows no selection until the next successful start.
+            Log.Warning(ex, "Skipped seeding the default compaction instruction set for {Path}", _configuredDbPath);
+        }
     }
 
     /// <summary>
@@ -571,7 +628,9 @@ internal sealed class AppDatabase : IDisposable
                     collect_non_proxied_categories,
                     enable_ir_translation,
                     copilot_compaction_model_name,
-                    enable_copilot_compaction_routing
+                    enable_copilot_compaction_routing,
+                    compaction_instruction_set_name,
+                    compaction_target_tokens
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -606,6 +665,8 @@ internal sealed class AppDatabase : IDisposable
                 EnableIrTranslation = ReadBoolean(reader, 16),
                 CopilotCompactionModelName = reader.IsDBNull(17) ? null : reader.GetString(17),
                 EnableCopilotCompactionRouting = ReadBoolean(reader, 18),
+                CompactionInstructionSetName = reader.IsDBNull(19) ? null : reader.GetString(19),
+                CompactionTargetTokens = reader.GetInt32(20),
             };
         }
     }
@@ -640,7 +701,9 @@ internal sealed class AppDatabase : IDisposable
                     collect_non_proxied_categories,
                     enable_ir_translation,
                     copilot_compaction_model_name,
-                    enable_copilot_compaction_routing
+                    enable_copilot_compaction_routing,
+                    compaction_instruction_set_name,
+                    compaction_target_tokens
                 )
                 VALUES (
                     $id,
@@ -662,7 +725,9 @@ internal sealed class AppDatabase : IDisposable
                     $collectNonProxiedCategories,
                     $enableIrTranslation,
                     $copilotCompactionModelName,
-                    $enableCopilotCompactionRouting
+                    $enableCopilotCompactionRouting,
+                    $compactionInstructionSetName,
+                    $compactionTargetTokens
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -683,7 +748,9 @@ internal sealed class AppDatabase : IDisposable
                     collect_non_proxied_categories = excluded.collect_non_proxied_categories,
                     enable_ir_translation = excluded.enable_ir_translation,
                     copilot_compaction_model_name = excluded.copilot_compaction_model_name,
-                    enable_copilot_compaction_routing = excluded.enable_copilot_compaction_routing;
+                    enable_copilot_compaction_routing = excluded.enable_copilot_compaction_routing,
+                    compaction_instruction_set_name = excluded.compaction_instruction_set_name,
+                    compaction_target_tokens = excluded.compaction_target_tokens;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -710,6 +777,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enableIrTranslation", ToSqliteBoolean(settings.EnableIrTranslation));
             command.Parameters.AddWithValue("$copilotCompactionModelName", DbValue(settings.CopilotCompactionModelName));
             command.Parameters.AddWithValue("$enableCopilotCompactionRouting", ToSqliteBoolean(settings.EnableCopilotCompactionRouting));
+            command.Parameters.AddWithValue("$compactionInstructionSetName", DbValue(settings.CompactionInstructionSetName));
+            command.Parameters.AddWithValue("$compactionTargetTokens", settings.CompactionTargetTokens);
             command.ExecuteNonQuery();
         }
     }
@@ -1346,7 +1415,9 @@ internal sealed class AppDatabase : IDisposable
                     collect_non_proxied_categories TEXT NULL,
                     enable_ir_translation INTEGER NOT NULL DEFAULT 0,
                     copilot_compaction_model_name TEXT NULL,
-                    enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1
+                    enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1,
+                    compaction_instruction_set_name TEXT NULL,
+                    compaction_target_tokens INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1572,6 +1643,8 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "enable_ir_translation", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "copilot_compaction_model_name", "TEXT NULL"),
                                 ("runtime_settings", "enable_copilot_compaction_routing", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "compaction_instruction_set_name", "TEXT NULL"),
+                                ("runtime_settings", "compaction_target_tokens", "INTEGER NOT NULL DEFAULT 0"),
 
                                 // ── credentials ───────────────────────────────────────────────
                                 ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),

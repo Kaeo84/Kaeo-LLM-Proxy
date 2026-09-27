@@ -11,6 +11,30 @@ internal static class SeedData
     /// <summary>Name of the credential shared by the hosted Qwen Cloud mappings.</summary>
     internal const string QwenCloudCredentialName = "QwenCloud Token Plan";
 
+    /// <summary>
+    /// Name of the seeded instruction set that drives compaction summarization. Preselected in the
+    /// Settings tab so the operator has an editable prompt rather than an opaque built-in one.
+    /// </summary>
+    internal const string CompactionInstructionSetName = "Compaction";
+
+    /// <summary>
+    /// The canonical compaction summarizer prompt, and the proxy's built-in default when no
+    /// instruction set is selected.
+    /// </summary>
+    /// <remarks>
+    /// Lives here rather than in the compaction service because the seed data and the runtime
+    /// default must be the same text: a fresh install and an install with no selection would
+    /// otherwise summarize differently for no visible reason. The <c>## Tool activity</c>
+    /// requirement is load-bearing — compacted conversations must still record which tools ran and
+    /// what they returned, and dropping it silently loses that.
+    /// </remarks>
+    internal const string CompactionSummarizerInstructions =
+        "You are a conversation summarizer. Summarize the following conversation chunk concisely, preserving key information, decisions, and context. " +
+        "Focus on facts and outcomes rather than pleasantries. " +
+        "If the transcript includes a <toolcalls> section, those are tool invocations and their results. You MUST end your summary with a " +
+        "'## Tool activity' section listing each tool called, whether it succeeded or failed, and any important outputs " +
+        "(file paths, command results, errors, and decisions made from them). Never omit tool activity.";
+
     /// <summary>Qwen Cloud token-plan OpenAI-compatible base URL shared by the hosted mappings.</summary>
     private const string QwenCloudUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 
@@ -111,5 +135,27 @@ internal static class SeedData
         RedactRequestBodies = false,
         RedactResponseBodies = false,
         RedactSensitiveJsonFields = false,
+    };
+
+    /// <summary>
+    /// Creates the seeded compaction instruction set, carrying the same prompt the proxy uses as its
+    /// built-in summarizer default.
+    /// </summary>
+    /// <remarks>
+    /// Seeded as an editable instruction set rather than left implicit so the operator can see and
+    /// change what the compaction model is told. The text must match the built-in default, or a fresh
+    /// install and an install with no selection would summarize differently for no visible reason.
+    /// <para>
+    /// The <c>## Tool activity</c> requirement is load-bearing: compacted conversations must still
+    /// record which tools ran and what they returned, and dropping it silently loses that.
+    /// </para>
+    /// </remarks>
+    internal static InstructionSet CreateCompactionInstructionSet() => new()
+    {
+        Name = CompactionInstructionSetName,
+        Instructions = CompactionSummarizerInstructions,
+        Description =
+            "Summarizer prompt used for every context compaction. Seeded from the proxy's built-in "
+            + "default; edit to change how compacted conversations are summarized.",
     };
 }
