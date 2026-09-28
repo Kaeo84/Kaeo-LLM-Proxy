@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Kaeo.LlmProxy.Core.Models;
 
 internal enum RequestStatus
@@ -91,6 +93,24 @@ internal sealed class RequestLog
     /// collection for the full stack trace and inner exception chain.
     /// </summary>
     public int? ExceptionId { get; set; }
+
+    /// <summary>
+    /// Exception to persist alongside this entry, or null when the request succeeded or the failure
+    /// is already understood.
+    /// </summary>
+    /// <remarks>
+    /// Transient: carried on the entry so a failure detected deep inside a handler reaches the single
+    /// persistence point, which stores the detail and links <see cref="ExceptionId"/>. Not persisted
+    /// as a column and excluded from any serialization, since the detail itself lives in the
+    /// exceptions table.
+    /// <para>
+    /// Only for failures that would otherwise be undiagnosable. A failure the log already explains —
+    /// an upstream status and body recorded in <see cref="ErrorMessage"/> — does not need a stack
+    /// trace, and attaching one would bury the actionable part.
+    /// </para>
+    /// </remarks>
+    [JsonIgnore]
+    public Exception? Exception { get; set; }
 
     /// <summary>
     /// The request body received from the client, exactly as it was sent on the wire — no

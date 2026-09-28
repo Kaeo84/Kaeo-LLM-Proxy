@@ -1622,7 +1622,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 }
                 else
                 {
-                    _stats.AddLog(log);
+                    // Pass any exception attached by a handler, so its detail is stored and linked.
+                    // A post-header passthrough failure records one because the client can no longer
+                    // receive the cause; without this the entry would be a bare status with no
+                    // explanation anywhere.
+                    _stats.AddLog(log, log.Exception);
                 }
             }
         }
@@ -1661,10 +1665,22 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// status code while the headers are unwritten, or as a frame inside the already-open stream once
     /// they are not.
     /// </summary>
+    /// <remarks>
+    /// <see cref="LastUpstreamError"/> exists because once the headers are committed the failure can
+    /// only be reported as a frame, and the cause is then invisible to the client. Without it a late
+    /// upstream error arrived as a bare exception with the upstream's own explanation discarded, which
+    /// left the request log reporting a generic stream failure that could not be acted on.
+    /// </remarks>
     private sealed class PassthroughResponseState
     {
         /// <summary>True once <c>200 text/event-stream</c> has been flushed to the client.</summary>
         public bool HeadersCommitted { get; set; }
+
+        /// <summary>
+        /// The upstream's own error body and status, when the upstream answered with a failure.
+        /// Captured so a later stream failure can name the real cause rather than only the symptom.
+        /// </summary>
+        public string? LastUpstreamError { get; set; }
     }
 
     /// <summary>
@@ -1701,7 +1717,23 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // when the failure preceded any upstream response.
             log.Status = RequestStatus.Error;
             log.ErrorMessage = description;
-            Log.Warning(ex, "Passthrough failed after the SSE headers were committed; terminating the stream with an error frame");
+
+            // Attach the exception so the full stack trace is persisted and linked to this entry.
+            // The previous Log.Warning passed it to Serilog only, and that sink stores the message
+            // without the trace, so a post-header failure left no diagnosable record at all.
+            //
+            // The upstream's own error body is named in the message when it exists, because a bare
+            // "the response was interrupted" cannot be acted on and that body is the actionable part.
+            log.Exception = ex;
+            Log.Warning(
+                "Passthrough failed after the SSE headers were committed for {Method} {Path} (model {Model}, request {RequestId}); "
+                + "terminating the stream with an error frame. Cause: {Cause}. Upstream error: {UpstreamError}",
+                log.Method,
+                log.OllamaPath,
+                string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
+                log.RequestId,
+                description,
+                state.LastUpstreamError ?? "(none reported)");
 
             await WritePostCommitErrorFramesAsync(resp, description, 502, ct).ConfigureAwait(false);
             return;
@@ -1739,15 +1771,28 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
     /// <summary>
     /// Produces the client-facing description of a passthrough failure. Timeouts and upstream
-    /// unavailability are named explicitly because those are the two cases an operator can act on;
-    /// everything else falls back to the exception message.
+    /// unavailability are named explicitly because those are the two cases a client can act on;
+    /// everything else stays generic.
     /// </summary>
+    /// <remarks>
+    /// Deliberately does not echo <c>ex.Message</c>. An <see cref="HttpRequestException"/> carries the
+    /// upstream URI and often a hostname, and that text goes into an SSE error frame the client reads
+    /// — the same leak <see cref="DescribeUpstreamStreamError"/> exists to avoid. The full exception is
+    /// still recorded on the request log, where an operator can see it and a client cannot.
+    /// </remarks>
     private static string DescribePassthroughFailure(Exception ex) => ex switch
     {
         TaskCanceledException or TimeoutException => "Upstream request timed out.",
-        HttpRequestException httpEx => $"Upstream request failed: {httpEx.Message}",
-        _ => ex.Message,
+        HttpRequestException => "Upstream connection error: the upstream server closed the connection or became unreachable.",
+        IOException => "Upstream I/O error: the upstream connection was interrupted.",
+        _ => "Upstream error: the response was interrupted before it completed.",
     };
+
+    /// <summary>
+    /// Test seam for <see cref="DescribePassthroughFailure"/>, so the no-leak guarantee can be
+    /// asserted across the realistic exception shapes rather than inferred from reading the switch.
+    /// </summary>
+    internal static string DescribePassthroughFailureForTest(Exception ex) => DescribePassthroughFailure(ex);
 
     private async Task PassthroughCoreAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, PassthroughResponseState state, CancellationToken ct)
@@ -2134,6 +2179,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             string errorBody = consumedErrorBody ?? await upstreamResp.Content.ReadAsStringAsync(ct);
             log.Status = RequestStatus.Error;
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
+
+            // Record the upstream's own explanation on the state, so a failure that happens after the
+            // headers are committed can name it. Without this the later catch sees only a stream-level
+            // symptom and the actionable part — what the upstream actually said — is gone.
+            state.LastUpstreamError = $"HTTP {(int)upstreamResp.StatusCode}: {errorBody}";
             if (_settings.CollectResponseDetails && log.ResponseBody is null)
                 log.ResponseBody = errorBody;
             // Debug mode captures the raw upstream error body independently of the Collect
