@@ -48,6 +48,40 @@ internal static class SeedData
         "You MUST end your summary with a '## Tool activity' section listing each tool called, whether it succeeded or failed, " +
         "and any important outputs (file paths, command results, errors, and decisions made from them). Never omit tool activity.";
 
+    /// <summary>
+    /// Summarizer prompt used when the conversation being compacted is GitHub Copilot's own
+    /// session-summary request.
+    /// </summary>
+    /// <remarks>
+    /// Copilot's system prompt already demands a specific XML skeleton and is preserved verbatim into
+    /// the compacted body, sitting immediately before the summary text. That instruction therefore
+    /// outranks anything a generic prompt says, and a prompt asking for plain prose competes with it
+    /// rather than helping. The observed result was a response whose later sections were still the
+    /// template's own placeholder text, because nothing had told the model the skeleton mattered.
+    /// <para>
+    /// So this prompt does not restate a format of its own. It defers to the skeleton Copilot already
+    /// supplied and reinforces two things the template cannot say for itself: fill every section rather
+    /// than leaving a placeholder, and prefer completeness over brevity — the template is large and a
+    /// summary that stops early is unusable to the next session.
+    /// </para>
+    /// <para>
+    /// The <c>## Tool activity</c> requirement is intentionally absent here. Copilot's skeleton has no
+    /// section for it, and asking for a heading the template does not contain invites the model to
+    /// emit text outside the XML — which the client explicitly forbids.
+    /// </para>
+    /// </remarks>
+    internal const string CopilotCompactionSummarizerInstructions =
+        "You are summarizing a GitHub Copilot session so a fresh session can continue the work from a smaller context. " +
+        "The conversation's system message specifies the exact summary format required. Follow that format exactly: obey the section names, " +
+        "nesting, and order it gives. " +
+        "Fill in EVERY section of that format with real content drawn from the conversation that follows. " +
+        "Do not leave placeholder text, bracketed guidance, or an element empty — a section with nothing to report should say so briefly " +
+        "rather than repeating instructions, and a section that does not apply should be omitted instead of filled with a note. " +
+        "Prefer completeness over brevity: the required format is detailed, and a summary that stops part-way through it is unusable. " +
+        "Preserve decisions and their rationale, files and identifiers touched, commands run and their outcomes, errors and how they were " +
+        "resolved, and any stated requirements or constraints. Drop pleasantries and superseded detail. " +
+        "Output only the required format, with no commentary before or after it.";
+
     /// <summary>Qwen Cloud token-plan OpenAI-compatible base URL shared by the hosted mappings.</summary>
     private const string QwenCloudUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 

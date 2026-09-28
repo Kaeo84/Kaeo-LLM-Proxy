@@ -301,6 +301,30 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
+    /// Returns the Copilot context-summarize system prompt carried by message[0] of a request body,
+    /// or null when the body has no such message.
+    /// </summary>
+    /// <remarks>
+    /// Used to decide whether a compaction run is producing a summary for GitHub Copilot, which
+    /// demands a specific output format. The check runs on the body being compacted rather than on the
+    /// inbound request, because the two are not the same thing: a redirected request has already been
+    /// retargeted, and the reactive and manual paths reach compaction without an inbound signature test
+    /// at all.
+    /// </remarks>
+    internal static bool IsCopilotCompactionBody(string bodyText)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(bodyText);
+            return IsContextSummarizeRequest(GetFirstMessageContent(doc.RootElement));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Detects whether a request is a GitHub Copilot context-summarize (/compact) request by
     /// inspecting only the head of the first message. The Copilot /compact system prompt begins
     /// with a distinctive instruction to produce a session summary; matching a short prefix keeps
@@ -4989,7 +5013,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             compactionWindow,
             compactionWindow,
             ct,
-            format);
+            format,
+            isCopilotSummary: IsCopilotCompactionBody(bodyText));
 
         if (compacted is null)
         {

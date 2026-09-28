@@ -142,6 +142,16 @@ internal sealed class AutoCompactionService
         /// </summary>
         private string _summarizerInstructions = SummarizerInstructions;
 
+                /// <summary>
+                /// The instruction set text the operator configured, or null when none is configured.
+                /// </summary>
+                /// <remarks>
+                /// Distinct from <see cref="_summarizerInstructions"/>, which is never null because it falls back
+                /// to the built-in default. A Copilot run uses its own prompt only when this is null, so an
+                /// explicit instruction set is not silently replaced.
+                /// </remarks>
+                private string? _configuredInstructions;
+
         /// <summary>
         /// Advisory ceiling for the summary, in tokens; 0 means no ceiling. Raises the generation cap so
         /// the ceiling is achievable, which in turn shrinks the prompt budget.
@@ -176,9 +186,14 @@ internal sealed class AutoCompactionService
         /// <param name="targetTokens">Advisory summary ceiling in tokens; 0 or less means no ceiling.</param>
         internal void Configure(string? summarizerInstructions, int targetTokens)
         {
-            _summarizerInstructions = string.IsNullOrWhiteSpace(summarizerInstructions)
-                ? SummarizerInstructions
+            // Kept separate from _summarizerInstructions so a Copilot run can tell an operator's choice
+            // from the built-in default: the Copilot-specific prompt applies only when nothing was
+            // chosen, since an explicit instruction set is a deliberate instruction to override it.
+            _configuredInstructions = string.IsNullOrWhiteSpace(summarizerInstructions)
+                ? null
                 : summarizerInstructions;
+
+            _summarizerInstructions = _configuredInstructions ?? SummarizerInstructions;
 
             _targetTokens = Math.Max(0, targetTokens);
         }
@@ -257,6 +272,31 @@ internal sealed class AutoCompactionService
             _targetTokens > 0
                 ? $"{_summarizerInstructions}\n\nKeep the summary under approximately {_targetTokens:N0} tokens."
                 : _summarizerInstructions;
+
+        /// <summary>
+        /// The summarizer prompt to use for a run, given whether the conversation belongs to GitHub
+        /// Copilot's own session-summary request.
+        /// </summary>
+        /// <remarks>
+        /// The Copilot prompt is chosen per run rather than stored, because it describes the client and
+        /// not the installation: the same settings serve Copilot and every other client at once, so a
+        /// stored value would be whichever request configured it last.
+        /// <para>
+        /// A configured instruction set still wins for Copilot. An operator who has written their own
+        /// prompt for a Copilot-facing deployment has stated what they want, and silently overriding it
+        /// would be worse than the format mismatch this default exists to avoid.
+        /// </para>
+        /// </remarks>
+        /// <param name="isCopilotSummary">True when the conversation is Copilot's session summary.</param>
+        private string SummarizerInstructionsFor(bool isCopilotSummary)
+        {
+            bool operatorChose = !string.IsNullOrWhiteSpace(_configuredInstructions);
+
+            if (isCopilotSummary && !operatorChose)
+                return SeedData.CopilotCompactionSummarizerInstructions;
+
+            return EffectiveSummarizerInstructions;
+        }
 
         /// <summary>
         /// Reducer prompt with the same ceiling appended. The reducer keeps its own wording, but the
@@ -356,7 +396,8 @@ internal sealed class AutoCompactionService
         int targetModelContextWindow,
         int compactModelContextWindow,
         CancellationToken ct,
-        CompactionFormat format = CompactionFormat.Proxy)
+        CompactionFormat format = CompactionFormat.Proxy,
+        bool isCopilotSummary = false)
     {
         // Record the attempt.
         CompactionState state = _sessionStates.GetOrAdd(sessionKey, _ => new());
@@ -486,7 +527,7 @@ internal sealed class AutoCompactionService
                 Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} estimated tokens)",
                     chunkNumber, chunk.Count, estimatedChunkTokens);
 
-                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
+                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, isCopilotSummary, ct);
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
@@ -805,6 +846,7 @@ internal sealed class AutoCompactionService
         string? apiKey,
         int timeoutSeconds,
         int compactModelContextWindow,
+        bool isCopilotSummary,
         CancellationToken ct)
     {
         // Reserve space for the summary output so prompt + completion fits within the window
@@ -842,7 +884,7 @@ internal sealed class AutoCompactionService
                 }
 
                 var subChunk = chunkMessages.GetRange(subChunkStart, subChunkEnd - subChunkStart);
-                string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, ct);
+                string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, isCopilotSummary, ct);
                 if (subSummary is not null)
                 {
                     subChunkSummaries.Add(subSummary);
@@ -864,17 +906,17 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                        content = EffectiveSummarizerInstructions
-                    },
-                    new
-                    {
-                        role = "user",
-                        content = "Please summarize this conversation chunk:"
-                    }
-                };
+                content = SummarizerInstructionsFor(isCopilotSummary)
+            },
+            new
+            {
+                role = "user",
+                content = "Please summarize this conversation chunk:"
+            }
+        };
 
-                // Add the chunk messages (tool calls flattened into a <toolcalls> section).
-                messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
+        // Add the chunk messages (tool calls flattened into a <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
 
         var request = new
         {
@@ -944,6 +986,7 @@ internal sealed class AutoCompactionService
         string? apiKey,
         int timeoutSeconds,
         int maxTokensPerMessage,
+        bool isCopilotSummary,
         CancellationToken ct)
     {
         var messages = new List<object>
@@ -951,20 +994,20 @@ internal sealed class AutoCompactionService
             new
             {
                 role = "system",
-                        content = EffectiveSummarizerInstructions
-                    },
-                    new
-                    {
-                        role = "user",
-                        content = "Please summarize this conversation chunk:"
-                    }
-                };
+                content = SummarizerInstructionsFor(isCopilotSummary)
+            },
+            new
+            {
+                role = "user",
+                content = "Please summarize this conversation chunk:"
+            }
+        };
 
-                // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
-                        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
+        // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
 
-                        var request = new
-                        {
+        var request = new
+        {
                             model,
                             messages,
                             max_tokens = EffectiveSummaryMaxTokens,
