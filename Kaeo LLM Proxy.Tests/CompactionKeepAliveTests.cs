@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Services;
@@ -138,5 +139,43 @@ public class CompactionKeepAliveTests
 
         await pump.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(0, stream.WriteCount);
+    }
+
+    // ── A client disconnect is not an upstream error ──────────────────────
+
+    [Fact]
+    public void AClientDisconnectIsDescribedAsSuchRatherThanBlamingTheUpstream()
+    {
+        // HttpListenerException is the client closing the socket. It derives from Win32Exception, not
+        // IOException, so it previously fell through to the generic arm and every client disconnect was
+        // logged as an upstream error — which cost real diagnosis time on a reported failure.
+        string description = OllamaProxyHandler.DescribePassthroughFailureForTest(
+            new HttpListenerException(64, "An operation was attempted on a nonexistent network connection."));
+
+        Assert.Contains("client disconnected", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("upstream", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AClientDisconnectIsRecognisedSoItCanBeLoggedQuietly()
+    {
+        // Copilot abandons a turn around compaction routinely, so this must not warn.
+        Assert.True(OllamaProxyHandler.IsClientDisconnectForTest(
+            new HttpListenerException(64, "An operation was attempted on a nonexistent network connection.")));
+
+        // A genuine upstream failure must not be classified as a client disconnect, or real faults would
+        // be downgraded to Debug and lost.
+        Assert.False(OllamaProxyHandler.IsClientDisconnectForTest(
+            new HttpRequestException("Connection refused (127.0.0.1:8080)")));
+        Assert.False(OllamaProxyHandler.IsClientDisconnectForTest(new TimeoutException("slow")));
+    }
+
+    [Fact]
+    public void ATimeoutIsStillNamedForTheClient()
+    {
+        // The cases a client can act on must survive the tightening, or the leak fix would have traded
+        // one problem for another.
+        Assert.Contains("timed out", OllamaProxyHandler.DescribePassthroughFailureForTest(new TimeoutException("x9")));
+        Assert.Contains("timed out", OllamaProxyHandler.DescribePassthroughFailureForTest(new TaskCanceledException("x9")));
     }
 }

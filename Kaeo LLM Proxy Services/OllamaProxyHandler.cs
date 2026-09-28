@@ -1759,18 +1759,34 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // The upstream's own error body is named in the message when it exists, because a bare
             // "the response was interrupted" cannot be acted on and that body is the actionable part.
             log.Exception = ex;
-            Log.Warning(
-                "Passthrough failed after the SSE headers were committed for {Method} {Path} (model {Model}, request {RequestId}); "
-                + "terminating the stream with an error frame. Cause: {Cause}. Upstream error: {UpstreamError}",
-                log.Method,
-                log.OllamaPath,
-                string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
-                log.RequestId,
-                description,
-                state.LastUpstreamError ?? "(none reported)");
 
-            await WritePostCommitErrorFramesAsync(resp, description, 502, ct).ConfigureAwait(false);
-            return;
+                        // A client disconnect is normal operation, not a fault: Copilot abandons a turn around
+                        // compaction routinely. Logging it at Warning buried the failures that matter, and the
+                        // generic description previously blamed the upstream for it.
+                        if (IsClientDisconnect(ex))
+                        {
+                            Log.Debug(
+                                "Client disconnected during passthrough for {Method} {Path} (model {Model}, request {RequestId})",
+                                log.Method,
+                                log.OllamaPath,
+                                string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
+                                log.RequestId);
+                        }
+                        else
+                        {
+                            Log.Warning(
+                                "Passthrough failed after the SSE headers were committed for {Method} {Path} (model {Model}, request {RequestId}); "
+                                + "terminating the stream with an error frame. Cause: {Cause}. Upstream error: {UpstreamError}",
+                                log.Method,
+                                log.OllamaPath,
+                                string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
+                                log.RequestId,
+                                description,
+                                state.LastUpstreamError ?? "(none reported)");
+                        }
+
+                        await WritePostCommitErrorFramesAsync(resp, description, 502, ct).ConfigureAwait(false);
+                        return;
         }
     }
 
@@ -1813,20 +1829,48 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// upstream URI and often a hostname, and that text goes into an SSE error frame the client reads
     /// — the same leak <see cref="DescribeUpstreamStreamError"/> exists to avoid. The full exception is
     /// still recorded on the request log, where an operator can see it and a client cannot.
+    /// <para>
+    /// <see cref="HttpListenerException"/> is the client disconnecting, not an upstream fault. It was
+    /// previously unlisted — it derives from <see cref="System.ComponentModel.Win32Exception"/>, not
+    /// <see cref="IOException"/> — and fell through to the generic arm, so every client disconnect was
+    /// logged as an upstream error. That misattribution cost real diagnosis time.
+    /// </para>
     /// </remarks>
     private static string DescribePassthroughFailure(Exception ex) => ex switch
     {
         TaskCanceledException or TimeoutException => "Upstream request timed out.",
         HttpRequestException => "Upstream connection error: the upstream server closed the connection or became unreachable.",
+        HttpListenerException => "The client disconnected before the response completed.",
         IOException => "Upstream I/O error: the upstream connection was interrupted.",
         _ => "Upstream error: the response was interrupted before it completed.",
     };
+
+    /// <summary>
+    /// Returns whether the failure is the client going away rather than anything the proxy or the
+    /// upstream did wrong.
+    /// </summary>
+    /// <remarks>
+    /// Kept separate from the description so the log can record it at Debug instead of Warning. A
+    /// client that abandons a turn — which Copilot does routinely around compaction — is normal
+    /// operation, and warning on it buries the failures that matter.
+    /// </remarks>
+    private static bool IsClientDisconnect(Exception ex) =>
+        ex is HttpListenerException
+            // A cancelled write to the response stream is also the client leaving; the cancellation
+            // token is the listener's, not the caller's, so it lands here rather than as a cancellation.
+            || (ex is IOException io && io.InnerException is System.Net.Sockets.SocketException);
 
     /// <summary>
     /// Test seam for <see cref="DescribePassthroughFailure"/>, so the no-leak guarantee can be
     /// asserted across the realistic exception shapes rather than inferred from reading the switch.
     /// </summary>
     internal static string DescribePassthroughFailureForTest(Exception ex) => DescribePassthroughFailure(ex);
+
+        /// <summary>
+        /// Test seam for <see cref="IsClientDisconnect"/>, so the classification that decides whether a
+        /// failure is logged at Debug or Warning can be asserted directly.
+        /// </summary>
+        internal static bool IsClientDisconnectForTest(Exception ex) => IsClientDisconnect(ex);
 
     private async Task PassthroughCoreAsync(
         HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, PassthroughResponseState state, CancellationToken ct)
@@ -1972,56 +2016,26 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 if (alreadyRedirectedForCompaction
                     && _settings.FindModelMapping(originalModel) is { } redirectTarget)
                 {
-                    // Compaction of a large conversation runs for minutes: the observed case was 2m27s
-                    // of chunked summarization on a 918k-token transcript. Once the SSE headers are
-                    // committed the client is holding an open stream, and anything with a read timeout
-                    // gives up during that silence — Copilot cancelled with a TaskCanceledException
-                    // from its own summarizer before the proxy had finished.
+                    // No SSE headers are committed and no keep-alive pump runs on this path.
                     //
-                    // The other long-silence paths (the pre-response wait and the reactive retry)
-                    // already pump keep-alives for exactly this reason; the redirected path committed
-                    // its headers and then wrote nothing until the work was done.
+                    // An earlier fix (65920a5) removed exactly this — a comment frame written before
+                    // the compaction work — because committing the response headers before there is a
+                    // response is wrong. Re-adding it as a keep-alive pump reproduced the failure: the
+                    // stream opens, the client begins parsing SSE, and it receives comment frames only
+                    // while a summary it is awaiting takes minutes to compute. Copilot then gives up
+                    // or reports that there was nothing to compact.
                     //
-                    // Headers are committed only when a pump will follow. Committing and then staying
-                    // silent is worse than not committing: the status line is fixed at 200, so a later
-                    // failure can no longer be reported as a real code.
-                    using var redirectedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    Task redirectedKeepAliveTask = Task.CompletedTask;
-
-                    if (isStreamingRequest && ShouldEmitSseKeepAlive(originalModel))
-                    {
-                        await CommitSseHeadersAsync();
-
-                        redirectedKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
-                            resp.OutputStream,
-                            _settings.SseKeepAliveIntervalSeconds,
-                            redirectedCts.Token);
-                    }
-
-                    // No progress notifications are written to the stream here. They are plain text
-                    // rather than valid SSE frames, nothing consumes them, and writing them from two
-                    // sources alongside the pump would interleave and corrupt the stream. The pump's
-                    // comment frames are what keep the client alive.
+                    // The pump is right for the pre-response wait, where the stream is about to carry
+                    // the model's own tokens. It is wrong here, where the work produces a single
+                    // non-streamed summary and nothing is written until it exists.
                     string beforeBounding = rewritten;
-                    string bounded;
-                    try
-                    {
-                        bounded = await BoundRedirectedCompactBodyAsync(
-                            redirectTarget,
-                            rewritten,
-                            originalModel,
-                            CompactionFormat.Proxy,
-                            ct);
-                    }
-                    finally
-                    {
-                        // Stop pumping before anything else writes to the stream: two writers would
-                        // interleave frames and corrupt it.
-                        await redirectedCts.CancelAsync();
-                        await redirectedKeepAliveTask;
-                    }
+                    rewritten = await BoundRedirectedCompactBodyAsync(
+                        redirectTarget,
+                        rewritten,
+                        originalModel,
+                        CompactionFormat.Proxy,
+                        ct);
 
-                    rewritten = bounded;
                     contextCompacted = !ReferenceEquals(rewritten, beforeBounding);
                 }
                 else
