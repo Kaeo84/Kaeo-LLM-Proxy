@@ -1943,26 +1943,60 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 if (alreadyRedirectedForCompaction
                     && _settings.FindModelMapping(originalModel) is { } redirectTarget)
                 {
-                    Stream? redirectedOutputStream = null;
-                    if (isStreamingRequest)
+                    // Compaction of a large conversation runs for minutes: the observed case was 2m27s
+                    // of chunked summarization on a 918k-token transcript. Once the SSE headers are
+                    // committed the client is holding an open stream, and anything with a read timeout
+                    // gives up during that silence — Copilot cancelled with a TaskCanceledException
+                    // from its own summarizer before the proxy had finished.
+                    //
+                    // The other long-silence paths (the pre-response wait and the reactive retry)
+                    // already pump keep-alives for exactly this reason; the redirected path committed
+                    // its headers and then wrote nothing until the work was done.
+                    //
+                    // Headers are committed only when a pump will follow. Committing and then staying
+                    // silent is worse than not committing: the status line is fixed at 200, so a later
+                    // failure can no longer be reported as a real code.
+                    using var redirectedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    Task redirectedKeepAliveTask = Task.CompletedTask;
+
+                    if (isStreamingRequest && ShouldEmitSseKeepAlive(originalModel))
                     {
                         await CommitSseHeadersAsync();
-                        redirectedOutputStream = resp.OutputStream;
+
+                        redirectedKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
+                            resp.OutputStream,
+                            _settings.SseKeepAliveIntervalSeconds,
+                            redirectedCts.Token);
                     }
 
+                    // No progress notifications are written to the stream here. They are plain text
+                    // rather than valid SSE frames, nothing consumes them, and writing them from two
+                    // sources alongside the pump would interleave and corrupt the stream. The pump's
+                    // comment frames are what keep the client alive.
                     string beforeBounding = rewritten;
-                                        rewritten = await BoundRedirectedCompactBodyAsync(
-                                                                redirectTarget,
-                                                                rewritten,
-                                                                originalModel,
-                                                                CompactionFormat.Proxy,
-                                                                redirectedOutputStream,
-                                                                ct);
+                    string bounded;
+                    try
+                    {
+                        bounded = await BoundRedirectedCompactBodyAsync(
+                            redirectTarget,
+                            rewritten,
+                            originalModel,
+                            CompactionFormat.Proxy,
+                            ct);
+                    }
+                    finally
+                    {
+                        // Stop pumping before anything else writes to the stream: two writers would
+                        // interleave frames and corrupt it.
+                        await redirectedCts.CancelAsync();
+                        await redirectedKeepAliveTask;
+                    }
 
-                                        contextCompacted = !ReferenceEquals(rewritten, beforeBounding);
-                                    }
-                                    else
-                                    {
+                    rewritten = bounded;
+                    contextCompacted = !ReferenceEquals(rewritten, beforeBounding);
+                }
+                else
+                {
                     // For streaming requests, commit SSE headers before compaction so progress
                     // comments can be written. CommitSseHeadersAsync also flushes the initial
                     // keep-alive frame, which is what actually puts the headers on the wire.
@@ -2658,6 +2692,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         }
         catch (OperationCanceledException) { /* expected on cancel */ }
     }
+
+    /// <summary>
+    /// Test seam for <see cref="PumpPreResponseSseKeepAliveAsync"/>, so the pump that keeps a client
+    /// alive during a long compaction can be exercised without a live HTTP response.
+    /// </summary>
+    internal static Task PumpPreResponseSseKeepAliveForTest(
+        Stream output, int intervalSeconds, CancellationToken ct) =>
+        PumpPreResponseSseKeepAliveAsync(output, intervalSeconds, ct);
 
     /// <summary>
     /// Copies an SSE response to the client verbatim, interleaving keep-alive comment frames while the
@@ -4892,18 +4934,18 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// <param name="bodyText">The upstream-bound request body.</param>
     /// <param name="originalModel">The model the client asked for, for logging.</param>
     /// <param name="format">The compacted-body format matching the path being served.</param>
-    /// <param name="outputStream">
-    /// Optional SSE stream for compaction progress notifications; null on the Ollama path, whose
-    /// output is NDJSON and carries no SSE comments.
-    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The body to forward, either compacted or unchanged.</returns>
+    /// <remarks>
+    /// Deliberately takes no output stream. The caller keeps the client's connection alive with valid
+    /// SSE comment frames while this runs; writing progress text from here as well would put two
+    /// writers on the same stream and interleave it.
+    /// </remarks>
     private async Task<string> BoundRedirectedCompactBodyAsync(
         ModelMapping targetMapping,
         string bodyText,
         string originalModel,
         CompactionFormat format,
-        Stream? outputStream,
         CancellationToken ct)
     {
         int compactionWindow = targetMapping.GetCompactionContextWindow(_settings.CompactionFallbackContextTokens);
@@ -4924,15 +4966,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             "Redirected compaction for {OriginalModel} exceeds compaction model {Target}'s {Budget} token budget "
             + "(~{Estimated} tokens); running chunked map-reduce summarization before forwarding",
             originalModel, targetMapping.ProxyName, budget, estimated);
-
-        if (outputStream is not null)
-        {
-            string notification =
-                $": <ignorethis>kaeo-compaction-needed: Context size (~{estimated} tokens) exceeds the compaction model's budget ({budget} tokens). Starting compaction...</ignorethis>\n\n";
-            byte[] notificationBytes = Encoding.UTF8.GetBytes(notification);
-            await outputStream.WriteAsync(notificationBytes, ct);
-            await outputStream.FlushAsync(ct);
-        }
 
         // The circuit breaker counts attempts before doing any work, so it is keyed per
         // conversation: a request that keeps overflowing backs off instead of re-summarizing
@@ -5702,7 +5735,6 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 upstreamBody,
                 ollamaReq.Model,
                 CompactionFormat.Ollama,
-                outputStream: null,
                 ct);
         }
         else
