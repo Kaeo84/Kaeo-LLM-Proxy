@@ -68,6 +68,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         {
             AutoCompactionService service = new(BuildHttpClient());
             service.Configure(settings.ResolveCompactionInstructions(), settings.CompactionTargetTokens);
+            service.SetMaxConcurrentCompactions(settings.MaxConcurrentCompactions);
             return service;
         }
 
@@ -80,10 +81,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         /// the initial configuration and again from <see cref="UpdateSettings"/> so a change on the
         /// Settings tab takes effect without restarting the proxy.
         /// </remarks>
-        private void ApplyCompactionSettings() =>
-            _autoCompactionService.Configure(
-                _settings.ResolveCompactionInstructions(),
-                _settings.CompactionTargetTokens);
+        private void ApplyCompactionSettings()
+                {
+                    _autoCompactionService.Configure(
+                        _settings.ResolveCompactionInstructions(),
+                        _settings.CompactionTargetTokens);
+
+                    _autoCompactionService.SetMaxConcurrentCompactions(_settings.MaxConcurrentCompactions);
+                }
 
         /// <summary>Called from the Settings UI after the user saves new settings.</summary>
         public void UpdateSettings(AppSettings settings)

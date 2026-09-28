@@ -133,6 +133,7 @@ internal partial class MainForm : Form
         _chkCopilotCompactionRouting.CheckedChanged += (_, _) => SaveGeneralSettings();
         _cmbCompactionInstructionSet.SelectedIndexChanged += (_, _) => SaveGeneralSettings();
         _txtCompactionTarget.Validated += (_, _) => SaveGeneralSettings();
+        _txtMaxConcurrentCompactions.Validated += (_, _) => SaveGeneralSettings();
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -1732,6 +1733,7 @@ internal partial class MainForm : Form
         _txtCompactionTarget.Text = _settings.CompactionTargetTokens > 0
             ? _settings.CompactionTargetTokens.ToString()
             : string.Empty;
+        _txtMaxConcurrentCompactions.Text = _settings.MaxConcurrentCompactions.ToString();
         _chkCopilotCompactionRouting.Checked = _settings.EnableCopilotCompactionRouting;
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
@@ -1964,12 +1966,25 @@ internal partial class MainForm : Form
             }
         }
 
+        // Same convention: an empty box leaves the current value alone rather than forcing a default.
+        int maxConcurrentCompactions = _settings.MaxConcurrentCompactions;
+        if (!string.IsNullOrWhiteSpace(_txtMaxConcurrentCompactions.Text))
+        {
+            if (!int.TryParse(_txtMaxConcurrentCompactions.Text, out maxConcurrentCompactions)
+                || maxConcurrentCompactions < AppSettings.MinMaxConcurrentCompactions
+                || maxConcurrentCompactions > AppSettings.MaxMaxConcurrentCompactions)
+            {
+                return;
+            }
+        }
+
         _settings.MaxLogEntries = maxLogs;
         _settings.CompactionFallbackContextTokens = compactionFallback;
         _settings.CopilotCompactionModelName = CopilotCompactionModelName;
         _settings.EnableCopilotCompactionRouting = _chkCopilotCompactionRouting.Checked;
         _settings.CompactionInstructionSetName = CompactionInstructionSetName;
         _settings.CompactionTargetTokens = compactionTargetTokens;
+        _settings.MaxConcurrentCompactions = maxConcurrentCompactions;
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;

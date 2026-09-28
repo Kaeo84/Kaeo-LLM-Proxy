@@ -630,7 +630,8 @@ internal sealed class AppDatabase : IDisposable
                     copilot_compaction_model_name,
                     enable_copilot_compaction_routing,
                     compaction_instruction_set_name,
-                    compaction_target_tokens
+                    compaction_target_tokens,
+                    max_concurrent_compactions
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -667,6 +668,7 @@ internal sealed class AppDatabase : IDisposable
                 EnableCopilotCompactionRouting = ReadBoolean(reader, 18),
                 CompactionInstructionSetName = reader.IsDBNull(19) ? null : reader.GetString(19),
                 CompactionTargetTokens = reader.GetInt32(20),
+                MaxConcurrentCompactions = reader.GetInt32(21),
             };
         }
     }
@@ -703,7 +705,8 @@ internal sealed class AppDatabase : IDisposable
                     copilot_compaction_model_name,
                     enable_copilot_compaction_routing,
                     compaction_instruction_set_name,
-                    compaction_target_tokens
+                    compaction_target_tokens,
+                    max_concurrent_compactions
                 )
                 VALUES (
                     $id,
@@ -727,7 +730,8 @@ internal sealed class AppDatabase : IDisposable
                     $copilotCompactionModelName,
                     $enableCopilotCompactionRouting,
                     $compactionInstructionSetName,
-                    $compactionTargetTokens
+                    $compactionTargetTokens,
+                    $maxConcurrentCompactions
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -750,7 +754,8 @@ internal sealed class AppDatabase : IDisposable
                     copilot_compaction_model_name = excluded.copilot_compaction_model_name,
                     enable_copilot_compaction_routing = excluded.enable_copilot_compaction_routing,
                     compaction_instruction_set_name = excluded.compaction_instruction_set_name,
-                    compaction_target_tokens = excluded.compaction_target_tokens;
+                    compaction_target_tokens = excluded.compaction_target_tokens,
+                    max_concurrent_compactions = excluded.max_concurrent_compactions;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -779,6 +784,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$enableCopilotCompactionRouting", ToSqliteBoolean(settings.EnableCopilotCompactionRouting));
             command.Parameters.AddWithValue("$compactionInstructionSetName", DbValue(settings.CompactionInstructionSetName));
             command.Parameters.AddWithValue("$compactionTargetTokens", settings.CompactionTargetTokens);
+            command.Parameters.AddWithValue("$maxConcurrentCompactions", settings.MaxConcurrentCompactions);
             command.ExecuteNonQuery();
         }
     }
@@ -1417,7 +1423,8 @@ internal sealed class AppDatabase : IDisposable
                     copilot_compaction_model_name TEXT NULL,
                     enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1,
                     compaction_instruction_set_name TEXT NULL,
-                    compaction_target_tokens INTEGER NOT NULL DEFAULT 0
+                    compaction_target_tokens INTEGER NOT NULL DEFAULT 0,
+                    max_concurrent_compactions INTEGER NOT NULL DEFAULT 1
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1645,6 +1652,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "enable_copilot_compaction_routing", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "compaction_instruction_set_name", "TEXT NULL"),
                                 ("runtime_settings", "compaction_target_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "max_concurrent_compactions", "INTEGER NOT NULL DEFAULT 1"),
 
                                 // ── credentials ───────────────────────────────────────────────
                                 ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),

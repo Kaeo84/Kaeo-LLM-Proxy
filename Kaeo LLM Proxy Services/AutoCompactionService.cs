@@ -184,6 +184,61 @@ internal sealed class AutoCompactionService
         }
 
         /// <summary>
+        /// Serializes compaction runs so their chunk requests cannot interleave on one upstream.
+        /// </summary>
+        /// <remarks>
+        /// Sized from <see cref="AppSettings.MaxConcurrentCompactions"/> when that changes, by
+        /// <see cref="SetMaxConcurrentCompactions"/>. A run already awaits each chunk in turn, so this
+        /// is about *between* runs: an automatic compaction, a manual one, and a reactive retry were
+        /// free to overlap, and on a single-slot server each request then evicts the previous prompt's
+        /// KV cache — llama.cpp reports <c>failed to find N available cells in kv cache</c> and
+        /// <c>failed to restore state</c>, then reprocesses from scratch. Every chunk paid that cost.
+        /// </remarks>
+        private SemaphoreSlim _compactionGate = new(1, 1);
+
+        /// <summary>
+        /// The limit <see cref="_compactionGate"/> was built with.
+        /// </summary>
+        /// <remarks>
+        /// Tracked separately because the semaphore's own <c>CurrentCount</c> reflects available
+        /// permits, not the configured limit: with one run in flight on a limit of one it reads zero, so
+        /// comparing against it would rebuild the gate on every request and never actually serialize.
+        /// </remarks>
+        private int _maxConcurrentCompactions = AppSettings.DefaultMaxConcurrentCompactions;
+
+        /// <summary>
+        /// Applies <see cref="AppSettings.MaxConcurrentCompactions"/>, replacing the gate when the
+        /// limit changes.
+        /// </summary>
+        /// <remarks>
+        /// A semaphore's limit is fixed at construction, so a changed setting needs a new gate. A run
+        /// already holding the old gate releases into an abandoned semaphore, which is harmless: the new
+        /// gate starts fully available, so at worst one extra run overlaps a still-finishing one rather
+        /// than the limit being permanently ignored.
+        /// </remarks>
+        /// <param name="maxConcurrent">Maximum simultaneous runs; values below 1 are treated as 1.</param>
+        internal void SetMaxConcurrentCompactions(int maxConcurrent)
+        {
+            int clamped = Math.Clamp(
+                maxConcurrent,
+                AppSettings.MinMaxConcurrentCompactions,
+                AppSettings.MaxMaxConcurrentCompactions);
+
+            if (_maxConcurrentCompactions == clamped)
+                return;
+
+            _maxConcurrentCompactions = clamped;
+
+            SemaphoreSlim previous = _compactionGate;
+            _compactionGate = new SemaphoreSlim(clamped, clamped);
+
+            // Only dispose when nothing can still be holding it; an in-flight run would otherwise
+            // release into a disposed semaphore and throw inside its own finally.
+            if (previous.CurrentCount == clamped)
+                previous.Dispose();
+        }
+
+        /// <summary>
             /// Output cap for a summarization call, and the amount reserved out of its prompt budget.
             /// </summary>
             /// <remarks>
@@ -314,6 +369,32 @@ internal sealed class AutoCompactionService
             Log.Warning(
                 "Auto-compaction circuit breaker opened for session {SessionKey} after {Attempts} attempts",
                 sessionKey, state.Attempts);
+            return null;
+        }
+
+        // Serialize runs so their chunk requests cannot interleave on one upstream. Each run awaits its
+        // chunks in order, so the concurrency that matters is between runs: an automatic compaction, a
+        // manual one and a reactive retry were free to overlap, and on a single-slot server each
+        // request then evicts the previous prompt's KV cache and reprocesses from scratch.
+        //
+        // The wait is logged when it is not immediate, because from the client's side a queued
+        // compaction is indistinguishable from a slow one and the reason should be visible.
+        bool gateHeld = false;
+        if (_compactionGate.CurrentCount == 0)
+            Log.Information(
+                "Auto-compaction for session {SessionKey} is waiting for another compaction to finish (limit {Limit})",
+                sessionKey, _maxConcurrentCompactions);
+
+        try
+        {
+            await _compactionGate.WaitAsync(ct).ConfigureAwait(false);
+            gateHeld = true;
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Debug(
+                "Auto-compaction for session {SessionKey} was cancelled while waiting for the compaction gate",
+                sessionKey);
             return null;
         }
 
@@ -481,6 +562,14 @@ internal sealed class AutoCompactionService
         {
             Log.Error(ex, "Auto-compaction unexpected error for session {SessionKey}", sessionKey);
             return null;
+        }
+        finally
+        {
+            // Released in a finally so every exit path — success, size guard, upstream failure, or an
+            // unexpected throw — frees the gate. A leaked permit would eventually stall all compaction
+            // with no error, which is worse than the contention this prevents.
+            if (gateHeld)
+                _compactionGate.Release();
         }
     }
 

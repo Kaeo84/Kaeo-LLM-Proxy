@@ -362,6 +362,12 @@ internal sealed class RuntimeSettings
     public int CompactionFallbackContextTokens { get; set; } = 8192;
 
     /// <summary>
+    /// How many compaction runs may be in flight at once. Default: 1, which suits a single-slot
+    /// upstream where concurrent prompts force KV-cache eviction and a full reprocess.
+    /// </summary>
+    public int MaxConcurrentCompactions { get; set; } = 1;
+
+    /// <summary>
     /// Proxy name of the single global model every Copilot-detected context summarization is routed
     /// to, or null when none is selected. Stored in the application database beside the other
     /// runtime settings because it is a single installation-wide choice.
@@ -1149,6 +1155,41 @@ internal sealed class AppSettings
     public int CompactionFallbackContextTokens { get; set; } = DefaultCompactionFallbackContextTokens;
 
     /// <summary>
+    /// How many compaction runs may be in flight at once. Min: 1, Max: 16. Default: 1.
+    /// </summary>
+    /// <remarks>
+    /// A compaction run already sends its chunks one at a time, but nothing stopped two runs — or a
+    /// manual compaction arriving while an automatic one is summarizing — from interleaving their
+    /// requests to the same upstream. On a single-slot local server that is directly harmful: each
+    /// request has to evict the previous one's KV cache, so llama.cpp reports
+    /// <c>failed to find N available cells in kv cache</c> and
+    /// <c>failed to restore state</c>, then reprocesses the prompt from scratch. Every chunk then pays
+    /// a doomed state restore before doing its real work.
+    /// <para>
+    /// Default 1 suits a single-slot server, which is the common local setup. Raise it only when the
+    /// upstream can genuinely serve several prompts at once; a hosted endpoint with real parallelism
+    /// is the case where more than one helps.
+    /// </para>
+    /// <para>
+    /// This does not reserve the upstream slot for compaction. Ordinary chat traffic can still take it
+    /// mid-run, which needs slot pinning on the server rather than anything the proxy can set.
+    /// </para>
+    /// </remarks>
+    [JsonIgnore]
+    public int MaxConcurrentCompactions { get; set; } = DefaultMaxConcurrentCompactions;
+
+    /// <summary>Lower bound accepted for <see cref="MaxConcurrentCompactions"/>.</summary>
+    public const int MinMaxConcurrentCompactions = 1;
+
+    /// <summary>Upper bound accepted for <see cref="MaxConcurrentCompactions"/>.</summary>
+    public const int MaxMaxConcurrentCompactions = 16;
+
+    /// <summary>
+    /// Default concurrency for compaction runs: one at a time, which suits a single-slot upstream.
+    /// </summary>
+    public const int DefaultMaxConcurrentCompactions = 1;
+
+    /// <summary>
     /// Name of the instruction set that drives every compaction summarization, or null to use the
     /// built-in summarizer prompt. Installation-wide, like the compaction model it accompanies.
     /// </summary>
@@ -1345,6 +1386,8 @@ internal sealed class AppSettings
             HeartbeatIntervalSeconds, MinHeartbeatIntervalSeconds, MaxHeartbeatIntervalSeconds);
         CompactionFallbackContextTokens = Math.Clamp(
             CompactionFallbackContextTokens, MinCompactionFallbackContextTokens, MaxCompactionFallbackContextTokens);
+        MaxConcurrentCompactions = Math.Clamp(
+            MaxConcurrentCompactions, MinMaxConcurrentCompactions, MaxMaxConcurrentCompactions);
         CompactionTargetTokens = Math.Clamp(
             CompactionTargetTokens, MinCompactionTargetTokens, MaxCompactionTargetTokens);
 
@@ -1398,6 +1441,7 @@ internal sealed class AppSettings
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
+        MaxConcurrentCompactions = MaxConcurrentCompactions,
         CopilotCompactionModelName = CopilotCompactionModelName,
         EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
         CompactionInstructionSetName = CompactionInstructionSetName,
@@ -1424,6 +1468,7 @@ internal sealed class AppSettings
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
+        MaxConcurrentCompactions = runtimeSettings.MaxConcurrentCompactions;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
         CompactionInstructionSetName = runtimeSettings.CompactionInstructionSetName;

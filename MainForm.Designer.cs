@@ -191,6 +191,8 @@ partial class MainForm
         _cmbCompactionInstructionSet = new ComboBox();
         _lblCompactionTarget = new Label();
         _txtCompactionTarget = new TextBox();
+        _lblMaxConcurrentCompactions = new Label();
+        _txtMaxConcurrentCompactions = new TextBox();
         _lblMappings = new Label();
         _dgvMappings = new DataGridView();
         _colMappingEnabled = new DataGridViewTextBoxColumn();
@@ -1165,7 +1167,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 24;
+        _tlpSettings.RowCount = 25;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1212,10 +1214,12 @@ partial class MainForm
         _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 20);
         _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 21);
         _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 21);
-        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 22);
+        _tlpSettings.Controls.Add(_lblMaxConcurrentCompactions, 0, 22);
+        _tlpSettings.Controls.Add(_txtMaxConcurrentCompactions, 1, 22);
+        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 23);
         _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
-        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 23);
-        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 23);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 24);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 24);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1310,6 +1314,16 @@ partial class MainForm
         _txtCompactionTarget.Dock = DockStyle.Fill;
         _txtCompactionTarget.Margin = new Padding(4, 6, 4, 4);
         _txtCompactionTarget.Name = "_txtCompactionTarget";
+
+        _lblMaxConcurrentCompactions.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblMaxConcurrentCompactions.AutoSize = true;
+        _lblMaxConcurrentCompactions.Margin = new Padding(4, 8, 8, 4);
+        _lblMaxConcurrentCompactions.Name = "_lblMaxConcurrentCompactions";
+        _lblMaxConcurrentCompactions.Text = "Max Concurrent Compactions:";
+
+        _txtMaxConcurrentCompactions.Dock = DockStyle.Fill;
+        _txtMaxConcurrentCompactions.Margin = new Padding(4, 6, 4, 4);
+        _txtMaxConcurrentCompactions.Name = "_txtMaxConcurrentCompactions";
 
         _chkCopilotCompactionRouting.AutoSize = true;
         _chkCopilotCompactionRouting.Margin = new Padding(4, 8, 4, 4);
@@ -2723,6 +2737,8 @@ partial class MainForm
     private ComboBox _cmbCompactionInstructionSet;
     private Label _lblCompactionTarget;
     private TextBox _txtCompactionTarget;
+    private Label _lblMaxConcurrentCompactions;
+    private TextBox _txtMaxConcurrentCompactions;
     private Label _lblMappings;
     private DataGridView _dgvMappings;
     private DataGridViewTextBoxColumn _colMappingEnabled;
