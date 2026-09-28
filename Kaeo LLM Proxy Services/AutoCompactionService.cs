@@ -583,6 +583,21 @@ internal sealed class AutoCompactionService
                 continue;
             }
 
+            // A chunk is a slice of the conversation, so it can begin on — or contain — the client's
+            // own system message (Copilot sends several). Our summarization request already carries a
+            // system message of its own (the summarizer prompt), and strict chat templates reject a
+            // second one anywhere but the start. Passing them through produced
+            // "Jinja Exception: System message must be at the beginning", and the chunk was lost.
+            //
+            // Re-emitting them as user turns keeps the text in the transcript — to a summarizer it is
+            // conversation content, not instruction — while leaving exactly one system message in the
+            // request.
+            if (role.Equals("system", StringComparison.OrdinalIgnoreCase))
+            {
+                transcript.Add(DemoteSystemToUser(msg, maxTokensPerMessage));
+                continue;
+            }
+
             bool hasToolCalls = msg.TryGetProperty("tool_calls", out JsonElement toolCalls)
                 && toolCalls.ValueKind == JsonValueKind.Array
                 && toolCalls.GetArrayLength() > 0;
@@ -1345,10 +1360,39 @@ internal sealed class AutoCompactionService
 
         for (int i = lastUserIndex; i < messages.Count; i++)
         {
-            result.Add(TruncateMessageIfNeeded(messages[i], perMessageTokens));
+            // Both compacted-body builders already put a system message first (the pinned prompt plus
+            // the summary), so a system message appearing here would be a second one and strict chat
+            // templates reject that. The same reasoning as the transcript builder: the text is
+            // preserved, its role is not.
+            result.Add(messages[i].TryGetProperty("role", out JsonElement role)
+                && role.GetString()?.Equals("system", StringComparison.OrdinalIgnoreCase) == true
+                    ? DemoteSystemToUser(messages[i], perMessageTokens)
+                    : TruncateMessageIfNeeded(messages[i], perMessageTokens));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Re-emits a system message as a user turn, preserving its text.
+    /// </summary>
+    /// <remarks>
+    /// Used wherever a keep-the-text-but-not-the-role conversion is needed: the transcript builder,
+    /// and the trailing turn of a compacted body whose first message is already a system message.
+    /// </remarks>
+    private static object DemoteSystemToUser(JsonElement message, int maxTokens)
+    {
+        JsonObject demoted = [];
+        foreach (JsonProperty prop in message.EnumerateObject())
+        {
+            if (prop.NameEquals("role"u8))
+                continue;
+            demoted[prop.Name] = JsonNode.Parse(prop.Value.GetRawText());
+        }
+
+        demoted["role"] = "user";
+        demoted["content"] = ShrinkForSummary(GetContentText(message), maxTokens);
+        return demoted;
     }
 
     private static string ExtractModelName(string requestBody)
