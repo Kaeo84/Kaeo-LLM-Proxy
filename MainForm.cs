@@ -155,6 +155,7 @@ internal partial class MainForm : Form
         _txtKeepAliveInterval.Validated += (_, _) => SaveKeepAliveSettings();
         _txtLogDir.Validated += (_, _) => SaveLoggingSettings();
         _cmbMinLevel.SelectedIndexChanged += (_, _) => SaveLoggingSettings();
+        _cmbHeartbeatLevel.SelectedIndexChanged += (_, _) => SaveLoggingSettings();
         _txtAppLogSize.Validated += (_, _) => SaveLoggingSettings();
         _txtAppLogRetain.Validated += (_, _) => SaveLoggingSettings();
         _txtReqLogSize.Validated += (_, _) => SaveLoggingSettings();
@@ -1767,6 +1768,8 @@ internal partial class MainForm : Form
         _txtLogDir.Text = _settings.Logging.LogDirectory;
         int levelIndex = _cmbMinLevel.FindStringExact(_settings.Logging.MinimumLevel);
         _cmbMinLevel.SelectedIndex = levelIndex >= 0 ? levelIndex : 2; // default Information
+        int heartbeatLevelIndex = _cmbHeartbeatLevel.FindStringExact(_settings.Logging.HeartbeatMinimumLevel);
+        _cmbHeartbeatLevel.SelectedIndex = heartbeatLevelIndex >= 0 ? heartbeatLevelIndex : 1; // default Debug
         _txtAppLogSize.Text = _settings.Logging.AppLogFileSizeLimitMb.ToString();
         _txtAppLogRetain.Text = _settings.Logging.AppLogRetainedFileCount.ToString();
         _txtReqLogSize.Text = _settings.Logging.RequestLogFileSizeLimitMb.ToString();
@@ -2026,6 +2029,7 @@ internal partial class MainForm : Form
 
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";
+        _settings.Logging.HeartbeatMinimumLevel = _cmbHeartbeatLevel.SelectedItem?.ToString() ?? "Debug";
         _settings.Logging.AppLogFileSizeLimitMb = appLogSize;
         _settings.Logging.AppLogRetainedFileCount = appLogRetain;
         _settings.Logging.RequestLogFileSizeLimitMb = reqLogSize;

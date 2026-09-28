@@ -874,6 +874,29 @@ internal sealed class LoggingSettings
     /// <summary>Minimum Serilog level: Verbose, Debug, Information, Warning, Error, Fatal. Min: Verbose, Max: Fatal.</summary>
     public string MinimumLevel { get; set; } = "Information";
 
+    /// <summary>
+    /// Minimum Serilog level for periodic upstream heartbeat (liveness ping) failures:
+    /// Verbose, Debug, Information, Warning, Error, Fatal. Default: Debug.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="MinimumLevel"/> because these failures are qualitatively different
+    /// from the rest of the log. A heartbeat fires on a timer for every enabled model, so an upstream
+    /// that is simply down — or a model that is intentionally not running — produces a failure and a
+    /// full stack trace every interval, indefinitely. At the default Information level that is the
+    /// overwhelming majority of the log, which buries the entries that actually need attention and can
+    /// roll a crash report out of existence before anyone reads it.
+    /// <para>
+    /// Nothing is lost by raising this threshold: each model's last status, failure count, last probe
+    /// time, and last error are already recorded per model and shown on the Heartbeats tab, so the
+    /// information remains available without being logged repeatedly.
+    /// </para>
+    /// <para>
+    /// Default Debug keeps a failed probe available while debugging without cluttering normal
+    /// operation, where it stays at Information.
+    /// </para>
+    /// </remarks>
+    public string HeartbeatMinimumLevel { get; set; } = "Debug";
+
     /// <summary>Maximum size in MB of a single app-log file before rolling. Min: 1, Max: 1000.</summary>
     public int AppLogFileSizeLimitMb { get; set; } = 10;
 
@@ -1672,6 +1695,7 @@ internal sealed class AppSettings
         sb.AppendLine("    // Minimum Serilog severity level written to the app log.");
         sb.AppendLine("    // Values: Verbose | Debug | Information | Warning | Error | Fatal");
         sb.AppendLine($"    \"MinimumLevel\": \"{Logging.MinimumLevel}\",");
+        sb.AppendLine($"    \"HeartbeatMinimumLevel\": \"{Logging.HeartbeatMinimumLevel}\",");
         sb.AppendLine();
         sb.AppendLine("    // Roll the app log file when it reaches this size (MB).");
         sb.AppendLine("    // Min: 1  Max: 1000  Default: 10");

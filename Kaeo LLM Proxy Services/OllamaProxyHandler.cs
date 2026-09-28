@@ -208,7 +208,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
         string error = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
         _stats.RecordHeartbeatFailure(modelName, error);
-        Log.Warning("Heartbeat probe for model {Model} returned {Error}", modelName, error);
+
+        // Same treatment as the exception path above: a non-success probe answer repeats forever for a
+        // model that is down, so it is Debug plus the marker rather than Warning, and the configured
+        // heartbeat threshold decides whether it is recorded at all.
+        Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
+            .Debug("Heartbeat probe for model {Model} returned {Error}", modelName, error);
     }
 
     private void RecordPeriodicHeartbeatFailure(ModelMapping mapping, string errorMessage)
@@ -7702,7 +7707,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             catch (Exception ex)
             {
                 _recordFailure(_mapping, ex.Message);
-                Log.Warning(ex, "Periodic heartbeat failed for model {Model}", _mapping.ProxyName);
+
+                // Logged at Debug and tagged, not at Warning with the exception attached. A ping fires
+                // on a timer for every enabled model, so an upstream that is down — or a model that is
+                // deliberately not running — produced a full stack trace every interval forever, which
+                // made up the large majority of the application log and could roll a crash report out
+                // of existence before anyone read it.
+                //
+                // Gatewayed by the logger-wide exclusion on LoggingSettings.HeartbeatMinimumLevel, so
+                // raising that threshold silences these everywhere at once. Nothing is lost: the last
+                // status, failure count, probe time and error are recorded per model and shown on the
+                // Heartbeats tab.
+                Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
+                    .Debug(ex, "Periodic heartbeat failed for model {Model}", _mapping.ProxyName);
             }
             finally
             {

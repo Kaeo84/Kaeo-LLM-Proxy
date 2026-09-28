@@ -237,6 +237,8 @@ partial class MainForm
         _txtLogDir = new TextBox();
         _lblMinLevel = new Label();
         _cmbMinLevel = new ComboBox();
+        _lblHeartbeatLevel = new Label();
+        _cmbHeartbeatLevel = new ComboBox();
         _lblAppLogSize = new Label();
         _txtAppLogSize = new TextBox();
         _lblAppLogRetain = new Label();
@@ -1572,21 +1574,23 @@ partial class MainForm
         _tlpLogging.Dock = DockStyle.Fill;
         _tlpLogging.Margin = new Padding(4);
         _tlpLogging.Name = "_tlpLogging";
-        _tlpLogging.RowCount = 7;
+        _tlpLogging.RowCount = 8;
         _tlpLogging.Controls.Add(_lblLogDir, 0, 0);
         _tlpLogging.Controls.Add(_txtLogDir, 1, 0);
         _tlpLogging.Controls.Add(_lblMinLevel, 0, 1);
         _tlpLogging.Controls.Add(_cmbMinLevel, 1, 1);
-        _tlpLogging.Controls.Add(_lblAppLogSize, 0, 2);
-        _tlpLogging.Controls.Add(_txtAppLogSize, 1, 2);
-        _tlpLogging.Controls.Add(_lblAppLogRetain, 0, 3);
-        _tlpLogging.Controls.Add(_txtAppLogRetain, 1, 3);
-        _tlpLogging.Controls.Add(_lblReqLogSize, 0, 4);
-        _tlpLogging.Controls.Add(_txtReqLogSize, 1, 4);
-        _tlpLogging.Controls.Add(_lblRequestDbPath, 0, 5);
-        _tlpLogging.Controls.Add(_tlpRequestDbPath, 1, 5);
-        _tlpLogging.Controls.Add(_lblLogRetention, 0, 6);
-        _tlpLogging.Controls.Add(_txtLogRetention, 1, 6);
+        _tlpLogging.Controls.Add(_lblHeartbeatLevel, 0, 2);
+        _tlpLogging.Controls.Add(_cmbHeartbeatLevel, 1, 2);
+        _tlpLogging.Controls.Add(_lblAppLogSize, 0, 3);
+        _tlpLogging.Controls.Add(_txtAppLogSize, 1, 3);
+        _tlpLogging.Controls.Add(_lblAppLogRetain, 0, 4);
+        _tlpLogging.Controls.Add(_txtAppLogRetain, 1, 4);
+        _tlpLogging.Controls.Add(_lblReqLogSize, 0, 5);
+        _tlpLogging.Controls.Add(_txtReqLogSize, 1, 5);
+        _tlpLogging.Controls.Add(_lblRequestDbPath, 0, 6);
+        _tlpLogging.Controls.Add(_tlpRequestDbPath, 1, 6);
+        _tlpLogging.Controls.Add(_lblLogRetention, 0, 7);
+        _tlpLogging.Controls.Add(_txtLogRetention, 1, 7);
 
         _lblLogDir.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblLogDir.AutoSize = true;
@@ -1610,7 +1614,19 @@ partial class MainForm
         _cmbMinLevel.Margin = new Padding(4, 6, 4, 4);
         _cmbMinLevel.Name = "_cmbMinLevel";
 
-        _lblAppLogSize.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+                _lblHeartbeatLevel.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+                _lblHeartbeatLevel.AutoSize = true;
+                _lblHeartbeatLevel.Margin = new Padding(4, 8, 8, 4);
+                _lblHeartbeatLevel.Name = "_lblHeartbeatLevel";
+                _lblHeartbeatLevel.Text = "Heartbeat Failure Level:";
+
+                _cmbHeartbeatLevel.Dock = DockStyle.Fill;
+                _cmbHeartbeatLevel.DropDownStyle = ComboBoxStyle.DropDownList;
+                _cmbHeartbeatLevel.Items.AddRange(new object[] { "Verbose", "Debug", "Information", "Warning", "Error", "Fatal" });
+                _cmbHeartbeatLevel.Margin = new Padding(4, 6, 4, 4);
+                _cmbHeartbeatLevel.Name = "_cmbHeartbeatLevel";
+
+                _lblAppLogSize.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblAppLogSize.AutoSize = true;
         _lblAppLogSize.Margin = new Padding(4, 8, 8, 4);
         _lblAppLogSize.Name = "_lblAppLogSize";
@@ -2758,6 +2774,8 @@ partial class MainForm
     private TextBox _txtLogDir;
     private Label _lblMinLevel;
     private ComboBox _cmbMinLevel;
+    private Label _lblHeartbeatLevel;
+    private ComboBox _cmbHeartbeatLevel;
     private Label _lblAppLogSize;
     private TextBox _txtAppLogSize;
     private Label _lblAppLogRetain;
