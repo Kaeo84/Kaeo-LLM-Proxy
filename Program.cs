@@ -5,6 +5,8 @@ using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Modules;
+using Serilog;
+using Serilog.Events;
 
 namespace Kaeo.LlmProxy;
 
@@ -19,21 +21,27 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         Application.SetColorMode(SystemColorMode.System);
 
+        // Seed a crash-only logger before anything else can fail. Serilog is not configured until
+        // TrayApplicationContext runs, so an exception in startup would otherwise have no sink at all.
+        InitializeCrashLogger();
+
         // Surface ALL unhandled exceptions instead of silently swallowing them.
-        #if DEBUG
-                // In debug, rethrow so the debugger breaks at the exact throw line.
-                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
-        #else
-                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-                Application.ThreadException += (_, e) => ShowUnhandledException("UI thread", e.Exception);
-                AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-                    ShowUnhandledException("AppDomain", e.ExceptionObject as Exception);
-                TaskScheduler.UnobservedTaskException += (_, e) =>
-                {
-                    ShowUnhandledException("Unobserved Task", e.Exception);
-                    e.SetObserved();
-                };
-        #endif
+        //
+        // These handlers are registered in every build, including Debug. Registering them only for
+        // release meant a Debug session had no handler AND ran under UnhandledExceptionMode.
+        // ThrowException, so an exception on the UI thread — most often in one of the many async void
+        // event handlers — killed the process outright with nothing recorded anywhere. The debugger
+        // breaks first when attached, which preserves the old debugging behavior, so there is nothing
+        // lost by handling them here too.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => ReportUnhandledException("UI thread", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            ReportUnhandledException("AppDomain", e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            ReportUnhandledException("Unobserved Task", e.Exception);
+            e.SetObserved();
+        };
 
         AppSettings settings = AppSettings.Load();
 
@@ -266,20 +274,45 @@ internal static class Program
         }
     }
 
-    private static void ShowUnhandledException(string source, Exception? ex)
+    /// <summary>
+    /// Records an unhandled exception to every channel available, then tells the user.
+    /// </summary>
+    /// <remarks>
+    /// The order matters and is deliberate. Serilog handles the normal case; the direct file append is
+    /// there because the Serilog pipeline itself may be the thing that failed, or may not be
+    /// initialized yet, and losing the only record of a crash to a logging failure is the worst
+    /// outcome available. Nothing here is allowed to throw: a handler that throws while handling a
+    /// crash turns a diagnosable failure into a silent one.
+    /// </remarks>
+    private static void ReportUnhandledException(string source, Exception? ex)
     {
         if (ex is null)
             return;
 
-        if (System.Diagnostics.Debugger.IsAttached)
-            System.Diagnostics.Debugger.Break();
+        // Break at the throw site when a debugger is attached, so debugging behavior is unchanged by
+        // registering these handlers in Debug builds.
+        if (Debugger.IsAttached)
+            Debugger.Break();
 
-        System.Diagnostics.Debug.WriteLine($"[UNHANDLED:{source}] {ex}");
+        Debug.WriteLine($"[UNHANDLED:{source}] {ex}");
+
+        try
+        {
+            Log.Fatal(ex, "Unhandled exception ({Source})", source);
+            Log.CloseAndFlush();
+        }
+        catch
+        {
+            // The logging pipeline is unavailable; the file append below is the remaining channel.
+        }
+
+        AppendCrashReport(source, ex);
 
         try
         {
             MessageBox.Show(
-                $"An unhandled exception occurred ({source}):\n\n{ex.GetType().FullName}: {ex.Message}\n\n{ex.StackTrace}",
+                $"An unhandled exception occurred ({source}):\n\n{ex.GetType().FullName}: {ex.Message}\n\n" +
+                $"A report was written to:\n{CrashLogPath}\n\nex.StackTrace:\n{ex.StackTrace}",
                 "Unhandled Exception",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -287,6 +320,81 @@ internal static class Program
         catch
         {
             // Last-resort: never let the handler itself crash the process.
+        }
+    }
+
+    /// <summary>Path of the direct crash log, alongside the application's other logs.</summary>
+    private static string CrashLogPath =>
+        Path.Combine(_crashLogDirectory, "unhandled-exceptions.log");
+
+    private static string _crashLogDirectory = AppContext.BaseDirectory;
+
+    /// <summary>
+    /// Creates a minimal file-only Serilog logger so failures before the real configuration is loaded
+    /// still reach disk.
+    /// </summary>
+    /// <remarks>
+    /// Reads the log directory from settings when it can, falling back to the application directory.
+    /// Any failure is ignored: this is a best-effort safety net and must never prevent startup.
+    /// </remarks>
+    private static void InitializeCrashLogger()
+    {
+        try
+        {
+            AppSettings bootstrap = AppSettings.Load();
+            if (!string.IsNullOrWhiteSpace(bootstrap.Logging.LogDirectory))
+                _crashLogDirectory = bootstrap.Logging.LogDirectory;
+        }
+        catch
+        {
+            // Settings unreadable; the application directory is the fallback.
+        }
+
+        try
+        {
+            Directory.CreateDirectory(_crashLogDirectory);
+
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .WriteTo.File(
+                    Path.Combine(_crashLogDirectory, "startup-.log"),
+                    rollingInterval: RollingInterval.Day,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                .CreateLogger();
+        }
+        catch
+        {
+            // No logger; ReportUnhandledException still writes the report file directly.
+        }
+    }
+
+    /// <summary>
+    /// Appends a crash report straight to a file, independent of the logging pipeline.
+    /// </summary>
+    /// <remarks>
+    /// A plain text append that uses no configuration and no third-party code path, because the point
+    /// is to survive whatever just went wrong. This is the channel that works even when the Serilog
+    /// pipeline is the thing that failed, and even when the process is being torn down.
+    /// </remarks>
+    private static void AppendCrashReport(string source, Exception ex)
+    {
+        try
+        {
+            Directory.CreateDirectory(_crashLogDirectory);
+
+            string report =
+                $"{new string('=', 80)}{Environment.NewLine}" +
+                $"Timestamp : {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz}{Environment.NewLine}" +
+                $"Source    : {source}{Environment.NewLine}" +
+                $"Type      : {ex.GetType().FullName}{Environment.NewLine}" +
+                $"Message   : {ex.Message}{Environment.NewLine}" +
+                $"Stack     :{Environment.NewLine}{ex}{Environment.NewLine}";
+
+            File.AppendAllText(CrashLogPath, report);
+        }
+        catch
+        {
+            // Nothing left to try; the user-facing dialog still reports the exception.
         }
     }
 }

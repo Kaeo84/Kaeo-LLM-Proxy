@@ -30,6 +30,14 @@ internal static class AppLogger
     /// Configures and assigns <see cref="Log.Logger"/> from the supplied settings.
     /// Safe to call multiple times — reconfigures on subsequent calls.
     /// </summary>
+    /// <remarks>
+    /// A rolling file sink is included deliberately. The database sink cannot record a failure that
+    /// kills the process before the entry is flushed, and a crash is exactly the case that most needs
+    /// a durable record — which is why an unexplained exit could previously leave nothing behind
+    /// anywhere. The file sink writes synchronously so the last entry survives process death, and it
+    /// is the consumer of <c>AppLogFileSizeLimitMb</c> / <c>AppLogRetainedFileCount</c>, which had no
+    /// effect on anything before.
+    /// </remarks>
     public static void Initialize(LoggingSettings settings)
     {
         // Close any existing logger before reconfiguring.
@@ -57,11 +65,19 @@ internal static class AppLogger
             .MinimumLevel.Is(level)
             .WriteTo.Sink(syslog)
             .WriteTo.Sink(dbSink)
+            .WriteTo.File(
+                Path.Combine(appLogDir, "app-.log"),
+                rollingInterval: RollingInterval.Day,
+                fileSizeLimitBytes: Math.Max(1, settings.AppLogFileSizeLimitMb) * 1024L * 1024L,
+                rollOnFileSizeLimit: true,
+                retainedFileCountLimit: Math.Max(1, settings.AppLogRetainedFileCount),
+                shared: false,
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
         _initialized = true;
-        Log.Information("AppLogger initialized. Level={Level} DbPath={DbPath} Fallback={Fallback}",
-            level, dbPath, fallbackPath);
+        Log.Information("AppLogger initialized. Level={Level} DbPath={DbPath} Fallback={Fallback} File={File}",
+            level, dbPath, fallbackPath, appLogDir);
     }
 
     /// <summary>Flushes and closes the current logger. Call on application exit.</summary>

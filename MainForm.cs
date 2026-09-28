@@ -3142,58 +3142,77 @@ internal partial class MainForm : Form
             ? proxyName
             : mapping.ModelName;
 
-        // The Test Console acts as a regular client app: it sends the proxy model name and its
-        // own sampling values, then runs the body through the same normalization pipeline the
-        // /v1 passthrough uses, so model rewriting, instruction injection and the per-model
-        // sampling priorities (including reasoning_effort) apply identically.
-        var messages = new List<object>
+        // Everything up to the streaming loop is guarded, not just the loop. The payload build and
+        // normalization run before the try below, and a throw there would leave the Send button
+        // disabled forever — its re-enable lives in that block's finally — while the faulting
+        // async void handler had nowhere to report to.
+        string clientBody;
+        string requestBody;
+        RequestLog log;
+        try
         {
-            new { role = "user", content = prompt },
-        };
-
-        JsonArray messagesArray = [];
-        foreach (object message in messages)
-            messagesArray.Add(JsonSerializer.SerializeToNode(message));
-
-        JsonObject payload = new()
-        {
-            ["model"] = proxyName,
-            ["stream"] = true,
-            ["messages"] = messagesArray,
-            ["temperature"] = (double)_nudTestTemp.Value,
-            ["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value,
-            // Ask OpenAI-compatible upstreams to include a usage block in the terminal stream
-            // chunk so the request log can report prompt/completion/reasoning/cached tokens.
-            ["stream_options"] = new JsonObject
+            // The Test Console acts as a regular client app: it sends the proxy model name and its
+            // own sampling values, then runs the body through the same normalization pipeline the
+            // /v1 passthrough uses, so model rewriting, instruction injection and the per-model
+            // sampling priorities (including reasoning_effort) apply identically.
+            var messages = new List<object>
             {
-                ["include_usage"] = true,
-            },
-        };
-        string clientBody = payload.ToJsonString(_indentedJsonOptions);
+                new { role = "user", content = prompt },
+            };
 
-        var log = new RequestLog
+            JsonArray messagesArray = [];
+            foreach (object message in messages)
+                messagesArray.Add(JsonSerializer.SerializeToNode(message));
+
+            JsonObject payload = new()
+            {
+                ["model"] = proxyName,
+                ["stream"] = true,
+                ["messages"] = messagesArray,
+                ["temperature"] = (double)_nudTestTemp.Value,
+                ["repeat_penalty"] = (double)_nudTestRepeatPenalty.Value,
+                // Ask OpenAI-compatible upstreams to include a usage block in the terminal stream
+                // chunk so the request log can report prompt/completion/reasoning/cached tokens.
+                ["stream_options"] = new JsonObject
+                {
+                    ["include_usage"] = true,
+                },
+            };
+            clientBody = payload.ToJsonString(_indentedJsonOptions);
+
+            log = new RequestLog
+            {
+                Method = "POST",
+                OllamaPath = "(test console)",
+                UpstreamPath = "/v1/chat/completions",
+                Model = proxyName,
+                Streaming = true,
+                Status = RequestStatus.Success,
+                RequestBytes = Encoding.UTF8.GetByteCount(clientBody),
+            };
+
+            requestBody = OllamaProxyHandler.NormalizeRequestBody(
+                clientBody,
+                _settings,
+                log,
+                modelName => OllamaProxyHandler.ShouldApplyThinkingCompatibility(_settings, modelName));
+
+            // Capture the client's original body and the upstream-bound (rewritten) body side by
+            // side, mirroring the passthrough path, so proxy-injected values are visible in the log.
+            if (_settings.CollectRequestDetails)
+            {
+                log.RequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, clientBody, proxyName);
+                log.UpstreamRequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, requestBody, proxyName);
+            }
+        }
+        catch (Exception ex)
         {
-            Method = "POST",
-            OllamaPath = "(test console)",
-            UpstreamPath = "/v1/chat/completions",
-            Model = proxyName,
-            Streaming = true,
-            Status = RequestStatus.Success,
-            RequestBytes = Encoding.UTF8.GetByteCount(clientBody),
-        };
-
-        string requestBody = OllamaProxyHandler.NormalizeRequestBody(
-            clientBody,
-            _settings,
-            log,
-            modelName => OllamaProxyHandler.ShouldApplyThinkingCompatibility(_settings, modelName));
-
-        // Capture the client's original body and the upstream-bound (rewritten) body side by
-        // side, mirroring the passthrough path, so proxy-injected values are visible in the log.
-        if (_settings.CollectRequestDetails)
-        {
-            log.RequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, clientBody, proxyName);
-            log.UpstreamRequestBody = OllamaProxyHandler.RedactRequestBodyForLog(_settings, requestBody, proxyName);
+            Log.Error(ex, "Test Console could not build or normalize the request for model {Model}", proxyName);
+            HandleTestConsoleException(ex);
+            _btnTestSend.Enabled = true;
+            _btnTestCancel.Enabled = false;
+            _lblTestStatus.Text = "Failed before sending. See the System Logs tab for details.";
+            return;
         }
 
         var responseBuilder = new StringBuilder();
