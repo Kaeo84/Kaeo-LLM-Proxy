@@ -69,6 +69,24 @@ internal sealed class AutoCompactionService
     internal const int CombineMaxTokens = 1500;
 
     /// <summary>
+    /// The <c>cache_prompt</c> value sent on every compaction request. Sent as <c>false</c> so each
+    /// summarization call is processed against a cleared prompt cache.
+    /// </summary>
+    /// <remarks>
+    /// A chunked summarization issues a sequence of prompts that share only their opening
+    /// instructions; the transcript each one carries is different. Left to its own default
+    /// (<c>true</c>), llama.cpp reuses the largest common prefix it still holds cached and then
+    /// charges the new prompt against the context window on top of it. Its internal accounting is
+    /// what then fails — <c>failed to find N available cells in kv cache</c>, surfaced to the client
+    /// as <c>exceed_context_size_error</c> — when moving from one chunk to the next, even though the
+    /// chunk itself fits. This is the same hazard the per-request <c>id_slot</c> pin would address
+    /// from the other direction; clearing the cache is the simpler fix because it needs nothing from
+    /// the server beyond the standard field. Hosted OpenAI-compatible APIs ignore the unknown
+    /// property, so it is sent on every compaction request rather than conditioned on the upstream.
+    /// </remarks>
+    internal const bool ReusePromptCache = false;
+
+    /// <summary>
     /// Floor for the prompt budget left after the summary output is reserved. A model with a very
     /// small window can otherwise produce a zero or negative budget, which would make every chunk
     /// over-limit and spin the sub-chunk splitter without ever fitting a message.
@@ -923,7 +941,10 @@ internal sealed class AutoCompactionService
             model,
             messages,
             max_tokens = EffectiveSummaryMaxTokens,
-            temperature = 0.3
+            temperature = 0.3,
+            // Forced per chunk so llama.cpp does not reuse the previous chunk's cached prefix. See
+            // ReusePromptCache for the overflow this prevents.
+            cache_prompt = ReusePromptCache
         };
 
         string requestBody = JsonSerializer.Serialize(request);
@@ -1011,7 +1032,8 @@ internal sealed class AutoCompactionService
                             model,
                             messages,
                             max_tokens = EffectiveSummaryMaxTokens,
-                            temperature = 0.3
+                            temperature = 0.3,
+                            cache_prompt = ReusePromptCache
                         };
 
         string requestBody = JsonSerializer.Serialize(request);
@@ -1255,7 +1277,8 @@ internal sealed class AutoCompactionService
             model,
             messages,
             max_tokens = Math.Max(CombineMaxTokens, _targetTokens > 0 ? _targetTokens : 0),
-            temperature = 0.3
+            temperature = 0.3,
+            cache_prompt = ReusePromptCache
         };
 
         string requestBody = JsonSerializer.Serialize(request);

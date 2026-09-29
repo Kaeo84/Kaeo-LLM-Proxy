@@ -60,6 +60,44 @@ public class CompactionKeepAliveTests
         public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Fails every write the way a closed listener socket does, counting the attempts so a pump that
+    /// tried to write can be distinguished from one that never did.
+    /// </summary>
+    private sealed class DisconnectedClientStream : Stream
+    {
+        public int WriteAttempts { get; private set; }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw Disconnected();
+
+        // The pump writes a ReadOnlyMemory, which the base class forwards to this overload because the
+        // frame bytes are a plain array. That is what makes it throw for the same reason the real
+        // HttpResponseStream does.
+        public override Task WriteAsync(
+            byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            WriteAttempts++;
+            throw Disconnected();
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        private static HttpListenerException Disconnected() =>
+            new(64, "An operation was attempted on a nonexistent network connection.");
+    }
+
     // ── The pump emits frames on the configured cadence ───────────────────
 
     [Fact]
@@ -177,5 +215,30 @@ public class CompactionKeepAliveTests
         // one problem for another.
         Assert.Contains("timed out", OllamaProxyHandler.DescribePassthroughFailureForTest(new TimeoutException("x9")));
         Assert.Contains("timed out", OllamaProxyHandler.DescribePassthroughFailureForTest(new TaskCanceledException("x9")));
+    }
+
+    [Fact]
+    public async Task AKeepAliveWriteToADisconnectedClientStopsThePumpWithoutThrowing()
+    {
+        // The compaction paths await this pump inside a finally block. Keep-alive is the only traffic on
+        // the wire during a redirected compaction, so an abandoned client surfaces on its write as an
+        // HttpListenerException; before that was tolerated the exception propagated out of the await,
+        // skipping the compaction cancellation and the local-retry cleanup, and a routine disconnect was
+        // reported as a passthrough failure.
+        using DisconnectedClientStream stream = new();
+        using CancellationTokenSource cts = new();
+
+        Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(stream, 5, cts.Token);
+
+        // The cadence is clamped to a 5s floor, so the first write — and therefore the failing one —
+        // cannot land sooner. Wait for the attempt instead of guessing at a delay.
+        for (int i = 0; i < 200 && stream.WriteAttempts == 0; i++)
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+
+        Assert.True(stream.WriteAttempts > 0, "The pump should have attempted a keep-alive write.");
+
+        await pump.WaitAsync(TimeSpan.FromSeconds(5)); // Must not throw.
+
+        Assert.True(pump.IsCompletedSuccessfully);
     }
 }

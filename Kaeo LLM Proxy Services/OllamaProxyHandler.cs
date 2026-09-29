@@ -2718,6 +2718,17 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// Used to keep the client connection alive while waiting for the upstream to send its
     /// first response header (i.e. before the first token is generated).
     /// </summary>
+    /// <remarks>
+    /// A client that has gone away must not fault this task. Keep-alive is the only traffic on the
+    /// wire during a redirected compaction, so the socket is where a disconnect surfaces — as an
+    /// <see cref="HttpListenerException"/>, since the stream is an
+    /// <see cref="HttpResponseStream"/> — and the callers observe the pump's exception by awaiting
+    /// it in a <c>finally</c> block. Left to propagate, that exception skipped the compaction
+    /// cancellation and the local-retry cleanup that share those blocks, and a normal client
+    /// disconnect was reported as a passthrough failure. The pump has no useful work left once the
+    /// client is gone, so it stops quietly; the real failure is reported by whatever path is
+    /// awaiting the compaction itself.
+    /// </remarks>
     private static async Task PumpPreResponseSseKeepAliveAsync(
         Stream output,
         int intervalSeconds,
@@ -2734,6 +2745,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             }
         }
         catch (OperationCanceledException) { /* expected on cancel */ }
+        catch (Exception ex) when (IsClientDisconnect(ex))
+        {
+            Log.Debug(ex, "Client disconnected while the SSE keep-alive pump was writing");
+        }
     }
 
     /// <summary>

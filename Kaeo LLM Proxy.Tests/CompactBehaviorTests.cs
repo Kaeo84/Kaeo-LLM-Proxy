@@ -189,6 +189,48 @@ public class CompactBehaviorTests
     }
 
     [Fact]
+    public async Task CompactAsync_ForcesThePromptCacheToBeClearedOnEverySummarizationRequest()
+    {
+        // llama.cpp reuses the largest prompt prefix it still holds cached and then charges the new
+        // prompt against the context window on top of it. Chunked summarization sends prompts that
+        // share only their opening instructions, so crossing from one chunk to the next failed with
+        // "failed to find N available cells in kv cache" — surfaced to the client as
+        // exceed_context_size_error — even though each chunk fits on its own. Every summarization
+        // request must therefore clear the cache so each chunk starts from a known-empty context.
+        StubChatHandler stub = new();
+        using HttpClient http = new(stub);
+        AutoCompactionService service = new(http);
+
+        string chunkFiller = new string('c', 20_000);
+        string body = BuildBody(
+            ("user", $"first {chunkFiller}"),
+            ("assistant", $"answer {chunkFiller}"),
+            ("user", $"second {chunkFiller}"),
+            ("assistant", $"answer2 {chunkFiller}"),
+            ("user", "final question?"));
+
+        string? compacted = await CompactAsync(service, NewMapping(), body, CompactionFormat.Proxy);
+
+        Assert.NotNull(compacted);
+
+        // The batch boundary is the case that failed, so more than one request has to be inspected for
+        // this to prove anything: a single request could clear its cache by accident of being first.
+        Assert.True(stub.RequestBodies.Count >= 2,
+            $"expected multiple chunk summarization requests, got {stub.RequestBodies.Count}");
+
+        foreach (string request in stub.RequestBodies)
+        {
+            using JsonDocument doc = JsonDocument.Parse(request);
+            Assert.True(
+                doc.RootElement.TryGetProperty("cache_prompt", out JsonElement cachePrompt),
+                "Every compaction request must state cache_prompt explicitly.");
+            Assert.False(
+                cachePrompt.GetBoolean(),
+                "Compaction must force the upstream to clear its prompt cache between chunks.");
+        }
+    }
+
+    [Fact]
     public async Task CompactAsync_BodyWithoutMessages_ReturnsNullWithoutCallingUpstream()
     {
         StubChatHandler stub = new();
