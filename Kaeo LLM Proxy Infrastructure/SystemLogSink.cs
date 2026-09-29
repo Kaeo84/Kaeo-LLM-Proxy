@@ -13,7 +13,8 @@ internal sealed record SystemLogEntry(
     string Level,
     string Message,
     string? Exception,
-    string? SourceContext);
+    string? SourceContext,
+    bool IsHeartbeat = false);
 
 /// <summary>
 /// Bounded in-memory Serilog sink that retains the most recent log events for real-time

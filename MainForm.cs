@@ -830,6 +830,19 @@ internal partial class MainForm : Form
             RefreshSystemLogsDebounced();
 
         /// <summary>
+        /// Re-queries after the heartbeat split is toggled and persists the choice. The split is applied in
+        /// SQL rather than to the cached rows, so a refresh is required rather than a re-render.
+        /// </summary>
+        private void SysLogHideHeartbeats_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_loadingSettings)
+                return;
+
+            SaveGeneralSettings();
+            RefreshSystemLogs();
+        }
+
+        /// <summary>
         /// Refreshes the System Logs list after a short debounce so a fast typist does not trigger a
         /// database query per keystroke. The debounce timer is created once and restarted on each call.
         /// </summary>
@@ -1354,10 +1367,13 @@ internal partial class MainForm : Form
             string? searchText = string.IsNullOrWhiteSpace(_txtSysLogFilter.Text) ? null : _txtSysLogFilter.Text.Trim();
 
             IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(
-                levelFilter: null, limit: 500, levelFilters: levelFilters, searchText: searchText);
+                levelFilter: null, limit: 500, levelFilters: levelFilters, searchText: searchText,
+                excludeHeartbeats: _chkSysLogHideHeartbeats.Checked);
 
             bool dbHealthy = AppLogger.DbSink?.IsUsingDatabase ?? true;
             string scope = levelFilters is null ? "all levels" : $"{levelFilters.Count} level(s)";
+            if (_chkSysLogHideHeartbeats.Checked)
+                scope += ", heartbeats hidden";
             _lblSysLogStatus.Text = dbHealthy
                 ? $"Database ({entries.Count} entries, {scope})"
                 : "Fallback file active (DB unavailable)";
@@ -1740,6 +1756,7 @@ internal partial class MainForm : Form
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
+        _chkSysLogHideHeartbeats.Checked = _settings.HideHeartbeatLogs;
         _chkDebugMode.Checked = _settings.DebugMode;
         _chkIrTranslation.Checked = _settings.UseIrTranslation;
         HashSet<NonProxiedCategory> capture = _settings.CollectNonProxiedCategories;
@@ -1797,25 +1814,10 @@ internal partial class MainForm : Form
             mapping.ProxyName,
             mapping.ModelName,
             mapping.InstructionSetName ?? string.Empty,
-            mapping.ReasoningEffort ?? string.Empty,
-            mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No",
-            DescribeCompactionTarget(mapping),
-            mapping.RedirectManualCompaction ? "Yes" : "No");
+            mapping.ReasoningEffort ?? string.Empty);
 
         _dgvMappings.Rows[idx].Tag = mapping;
         return idx;
-    }
-
-    /// <summary>
-    /// Describes where /compact requests for <paramref name="mapping"/> actually go, using the
-    /// same resolver the proxy uses so the grid can never display a target that differs from the
-    /// one routing picks. A target that resolves to the mapping itself reads as no target, matching
-    /// the self-reference rule in the manual-compaction resolver.
-    /// </summary>
-    private string DescribeCompactionTarget(ModelMapping mapping)
-    {
-        ModelMapping? target = _settings.FindContextSummarizeTarget(mapping);
-        return target is null || target.Id == mapping.Id ? string.Empty : target.ProxyName;
     }
 
     /// <summary>Placeholder shown in the Global Copilot Compaction Model dropdown for "no target".</summary>
@@ -1990,6 +1992,7 @@ internal partial class MainForm : Form
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
+        _settings.HideHeartbeatLogs = _chkSysLogHideHeartbeats.Checked;
         _settings.DebugMode = _chkDebugMode.Checked;
         _settings.UseIrTranslation = _chkIrTranslation.Checked;
         // One toggle per category. Rejected requests are deliberately affected by their own toggle
@@ -2335,9 +2338,6 @@ internal partial class MainForm : Form
             row.Cells[_colModelName.Name].Value = mapping.ModelName;
             row.Cells[_colInstructionSet.Name].Value = mapping.InstructionSetName ?? string.Empty;
             row.Cells[_colReasoningEffort.Name].Value = mapping.ReasoningEffort ?? string.Empty;
-            row.Cells[_colVision.Name].Value = mapping.Capabilities.Contains("vision", StringComparer.OrdinalIgnoreCase) ? "Yes" : "No";
-            row.Cells[_colCompactionTarget.Name].Value = DescribeCompactionTarget(mapping);
-            row.Cells[_colCompactionRedirect.Name].Value = mapping.RedirectManualCompaction ? "Yes" : "No";
 
             CommitMappingsFromGrid();
         }

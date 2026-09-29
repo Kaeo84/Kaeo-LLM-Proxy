@@ -56,6 +56,7 @@ partial class MainForm
         _colSysLogMsg = new ColumnHeader();
         _colSysLogSrc = new ColumnHeader();
         _lblSysLogStatus = new Label();
+        _chkSysLogHideHeartbeats = new CheckBox();
         _tabHelp = new TabPage();
         _helpTabs = new TabControl();
 
@@ -200,9 +201,6 @@ partial class MainForm
         _colModelName = new DataGridViewTextBoxColumn();
         _colInstructionSet = new DataGridViewTextBoxColumn();
         _colReasoningEffort = new DataGridViewTextBoxColumn();
-        _colVision = new DataGridViewTextBoxColumn();
-        _colCompactionTarget = new DataGridViewTextBoxColumn();
-        _colCompactionRedirect = new DataGridViewTextBoxColumn();
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
@@ -1368,6 +1366,9 @@ partial class MainForm
         _chkIrTranslation.AutoSize = true;
         _chkIrTranslation.Margin = new Padding(4, 4, 4, 4);
         _chkIrTranslation.Name = "_chkIrTranslation";
+        // Capped so the long caption wraps to a second line instead of demanding a phantom column
+        // width and pushing the whole tab past the window edge.
+        _chkIrTranslation.MaximumSize = new Size(600, 0);
         _chkIrTranslation.Text = "Use IR translation pipeline (experimental: validate the Microsoft.Extensions.AI path against live traffic)";
 
         // _grpNonProxiedCapture — one toggle per category of request the proxy answers without
@@ -1400,6 +1401,8 @@ partial class MainForm
 
         _lblNonProxiedCaptureIntro.AutoSize = true;
         _lblNonProxiedCaptureIntro.Margin = new Padding(4, 4, 4, 4);
+        // Capped so the caption wraps rather than demanding a phantom column width.
+        _lblNonProxiedCaptureIntro.MaximumSize = new Size(600, 0);
         _lblNonProxiedCaptureIntro.Name = "_lblNonProxiedCaptureIntro";
         _lblNonProxiedCaptureIntro.Text = "Requests the proxy answers without calling a model are logged to the Non-proxied tab. Choose which categories to capture:";
 
@@ -1430,6 +1433,8 @@ partial class MainForm
 
         _lblCollectNonProxiedWarning.AutoSize = true;
         _lblCollectNonProxiedWarning.Margin = new Padding(4, 4, 4, 4);
+        // Capped so the caption wraps rather than demanding a phantom column width.
+        _lblCollectNonProxiedWarning.MaximumSize = new Size(600, 0);
         _lblCollectNonProxiedWarning.Name = "_lblCollectNonProxiedWarning";
         _lblCollectNonProxiedWarning.ForeColor = Color.DarkOrange;
         _lblCollectNonProxiedWarning.Text = "⚠ Turning a category off stops that traffic from being logged at all. Health probes and version/explorer calls arrive every few seconds, so leaving them on can bury real traffic.";
@@ -1476,9 +1481,6 @@ partial class MainForm
         _dgvMappings.Columns.Add(_colModelName);
         _dgvMappings.Columns.Add(_colInstructionSet);
         _dgvMappings.Columns.Add(_colReasoningEffort);
-        _dgvMappings.Columns.Add(_colVision);
-        _dgvMappings.Columns.Add(_colCompactionTarget);
-        _dgvMappings.Columns.Add(_colCompactionRedirect);
         _dgvMappings.Dock = DockStyle.Fill;
         _dgvMappings.Margin = new Padding(4, 4, 4, 4);
         _dgvMappings.MinimumSize = new Size(0, 120);
@@ -1506,19 +1508,6 @@ partial class MainForm
         _colReasoningEffort.Name = "_colReasoningEffort";
         _colReasoningEffort.FillWeight = 90;
         _colReasoningEffort.DefaultCellStyle.NullValue = string.Empty;
-
-        _colVision.HeaderText = "Vision";
-        _colVision.Name = "_colVision";
-        _colVision.FillWeight = 50;
-
-        _colCompactionTarget.HeaderText = "Compaction Model";
-        _colCompactionTarget.Name = "_colCompactionTarget";
-        _colCompactionTarget.FillWeight = 110;
-        _colCompactionTarget.DefaultCellStyle.NullValue = string.Empty;
-
-        _colCompactionRedirect.HeaderText = "Redirect /compact";
-        _colCompactionRedirect.Name = "_colCompactionRedirect";
-        _colCompactionRedirect.FillWeight = 70;
 
         _flpMappingButtons.AutoSize = true;
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -2243,14 +2232,16 @@ partial class MainForm
         _tabSysLogs.Padding = new Padding(8);
         _tabSysLogs.Text = "System Logs";
 
-        // _tlpSysLogs — 1 column: top bar AutoSize | list fills remaining
+        // _tlpSysLogs — 1 column: top bar AutoSize | status line AutoSize | list fills remaining
         _tlpSysLogs.ColumnCount = 1;
         _tlpSysLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSysLogs.Controls.Add(_flpSysLogTop, 0, 0);
-        _tlpSysLogs.Controls.Add(_lstSysLogs, 0, 1);
+        _tlpSysLogs.Controls.Add(_lblSysLogStatus, 0, 1);
+        _tlpSysLogs.Controls.Add(_lstSysLogs, 0, 2);
         _tlpSysLogs.Dock = DockStyle.Fill;
         _tlpSysLogs.Name = "_tlpSysLogs";
-        _tlpSysLogs.RowCount = 2;
+        _tlpSysLogs.RowCount = 3;
+        _tlpSysLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpSysLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpSysLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -2259,14 +2250,14 @@ partial class MainForm
         _flpSysLogTop.AutoSize = true;
         _flpSysLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
         _flpSysLogTop.FlowDirection = FlowDirection.LeftToRight;
-        _flpSysLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpSysLogTop.Margin = new Padding(0, 0, 0, 2);
         _flpSysLogTop.Name = "_flpSysLogTop";
         _flpSysLogTop.WrapContents = false;
         _flpSysLogTop.Controls.Add(_lblSysLogLevel);
         _flpSysLogTop.Controls.Add(_clbSysLogLevel);
         _flpSysLogTop.Controls.Add(_lblSysLogFilter);
         _flpSysLogTop.Controls.Add(_txtSysLogFilter);
-        _flpSysLogTop.Controls.Add(_lblSysLogStatus);
+        _flpSysLogTop.Controls.Add(_chkSysLogHideHeartbeats);
 
         _lblSysLogLevel.Anchor = AnchorStyles.Left;
         _lblSysLogLevel.AutoSize = true;
@@ -2296,9 +2287,21 @@ partial class MainForm
         _txtSysLogFilter.Size = new Size(280, 23);
         _txtSysLogFilter.TextChanged += SysLogFilter_TextChanged;
 
+        // Keeps the periodic ping failures - one line per interval for every model that is down -
+        // from burying the entries worth reading. Excluded in the query so the row limit applies to
+        // what is left, not to a window the heartbeats have already filled.
+        _chkSysLogHideHeartbeats.Anchor = AnchorStyles.Left;
+        _chkSysLogHideHeartbeats.AutoSize = true;
+        _chkSysLogHideHeartbeats.Margin = new Padding(0, 4, 0, 0);
+        _chkSysLogHideHeartbeats.Name = "_chkSysLogHideHeartbeats";
+        _chkSysLogHideHeartbeats.Text = "Hide heartbeat errors";
+        _chkSysLogHideHeartbeats.CheckedChanged += SysLogHideHeartbeats_CheckedChanged;
+
+        // Own full-width row rather than the end of the filter bar: the entry count and scope run
+        // long enough that a single-row flow layout clipped them at the right edge.
         _lblSysLogStatus.Anchor = AnchorStyles.Left;
         _lblSysLogStatus.AutoSize = true;
-        _lblSysLogStatus.Margin = new Padding(0, 5, 0, 0);
+        _lblSysLogStatus.Margin = new Padding(0, 0, 0, 4);
         _lblSysLogStatus.Name = "_lblSysLogStatus";
         _lblSysLogStatus.Text = "";
 
@@ -2746,9 +2749,6 @@ partial class MainForm
     private DataGridViewTextBoxColumn _colModelName;
     private DataGridViewTextBoxColumn _colInstructionSet;
     private DataGridViewTextBoxColumn _colReasoningEffort;
-    private DataGridViewTextBoxColumn _colVision;
-    private DataGridViewTextBoxColumn _colCompactionTarget;
-    private DataGridViewTextBoxColumn _colCompactionRedirect;
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
@@ -2890,6 +2890,7 @@ partial class MainForm
     private Label _lblSysLogLevel;
     private Label _lblSysLogFilter;
     private TextBox _txtSysLogFilter;
+    private CheckBox _chkSysLogHideHeartbeats;
     private ListView _lstSysLogs;
     private ColumnHeader _colSysLogTime;
     private ColumnHeader _colSysLogLevel;

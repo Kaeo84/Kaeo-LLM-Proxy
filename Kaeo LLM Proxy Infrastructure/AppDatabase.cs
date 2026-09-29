@@ -631,7 +631,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_copilot_compaction_routing,
                     compaction_instruction_set_name,
                     compaction_target_tokens,
-                    max_concurrent_compactions
+                    max_concurrent_compactions,
+                    hide_heartbeat_logs
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -669,6 +670,7 @@ internal sealed class AppDatabase : IDisposable
                 CompactionInstructionSetName = reader.IsDBNull(19) ? null : reader.GetString(19),
                 CompactionTargetTokens = reader.GetInt32(20),
                 MaxConcurrentCompactions = reader.GetInt32(21),
+                HideHeartbeatLogs = ReadBoolean(reader, 22),
             };
         }
     }
@@ -706,7 +708,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_copilot_compaction_routing,
                     compaction_instruction_set_name,
                     compaction_target_tokens,
-                    max_concurrent_compactions
+                    max_concurrent_compactions,
+                    hide_heartbeat_logs
                 )
                 VALUES (
                     $id,
@@ -731,7 +734,8 @@ internal sealed class AppDatabase : IDisposable
                     $enableCopilotCompactionRouting,
                     $compactionInstructionSetName,
                     $compactionTargetTokens,
-                    $maxConcurrentCompactions
+                    $maxConcurrentCompactions,
+                    $hideHeartbeatLogs
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -755,7 +759,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_copilot_compaction_routing = excluded.enable_copilot_compaction_routing,
                     compaction_instruction_set_name = excluded.compaction_instruction_set_name,
                     compaction_target_tokens = excluded.compaction_target_tokens,
-                    max_concurrent_compactions = excluded.max_concurrent_compactions;
+                    max_concurrent_compactions = excluded.max_concurrent_compactions,
+                    hide_heartbeat_logs = excluded.hide_heartbeat_logs;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -785,6 +790,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$compactionInstructionSetName", DbValue(settings.CompactionInstructionSetName));
             command.Parameters.AddWithValue("$compactionTargetTokens", settings.CompactionTargetTokens);
             command.Parameters.AddWithValue("$maxConcurrentCompactions", settings.MaxConcurrentCompactions);
+            command.Parameters.AddWithValue("$hideHeartbeatLogs", ToSqliteBoolean(settings.HideHeartbeatLogs));
             command.ExecuteNonQuery();
         }
     }
@@ -1424,7 +1430,8 @@ internal sealed class AppDatabase : IDisposable
                     enable_copilot_compaction_routing INTEGER NOT NULL DEFAULT 1,
                     compaction_instruction_set_name TEXT NULL,
                     compaction_target_tokens INTEGER NOT NULL DEFAULT 0,
-                    max_concurrent_compactions INTEGER NOT NULL DEFAULT 1
+                    max_concurrent_compactions INTEGER NOT NULL DEFAULT 1,
+                    hide_heartbeat_logs INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1653,6 +1660,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "compaction_instruction_set_name", "TEXT NULL"),
                                 ("runtime_settings", "compaction_target_tokens", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "max_concurrent_compactions", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "hide_heartbeat_logs", "INTEGER NOT NULL DEFAULT 0"),
 
                                 // ── credentials ───────────────────────────────────────────────
                                 ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),
@@ -2500,9 +2508,16 @@ internal sealed class AppDatabase : IDisposable
     /// </summary>
     /// <param name="levelFilter">Optional level name to filter by (e.g. "Error"). Null returns all.</param>
     /// <param name="limit">Maximum number of entries to return. Default 500.</param>
+    /// <param name="excludeHeartbeats">
+    /// When true, periodic heartbeat-failure entries are omitted. Excluding in SQL rather than in the
+    /// caller keeps <paramref name="limit"/> applying to the entries the caller actually wants, which
+    /// matters because a failed probe repeats for every enabled model and can otherwise fill the whole
+    /// window.
+    /// </param>
     public IReadOnlyList<SystemLogEntry> GetSystemLogs(
             string? levelFilter = null, int limit = 500,
-            IReadOnlyCollection<string>? levelFilters = null, string? searchText = null)
+            IReadOnlyCollection<string>? levelFilters = null, string? searchText = null,
+            bool excludeHeartbeats = false)
         {
             lock (_lock)
             {
@@ -2543,6 +2558,15 @@ internal sealed class AppDatabase : IDisposable
                     command.Parameters.AddWithValue("$search", "%" + EscapeLike(searchText.Trim()) + "%");
                 }
 
+                // The heartbeat marker is stamped into the message by the logger, so the split keys on
+                // stored text rather than an event property the database sink cannot persist.
+                if (excludeHeartbeats)
+                {
+                    clauses.Add("message NOT LIKE $heartbeat ESCAPE '\\'");
+                    command.Parameters.AddWithValue(
+                        "$heartbeat", "%" + EscapeLike(AppLogger.HeartbeatMessageMarker) + "%");
+                }
+
                 string where = clauses.Count > 0 ? " WHERE " + string.Join(" AND ", clauses) : string.Empty;
                 command.CommandText =
                     "SELECT timestamp_utc, level, message, exception, source_context " +
@@ -2562,7 +2586,8 @@ internal sealed class AppDatabase : IDisposable
                     string? exception = reader.IsDBNull(3) ? null : reader.GetString(3);
                     string? sourceContext = reader.IsDBNull(4) ? null : reader.GetString(4);
 
-                    results.Add(new SystemLogEntry(timestamp, level, message, exception, sourceContext));
+                    results.Add(new SystemLogEntry(timestamp, level, message, exception, sourceContext,
+                        message.Contains(AppLogger.HeartbeatMessageMarker, StringComparison.Ordinal)));
                 }
 
             return results;

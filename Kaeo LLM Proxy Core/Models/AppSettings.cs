@@ -342,6 +342,18 @@ internal sealed class RuntimeSettings
         public bool EnableIrTranslation { get; set; } = false;
 
         /// <summary>
+        /// When true, the System Logs tab drops periodic heartbeat-failure entries from its listing.
+        /// Default: false, so nothing is hidden until asked for.
+        /// </summary>
+        /// <remarks>
+        /// A failed liveness ping repeats on a timer for every enabled model, so one unreachable
+        /// upstream produces a line per interval indefinitely and can bury the entries worth reading.
+        /// The ping's own failure count, last status and last error are already on the Heartbeats tab,
+        /// so hiding these here loses nothing. Serialised as a plain boolean column.
+        /// </remarks>
+        public bool HideHeartbeatLogs { get; set; } = false;
+
+        /// <summary>
         /// Which categories of non-model request are captured into the Non-proxied log. Each category is
         /// independently toggleable so the frequent automated probes (a health poller hitting
         /// <c>HEAD /</c> every few seconds) can be silenced without also hiding the errors worth
@@ -1118,6 +1130,18 @@ internal sealed class AppSettings
     public bool UseIrTranslation { get; set; } = false;
 
     /// <summary>
+    /// When true, the System Logs tab hides periodic heartbeat-failure entries. Default: false.
+    /// </summary>
+    /// <remarks>
+    /// Persisted through <see cref="RuntimeSettings.HideHeartbeatLogs"/>. The split is by the
+    /// heartbeat marker the logger stamps into the message, so it is independent of
+    /// <see cref="LoggingSettings.HeartbeatMinimumLevel"/>, which decides whether a heartbeat line is
+    /// recorded at all.
+    /// </remarks>
+    [JsonIgnore]
+    public bool HideHeartbeatLogs { get; set; } = false;
+
+    /// <summary>
     /// Seconds between SSE keep-alive frames sent to the client while waiting for upstream tokens.
     /// Min: 5, Max: 300. Default: 60.
     /// </summary>
@@ -1436,6 +1460,7 @@ internal sealed class AppSettings
         CollectResponseDetails = CollectResponseDetails,
         DebugMode = DebugMode,
         EnableIrTranslation = UseIrTranslation,
+        HideHeartbeatLogs = HideHeartbeatLogs,
         CollectNonProxiedCategories = [.. CollectNonProxiedCategories],
         EnableSseKeepAlive = EnableSseKeepAlive,
         SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
@@ -1463,6 +1488,7 @@ internal sealed class AppSettings
         CollectResponseDetails = runtimeSettings.CollectResponseDetails;
         DebugMode = runtimeSettings.DebugMode;
         UseIrTranslation = runtimeSettings.EnableIrTranslation;
+        HideHeartbeatLogs = runtimeSettings.HideHeartbeatLogs;
         CollectNonProxiedCategories = [.. runtimeSettings.CollectNonProxiedCategories];
         EnableSseKeepAlive = runtimeSettings.EnableSseKeepAlive;
         SseKeepAliveIntervalSeconds = runtimeSettings.SseKeepAliveIntervalSeconds;

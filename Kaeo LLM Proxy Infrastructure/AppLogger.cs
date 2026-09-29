@@ -48,6 +48,26 @@ internal static class AppLogger
     internal const string HeartbeatMarkerProperty = "IsHeartbeat";
 
     /// <summary>
+    /// Text stamped into every heartbeat-failure message so the System Logs tab can split those
+    /// periodic lines from everything else.
+    /// </summary>
+    /// <remarks>
+    /// A message marker is used rather than the <c>IsHeartbeat</c> event property because the
+    /// database sink cannot take a Serilog filter of its own and does not persist event properties,
+    /// and rather than the source-context column because rows written before that column existed
+    /// have none, so a source-based split would misfile old logs. Callers keep their own wording;
+    /// the marker is only what the filter keys on.
+    /// </remarks>
+    internal const string HeartbeatMessageMarker = "[heartbeat]";
+
+    /// <summary>
+    /// Formats a heartbeat-failure message so it carries <see cref="HeartbeatMessageMarker"/> while
+    /// leaving the caller's Serilog template (and its placeholders) intact.
+    /// </summary>
+    internal static string HeartbeatMessage(string template) =>
+        $"{HeartbeatMessageMarker} {template}";
+
+    /// <summary>
     /// Parses a Serilog level name, falling back when the value is missing or unrecognized.
     /// </summary>
     internal static LogEventLevel ParseLevel(string? value, LogEventLevel fallback) =>

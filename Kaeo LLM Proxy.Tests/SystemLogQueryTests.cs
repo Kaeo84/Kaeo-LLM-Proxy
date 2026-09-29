@@ -233,4 +233,99 @@ public class SystemLogQueryTests
 
         Assert.Equal(2, entries.Count);
     }
+
+    [Fact]
+    public void ExcludingHeartbeatsDropsOnlyTheMarkedRows()
+    {
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            Seed(path,
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} Periodic heartbeat failed for model llama", "boom", null),
+                ("Information", "proxy started", null, null));
+        }
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<SystemLogEntry> entries = database.GetSystemLogs(excludeHeartbeats: true);
+
+        SystemLogEntry only = Assert.Single(entries);
+        Assert.Equal("proxy started", only.Message);
+    }
+
+    [Fact]
+    public void HeartbeatRowsAreMarkedOnTheEntrySoACallerCanRenderThemDifferently()
+    {
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            Seed(path,
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} Periodic heartbeat failed for model llama", "boom", null),
+                ("Information", "proxy started", null, null));
+        }
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<SystemLogEntry> entries = database.GetSystemLogs();
+
+        Assert.True(entries.Single(e => e.Message.Contains("heartbeat failed")).IsHeartbeat);
+        Assert.False(entries.Single(e => e.Message == "proxy started").IsHeartbeat);
+    }
+
+    [Fact]
+    public void ExcludingHeartbeatsAppliesTheLimitAfterTheHeartbeatsAreRemoved()
+    {
+        // A failed ping repeats for every enabled model, so if the limit were applied before the
+        // exclusion it could be consumed entirely by heartbeat rows and leave nothing to show.
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            Seed(path,
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} heartbeat one", null, null),
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} heartbeat two", null, null),
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} heartbeat three", null, null),
+                ("Information", "proxy started", null, null));
+        }
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<SystemLogEntry> entries = database.GetSystemLogs(limit: 1, excludeHeartbeats: true);
+
+        SystemLogEntry only = Assert.Single(entries);
+        Assert.Equal("proxy started", only.Message);
+    }
+
+    [Fact]
+    public void ExcludingHeartbeatsLeavesAnUnmarkedDebugLineAlone()
+    {
+        // The split keys on the marker, so an ordinary Debug line at the same level survives; this is
+        // what keeps the filter from being a second, silent threshold on everything at that severity.
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            Seed(path,
+                ("Debug", "ordinary debug detail", null, null),
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} heartbeat line", null, null));
+        }
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<SystemLogEntry> entries = database.GetSystemLogs(excludeHeartbeats: true);
+
+        SystemLogEntry only = Assert.Single(entries);
+        Assert.Equal("ordinary debug detail", only.Message);
+    }
+
+    [Fact]
+    public void HeartbeatMarkerInTheMessageIsNotTreatedAsAWildcard()
+    {
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            Seed(path,
+                ("Debug", $"{AppLogger.HeartbeatMessageMarker} heartbeat one", null, null),
+                ("Information", "unrelated", null, null));
+        }
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<SystemLogEntry> entries = database.GetSystemLogs(excludeHeartbeats: true);
+
+        Assert.DoesNotContain(entries, e => e.IsHeartbeat);
+    }
 }

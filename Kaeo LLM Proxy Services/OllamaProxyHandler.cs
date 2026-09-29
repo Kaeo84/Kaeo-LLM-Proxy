@@ -216,9 +216,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
         // Same treatment as the exception path above: a non-success probe answer repeats forever for a
         // model that is down, so it is Debug plus the marker rather than Warning, and the configured
-        // heartbeat threshold decides whether it is recorded at all.
+        // heartbeat threshold decides whether it is recorded at all. The message marker additionally
+        // lets the System Logs tab isolate or hide these lines.
         Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
-            .Debug("Heartbeat probe for model {Model} returned {Error}", modelName, error);
+            .Debug(AppLogger.HeartbeatMessage("Heartbeat probe for model {Model} returned {Error}"), modelName, error);
     }
 
     private void RecordPeriodicHeartbeatFailure(ModelMapping mapping, string errorMessage)
@@ -7808,9 +7809,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 // Gatewayed by the logger-wide exclusion on LoggingSettings.HeartbeatMinimumLevel, so
                 // raising that threshold silences these everywhere at once. Nothing is lost: the last
                 // status, failure count, probe time and error are recorded per model and shown on the
-                // Heartbeats tab.
+                // Heartbeats tab. The message marker additionally lets the System Logs tab isolate or
+                // hide these lines.
                 Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
-                    .Debug(ex, "Periodic heartbeat failed for model {Model}", _mapping.ProxyName);
+                    .Debug(ex, AppLogger.HeartbeatMessage("Periodic heartbeat failed for model {Model}"), _mapping.ProxyName);
             }
             finally
             {
