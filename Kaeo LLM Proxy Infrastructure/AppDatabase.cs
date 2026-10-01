@@ -263,7 +263,8 @@ internal sealed class AppDatabase : IDisposable
                     auto_compact_paths,
                     redirect_manual_compaction,
                     enable_heartbeats,
-                    enable_copilot_compatibility
+                    enable_copilot_compatibility,
+                    forward_client_authorization
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -342,7 +343,8 @@ internal sealed class AppDatabase : IDisposable
                         auto_compact_paths,
                         redirect_manual_compaction,
                         enable_heartbeats,
-                        enable_copilot_compatibility
+                        enable_copilot_compatibility,
+                        forward_client_authorization
                     )
                     VALUES (
                         $id,
@@ -378,7 +380,8 @@ internal sealed class AppDatabase : IDisposable
                         $autoCompactPaths,
                         $redirectManualCompaction,
                         $enableHeartbeats,
-                        $enableCopilotCompatibility
+                        $enableCopilotCompatibility,
+                        $forwardClientAuthorization
                     );
                     """;
 
@@ -1381,7 +1384,8 @@ internal sealed class AppDatabase : IDisposable
                     auto_compact_paths INTEGER NOT NULL DEFAULT 0,
                     redirect_manual_compaction INTEGER NOT NULL DEFAULT 0,
                     enable_heartbeats INTEGER NOT NULL DEFAULT 1,
-                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1
+                    enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1,
+                    forward_client_authorization INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1636,6 +1640,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("model_mappings", "redirect_manual_compaction", "INTEGER NOT NULL DEFAULT 0"),
                                 ("model_mappings", "enable_heartbeats", "INTEGER NOT NULL DEFAULT 1"),
                                 ("model_mappings", "enable_copilot_compatibility", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "forward_client_authorization", "INTEGER NOT NULL DEFAULT 0"),
 
                                 // ── runtime_settings ──────────────────────────────────────────
                                 ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
@@ -1988,6 +1993,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$redirectManualCompaction", ToSqliteBoolean(mapping.RedirectManualCompaction));
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$enableCopilotCompatibility", ToSqliteBoolean(mapping.EnableCopilotCompatibility));
+        command.Parameters.AddWithValue("$forwardClientAuthorization", ToSqliteBoolean(mapping.ForwardClientAuthorization));
     }
 
     /// <summary>
@@ -2071,6 +2077,7 @@ internal sealed class AppDatabase : IDisposable
         mapping.RedirectManualCompaction = ReadBoolean(reader, 31);
         mapping.EnableHeartbeats = ReadBoolean(reader, 32);
         mapping.EnableCopilotCompatibility = ReadBoolean(reader, 33);
+        mapping.ForwardClientAuthorization = ReadBoolean(reader, 34);
         return mapping;
     }
 

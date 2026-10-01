@@ -106,6 +106,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly GroupBox _grpCopilotCompat = new();
     private readonly TableLayoutPanel _tlpCopilotCompat = new();
     private readonly CheckBox _chkEnableCopilotCompatibility = new();
+    private readonly CheckBox _chkForwardClientAuthorization = new();
     // The status text explains in prose what Copilot compatibility does, so the label needs to wrap
     // inside the dialog rather than grow sideways: AutoSize combined with a MaximumSize width is the
     // WinForms pattern for a wrapping, self-sizing label (same as _lblCompactionStatus).
@@ -467,6 +468,13 @@ internal sealed class ModelMappingDialog : Form
         set => _chkEnableHeartbeats.Checked = value;
     }
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool ForwardClientAuthorization
+    {
+        get => _chkForwardClientAuthorization.Checked;
+        set => _chkForwardClientAuthorization.Checked = value;
+    }
+
     /// <summary>
     /// The capability tokens currently enabled in the Model Capabilities table, returned in
     /// canonical order (known tokens first, then custom tokens in row order; deduped). Disabled
@@ -823,7 +831,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 22;
+        _tlpMain.RowCount = 23;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -920,6 +928,12 @@ internal sealed class ModelMappingDialog : Form
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
         _tlpMain.Controls.Add(_grpRedaction, 0, 21);
+
+        // Forwarding the client's own bearer token is a security decision rather than a
+        // compatibility one, so it sits below the redaction group with the other
+        // "what leaves this process" options.
+        _tlpMain.SetColumnSpan(_chkForwardClientAuthorization, 3);
+        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 22);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1179,6 +1193,19 @@ internal sealed class ModelMappingDialog : Form
         _tlpRedaction.Controls.Add(_chkRedactSensitiveJsonFields, 0, 2);
 
         _grpRedaction.Controls.Add(_tlpRedaction);
+
+        _chkForwardClientAuthorization.AutoSize = true;
+        _chkForwardClientAuthorization.Margin = new Padding(0, 2, 0, 2);
+        _chkForwardClientAuthorization.Text = "Forward the client's own Authorization header to this upstream (unchecked by default)";
+        _toolTip.SetToolTip(
+            _chkForwardClientAuthorization,
+            "OpenAI-compatible clients send their own bearer token in the Authorization header.\n"
+            + "Unchecked (default) - that header is dropped before the request leaves this process,\n"
+            + "so a mapping pointing at a third-party base URL never receives a caller's credential.\n"
+            + "Checked - the client's header is relayed, for upstreams that expect the caller's own\n"
+            + "key (e.g. a client-supplied subscription credential).\n\n"
+            + "A mapping with its own configured credential is unaffected either way: its key always\n"
+            + "wins, so a correctly configured upstream is never shadowed by a client token.");
 
         // Copilot Compatibility group: a single toggle plus a wrapping status label that explains
         // what it does, mirroring the Compaction group's structure and theming.
@@ -2208,6 +2235,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
         dlg.RedactResponseBodies = mapping.RedactResponseBodies;
         dlg.RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields;
+        dlg.ForwardClientAuthorization = mapping.ForwardClientAuthorization;
         dlg.UpdateCompactionStatus();
 
         DialogResult result = dlg.ShowDialog(owner);
@@ -2250,6 +2278,7 @@ internal sealed class ModelMappingDialog : Form
         mapping.RedactRequestBodies = dlg.RedactRequestBodies;
         mapping.RedactResponseBodies = dlg.RedactResponseBodies;
         mapping.RedactSensitiveJsonFields = dlg.RedactSensitiveJsonFields;
+        mapping.ForwardClientAuthorization = dlg.ForwardClientAuthorization;
         return true;
     }
 

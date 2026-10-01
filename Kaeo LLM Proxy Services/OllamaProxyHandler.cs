@@ -93,7 +93,16 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         /// <summary>Called from the Settings UI after the user saves new settings.</summary>
         public void UpdateSettings(AppSettings settings)
         {
-            _settings = settings;
+            ArgumentNullException.ThrowIfNull(settings);
+
+            // Publish a private copy rather than the caller's live object. The Settings tab keeps
+            // mutating that object in place - the model-mapping list, the credential list and the
+            // instruction-set list are rebuilt on every save - while request threads enumerate
+            // whatever this field points at. Sharing one instance across both sides is what makes a
+            // save under load throw InvalidOperationException out of a live request, or worse, let a
+            // request see a half-applied mapping and report an upstream authentication failure.
+            // Request paths only ever read this reference, so a deep copy here is the whole contract.
+            _settings = settings.Clone();
             ApplyCompactionSettings();
             HttpClient old = _httpClient;
             _httpClient = BuildHttpClient();
@@ -245,37 +254,46 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// returns the first mapping's upstream settings as a fallback.
     /// </summary>
     private (string BaseUrl, int TimeoutSeconds, string? ApiKey) ResolveUpstream(string ollamaModel)
+        => ResolveUpstream(ResolveMapping(ollamaModel));
+
+    /// <summary>
+    /// The single mapping-selection authority behind <see cref="ResolveUpstream"/>: an exact enabled
+    /// match on the proxy name or the upstream name, else — only when no model was requested — the
+    /// first enabled mapping. Every caller that needs to know which mapping a request targets must go
+    /// through here rather than calling <see cref="AppSettings.FindModelMapping"/> directly, so the
+    /// routing decision and the per-mapping request gates (the client-credential relay, the upstream
+    /// origin check) cannot resolve a different mapping than the one the request is sent to.
+    /// </summary>
+    private ModelMapping ResolveMapping(string ollamaModel)
     {
         ModelMapping? mapping = _settings.FindModelMapping(ollamaModel);
         if (mapping is not null)
-        {
-            if (string.IsNullOrWhiteSpace(mapping.UpstreamUrl))
-                throw new InvalidOperationException(
-                    $"Model mapping '{mapping.ProxyName}' has no upstream URL configured. " +
-                    "Each mapping must specify its own UpstreamUrl.");
-
-            int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
-            return (mapping.UpstreamUrl.TrimEnd('/'), timeout, _settings.ResolveApiKey(mapping));
-        }
+            return mapping;
 
         // Fallback: if model name is empty/null and we have at least one mapping,
         // use the first configured mapping's upstream URL (common for single-model setups)
         if (string.IsNullOrWhiteSpace(ollamaModel))
         {
-            ModelMapping fallback = _settings.ModelMappings.FirstOrDefault(m => m.IsEnabled)
+            return _settings.ModelMappings.FirstOrDefault(m => m.IsEnabled)
                 ?? throw new InvalidOperationException("No enabled model mappings are configured.");
-            if (string.IsNullOrWhiteSpace(fallback.UpstreamUrl))
-                throw new InvalidOperationException(
-                    $"Model mapping '{fallback.ProxyName}' has no upstream URL configured. " +
-                    "Each mapping must specify its own UpstreamUrl.");
-
-            int timeout = fallback.UpstreamTimeoutSeconds > 0 ? fallback.UpstreamTimeoutSeconds : 300;
-            return (fallback.UpstreamUrl.TrimEnd('/'), timeout, _settings.ResolveApiKey(fallback));
         }
 
         throw new InvalidOperationException(
             $"No mapping found for model '{ollamaModel}'. " +
             "Add a mapping in settings with ProxyName, ModelName, and UpstreamUrl.");
+    }
+
+    private (string BaseUrl, int TimeoutSeconds, string? ApiKey) ResolveUpstream(ModelMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+
+        if (string.IsNullOrWhiteSpace(mapping.UpstreamUrl))
+            throw new InvalidOperationException(
+                $"Model mapping '{mapping.ProxyName}' has no upstream URL configured. " +
+                "Each mapping must specify its own UpstreamUrl.");
+
+        int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
+        return (mapping.UpstreamUrl.TrimEnd('/'), timeout, _settings.ResolveApiKey(mapping));
     }
 
     internal static bool ShouldApplyThinkingCompatibility(AppSettings settings, string modelName)
@@ -1131,6 +1149,55 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
     }
 
+    /// <summary>
+    /// Drops a client's own <c>Authorization</c> header from an upstream-bound request when the
+    /// resolved mapping did not opt into relaying it.
+    /// </summary>
+    /// <remarks>
+    /// Runs after <see cref="ApplyApiKey"/> rather than inside the inbound header-copy loop, because
+    /// that loop runs before the model name is parsed and the mapping is resolved: the decision needs
+    /// the base URL the request is actually going to, and the header copy does not have it yet. A
+    /// mapping that supplies its own credential has already had its header replaced above, so this only
+    /// ever sees the client's own token on credential-less mappings — exactly the case the
+    /// <see cref="ModelMapping.ForwardClientAuthorization"/> flag exists to gate.
+    /// <para>
+    /// Loopback is allowed through without the flag so the long-standing behaviour of a local proxy
+    /// serving a local llama.cpp server is unchanged: the token never leaves the machine. Anything
+    /// else is a third-party host and needs the explicit opt-in, because a listener bound to
+    /// <c>0.0.0.0</c> or a NIC IP turns "whatever the client sent" into an exfiltration primitive.
+    /// </para>
+    /// </remarks>
+    private static void StripUnoptedClientAuthorization(HttpRequestMessage request, ModelMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(mapping);
+
+        if (mapping.ForwardClientAuthorization || IsLoopbackUpstream(mapping.UpstreamUrl))
+            return;
+
+        request.Headers.Remove(HttpAuthHeaderName);
+    }
+
+    /// <summary>
+    /// Whether an upstream base URL names this machine rather than a remote host.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately conservative: an unparseable URL is not loopback, so an unopted mapping with a
+    /// malformed base URL drops the client credential instead of assuming the local case. Only the
+    /// host is inspected — a loopback host on any port is still this machine.
+    /// </remarks>
+    private static bool IsLoopbackUpstream(string upstreamUrl)
+    {
+        if (!Uri.TryCreate(upstreamUrl, UriKind.Absolute, out Uri? uri) || uri.Host is not { Length: > 0 } host)
+            return false;
+
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const string HttpAuthHeaderName = "Authorization";
+
     private static HttpClient BuildHttpClient() =>
         new(new SocketsHttpHandler
         {
@@ -1923,6 +1990,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // Studio's OpenAI-compatible model connection) reaches the upstream for
             // mappings without their own configured credential. ApplyApiKey below overrides
             // this with the mapping's resolved credential secret when one is configured.
+            // The copy is unconditional on the mapping because the mapping is not known yet at
+            // this point - the body has to be parsed to learn which model was asked for - so
+            // StripUnoptedClientAuthorization removes it after ResolveUpstream has settled the
+            // mapping, unless the mapping opted in or its base URL is this machine.
 
             string value = req.Headers[name] ?? string.Empty;
             if (!upstreamReq.Headers.TryAddWithoutValidation(name, value))
@@ -2094,15 +2165,16 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // any counts the upstream did report are included.
         (int PromptTokens, int CompletionTokens) tokenCounts() => (log.PromptTokens, log.CompletionTokens);
 
-        var (baseUrl, timeout, apiKey) = ResolveUpstream(originalModel);
+        ModelMapping upstreamMapping = ResolveMapping(originalModel);
+        var (baseUrl, timeout, apiKey) = ResolveUpstream(upstreamMapping);
         ApplyApiKey(upstreamReq, apiKey);
+        StripUnoptedClientAuthorization(upstreamReq, upstreamMapping);
 
         // Append upstream routing info to the debug summary so it's visible which server
         // the request is actually being sent to, including after compact redirects.
         if (_settings.DebugMode && log.DebugSummary is not null)
         {
-            ModelMapping? resolvedMapping = _settings.FindModelMapping(originalModel);
-            string mappingName = resolvedMapping?.ProxyName ?? originalModel;
+            string mappingName = string.IsNullOrEmpty(upstreamMapping.ProxyName) ? originalModel : upstreamMapping.ProxyName;
             log.DebugSummary += "\n" + DebugNotes.UpstreamRouting(
                 mappingName, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
         }

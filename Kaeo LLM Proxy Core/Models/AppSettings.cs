@@ -789,6 +789,25 @@ internal sealed class ModelMapping
     public bool EnableCopilotCompatibility { get; set; } = true;
 
     /// <summary>
+    /// When true, a client's own <c>Authorization</c> header is relayed to this mapping's upstream when
+    /// the mapping has no credential of its own. Default: false.
+    /// </summary>
+    /// <remarks>
+    /// The passthrough path copies every inbound header except the hop-by-hop and spoofing-prone ones,
+    /// so without this flag a client's bearer token would be handed to whatever base URL the mapping
+    /// points at — an exfiltration primitive once the listener is bound to anything wider than
+    /// <c>localhost</c>. The request log already redacts <c>Authorization</c>, so the audit trail treats
+    /// it as sensitive; forwarding it opt-in keeps the outbound copy under the same discipline.
+    /// <para>
+    /// Only ever consulted when the mapping has no configured credential: a mapping-level key always
+    /// wins, so a correctly configured upstream is never shadowed by a client token regardless of this
+    /// flag. Enable it for a mapping whose upstream expects the caller's own key (e.g. a client-supplied
+    /// subscription credential) and leave it off for third-party base URLs.
+    /// </para>
+    /// </remarks>
+    public bool ForwardClientAuthorization { get; set; }
+
+    /// <summary>
     /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
     /// Absolute token count takes precedence over percentage.
     /// </summary>
@@ -870,6 +889,7 @@ internal sealed class ModelMapping
             AutoCompactPaths = AutoCompactPaths,
             RedirectManualCompaction = RedirectManualCompaction,
             EnableCopilotCompatibility = EnableCopilotCompatibility,
+            ForwardClientAuthorization = ForwardClientAuthorization,
                     };
                     clone.EnsureId();
                     return clone;
@@ -1447,6 +1467,87 @@ internal sealed class AppSettings
                     mapping.ProxyName, uri.Scheme, mapping.UpstreamUrl);
             }
         }
+    }
+
+    /// <summary>
+    /// Creates an independent copy of these settings with every mutable collection copied.
+    /// </summary>
+    /// <remarks>
+    /// The proxy publishes one of these as its runtime view on each settings save so request threads
+    /// never enumerate the lists the Settings tab is editing. Without the copy, a save that adds or
+    /// removes a mapping, credential or instruction set mutates the very objects the request paths are
+    /// walking, which is the classic <c>InvalidOperationException</c> on a concurrently mutated list —
+    /// and once requests have started, a half-applied mapping surfaces as an upstream authentication
+    /// failure rather than as a settings edit.
+    /// <para>
+    /// Written as an explicit field list rather than a JSON round-trip because the collections that
+    /// matter here are the ones marked <c>JsonIgnore</c>: they are loaded from the application
+    /// database, not from settings.jsonc, so a serialise/deserialise would drop exactly what it needs
+    /// to keep. Mirrors <see cref="ModelMapping.Clone"/> in shape and reason.
+    /// </para>
+    /// </remarks>
+    public AppSettings Clone()
+    {
+        AppSettings clone = new()
+        {
+            ListenPort = ListenPort,
+            ListenAddress = ListenAddress,
+            MaxRequestBodyBytes = MaxRequestBodyBytes,
+            MaxConcurrentRequests = MaxConcurrentRequests,
+            EnableCors = EnableCors,
+            MaxLogEntries = MaxLogEntries,
+            AutoStartProxy = AutoStartProxy,
+            StartWithDashboardOpen = StartWithDashboardOpen,
+            AllowMultipleInstances = AllowMultipleInstances,
+            RunAsAdministrator = RunAsAdministrator,
+            ShowCloseToTrayNotification = ShowCloseToTrayNotification,
+            CollectRequestDetails = CollectRequestDetails,
+            CollectResponseDetails = CollectResponseDetails,
+            DebugMode = DebugMode,
+            CollectNonProxiedCategories = [.. CollectNonProxiedCategories],
+            EnableSseKeepAlive = EnableSseKeepAlive,
+            UseIrTranslation = UseIrTranslation,
+            HideHeartbeatLogs = HideHeartbeatLogs,
+            SseKeepAliveIntervalSeconds = SseKeepAliveIntervalSeconds,
+            HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
+            CompactionFallbackContextTokens = CompactionFallbackContextTokens,
+            MaxConcurrentCompactions = MaxConcurrentCompactions,
+            CompactionInstructionSetName = CompactionInstructionSetName,
+            CompactionTargetTokens = CompactionTargetTokens,
+            CopilotCompactionModelName = CopilotCompactionModelName,
+            EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
+            EnablePerformanceSampling = EnablePerformanceSampling,
+            EnableApiExplorer = EnableApiExplorer,
+            Logging = new LoggingSettings
+            {
+                MinimumLevel = Logging.MinimumLevel,
+                HeartbeatMinimumLevel = Logging.HeartbeatMinimumLevel,
+                AppLogFileSizeLimitMb = Logging.AppLogFileSizeLimitMb,
+                AppLogRetainedFileCount = Logging.AppLogRetainedFileCount,
+                RequestLogFileSizeLimitMb = Logging.RequestLogFileSizeLimitMb,
+                ApplicationDatabasePath = Logging.ApplicationDatabasePath,
+                LogRetentionHours = Logging.LogRetentionHours,
+            },
+            SecurityPassphrase = SecurityPassphrase,
+            RuntimePassphrase = RuntimePassphrase,
+            ModelMappings = [.. ModelMappings.Select(m => m.Clone())],
+            InstructionSets = [.. InstructionSets.Select(i => new InstructionSet
+            {
+                Name = i.Name,
+                Instructions = i.Instructions,
+                Description = i.Description,
+            })],
+            Credentials = [.. Credentials.Select(c => new StoredCredential
+            {
+                Name = c.Name,
+                Secret = c.Secret,
+                Description = c.Description,
+                Username = c.Username,
+                PrivateKey = c.PrivateKey,
+                Certificate = c.Certificate,
+            })],
+        };
+        return clone;
     }
 
     public RuntimeSettings CreateRuntimeSettings() => new()
