@@ -1136,36 +1136,6 @@ internal sealed class AppDatabase : IDisposable
         _ => "requests",
     };
 
-    /// <summary>Returns aggregate stats from the active database file.</summary>
-    public (long total, long errors, long promptTokens, long completionTokens) QueryTotals()
-    {
-        lock (_lock)
-        {
-            using SqliteConnection connection = OpenConnection();
-            using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                """
-                SELECT
-                    COUNT(*) AS total,
-                    COALESCE(SUM(CASE WHEN status = $errorStatus THEN 1 ELSE 0 END), 0) AS errors,
-                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM requests;
-                """;
-            command.Parameters.AddWithValue("$errorStatus", (int)RequestStatus.Error);
-
-            using SqliteDataReader reader = command.ExecuteReader();
-            if (!reader.Read())
-                return (0, 0, 0, 0);
-
-            return (
-                reader.GetInt64(0),
-                reader.GetInt64(1),
-                reader.GetInt64(2),
-                reader.GetInt64(3));
-        }
-    }
-
     /// <summary>
     /// Enables WAL journal mode if it is not already active. WAL mode is persistent on the
     /// database file across connections, so the pragma only runs when the mode differs,

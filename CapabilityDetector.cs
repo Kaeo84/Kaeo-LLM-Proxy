@@ -13,8 +13,6 @@ namespace Kaeo.LlmProxy;
 /// </summary>
 internal static class CapabilityDetector
 {
-    private static readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(15) };
-
     /// <summary>
     /// Detects the capabilities of <paramref name="modelId"/> on the upstream at
     /// <paramref name="upstreamUrl"/>. Uses data-only endpoints and name heuristics; it never
@@ -96,59 +94,9 @@ internal static class CapabilityDetector
     /// </summary>
     private static async Task<string> FetchModelJsonAsync(
         string upstreamUrl, string modelId, string? apiKey, CancellationToken cancellationToken)
-    {
-        // 1. Single-model endpoint (GET /v1/models/{id}).
-        string? body = await FetchBodyAsync(
-            UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models/" + Uri.EscapeDataString(modelId)),
-            apiKey, cancellationToken);
-        if (body is not null)
-        {
-            try
-            {
-                using var _ = JsonDocument.Parse(body);
-                return body;
-            }
-            catch (JsonException)
-            {
-                // Not valid JSON; fall through to the list endpoint.
-            }
-        }
-
-        // 2. List endpoint fallback (GET /v1/models).
-        string? listBody = await FetchBodyAsync(
-            UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models"),
-            apiKey, cancellationToken);
-        if (listBody is not null)
-        {
-            using JsonDocument doc = JsonDocument.Parse(listBody);
-            if (doc.RootElement.TryGetProperty("data", out JsonElement arr))
-            {
-                foreach (JsonElement item in arr.EnumerateArray())
-                {
-                    if (item.TryGetProperty("id", out JsonElement id)
-                        && string.Equals(id.GetString(), modelId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return item.GetRawText();
-                    }
-                }
-            }
-        }
-
-        throw new HttpRequestException("Upstream model metadata was not found at /v1/models or /v1/models/{id}.");
-    }
-
-    private static async Task<string?> FetchBodyAsync(
-        Uri uri, string? apiKey, CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
-
-        using HttpResponseMessage response = await _client.SendAsync(request, cancellationToken);
-        string responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-        return response.IsSuccessStatusCode ? responseBody : null;
-    }
+        => await UpstreamModelMetadata.TryFetchModelJsonAsync(upstreamUrl, modelId, apiKey, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new HttpRequestException("Upstream model metadata was not found at /v1/models or /v1/models/{id}.");
 
     /// <summary>
     /// Extracts an explicit <c>capabilities</c> field from the model metadata, if present.

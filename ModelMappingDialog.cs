@@ -17,10 +17,6 @@ internal sealed class ModelMappingDialog : Form
 {
     private const string NoneLabel = "(None)";
 
-    // Shared client for upstream model discovery. Avoids socket churn when model lists are
-    // fetched repeatedly; the fixed 10 s timeout applies to discovery calls only.
-    private static readonly HttpClient _modelFetchClient = new() { Timeout = TimeSpan.FromSeconds(10) };
-
     private readonly Panel _pnlScroll = new();
     private readonly TableLayoutPanel _tlpMain = new();
     private readonly Label _lblProxyName = new();
@@ -127,7 +123,6 @@ internal sealed class ModelMappingDialog : Form
     private WheelScrollFilter? _wheelFilter;
 
     private string _upstreamUrl = string.Empty;
-    private List<StoredCredential> _credentials = [];
     private AppSettings? _settings;
     private StatisticsService? _stats;
     private Dictionary<string, int> _compactModelNameToId = [];
@@ -178,7 +173,7 @@ internal sealed class ModelMappingDialog : Form
             Core.Models.AutoCompactPaths.None => "Automatic compaction: OFF (Auto-Compact Paths is Disabled).",
             _ when threshold <= 0 => "Automatic compaction: will not run — set a compaction threshold above.",
             _ when !hasTarget => "Automatic compaction: will not run — select a Compaction Model.",
-            _ => $"Automatic compaction: ON for {DescribePaths(paths)}, above ~{threshold:N0} tokens, using {_cmbContextSummarizeModel.SelectedItem}.",
+            _ => $"Automatic compaction: ON for {paths.ToDisplayName()}, above ~{threshold:N0} tokens, using {_cmbContextSummarizeModel.SelectedItem}.",
         };
 
         // Manual compaction always reaches a model. A Copilot-detected summarization is routed by the
@@ -216,37 +211,14 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>
-    /// Human-readable name for an <see cref="AutoCompactPaths"/> selection, for the status label.
-    /// </summary>
-    private static string DescribePaths(AutoCompactPaths paths) => paths switch
-    {
-        Core.Models.AutoCompactPaths.Ollama => "Ollama /api/chat",
-        Core.Models.AutoCompactPaths.OpenAI => "OpenAI /v1/chat/completions",
-        Core.Models.AutoCompactPaths.Both => "both Ollama and OpenAI paths",
-        Core.Models.AutoCompactPaths.ProxyOnly => "all proxy-handled paths",
-        _ => "no paths",
-    };
-
-    /// <summary>
     /// Mirrors <see cref="ModelMapping.GetProactiveOverflowThreshold"/>: the absolute token value
     /// wins over the percentage, and the percentage is resolved against the effective context
     /// window. Returns 0 when no threshold is configured.
     /// </summary>
-    private int EffectiveThresholdTokens()
-    {
-        int tokens = (int)_nudProactiveOverflowTokens.Value;
-        if (tokens > 0)
-            return tokens;
-
-        int percent = (int)_nudProactiveOverflowPercent.Value;
-        if (percent <= 0)
-            return 0;
-
-        int contextWindow = ContextWindowTokens > 0
-            ? ContextWindowTokens
-            : ModelMapping.DefaultContextWindowTokens;
-        return (int)(contextWindow * percent / 100.0);
-    }
+    private int EffectiveThresholdTokens() => ModelMapping.ResolveProactiveOverflowThreshold(
+        (int)_nudProactiveOverflowTokens.Value,
+        (int)_nudProactiveOverflowPercent.Value,
+        ContextWindowTokens > 0 ? ContextWindowTokens : ModelMapping.DefaultContextWindowTokens);
 
     protected override void OnShown(EventArgs e)
     {
@@ -776,7 +748,6 @@ internal sealed class ModelMappingDialog : Form
 
     private void PopulateCredentials(IEnumerable<StoredCredential> credentials)
     {
-        _credentials = [.. credentials];
         _cmbCredential.Items.Clear();
         _cmbCredential.Items.Add(NoneLabel);
         foreach (StoredCredential credential in credentials)
@@ -1688,7 +1659,7 @@ internal sealed class ModelMappingDialog : Form
             string? apiKey = ResolveApiKey();
 
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
-            UpstreamModelFetchResult result = await FetchUpstreamModelsAsync(_upstreamUrl, apiKey);
+            UpstreamModelMetadata.FetchResult result = await UpstreamModelMetadata.FetchModelsAsync(_upstreamUrl, apiKey);
             sw.Stop();
 
             LogFetchModelsRequest(result, sw.Elapsed.TotalMilliseconds);
@@ -1715,7 +1686,7 @@ internal sealed class ModelMappingDialog : Form
             // Only auto-fill when the user hasn't already typed a value manually.
             if (string.IsNullOrWhiteSpace(_txtContextWindow.Text)
                 && !string.IsNullOrWhiteSpace(result.ResponseBody)
-                && TryExtractContextWindow(result.ResponseBody, out int? listContextWindow)
+                && UpstreamModelMetadata.TryExtractContextWindow(result.ResponseBody, out int? listContextWindow)
                 && listContextWindow is > 0)
             {
                 _txtContextWindow.Text = listContextWindow.Value.ToString();
@@ -1759,65 +1730,29 @@ internal sealed class ModelMappingDialog : Form
         {
             string? apiKey = ResolveApiKey();
 
-            Uri modelUri = UpstreamUriHelper.BuildRequestUri(_upstreamUrl, "v1/models/" + Uri.EscapeDataString(modelId));
-            using var request = new HttpRequestMessage(HttpMethod.Get, modelUri);
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
+                        UpstreamModelMetadata.ModelJsonResult fetched =
+                            await UpstreamModelMetadata.FetchModelJsonAsync(_upstreamUrl, modelId, apiKey);
+                        string body = fetched.Body;
+                        int statusCode = fetched.StatusCode;
 
-            using var response = await _modelFetchClient.SendAsync(request);
-            string body = await response.Content.ReadAsStringAsync();
-
-            if (!response.IsSuccessStatusCode)
-            {
-                // Fall back to the list endpoint (Ollama and others don't support GET /v1/models/{id}).
-                Uri listUri = UpstreamUriHelper.BuildRequestUri(_upstreamUrl, "v1/models");
-                using var listRequest = new HttpRequestMessage(HttpMethod.Get, listUri);
-                if (!string.IsNullOrWhiteSpace(apiKey))
-                    listRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
-
-                using var listResponse = await _modelFetchClient.SendAsync(listRequest);
-                string listBody = await listResponse.Content.ReadAsStringAsync();
-
-                if (listResponse.IsSuccessStatusCode)
-                {
-                    using var doc = JsonDocument.Parse(listBody);
-                    if (doc.RootElement.TryGetProperty("data", out var data))
-                    {
-                        foreach (var item in data.EnumerateArray())
+                        // Pretty-print for display.
+                        string displayText;
+                        try
                         {
-                            if (item.TryGetProperty("id", out var idProp)
-                                && string.Equals(idProp.GetString(), modelId, StringComparison.OrdinalIgnoreCase))
-                            {
-                                body = item.GetRawText();
-                                break;
-                            }
+                            using var doc = JsonDocument.Parse(body);
+                            displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
                         }
-                    }
-                }
-                else
-                {
-                    body = listBody;
-                    response.StatusCode = listResponse.StatusCode;
-                }
-            }
+                        catch
+                        {
+                            displayText = body;
+                        }
 
-            // Pretty-print for display.
-            string displayText;
-            try
-            {
-                using var doc = JsonDocument.Parse(body);
-                displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
-            }
-            catch
-            {
-                displayText = body;
-            }
-
-            _lblModelInfoStatus.ForeColor = SystemColors.GrayText;
-            _lblModelInfoStatus.Text = response.IsSuccessStatusCode ? "Model info loaded." : $"HTTP {(int)response.StatusCode}";
+                        bool success = statusCode is >= 200 and < 300;
+                        _lblModelInfoStatus.ForeColor = SystemColors.GrayText;
+                        _lblModelInfoStatus.Text = success ? "Model info loaded." : $"HTTP {statusCode}";
 
             // Attempt to auto-fill context window from the response.
-            if (TryExtractContextWindow(body, out int? contextWindow))
+            if (UpstreamModelMetadata.TryExtractContextWindow(body, out int? contextWindow))
             {
                 if (contextWindow is > 0)
                 {
@@ -1966,96 +1901,14 @@ internal sealed class ModelMappingDialog : Form
     }
 
     /// <summary>Resolves the API key for the currently selected credential, if any.</summary>
-    private string? ResolveApiKey()
-    {
-        string? credentialName = CredentialName;
-        if (string.IsNullOrWhiteSpace(credentialName))
-            return null;
-        return _credentials.FirstOrDefault(
-            c => string.Equals(c.Name, credentialName, StringComparison.OrdinalIgnoreCase))?.Secret;
-    }
-
-    private static bool TryExtractContextWindow(string json, out int? contextWindow)
-    {
-        contextWindow = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            JsonElement root = doc.RootElement;
-
-            // Search common field names for context window size.
-            string[] candidateNames = [
-                "context_window", "context_length", "max_context_length", "max_context",
-                "context", "num_ctx", "max_tokens", "max_position_embeddings",
-                "sliding_window", "n_ctx_train"
-            ];
-
-            // 1. Root-level candidates first.
-            foreach (string name in candidateNames)
-            {
-                if (root.TryGetProperty(name, out var val) && val.ValueKind == JsonValueKind.Number
-                    && val.TryGetInt32(out int v) && v > 0)
-                {
-                    contextWindow = v;
-                    return true;
-                }
-            }
-
-            // 2. Nested "details", "parameters", "config", or "architecture" objects.
-            foreach (string nested in new[] { "details", "parameters", "config", "architecture" })
-            {
-                if (root.TryGetProperty(nested, out var nestedObj) && nestedObj.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (string name in candidateNames)
-                    {
-                        if (nestedObj.TryGetProperty(name, out var val) && val.ValueKind == JsonValueKind.Number
-                            && val.TryGetInt32(out int v) && v > 0)
-                        {
-                            contextWindow = v;
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            // 3. Ollama /api/show style: "model_info" object with dotted keys like "llama.context_length".
-            if (root.TryGetProperty("model_info", out var modelInfo) && modelInfo.ValueKind == JsonValueKind.Object)
-            {
-                foreach (JsonProperty prop in modelInfo.EnumerateObject())
-                {
-                    if (prop.Value.ValueKind == JsonValueKind.Number
-                        && prop.Value.TryGetInt32(out int v) && v > 0
-                        && prop.Name.Contains("context_length", StringComparison.OrdinalIgnoreCase))
-                    {
-                        contextWindow = v;
-                        return true;
-                    }
-                }
-            }
-
-            // 4. "llama" object with "context_length" (some providers nest under model family).
-            if (root.TryGetProperty("llama", out var llamaObj) && llamaObj.ValueKind == JsonValueKind.Object)
-            {
-                if (llamaObj.TryGetProperty("context_length", out var llamaCtx)
-                    && llamaCtx.ValueKind == JsonValueKind.Number
-                    && llamaCtx.TryGetInt32(out int llamaV) && llamaV > 0)
-                {
-                    contextWindow = llamaV;
-                    return true;
-                }
-            }
-        }
-        catch (JsonException) { }
-
-        return false;
-    }
+    private string? ResolveApiKey() => _settings?.FindCredential(CredentialName)?.Secret;
 
     /// <summary>
     /// Records the /v1/models discovery call in the request log, following the same body-capture
     /// gating and per-model redaction as proxied traffic. No-op when no statistics service was
     /// supplied to the dialog.
     /// </summary>
-    private void LogFetchModelsRequest(UpstreamModelFetchResult result, double durationMs)
+    private void LogFetchModelsRequest(UpstreamModelMetadata.FetchResult result, double durationMs)
     {
         if (_stats is null)
             return;
@@ -2102,63 +1955,6 @@ internal sealed class ModelMappingDialog : Form
 
         _stats.AddLog(log);
     }
-
-    /// <summary>
-    /// Fetches the model list from the specified upstream URL. Returns the parsed model ids along
-    /// with the HTTP status code, raw response body, and any error text so the caller can record
-    /// the discovery call in the request log.
-    /// </summary>
-    internal static async Task<UpstreamModelFetchResult> FetchUpstreamModelsAsync(string upstreamUrl, string? apiKey = null)
-    {
-        try
-        {
-            Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models");
-            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-            if (!string.IsNullOrWhiteSpace(apiKey))
-                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
-
-            using HttpResponseMessage resp = await _modelFetchClient.SendAsync(request);
-            string body = await resp.Content.ReadAsStringAsync();
-
-            if (!resp.IsSuccessStatusCode)
-                return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, $"Upstream {(int)resp.StatusCode}: {body}");
-
-            var models = new List<string>();
-            try
-            {
-                using JsonDocument doc = JsonDocument.Parse(body);
-                if (!doc.RootElement.TryGetProperty("data", out JsonElement data))
-                    return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, "Upstream response has no 'data' model array.");
-
-                foreach (JsonElement item in data.EnumerateArray())
-                {
-                    if (item.TryGetProperty("id", out JsonElement id))
-                    {
-                        string? name = id.GetString();
-                        if (!string.IsNullOrWhiteSpace(name))
-                            models.Add(name);
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                return new UpstreamModelFetchResult([], (int)resp.StatusCode, body, "Upstream returned an unparseable model list.");
-            }
-
-            return new UpstreamModelFetchResult(models, (int)resp.StatusCode, body, null);
-        }
-        catch (Exception ex)
-        {
-            return new UpstreamModelFetchResult([], 0, null, $"{ex.GetType().Name}: {ex.Message}");
-        }
-    }
-
-    /// <summary>Outcome of an upstream /v1/models discovery call, for request logging.</summary>
-    internal sealed record UpstreamModelFetchResult(
-        List<string> Models,
-        int StatusCode,
-        string? ResponseBody,
-        string? ErrorMessage);
 
     /// <summary>
     /// Shows the modal dialog for the supplied <paramref name="mapping"/>. The dialog is

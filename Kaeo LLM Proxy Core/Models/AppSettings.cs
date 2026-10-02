@@ -156,6 +156,24 @@ internal static class UpstreamTypeExtensions
     }
 }
 
+/// <summary>Display names for <see cref="AutoCompactPaths"/> selections.</summary>
+internal static class AutoCompactPathsExtensions
+{
+    /// <summary>
+    /// Human-readable name for an <see cref="AutoCompactPaths"/> selection, for status text and help
+    /// labels. Lives beside the enum for the same reason <see cref="UpstreamTypeExtensions"/> does:
+    /// one place describes the values, so a new flag cannot be added without the wording keeping up.
+    /// </summary>
+    public static string ToDisplayName(this AutoCompactPaths paths) => paths switch
+    {
+        AutoCompactPaths.Ollama => "Ollama /api/chat",
+        AutoCompactPaths.OpenAI => "OpenAI /v1/chat/completions",
+        AutoCompactPaths.Both => "both Ollama and OpenAI paths",
+        AutoCompactPaths.ProxyOnly => "all proxy-handled paths",
+        _ => "no paths",
+    };
+}
+
 /// <summary>Named custom instruction set that can be injected into AI requests.</summary>
 internal sealed class InstructionSet
 {
@@ -811,12 +829,30 @@ internal sealed class ModelMapping
     /// Resolves the effective proactive overflow threshold in tokens, or 0 if the feature is disabled.
     /// Absolute token count takes precedence over percentage.
     /// </summary>
-    public int GetProactiveOverflowThreshold()
+    public int GetProactiveOverflowThreshold() => ResolveProactiveOverflowThreshold(
+        ProactiveOverflowTokens, ProactiveOverflowPercent, GetEffectiveContextWindow());
+
+    /// <summary>
+    /// The single authority for the proactive overflow threshold rule: an explicit absolute token
+    /// count wins, otherwise the percentage is applied to the supplied context window, otherwise
+    /// there is no threshold. Returns 0 when neither input is set.
+    /// </summary>
+    /// <remarks>
+    /// Takes the three inputs as raw values rather than reading them off an instance so a caller
+    /// holding uncommitted values — the settings dialog previewing what the current control state
+    /// would do — computes the threshold through the same rule the proxy enforces. Without this the
+    /// dialog carried its own copy of the "absolute beats percentage" logic, which is precisely how
+    /// a help label ends up disagreeing with the gate it claims to describe.
+    /// </remarks>
+    /// <param name="absoluteTokens">Explicit token threshold; takes precedence when positive.</param>
+    /// <param name="percent">Percentage of <paramref name="contextWindow"/>; ignored when 0 or less.</param>
+    /// <param name="contextWindow">Effective context window in tokens to apply the percentage to.</param>
+    public static int ResolveProactiveOverflowThreshold(int absoluteTokens, int percent, int contextWindow)
     {
-        if (ProactiveOverflowTokens > 0)
-            return ProactiveOverflowTokens;
-        if (ProactiveOverflowPercent > 0)
-            return (int)(GetEffectiveContextWindow() * ProactiveOverflowPercent / 100.0);
+        if (absoluteTokens > 0)
+            return absoluteTokens;
+        if (percent > 0)
+            return (int)(contextWindow * percent / 100.0);
         return 0;
     }
 
