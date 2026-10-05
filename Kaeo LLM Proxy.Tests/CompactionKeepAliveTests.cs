@@ -18,9 +18,6 @@ namespace Kaeo.LlmProxy.Tests;
 /// </remarks>
 public class CompactionKeepAliveTests
 {
-    /// <summary>The SSE comment frame the pump emits; conformant clients discard it.</summary>
-    private const string KeepAliveFrame = ": kaeo-keep-alive\n\n";
-
     /// <summary>
     /// Records what is written and how long each write waited, so a pump can be distinguished from a
     /// single frame and from no traffic at all.
@@ -32,9 +29,6 @@ public class CompactionKeepAliveTests
         public IReadOnlyList<(string Text, long ElapsedMs)> Writes => _writes;
 
         public int WriteCount => _writes.Count;
-
-        public int KeepAliveFrameCount =>
-            _writes.Count(w => w.Text.Contains(KeepAliveFrame.Trim(), StringComparison.Ordinal));
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -104,17 +98,20 @@ public class CompactionKeepAliveTests
     public async Task ThePumpStaysRunningUntilCancelledRatherThanReturningImmediately()
     {
         // The contract the compaction path depends on: the pump is still alive while the work is in
-        // progress. The interval is clamped to a 5s floor, so frames cannot be observed quickly; what can
-        // be observed is that the pump is still running after a delay. A pump that returned immediately
-        // would leave the stream silent and the client would cancel — the reported failure.
+        // progress. Driven on an explicit cadence longer than the observation window, so no frame is
+        // due yet and the only thing being proved is that the pump has not returned. A pump that
+        // returned immediately would leave the stream silent and the client would cancel — the
+        // reported failure.
         using RecordingStream stream = new();
         using CancellationTokenSource cts = new();
 
-        Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(stream, 5, cts.Token);
+        Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(
+            stream, TimeSpan.FromSeconds(30), cts.Token);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(600));
+        await Task.Delay(TimeSpan.FromMilliseconds(150));
 
         Assert.False(pump.IsCompleted, "The pump must still be running while compaction is in progress.");
+        Assert.Equal(0, stream.WriteCount);
 
         await cts.CancelAsync();
         await pump;
@@ -145,8 +142,14 @@ public class CompactionKeepAliveTests
     {
         // A frame that looked like data would be parsed as model output. SSE comments start with ':',
         // which is why the pump can interleave them at any point without corrupting the response.
-        Assert.StartsWith(":", KeepAliveFrame, StringComparison.Ordinal);
-        Assert.EndsWith("\n\n", KeepAliveFrame, StringComparison.Ordinal);
+        //
+        // Read from the handler rather than a copy of the literal in this file: the previous version
+        // asserted against its own const, so it stayed green no matter what the proxy emitted.
+        string frame = OllamaProxyHandler.SseKeepAliveFrameForTest;
+
+        Assert.StartsWith(":", frame, StringComparison.Ordinal);
+        Assert.EndsWith("\n\n", frame, StringComparison.Ordinal);
+        Assert.DoesNotContain("data:", frame, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -228,12 +231,14 @@ public class CompactionKeepAliveTests
         using DisconnectedClientStream stream = new();
         using CancellationTokenSource cts = new();
 
-        Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(stream, 5, cts.Token);
+        // Driven on an explicit 20ms cadence rather than the clamped production interval. The 5s
+        // floor means the first write — and therefore the failing one — could not land any sooner,
+        // which made this single assertion cost five seconds of every test run.
+        Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(
+            stream, TimeSpan.FromMilliseconds(20), cts.Token);
 
-        // The cadence is clamped to a 5s floor, so the first write — and therefore the failing one —
-        // cannot land sooner. Wait for the attempt instead of guessing at a delay.
-        for (int i = 0; i < 200 && stream.WriteAttempts == 0; i++)
-            await Task.Delay(TimeSpan.FromMilliseconds(50));
+        for (int i = 0; i < 500 && stream.WriteAttempts == 0; i++)
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
 
         Assert.True(stream.WriteAttempts > 0, "The pump should have attempted a keep-alive write.");
 

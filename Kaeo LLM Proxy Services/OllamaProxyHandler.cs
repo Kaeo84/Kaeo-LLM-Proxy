@@ -2974,12 +2974,24 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// Shared implementation behind both public shapes: pumps frames until cancelled, and reports
     /// whether it stopped because the client disconnected.
     /// </summary>
-    private static async Task<bool> PumpPreResponseSseKeepAliveCoreAsync(
+    private static Task<bool> PumpPreResponseSseKeepAliveCoreAsync(
         Stream output,
         int intervalSeconds,
         CancellationToken ct)
+        => PumpPreResponseSseKeepAliveCoreAsync(
+            output, AppSettings.SseKeepAliveInterval(intervalSeconds), ct);
+
+    /// <summary>
+    /// Cadence-driven core. Production callers always arrive through the seconds overload so the
+    /// interval is clamped into the supported range; taking a <see cref="TimeSpan"/> here is what lets
+    /// a test observe a frame without sitting through the
+    /// <see cref="AppSettings.MinSseKeepAliveIntervalSeconds"/> floor.
+    /// </summary>
+    private static async Task<bool> PumpPreResponseSseKeepAliveCoreAsync(
+        Stream output,
+        TimeSpan interval,
+        CancellationToken ct)
     {
-        TimeSpan interval = AppSettings.SseKeepAliveInterval(intervalSeconds);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -3014,6 +3026,22 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     internal static Task PumpPreResponseSseKeepAliveForTest(
         Stream output, int intervalSeconds, CancellationToken ct) =>
         PumpPreResponseSseKeepAliveAsync(output, intervalSeconds, ct);
+
+    /// <summary>
+    /// Test seam that drives the pump on an explicit cadence, bypassing the
+    /// <see cref="AppSettings.MinSseKeepAliveIntervalSeconds"/> floor. That floor exists so a
+    /// misconfigured interval cannot spam a client, but it also means a test that needs to see a
+    /// keep-alive write would otherwise wait five real seconds for one.
+    /// </summary>
+    internal static Task<bool> PumpPreResponseSseKeepAliveForTest(
+        Stream output, TimeSpan interval, CancellationToken ct) =>
+        PumpPreResponseSseKeepAliveCoreAsync(output, interval, ct);
+
+    /// <summary>
+    /// Test seam for <see cref="SseKeepAliveFrame"/>, so the frame's SSE-comment shape is asserted
+    /// against what the proxy writes rather than against a copy of it living in the test.
+    /// </summary>
+    internal static string SseKeepAliveFrameForTest => SseKeepAliveFrame;
 
     /// <summary>
     /// Test seam for <see cref="PumpPreResponseSseKeepAliveReportingDisconnectAsync"/>, so the

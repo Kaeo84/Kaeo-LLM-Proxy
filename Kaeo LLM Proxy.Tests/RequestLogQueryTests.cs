@@ -197,17 +197,24 @@ public class RequestLogQueryTests
     }
 
     [Fact]
-    public void DeleteOlderThanHandlesMoreRowsThanWouldFitInABoundParameterList()
+    public void DeleteOlderThanPrunesALargeBacklogAndItsLinkedExceptions()
     {
-        // The previous implementation bound one parameter per distinct exception id, so a large
-        // backlog would build a list that eventually exceeds SQLITE_MAX_VARIABLE_NUMBER (32766).
-        // The engine-side subquery has no such ceiling, so a few thousand rows must prune cleanly.
+        // The previous implementation collected the distinct exception ids in memory and rebound them
+        // as one parameter per id, so a large backlog built a list that would eventually exceed
+        // SQLITE_MAX_VARIABLE_NUMBER (32766). The delete is now driven by an engine-side subquery
+        // with a single bound parameter, so the ceiling is gone structurally rather than by row count
+        // — which is why this no longer seeds thousands of rows to chase it. Seeding 3000 did not
+        // reach the ceiling anyway; it only made the fixture cost 2.8s of every run, since each
+        // Insert opens its own connection and transaction.
+        //
+        // What is still pinned: a backlog far larger than a normal test seeds prunes to the exact
+        // count, and the linked exception rows go with it.
         string path = NewDatabasePath();
         DateTime start = new(2026, 9, 24, 0, 0, 0, DateTimeKind.Local);
 
         using (AppDatabase setup = Open(path))
         {
-            for (int i = 0; i < 3000; i++)
+            for (int i = 0; i < 300; i++)
             {
                 RequestLog log = new()
                 {
@@ -222,9 +229,9 @@ public class RequestLogQueryTests
         }
 
         using AppDatabase database = Open(path);
-        int deleted = database.DeleteOlderThan(start.AddSeconds(2500));
+        int deleted = database.DeleteOlderThan(start.AddSeconds(250));
 
-        Assert.Equal(2500, deleted);
-        Assert.Equal(500, database.QueryRecent(5000).Count);
+        Assert.Equal(250, deleted);
+        Assert.Equal(50, database.QueryRecent(500).Count);
     }
 }
