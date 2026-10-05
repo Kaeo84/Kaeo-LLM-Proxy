@@ -2660,6 +2660,11 @@ internal partial class MainForm : Form
 
         _settings.Credentials.Add(newCredential);
         RefreshCredentials();
+
+        // Persisted immediately like every other settings section: there is no global Save button
+        // and closing the window only hides to the tray, so a credential left in memory here would
+        // never reach the database.
+        PersistSettingsCore();
     }
 
     private void BtnEditCredential_Click(object? sender, EventArgs e)
@@ -2700,6 +2705,11 @@ internal partial class MainForm : Form
             PropagateCredentialReferenceChange(oldName, edited.Name);
 
         RefreshCredentials();
+
+        // The edited secret and any other field only update the in-memory list until this runs.
+        // Without it, clicking OK in the dialog appeared to do nothing because the database kept
+        // the previous value and the next launch read that back.
+        PersistSettingsCore();
     }
 
     private void BtnRemoveCredential_Click(object? sender, EventArgs e)
@@ -2725,6 +2735,9 @@ internal partial class MainForm : Form
         _settings.Credentials.Remove(toRemove);
         PropagateCredentialReferenceChange(toRemove.Name, null);
         RefreshCredentials();
+
+        // Removal has to be written too, or the credential reappears on the next launch.
+        PersistSettingsCore();
     }
 
     private void LstCredentials_DoubleClick(object? sender, EventArgs e)
