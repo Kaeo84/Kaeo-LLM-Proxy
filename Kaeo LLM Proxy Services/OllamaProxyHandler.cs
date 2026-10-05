@@ -850,7 +850,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         string model,
         HttpListenerResponse resp,
         AutoCompactPaths requestPath,
-        Stream? outputStream,
+        Func<Task<Stream>>? openOutputStream,
         CancellationToken ct)
     {
         // Fast path: skip token estimation entirely if this path isn't enabled or no threshold is set.
@@ -893,6 +893,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 Log.Debug("Auto-compaction for model {Model} skipped: no compaction model selected", model);
                 return null;
             }
+
+            // Opened only now that compaction is definitely going to run. The caller hands over a
+            // factory rather than a stream because opening it commits the SSE headers, which fixes
+            // the client response at 200; doing that for a request that ends up not compacting leaves
+            // a later upstream failure with no status code left to report itself with.
+            Stream? outputStream = openOutputStream is null ? null : await openOutputStream();
 
             // Stream notification: compaction needed
             if (outputStream is not null)
@@ -1752,6 +1758,28 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             || name.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// How long a streaming passthrough waits for the upstream's first response header before it
+    /// commits the client-facing SSE headers and starts pumping keep-alive comments.
+    /// </summary>
+    /// <remarks>
+    /// Short enough that a client with a modest network timeout still sees bytes well before it gives
+    /// up on a slow upstream, and long enough that an upstream which refuses the request outright — a
+    /// body it will not accept, a dropped connection, bad credentials — fails inside the window and is
+    /// still reported with a real HTTP status. Committing the headers first, which this path used to
+    /// do, fixes the response at <c>200 text/event-stream</c>; from then on the only way to describe a
+    /// failure is a frame inside that stream, and clients built on the OpenAI SDK or
+    /// Microsoft.Extensions.AI parse such a frame as an empty completion, so the chat shows nothing.
+    /// </remarks>
+    private static readonly TimeSpan PreResponseCommitGrace = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Estimated token count above which a request is large enough that an upstream which drops the
+    /// connection during upload was probably refusing its size. Matches the threshold the
+    /// proactive-overflow path already uses to warn about an unconfigured compaction setup.
+    /// </summary>
+    private const int LargeUpstreamRequestTokenThreshold = 50_000;
+
     // ── /v1/* → transparent passthrough ────────────────────────────────────
 
     /// <summary>
@@ -1855,6 +1883,48 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
                         await WritePostCommitErrorFramesAsync(resp, description, 502, ct).ConfigureAwait(false);
                         return;
+        }
+        catch (Exception ex)
+        {
+            // The upstream failed before the proxy put a single byte on the wire, so a real status
+            // code is still available and that is how the failure has to be reported. Describing it
+            // inside an already-committed 200 SSE stream instead is invisible: clients built on the
+            // OpenAI SDK or Microsoft.Extensions.AI read such an error frame as an empty completion,
+            // so the chat shows nothing at all. This branch is the reason the SSE headers are held
+            // back for PreResponseCommitGrace rather than committed up front.
+            string description = DescribePassthroughFailure(ex);
+
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = description;
+            log.Exception = ex;
+
+            if (IsClientDisconnect(ex))
+            {
+                Log.Debug(
+                    "Client disconnected during passthrough for {Method} {Path} (model {Model}, request {RequestId})",
+                    log.Method,
+                    log.OllamaPath,
+                    string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
+                    log.RequestId);
+                return;
+            }
+
+            Log.Warning(
+                ex,
+                "Passthrough failed before any response was sent for {Method} {Path} (model {Model}, request {RequestId}); "
+                + "reporting 502 to the client. Cause: {Cause}",
+                log.Method,
+                log.OllamaPath,
+                string.IsNullOrWhiteSpace(log.Model) ? "(unknown)" : log.Model,
+                log.RequestId,
+                description);
+
+            if (!await TryWriteErrorResponseAsync(
+                    resp, log, 502, new { error = description, requestId = log.RequestId }, CancellationToken.None))
+            {
+                RecordUndeliverableError(log, 502);
+                CloseResponseQuietly(resp);
+            }
         }
     }
 
@@ -1969,6 +2039,29 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // discard, so it never reaches the model's output.
             await resp.OutputStream.WriteAsync(SseKeepAliveFrameBytes, ct);
             await resp.OutputStream.FlushAsync(ct);
+        }
+
+        // Deferred rather than immediate: see PreResponseCommitGrace. Committing the headers now
+        // would fix the response at 200 before the upstream has even been contacted, so a request the
+        // upstream then refuses would have no status code left to report the refusal with.
+        async Task DeferredPreResponseKeepAliveAsync(CancellationToken graceCt)
+        {
+            try
+            {
+                await Task.Delay(PreResponseCommitGrace, graceCt);
+            }
+            catch (OperationCanceledException)
+            {
+                // The upstream answered — or failed — inside the grace window, so there is nothing to
+                // keep the client alive through and the headers are still free to carry its status.
+                return;
+            }
+
+            await CommitSseHeadersAsync();
+            await PumpPreResponseSseKeepAliveAsync(
+                resp.OutputStream,
+                _settings.SseKeepAliveIntervalSeconds,
+                graceCt);
         }
 
         using var upstreamReq = new HttpRequestMessage
@@ -2112,21 +2205,24 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 }
                 else
                 {
-                    // For streaming requests, commit SSE headers before compaction so progress
-                    // comments can be written. CommitSseHeadersAsync also flushes the initial
-                    // keep-alive frame, which is what actually puts the headers on the wire.
-                    Stream? compactionOutputStream = null;
-                    if (isStreamingRequest)
-                    {
-                        await CommitSseHeadersAsync();
-                        compactionOutputStream = resp.OutputStream;
-                    }
+                    // Opened lazily, only if compaction actually runs and needs to write progress
+                    // comments. Committing the SSE headers for every streaming request — what this
+                    // block used to do — put a 200 on the wire before the upstream was contacted, so
+                    // a request the upstream then refused could no longer be reported with an error
+                    // status and reached the client as a silent empty stream.
+                    Func<Task<Stream>>? openCompactionStream = isStreamingRequest
+                        ? async () =>
+                        {
+                            await CommitSseHeadersAsync();
+                            return resp.OutputStream;
+                        }
+                        : null;
 
                     // Per-mapping AutoCompactPaths is the only gate: TryProactiveOverflowAsync
                     // consults IsAutoCompactActiveFor, the threshold, and the compaction target.
                     // There is deliberately no global toggle, so a mapping left on "Disabled"
                     // never compacts and the model handles its own context.
-                    string? compacted = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, AutoCompactPaths.OpenAI, compactionOutputStream, ct);
+                    string? compacted = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, AutoCompactPaths.OpenAI, openCompactionStream, ct);
                     if (compacted is not null)
                     {
                         rewritten = compacted;
@@ -2179,34 +2275,76 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 mappingName, baseUrl, !string.IsNullOrWhiteSpace(apiKey), timeout);
         }
 
-        // For streaming requests, pre-commit SSE headers to the client immediately and pump
-        // keep-alive comments while waiting for the upstream to send its first response header.
-        // llama.cpp does not send any HTTP headers until the first token is ready, so clients
-        // with a short NetworkTimeout (e.g. the OpenAI .NET SDK default of 100 s) would
-        // otherwise time out silently during long prompt-processing / thinking phases.
+        // For streaming requests, hold the client-facing SSE headers back for a short grace period and
+        // pump keep-alive comments only if the upstream has not answered by then. llama.cpp does not
+        // send any HTTP headers until the first token is ready, so clients with a short NetworkTimeout
+        // (e.g. the OpenAI .NET SDK default of 100 s) would otherwise time out silently during long
+        // prompt-processing / thinking phases.
+        //
+        // The grace period is what keeps a refused request reportable: committing immediately fixes
+        // the response at 200 text/event-stream, so an upstream that drops the connection mid-upload,
+        // rejects the credentials, or refuses the body could only be described by a frame inside that
+        // stream, which clients built on the OpenAI SDK or Microsoft.Extensions.AI read as an empty
+        // completion. See PreResponseCommitGrace.
         //
         // This deliberately does NOT test state.HeadersCommitted. The proactive-compaction path above
-        // already commits SSE headers for streaming requests without necessarily writing anything,
-        // so gating on that flag skipped the keep-alive pump for almost every streaming request and
-        // left the client with no bytes at all until the upstream answered.
+        // may already have committed the SSE headers, in which case CommitSseHeadersAsync is a no-op
+        // and only the pump is new.
         using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task preResponseKeepAliveTask = Task.CompletedTask;
 
         if (isStreamingRequest && ShouldEmitSseKeepAlive(originalModel))
         {
-            await CommitSseHeadersAsync();
-
-            preResponseKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
-                resp.OutputStream,
-                _settings.SseKeepAliveIntervalSeconds,
-                preResponseCts.Token);
+            preResponseKeepAliveTask = DeferredPreResponseKeepAliveAsync(preResponseCts.Token);
         }
 
         HttpResponseMessage upstreamResp;
         try
         {
-            upstreamResp = await SendUpstreamAsync(
-                upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+            try
+            {
+                upstreamResp = await SendUpstreamAsync(
+                    upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+            }
+            catch (HttpRequestException ex) when (
+                passthroughBody is not null
+                && !contextCompacted
+                && EstimateTokenCount(passthroughBody) > LargeUpstreamRequestTokenThreshold)
+            {
+                // The upstream dropped the connection while the request was still being uploaded. For
+                // a conversation this size the usual cause is a body the upstream will not accept, and
+                // it is indistinguishable here from a context overflow because the connection dies
+                // before any error body can arrive — the reactive path below only fires on an HTTP
+                // status, so an oversize request had no recovery at all. Compact and retry once so an
+                // oversize body is replaced by one the upstream will actually take.
+                Log.Warning(ex,
+                    "Upstream refused a large request for {Model} (~{EstimatedTokens} est. tokens); compacting before retrying",
+                    originalModel, EstimateTokenCount(passthroughBody));
+
+                // Stop the deferred keep-alive first: it must not commit the SSE headers in the middle
+                // of a compaction that may still end in a real error status.
+                await preResponseCts.CancelAsync();
+                await preResponseKeepAliveTask;
+
+                string? reactive = await TryReactiveCompactionAsync(
+                    passthroughBody, originalModel, resp, state.HeadersCommitted, ct);
+
+                if (reactive is null)
+                    throw; // nothing can shrink this body; let the original failure surface to the client
+
+                contextCompacted = true;
+                passthroughBody = reactive;
+
+                using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
+                {
+                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
+                };
+                retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+                ApplyApiKey(retryReq, apiKey);
+
+                upstreamResp = await SendUpstreamAsync(
+                    retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+            }
         }
         finally
         {
@@ -2806,6 +2944,40 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         Stream output,
         int intervalSeconds,
         CancellationToken ct)
+        => await PumpPreResponseSseKeepAliveCoreAsync(output, intervalSeconds, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Disconnect-reporting form of <see cref="PumpPreResponseSseKeepAliveAsync"/>: returns true when
+    /// the pump stopped because the client went away, false when it stopped for any other reason
+    /// (normal cancellation, or shutdown).
+    /// </summary>
+    /// <remarks>
+    /// The pump is the only writer on the wire during a long compaction, which makes its next write
+    /// the earliest point a client disconnect can be observed at all — <see cref="System.Net.Http.HttpClient"/>
+    /// does not cancel an in-flight request when the peer vanishes, and the request's
+    /// <see cref="CancellationToken"/> is the listener's lifetime token, cancelled only by a proxy
+    /// stop. So a caller that wants to stop paying for work whose result can no longer be delivered
+    /// has to learn it from here.
+    /// <para>
+    /// Also the pump's resolution limit: a disconnect is seen at the next scheduled frame, so with the
+    /// default 60-second interval the detection lags by up to that long. A shorter keep-alive interval
+    /// therefore shortens both the client's timeout headroom and the abandoned-work window.
+    /// </para>
+    /// </remarks>
+    internal static async Task<bool> PumpPreResponseSseKeepAliveReportingDisconnectAsync(
+        Stream output,
+        int intervalSeconds,
+        CancellationToken ct)
+        => await PumpPreResponseSseKeepAliveCoreAsync(output, intervalSeconds, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// Shared implementation behind both public shapes: pumps frames until cancelled, and reports
+    /// whether it stopped because the client disconnected.
+    /// </summary>
+    private static async Task<bool> PumpPreResponseSseKeepAliveCoreAsync(
+        Stream output,
+        int intervalSeconds,
+        CancellationToken ct)
     {
         TimeSpan interval = AppSettings.SseKeepAliveInterval(intervalSeconds);
         try
@@ -2821,7 +2993,18 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         catch (Exception ex) when (IsClientDisconnect(ex))
         {
             Log.Debug(ex, "Client disconnected while the SSE keep-alive pump was writing");
+            return true;
         }
+        catch (Exception ex) when (ex is ObjectDisposedException)
+        {
+            // The response stream was closed underneath the pump — normally because this same
+            // request wrote a terminal error frame and closed it. Not a client disconnect, and not
+            // a failure: there is simply nothing left to pump into, so stop quietly rather than
+            // faulting a task whose caller is awaiting it.
+            Log.Debug(ex, "SSE keep-alive pump stopped because the response stream was closed");
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2831,6 +3014,15 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     internal static Task PumpPreResponseSseKeepAliveForTest(
         Stream output, int intervalSeconds, CancellationToken ct) =>
         PumpPreResponseSseKeepAliveAsync(output, intervalSeconds, ct);
+
+    /// <summary>
+    /// Test seam for <see cref="PumpPreResponseSseKeepAliveReportingDisconnectAsync"/>, so the
+    /// disconnect classification that decides whether in-flight compaction work is abandoned can be
+    /// asserted against real stream failures rather than inferred.
+    /// </summary>
+    internal static Task<bool> PumpPreResponseSseKeepAliveReportingDisconnectForTest(
+        Stream output, int intervalSeconds, CancellationToken ct) =>
+        PumpPreResponseSseKeepAliveReportingDisconnectAsync(output, intervalSeconds, ct);
 
     /// <summary>
     /// Copies an SSE response to the client verbatim, interleaving keep-alive comment frames while the
@@ -4661,6 +4853,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ArgumentNullException.ThrowIfNull(targetMapping);
 
         bool headersPreCommitted = false;
+        bool clientDisconnected = false;
+
+        // Written by the pump's disconnect continuation and read by the compaction and the catch
+        // filter, which are on different threads; int + Volatile rather than bool so the write is
+        // visible to the request thread without a lock on the hot path.
+        int clientDisconnectedFlag = 0;
 
         try
         {
@@ -4678,6 +4876,63 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             if (ShouldApplyCopilotCompatibility(targetMapping.ProxyName))
                 (forwardedBody, compactStreamOptions) = StripStreamOptions(forwardedBody);
 
+            // Streaming is decided from what the client sent, before the pre-flight may rewrite the
+            // body: the rewrite only swaps the model field, but deciding here keeps the commit
+            // decision independent of anything the compaction does.
+            bool isStreamingRequest = IsStreamingJsonBody(forwardedBody);
+
+            // The keep-alive pump starts BEFORE the pre-flight map-reduce, not after it. The
+            // pre-flight can run for minutes (one upstream round-trip per chunk, serialized behind
+            // the compaction gate), and it used to run with no bytes on the wire at all — so a client
+            // with a short network timeout abandoned a compaction that was still progressing
+            // normally. The passthrough path has always committed headers before compacting (see
+            // PassthroughCoreAsync); this brings the manual path in line.
+            using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+            // Cancels the compaction if the client leaves. Separate from preResponseCts because
+            // preResponseCts exists to stop the pump, whereas this stops the work the pump is
+            // watching for — cancelling the pump must not cancel its own reason for running.
+            using var compactionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Task<bool> preResponseKeepAliveTask = Task.FromResult(false);
+
+            if (isStreamingRequest && ShouldEmitSseKeepAlive(targetMapping.ProxyName))
+            {
+                resp.StatusCode = 200;
+                resp.ContentType = "text/event-stream";
+                resp.SendChunked = true;
+                resp.KeepAlive = true;
+                headersPreCommitted = true;
+
+                // Writing and flushing this frame is what actually puts the headers on the wire;
+                // setting StatusCode/ContentType alone leaves the client with nothing to read.
+                await resp.OutputStream.WriteAsync(SseKeepAliveFrameBytes, ct);
+                await resp.OutputStream.FlushAsync(ct);
+
+                // The reporting form so a disconnect can stop the compaction below rather than let
+                // it run to completion against the model for a result nobody will receive.
+                preResponseKeepAliveTask = PumpPreResponseSseKeepAliveReportingDisconnectAsync(
+                    resp.OutputStream,
+                    _settings.SseKeepAliveIntervalSeconds,
+                    preResponseCts.Token);
+
+                // Observe the pump so its disconnect verdict cancels the compaction. Runs
+                // synchronously on the pump's completion, and reads the flag directly rather than
+                // through a captured closure over a bool, so the cancel is not racy.
+                _ = preResponseKeepAliveTask.ContinueWith(
+                    pump =>
+                    {
+                        if (pump.IsCompletedSuccessfully && pump.Result)
+                        {
+                            Volatile.Write(ref clientDisconnectedFlag, 1);
+                            try { compactionCts.Cancel(); }
+                            catch (ObjectDisposedException) { /* request already finished */ }
+                        }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+
             // Pre-flight: a manual /compact body is forwarded verbatim, so unlike the proactive and
             // reactive paths it has never been measured against the target model's window. An
             // embeddings-only or otherwise small compaction target receives Copilot's entire
@@ -4685,13 +4940,35 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // act on. Run it through the same map-reduce summarizer when the target allows it, and
             // otherwise reject here with an actionable message instead of paying for a round-trip
             // that is guaranteed to fail.
-            //
-            // This runs before any SSE headers are committed, so a rejection can still be delivered
-            // as a real HTTP status. A null result means the response has already been written.
-            string? preparedBody = await PrepareManualCompactBodyAsync(
-                targetMapping, forwardedBody, resp, log, ct);
-            if (preparedBody is null)
+            string? preparedBody;
+            try
+            {
+                preparedBody = await PrepareManualCompactBodyAsync(
+                    targetMapping, forwardedBody, resp, log, headersPreCommitted, compactionCts.Token);
+            }
+            catch (OperationCanceledException) when (Volatile.Read(ref clientDisconnectedFlag) == 1)
+            {
+                // The client left while the summarizer was running; the pump saw it and cancelled
+                // the compaction above. Nothing to deliver, so stop without writing a status.
+                clientDisconnected = true;
+                preparedBody = null;
+            }
+
+            if (clientDisconnected)
+            {
+                await preResponseCts.CancelAsync();
+                await preResponseKeepAliveTask;
                 return;
+            }
+
+            // A null result means the response has already been written (rejection, or the
+            // summarizer could not reduce the body).
+            if (preparedBody is null)
+            {
+                await preResponseCts.CancelAsync();
+                await preResponseKeepAliveTask;
+                return;
+            }
 
             forwardedBody = preparedBody;
 
@@ -4717,43 +4994,29 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
             ApplyApiKey(upstreamReq, apiKey);
 
-            // For streaming requests, pre-commit the SSE headers and pump keep-alive frames while
-            // the upstream summarizes. Compaction can take a long time and clients with a short
-            // network timeout would otherwise give up silently.
-            bool isStreamingRequest = IsStreamingJsonBody(forwardedBody);
-
-            using var preResponseCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            Task preResponseKeepAliveTask = Task.CompletedTask;
-
-            if (isStreamingRequest && ShouldEmitSseKeepAlive(targetMapping.ProxyName))
-            {
-                resp.StatusCode = 200;
-                resp.ContentType = "text/event-stream";
-                resp.SendChunked = true;
-                resp.KeepAlive = true;
-                headersPreCommitted = true;
-
-                // Writing and flushing this frame is what actually puts the headers on the wire;
-                // setting StatusCode/ContentType alone leaves the client with nothing to read.
-                await resp.OutputStream.WriteAsync(SseKeepAliveFrameBytes, ct);
-                await resp.OutputStream.FlushAsync(ct);
-
-                preResponseKeepAliveTask = PumpPreResponseSseKeepAliveAsync(
-                    resp.OutputStream,
-                    _settings.SseKeepAliveIntervalSeconds,
-                    preResponseCts.Token);
-            }
-
+            // The pre-response keep-alive pump is already running (started before the pre-flight above)
+            // and is stopped once the upstream's headers arrive, at which point the response body
+            // itself takes over keeping the connection busy. The upstream send shares the compaction
+            // token so a client that leaves during the summarization wait also stops this request
+            // rather than holding an upstream slot for an undeliverable answer.
             HttpResponseMessage upstreamResp;
             try
             {
                 upstreamResp = await SendUpstreamAsync(
-                    upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+                    upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, compactionCts.Token);
             }
             finally
             {
                 await preResponseCts.CancelAsync();
-                await preResponseKeepAliveTask;
+                clientDisconnected = await preResponseKeepAliveTask;
+            }
+
+            // The client left while the upstream was working; the compaction token is already
+            // cancelled, so there is nothing to deliver and no status worth writing.
+            if (clientDisconnected)
+            {
+                upstreamResp.Dispose();
+                return;
             }
 
             using HttpResponseMessage ownedUpstreamResponse = upstreamResp;
@@ -4900,6 +5163,13 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 "Manual compaction completed for {OriginalModel} using {TargetModel} ({ResponseBytes} bytes)",
                 originalModel, upstreamModel, log.ResponseBytes);
         }
+        catch (OperationCanceledException) when (clientDisconnected)
+        {
+            // The client left and the pump already logged the disconnect; there is nothing to
+            // deliver, so this is not a failure worth logging as one.
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = "Client disconnected during manual compaction";
+        }
         catch (Exception ex)
         {
             Log.Warning(ex, "Manual compaction for model {Model} threw", originalModel);
@@ -4908,21 +5178,9 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
             // Once the SSE headers are committed the status code is fixed at 200; report the
             // failure inside the stream instead so the client is not left with a silent close.
-            // The terminator frame is required as well: a client awaiting `data: [DONE]` blocks
-            // indefinitely without it.
             if (headersPreCommitted)
             {
-                try
-                {
-                    string errorFrame = $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(ex.Message)},\"code\":500}}}}\n\ndata: [DONE]\n\n";
-                    await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), CancellationToken.None);
-                    resp.OutputStream.Close();
-                }
-                catch (Exception writeEx)
-                {
-                    Log.Debug(writeEx, "Could not write a compaction error frame for model {Model}", originalModel);
-                }
-
+                await WriteCompactErrorFrameAsync(resp, ex.Message, 500);
                 return;
             }
 
@@ -4953,7 +5211,16 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// <param name="bodyText">The upstream-bound compaction body.</param>
     /// <param name="resp">Client response, written to when the request is rejected.</param>
     /// <param name="log">Request log, updated when the request is rejected.</param>
-    /// <param name="ct">Cancellation token.</param>
+    /// <param name="headersPreCommitted">
+    /// Whether the SSE headers have already been committed for this request. When they have, a
+    /// rejection cannot be delivered as a 413 — the status is fixed at 200 — so the reason has to be
+    /// written into the stream as an error frame instead.
+    /// </param>
+    /// <param name="ct">
+    /// Cancellation token for the summarization. A caller may pass a token that is additionally
+    /// cancelled when the client disconnects, so abandoning the request stops paying for chunks whose
+    /// summaries can no longer be delivered.
+    /// </param>
     /// <returns>
     /// The body to forward (unchanged, or compacted), or null when a rejection response has already
     /// been written and the caller must stop.
@@ -4963,6 +5230,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         string bodyText,
         HttpListenerResponse resp,
         RequestLog log,
+        bool headersPreCommitted,
         CancellationToken ct)
     {
         // Chunk sizing uses the compaction window (explicit value or the global conservative cap),
@@ -4985,50 +5253,115 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             : targetMapping.ModelName;
         int maxTokensPerChunk = budget;
 
-        Log.Information(
-            "Manual compaction for {Model} exceeds its {Budget} token budget (~{Estimated} tokens); "
-            + "running chunked map-reduce summarization against the target's own upstream",
-            targetMapping.ProxyName, budget, estimated);
+                Log.Information(
+                    "Manual compaction for {Model} exceeds its {Budget} token budget (~{Estimated} tokens); "
+                    + "running chunked map-reduce summarization against the target's own upstream",
+                    targetMapping.ProxyName, budget, estimated);
 
-        string sessionKey = $"manual:{targetMapping.ProxyName}:{bodyText.GetHashCode():X8}";
-        string? compacted = await _autoCompactionService.CompactAsync(
-            targetMapping,
-            bodyText,
-            sessionKey,
-            baseUrl,
-            apiKey,
-            timeout,
-            maxTokensPerChunk,
-            compactModelName,
-            compactionWindow,
-            compactionWindow,
-            ct,
-            CompactionFormat.Proxy);
+                // Measure the silent window explicitly. This span is the interval during which the client
+                // receives nothing but keep-alive frames, and it is the figure that decides whether a client
+                // with a short network timeout gives up on a compaction that is progressing normally. Logged
+                // on both outcomes so an abandoned run still reports how far it got.
+                Stopwatch preFlight = Stopwatch.StartNew();
 
-        if (compacted is null)
-        {
-            string message =
-                $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens, over its "
-                + $"{budget} token budget, and chunked summarization did not produce a smaller result. "
-                + "Check that the model is reachable and try a larger Compaction Model.";
+                string sessionKey = $"manual:{targetMapping.ProxyName}:{bodyText.GetHashCode():X8}";
+                string? compacted;
+                try
+                {
+                    compacted = await _autoCompactionService.CompactAsync(
+                        targetMapping,
+                        bodyText,
+                        sessionKey,
+                        baseUrl,
+                        apiKey,
+                        timeout,
+                        maxTokensPerChunk,
+                        compactModelName,
+                        compactionWindow,
+                        compactionWindow,
+                        ct,
+                        CompactionFormat.Proxy);
+                }
+                catch (OperationCanceledException)
+                {
+                    preFlight.Stop();
+                    Log.Information(
+                        "Manual compaction pre-flight for {Model} cancelled after {ElapsedMs} ms "
+                        + "(~{Estimated} tokens to reduce); in-flight chunk work was abandoned",
+                        targetMapping.ProxyName, preFlight.ElapsedMilliseconds, estimated);
+                    throw;
+                }
 
-            Log.Warning("Manual compaction map-reduce failed for model {Model}", targetMapping.ProxyName);
+                preFlight.Stop();
 
-            log.StatusCode = 413;
-            log.Status = RequestStatus.Error;
-            log.ErrorMessage = message;
+                        if (compacted is null)
+                        {
+                            // A cancelled compaction does not surface as an exception: the service catches the
+                            // cancellation while waiting for its gate and returns null, which is indistinguishable
+                            // from "could not reduce". Ask the caller's own disconnect verdict so an abandoned
+                            // request is not misreported to the client as an oversized-body rejection.
+                            ct.ThrowIfCancellationRequested();
 
-            resp.StatusCode = 413;
-            await WriteJsonAsync(resp, new { error = message }, ct);
-            return null;
-        }
+                            string message =
+                        $"Manual compaction for '{targetMapping.ProxyName}' needs ~{estimated} tokens, over its "
+                        + $"{budget} token budget, and chunked summarization did not produce a smaller result. "
+                        + "Check that the model is reachable and try a larger Compaction Model.";
 
-        _autoCompactionService.RecordSuccess(sessionKey);
-        Log.Information(
-            "Manual compaction for {Model} compacted ~{Original} → ~{Compacted} est. tokens",
-            targetMapping.ProxyName, estimated, EstimateTokenCount(compacted));
-        return compacted;
-    }
+                    Log.Warning(
+                        "Manual compaction map-reduce failed for model {Model} after {ElapsedMs} ms",
+                        targetMapping.ProxyName, preFlight.ElapsedMilliseconds);
+
+                    log.StatusCode = 413;
+                    log.Status = RequestStatus.Error;
+                    log.ErrorMessage = message;
+
+                    // With the SSE headers already committed the status is fixed at 200, so the reason has
+                    // to travel as an in-stream error frame; writing a 413 here would be silently dropped.
+                    if (headersPreCommitted)
+                    {
+                        await WriteCompactErrorFrameAsync(resp, message, 413);
+                        return null;
+                    }
+
+                    resp.StatusCode = 413;
+                    await WriteJsonAsync(resp, new { error = message }, ct);
+                    return null;
+                }
+
+                _autoCompactionService.RecordSuccess(sessionKey);
+                Log.Information(
+                    "Manual compaction for {Model} compacted ~{Original} → ~{Compacted} est. tokens "
+                    + "in {ElapsedMs} ms of pre-flight summarization",
+                    targetMapping.ProxyName, estimated, EstimateTokenCount(compacted), preFlight.ElapsedMilliseconds);
+                return compacted;
+            }
+
+            /// <summary>
+            /// Writes an SSE error frame followed by the terminal <c>[DONE]</c> marker, for a failure that
+            /// occurs after the SSE headers are already committed.
+            /// </summary>
+            /// <remarks>
+            /// Once a 200 has been sent the real status cannot be changed, so reporting a failure means
+            /// putting it in the stream. The terminal marker is required as well, not merely tidy: a client
+            /// built on Microsoft.Extensions.AI awaits it and would otherwise block indefinitely on a stream
+            /// that has quietly stopped.
+            /// </remarks>
+            private static async Task WriteCompactErrorFrameAsync(HttpListenerResponse resp, string message, int code)
+            {
+                try
+                {
+                    string errorFrame =
+                        $"data: {{\"error\":{{\"message\":{JsonSerializer.Serialize(message)},\"code\":{code}}}}}\n\ndata: [DONE]\n\n";
+                    await resp.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(errorFrame), CancellationToken.None);
+                    await resp.OutputStream.FlushAsync(CancellationToken.None);
+                    resp.OutputStream.Close();
+                }
+                catch (Exception ex) when (IsClientDisconnect(ex) || ex is ObjectDisposedException)
+                {
+                    // The client is already gone; there is nobody left to report to.
+                    Log.Debug(ex, "Could not write a compaction error frame");
+                }
+            }
 
     /// <summary>
     /// Bounds a redirected Copilot <c>/compact</c> body to the compaction target's own context window
