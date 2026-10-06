@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kaeo LLM Proxy — Code Review Report</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --border: #dee2e6;
+  --critical-bg: #fce4ec;
+  --critical-border: #e57373;
+  --high-bg: #fff3e0;
+  --high-border: #ffb74d;
+  --medium-bg: #fff9c4;
+  --medium-border: #fff176;
+  --low-bg: #e8f5e9;
+  --low-border: #81c784;
+  --code-bg: #f5f5f5;
+  --heading: #263238;
+  --link: #1565c0;
+  --meta: #616161;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 1100px; margin: 0 auto; padding: 24px 16px; background: var(--bg); color: var(--fg); line-height: 1.55; }
+h1 { font-size: 1.75rem; border-bottom: 3px solid #1565c0; padding-bottom: 8px; margin-bottom: 4px; color: var(--heading); }
+h2 { font-size: 1.3rem; margin: 32px 0 12px; color: var(--heading); }
+h3 { font-size: 1.05rem; margin: 18px 0 6px; }
+.meta { color: var(--meta); font-size: .85rem; margin-bottom: 20px; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 12px; margin: 16px 0 24px; }
+.summary-card { border-radius: 8px; padding: 14px 12px; text-align: center; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.summary-card.critical { background: var(--critical-bg); border: 2px solid var(--critical-border); }
+.summary-card.high    { background: var(--high-bg);     border: 2px solid var(--high-border); }
+.summary-card.medium  { background: var(--medium-bg);   border: 2px solid var(--medium-border); }
+.summary-card.low     { background: var(--low-bg);      border: 2px solid var(--low-border); }
+.count { font-size: 2rem; display: block; }
+.issue { border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.issue-header { padding: 10px 16px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+.issue.critical .issue-header { background: var(--critical-bg); border-bottom: 1px solid var(--critical-border); }
+.issue.high     .issue-header { background: var(--high-bg);     border-bottom: 1px solid var(--high-border); }
+.issue.medium   .issue-header { background: var(--medium-bg);   border-bottom: 1px solid var(--medium-border); }
+.issue.low      .issue-header { background: var(--low-bg);      border-bottom: 1px solid var(--low-border); }
+.issue-body { padding: 12px 16px; }
+.issue-body p { margin: 0 0 8px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.badge.critical { background: #d32f2f; color: #fff; }
+.badge.high     { background: #f57c00; color: #fff; }
+.badge.medium   { background: #fbc02d; color: #333; }
+.badge.low      { background: #43a047; color: #fff; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow-x: auto; font-size: .82rem; line-height: 1.45; }
+code { font-family: 'Cascadia Code','JetBrains Mono','Fira Code','Consolas',monospace; font-size: .82rem; }
+.loc { color: var(--meta); font-size: .8rem; }
+ul { margin: 4px 0; padding-left: 20px; }
+li { margin-bottom: 4px; }
+.note { background: #e3f2fd; border-left: 4px solid #1976d2; padding: 8px 12px; border-radius: 0 6px 6px 0; margin: 12px 0; font-size: .88rem; }
+h2 .badge { vertical-align: middle; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Kaeo LLM Proxy — Code Review Report</h1>
+<p class="meta">
+  Generated from solution <code>Kaeo LLM Proxy.slnx</code> —
+  10 projects, targeting .NET&nbsp;10, .NET&nbsp;Standard&nbsp;2.0, .NET&nbsp;Framework&nbsp;4.8
+</p>
+
+<div class="summary-grid">
+  <div class="summary-card critical"><span class="count">2</span>Critical</div>
+  <div class="summary-card high"><span class="count">4</span>High</div>
+  <div class="summary-card medium"><span class="count">5</span>Medium</div>
+  <div class="summary-card low"><span class="count">6</span>Low</div>
+</div>
+
+<!-- ───────────────────────────── CRITICAL ───────────────────────────── -->
+<h2>Critical <span class="badge critical">Fix now</span></h2>
+
+<div class="issue critical">
+  <div class="issue-header"><span>#1 — <code>async void</code> on non-event-handler method can crash the process</span><span class="loc">MainForm.cs:289</span></div>
+  <div class="issue-body">
+    <p><code>ApplyMcpServerSettingsAsync</code> is declared <strong>async void</strong> but is called from <code>OnMcpSettingChanged</code> — it is <em>not</em> a WinForms event handler. If an unhandled exception propagates out of this method, it will crash the entire process with no opportunity for recovery.</p>
+    <pre><code>// MainForm.cs line 289
+private async void ApplyMcpServerSettingsAsync()
+{
+    // ...
+    try { await _mcpServer.ApplySettingsAsync(); }
+    catch (Exception ex) { Log.Error(ex, "Failed to apply MCP server settings"); }
+    // ...
+}</code></pre>
+    <p><strong>Recommendation:</strong> Change the signature to <code>private async Task ApplyMcpServerSettingsAsync()</code> and have the caller use <code>_ = ApplyMcpServerSettingsAsync();</code> or await it. The log-on-error pattern is correct, so the only risk is an exception thrown outside the try/catch (e.g. before the try block).</p>
+  </div>
+</div>
+
+<div class="issue critical">
+  <div class="issue-header"><span>#2 — <code>Task.Wait()</code> in Dispose blocks thread for up to 5 seconds</span><span class="loc">StatisticsService.cs:464</span></div>
+  <div class="issue-body">
+    <p><code>_persistTask?.Wait(TimeSpan.FromSeconds(5))</code> synchronously blocks the calling thread during shutdown. If Dispose is called from the UI thread, this freezes the dashboard for up to 5 seconds. If multiple services dispose on the same thread, the time accumulates.</p>
+    <pre><code>// StatisticsService.cs line ~464
+public void Dispose()
+{
+    _cleanupTimer?.Dispose();
+    if (_persistChannel is not null)
+    {
+        _persistChannel.Writer.TryComplete();
+        try { _persistTask?.Wait(TimeSpan.FromSeconds(5)); }  // &lt;-- BLOCKING
+        catch (Exception ex) { Log.Warning(ex, "..."); }
+    }
+}</code></pre>
+    <p><strong>Recommendation:</strong> Replace with <code>await _persistTask</code> by making Dispose async, or use a fire-and-forget continuation with a timeout via <code>Task.WhenAny</code> / <code>CancellationTokenSource.CancelAfter</code>. If the Dispose pattern cannot change to async, at least push the wait onto <code>Task.Run</code> so the caller is not blocked.</p>
+  </div>
+</div>
+
+<!-- ───────────────────────────── HIGH ───────────────────────────── -->
+<h2>High <span class="badge high">Address soon</span></h2>
+
+<div class="issue high">
+  <div class="issue-header"><span>#3 — <code>OllamaProxyHandler.cs</code> is 8,318 lines in a single file</span><span class="loc">OllamaProxyHandler.cs</span></div>
+  <div class="issue-body">
+    <p>This one file contains the entire request pipeline: Ollama-to-OpenAI translation, OpenAI passthrough, SSE streaming, NDJSON streaming, chat, generate, embeddings, tags, models, compaction, keep-alive logic, API explorer, error handling, utility classes (<code>CountingStream</code>, <code>ResponseCaptureStream</code>, <code>SseUsageSniffer</code>, <code>PeriodicHeartbeatState</code>), and more. It is marked <code>partial</code> but not split into any other file.</p>
+    <p><strong>Impact:</strong> Extremely hard to navigate, review, and test. Merge conflicts on this file are frequent and painful. New contributors struggle to understand boundaries.</p>
+    <p><strong>Recommendation:</strong> Split into separate files across the <code>partial class</code> boundary or extract into dedicated service classes:
+      <ul>
+        <li><code>OllamaProxyHandler.OllamaSurface.cs</code> — /api/chat, /api/generate, /api/embeddings</li>
+        <li><code>OllamaProxyHandler.Passthrough.cs</code> — OpenAI passthrough, SSE copy, compaction forwarding</li>
+        <li><code>OllamaProxyHandler.StreamIO.cs</code> — CountingStream, ResponseCaptureStream, SseUsageSniffer</li>
+        <li><code>OllamaProxyHandler.Heartbeat.cs</code> — PeriodicHeartbeatState</li>
+        <li><code>OllamaProxyHandler.Utilities.cs</code> — JSON helpers, token resolution, MIME helpers</li>
+      </ul>
+    </p>
+  </div>
+</div>
+
+<div class="issue high">
+  <div class="issue-header"><span>#4 — <code>MainForm.cs</code> is 3,946 lines of WinForms code-behind</span><span class="loc">MainForm.cs</span></div>
+  <div class="issue-body">
+    <p>The main form handles dashboard UI, settings persistence, log display (virtual-mode ListViews), MCP controls, module management, test console, heartbeat display, system logs, and help content — all in a single file. Many methods mix UI concerns with business logic (e.g. network interface enumeration directly in the form).</p>
+    <p><strong>Recommendation:</strong> Extract view-models or presenter classes for the major tabs. The Logs tab alone could be its own user control. The Settings tab's save logic mixes persistence with UI — extract to a <code>SettingsPresenter</code>.</p>
+  </div>
+</div>
+
+<div class="issue high">
+  <div class="issue-header"><span>#5 — <code>Thread.Sleep</code> in retry loop blocks thread-pool thread</span><span class="loc">ExtensionSettingsStore.cs:135</span></div>
+  <div class="issue-body">
+    <p>A synchronous file write with a retry loop using <code>Thread.Sleep(50 * attempt)</code> blocks the calling thread for up to 1.2 seconds (sum of sleeps for 8 attempts). This method is in the VS Extension project targeting .NET Framework 4.8.</p>
+    <pre><code>// ExtensionSettingsStore.cs ~line 135
+for (var attempt = 1; ; attempt++)
+{
+    try
+    {
+        using (var stream = new FileStream(path, FileMode.Create, ...))
+        using (var writer = new StreamWriter(stream, Encoding.UTF8))
+        { writer.Write(text); }
+        return;
+    }
+    catch (IOException) when (attempt < maxAttempts)
+    {
+        Thread.Sleep(50 * attempt); // 50, 100, 150 ... ms — BLOCKING
+    }
+}</code></pre>
+    <p><strong>Recommendation:</strong> Use <code>await Task.Delay(50 * attempt, cancellationToken)</code> with an async retry helper. If the method cannot become async due to its caller, push the whole retry to <code>Task.Run</code> and await the result, or use a <code>SpinWait</code> for very short waits.</p>
+  </div>
+</div>
+
+<div class="issue high">
+  <div class="issue-header"><span>#6 — <code>ConnectionHealthStat</code> uses public mutable fields accessed from multiple threads</span><span class="loc">StatisticsService.cs:490</span></div>
+  <div class="issue-body">
+    <p>The <code>ConnectionHealthStat</code> class exposes all its state as public fields (<code>Attempts</code>, <code>Failures</code>, <code>Count</code>, <code>LastError</code>, etc.) and is stored in a <code>ConcurrentDictionary</code>. Updates happen via <code>Interlocked.Increment</code> on some fields but <em>not</em> on others. Reads happen from the UI thread without any synchronization, so a read can observe a partially updated state.</p>
+    <pre><code>// StatisticsService.cs ~line 490
+internal sealed class ConnectionHealthStat  // &lt;-- public fields!
+{
+    public long Attempts;
+    public long Count;
+    public long Failures;
+    public long LastAttemptUtcTicks;
+    public long LastSentUtcTicks;
+    public string LastStatus = "Not checked";
+    public string LastError = string.Empty;
+}</code></pre>
+    <p><strong>Recommendation:</strong> Replace public fields with properties backed by <code>Interlocked.Read</code>/<code>Interlocked.Exchange</code> or use a snapshot pattern (copy under a lock before exposing). <code>ConnectionHealthSnapshot</code> (the record) already exists for this purpose; ensure all reads go through <code>Snap()</code>.</p>
+  </div>
+</div>
+
+<!-- ───────────────────────────── MEDIUM ───────────────────────────── -->
+<h2>Medium <span class="badge medium">Fix in next cycle</span></h2>
+
+<div class="issue medium">
+  <div class="issue-header"><span>#7 — Broad <code>catch (Exception)</code> with log-only recovery obscures root causes</span><span class="loc">Multiple files</span></div>
+  <div class="issue-body">
+    <p>At least 25 sites catch <code>Exception</code> generically and only log a message, effectively swallowing errors that might indicate corruption, threading violations, or resource exhaustion. Notable examples:</p>
+    <ul>
+      <li><code>TrayApplicationContext.cs:107,135,162</code> — Start/stop/restart proxy failures</li>
+      <li><code>MainForm.cs:1405,1726,2807,2934,3047,3130,3240</code> — Various UI refresh paths</li>
+      <li><code>StatisticsService.cs</code> — persistence drain timeout</li>
+    </ul>
+    <p><strong>Recommendation:</strong> Catch and log specific exception types where the failure mode is understood. Reserve generic <code>Exception</code> catches only for top-level boundary handlers where the process must not crash, and always include the full exception (not just <code>ex.Message</code>) in the log context.</p>
+  </div>
+</div>
+
+<div class="issue medium">
+  <div class="issue-header"><span>#8 — Fire-and-forget <code>_ = StartModuleAsync(...)</code> with no error telemetry</span><span class="loc">TrayApplicationContext.cs:125</span></div>
+  <div class="issue-body">
+    <pre><code>// TrayApplicationContext.cs
+private void StartModules()
+{
+    foreach (LoadedModule loaded in _moduleHost.LoadedModules)
+    {
+        if (loaded.Module is not IRunnableModule runnable) continue;
+        _ = StartModuleAsync(loaded.Entry.Name, runnable);  // &lt;-- FIRE AND FORGET
+    }
+}</code></pre>
+    <p>While <code>StartModuleAsync</code> has its own try/catch, the discard means any unobserved exception from the async state machine (e.g. an exception after the first <code>await</code>) is silently lost. Additionally, if multiple module start operations overlap, there is no mechanism to detect which succeeded and which failed.</p>
+  </div>
+</div>
+
+<div class="issue medium">
+  <div class="issue-header"><span>#9 — Static <code>HttpClient _explorerSpecClient</code> without lifecycle management</span><span class="loc">OllamaProxyHandler.cs:7490</span></div>
+  <div class="issue-body">
+    <p>A static <code>HttpClient</code> is created inline for fetching API explorer specs. Static HttpClient instances are well-known to cause DNS change issues in long-running processes (they cache DNS indefinitely on .NET Core when no handler is configured). While this client has a 5-second timeout, it lacks <code>PooledConnectionLifetime</code> and will retain stale DNS entries forever.</p>
+    <pre><code>// OllamaProxyHandler.cs ~line 7490
+private static readonly HttpClient _explorerSpecClient = new() { Timeout = TimeSpan.FromSeconds(5) };</code></pre>
+    <p><strong>Recommendation:</strong> Use <code>SocketsHttpHandler</code> with <code>PooledConnectionLifetime</code> like the main <code>BuildHttpClient()</code> does, or use <code>IHttpClientFactory</code>.</p>
+  </div>
+</div>
+
+<div class="issue medium">
+  <div class="issue-header"><span>#10 — Property named <code>Result</code> is easily confused with <code>Task.Result</code></span><span class="loc">MeaiAdapter.cs:93</span></div>
+  <div class="issue-body">
+    <pre><code>// MeaiAdapter.cs line 93
+json["content"] = result.Result?.ToString() ?? content;</code></pre>
+    <p>Here <code>result</code> is a <code>FunctionResultContent</code> instance and <code>Result</code> is a property of type <code>object?</code>, but the syntax is identical to blocking on a <code>Task&lt;object&gt;.Result</code>. A reader (or Copilot) scanning this line will flag it as a potential deadlock.</p>
+    <p><strong>Recommendation:</strong> Rename the property or use a local alias: <code>var functionResult = result.Result?.ToString()</code> with a comment clarifying this is not <code>Task.Result</code>.</p>
+  </div>
+</div>
+
+<div class="issue medium">
+  <div class="issue-header"><span>#11 — HttpClient disposal races against in-flight requests via polling</span><span class="loc">OllamaProxyHandler.cs:120</span></div>
+  <div class="issue-body">
+    <p>When settings change, a new HttpClient is created and the old one is disposed via a fire-and-forget <code>Task.Run</code> that polls an <code>_inFlightRequests</code> counter with a 250ms interval for up to 5 minutes. This is a fragile timing contract: if a request thread increments the counter between the poll and the dispose, the old client gets disposed while still in use.</p>
+    <pre><code>_ = Task.Run(async () =>
+{
+    DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+    while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
+        await Task.Delay(TimeSpan.FromMilliseconds(250));
+    // ... 
+    old.Dispose();  // &lt;-- possible race
+});</code></pre>
+    <p><strong>Recommendation:</strong> Use a reference-counted handle (e.g. a wrapper that increments on checkout and decrements on return) rather than checking a flat counter. Or accept that disposing a pooled HttpClient while connections are open may throw <code>ObjectDisposedException</code> and catch that.</p>
+  </div>
+</div>
+
+<!-- ───────────────────────────── LOW ───────────────────────────── -->
+<h2>Low <span class="badge low">Nice to fix</span></h2>
+
+<div class="issue low">
+  <div class="issue-header"><span>#12 — <code>ContainsToken</code> increments search index by 1 after each failed match</span><span class="loc">CapabilityDetector.cs:173</span></div>
+  <div class="issue-body">
+    <pre><code>while ((idx = text.IndexOf(token, idx, StringComparison.Ordinal)) >= 0)
+{
+    // ... boundary check ...
+    idx += 1;  // &lt;-- could skip ahead by token.Length
+}</code></pre>
+    <p>After a partial match that fails the boundary check, jumping by 1 instead of <code>token.Length</code> means re-scanning most of the token substring character by character. For a model name like <code>starcoder-15b-v0.1</code> searching for <code>code</code>, very unlikely to matter. Purely a micro-optimization.</p>
+  </div>
+</div>
+
+<div class="issue low">
+  <div class="issue-header"><span>#13 — <code>AddIfMissing</code> uses O(n) linear scan on <code>List&lt;string&gt;</code></span><span class="loc">CapabilityDetector.cs:179</span></div>
+  <div class="issue-body">
+    <pre><code>private static void AddIfMissing(List&lt;string&gt; list, string token)
+{
+    if (!list.Any(t => string.Equals(t, token, StringComparison.OrdinalIgnoreCase)))
+        list.Add(token);
+}</code></pre>
+    <p>Linear scan on a small list (at most ~6 capability tokens) so the performance impact is negligible. A <code>HashSet&lt;string&gt;</code> with an ordinal-ignore-case comparer would be more idiomatic.</p>
+  </div>
+</div>
+
+<div class="issue low">
+  <div class="issue-header"><span>#14 — Multiple <code>async void</code> event handlers in MainForm and TrayApplicationContext</span><span class="loc">MainForm.cs, TrayApplicationContext.cs</span></div>
+  <div class="issue-body">
+    <p>WinForms button click handlers that are <code>async void</code> (BtnStart_Click, BtnStop_Click, etc.) are standard practice and each contains its own try/catch. This is acceptable for WinForms but worth noting: a missed exception path (<em>before</em> the try block) would crash the process. Consider a centralized <code>AsyncEventHandler</code> wrapper that catches and logs.</p>
+  </div>
+</div>
+
+<div class="issue low">
+  <div class="issue-header"><span>#15 — <code>volatile AppSettings _settings</code> used inconsistently</span><span class="loc">OllamaProxyHandler.cs:34</span></div>
+  <div class="issue-body">
+    <p>The <code>_settings</code> reference is marked <code>volatile</code> and replaced atomically in <code>UpdateSettings</code>, but the replacement involves a deep clone (<code>settings.Clone()</code>) which could be partially constructed if not done atomically. The clone itself is fine (it's done before the volatile write), but any code that reads <code>_settings.SomeProperty</code> multiple times in a single method may see values from two different snapshots if the field is replaced between reads.</p>
+  </div>
+</div>
+
+<div class="issue low">
+  <div class="issue-header"><span>#16 — Nested <code>foreach</code> over network interfaces blocks UI thread</span><span class="loc">MainForm.cs:1706</span></div>
+  <div class="issue-body">
+    <p><code>NetworkInterface.GetAllNetworkInterfaces()</code> is enumerated synchronously on the UI thread to populate the listen-address combo box. For a machine with many virtual adapters (VPNs, Docker, Hyper-V), this can be slow. Cache the result or move to a background call.</p>
+  </div>
+</div>
+
+<div class="issue low">
+  <div class="issue-header"><span>#17 — <code>partial class</code> declared but never split</span><span class="loc">OllamaProxyHandler.cs:23</span></div>
+  <div class="issue-body">
+    <p><code>OllamaProxyHandler</code> is declared as <code>internal sealed partial class</code> but no other file contributes to it. The <code>partial</code> keyword exists ready for a split (see Issue #3) but is currently unused.</p>
+  </div>
+</div>
+
+<!-- ───────────────────────────── POSITIVE NOTES ───────────────────────────── -->
+<h2>Positive Findings</h2>
+<div class="note">
+  <p><strong>Good practices observed:</strong></p>
+  <ul>
+    <li><strong>Parameterized SQL everywhere</strong> — AppDatabase uses <code>$param</code> bindings exclusively; no string-concatenated SQL found.</li>
+    <li><strong>ConcurrentDictionary for shared state</strong> — StreamMonitor, StatisticsService, and PeriodicHeartbeatState all use appropriate concurrent collections.</li>
+    <li><strong>Private lock objects</strong> — All <code>lock</code> statements use dedicated <code>_lock</code> / <code>_gate</code> objects, never <code>this</code> or <code>typeof(...)</code>.</li>
+    <li><strong>HttpClient pooling</strong> — <code>BuildHttpClient()</code> uses <code>SocketsHttpHandler</code> with <code>PooledConnectionLifetime</code> and <code>MaxConnectionsPerServer</code>.</li>
+    <li><strong>Virtual-mode ListViews</strong> — Log grids use <code>VirtualMode</code> + <code>RetrieveVirtualItem</code>, avoiding thousands of ListViewItem allocations.</li>
+    <li><strong>Bounded channels for persistence</strong> — <code>StatisticsService</code> uses a <code>Channel&lt;PersistEntry&gt;</code> with a dedicated writer task instead of unbounded <code>ThreadPool.QueueUserWorkItem</code>.</li>
+    <li><strong>Implicit usings + nullable enabled</strong> across all .NET&nbsp;10 projects.</li>
+    <li><strong>Comprehensive XML documentation</strong> on public and internal APIs.</li>
+    <li><strong>Test project</strong> with multiple test fixture files covering specs, logging, schema, and compaction.</li>
+  </ul>
+</div>
+
+<h2>Project Size Summary</h2>
+<table style="width:100%;border-collapse:collapse;margin-top:8px;">
+<thead><tr style="background:#f5f5f5;"><th style="text-align:left;padding:6px 10px;border:1px solid #dee2e6;">File</th><th style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;">Lines</th><th style="text-align:left;padding:6px 10px;border:1px solid #dee2e6;">Assessment</th></tr></thead>
+<tbody>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">Kaeo LLM Proxy Services/OllamaProxyHandler.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;font-weight:700;color:#d32f2f;">8,318</td><td style="padding:6px 10px;border:1px solid #dee2e6;">🚫 Critical — split required</td></tr>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">MainForm.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;font-weight:700;color:#f57c00;">3,946</td><td style="padding:6px 10px;border:1px solid #dee2e6;">⚠️ Very large — needs extraction</td></tr>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">MainForm.Designer.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;">2,930</td><td style="padding:6px 10px;border:1px solid #dee2e6;">Generated — acceptable</td></tr>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">Kaeo LLM Proxy Infrastructure/AppDatabase.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;">2,591</td><td style="padding:6px 10px;border:1px solid #dee2e6;">⚠️ Large — consider splitting by table area</td></tr>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">Kaeo LLM Proxy Services/AutoCompactionService.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;">~1,600</td><td style="padding:6px 10px;border:1px solid #dee2e6;">⚠️ Large — dedicated class is good</td></tr>
+<tr><td style="padding:6px 10px;border:1px solid #dee2e6;">Kaeo LLM Proxy Core/Models/AppSettings.cs</td><td style="text-align:right;padding:6px 10px;border:1px solid #dee2e6;">~1,450</td><td style="padding:6px 10px;border:1px solid #dee2e6;">⚠️ Large — consider splitting parsing/validation</td></tr>
+</tbody>
+</table>
+
+<p style="margin-top:24px;color:var(--meta);font-size:.8rem;text-align:center;">
+  Review completed — 17 issues found across 10 projects. Focus on the 2 critical and 4 high issues first.
+</p>
+
+</body>
+</html>
