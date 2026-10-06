@@ -33,6 +33,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppDatabase _database;
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
+    private readonly StreamMonitor _streamMonitor;
     private MainForm? _mainForm;
     private bool _disposed;
 
@@ -69,7 +70,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
         _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
-        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer, _nonProxiedStats);
+        _streamMonitor = new StreamMonitor();
+        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer, _nonProxiedStats, streamMonitor: _streamMonitor);
         _handler.StartHeartbeatMonitors();
         _server = new ProxyServer(_handler);
 
@@ -216,7 +218,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost, _mcpServer, _nonProxiedStats);
+            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost, _mcpServer, _nonProxiedStats, _streamMonitor);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }

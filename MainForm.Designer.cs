@@ -174,6 +174,23 @@ partial class MainForm
         _btnRefreshLogs = new Button();
         _btnClearLogs = new Button();
         _btnLogDetails = new Button();
+                _logStreamsPage = new TabPage();
+                _tlpStreams = new TableLayoutPanel();
+                _lstStreams = new ListView();
+                _colStrTime = new ColumnHeader();
+                _colStrKind = new ColumnHeader();
+                _colStrMethod = new ColumnHeader();
+                _colStrPath = new ColumnHeader();
+                _colStrModel = new ColumnHeader();
+                _colStrState = new ColumnHeader();
+                _colStrUp = new ColumnHeader();
+                _colStrDown = new ColumnHeader();
+                _colStrFrames = new ColumnHeader();
+                _splitStreams = new SplitContainer();
+                _lblStreamRaw = new Label();
+                _txtStreamRaw = new RichTextBox();
+                _lblStreamForwarded = new Label();
+                _txtStreamForwarded = new RichTextBox();
 
         // Settings controls
         _tlpSettings = new TableLayoutPanel();
@@ -862,6 +879,7 @@ partial class MainForm
         _logSubTabs.Controls.Add(_logMcpPage);
         _logSubTabs.Controls.Add(_logNonProxiedPage);
         _logSubTabs.Controls.Add(_tabSysLogs);
+                _logSubTabs.Controls.Add(_logStreamsPage);
         _logSubTabs.Dock = DockStyle.Fill;
         _logSubTabs.Name = "_logSubTabs";
         _logSubTabs.SelectedIndexChanged += LogSubTabs_SelectionChanged;
@@ -1019,6 +1037,91 @@ partial class MainForm
         _colNpDuration.Width = 60;
         _colNpBytes.Text = "Bytes (req/resp)";
         _colNpBytes.Width = 110;
+
+        // _logStreamsPage
+        _logStreamsPage.Controls.Add(_tlpStreams);
+        _logStreamsPage.Dock = DockStyle.Fill;
+        _logStreamsPage.Name = "_logStreamsPage";
+        _logStreamsPage.Padding = new Padding(3);
+        _logStreamsPage.Text = "Streams";
+
+        // _tlpStreams — two rows: list (40% top) | live panes (60% bottom)
+        _tlpStreams.ColumnCount = 1;
+        _tlpStreams.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpStreams.Controls.Add(_lstStreams, 0, 0);
+        _tlpStreams.Controls.Add(_splitStreams, 0, 1);
+        _tlpStreams.Dock = DockStyle.Fill;
+        _tlpStreams.Name = "_tlpStreams";
+        _tlpStreams.RowCount = 2;
+        _tlpStreams.RowStyles.Add(new RowStyle(SizeType.Percent, 40F));
+        _tlpStreams.RowStyles.Add(new RowStyle(SizeType.Percent, 60F));
+
+        // _lstStreams
+        _lstStreams.Columns.Add(_colStrTime);
+        _lstStreams.Columns.Add(_colStrKind);
+        _lstStreams.Columns.Add(_colStrMethod);
+        _lstStreams.Columns.Add(_colStrPath);
+        _lstStreams.Columns.Add(_colStrModel);
+        _lstStreams.Columns.Add(_colStrState);
+        _lstStreams.Columns.Add(_colStrUp);
+        _lstStreams.Columns.Add(_colStrDown);
+        _lstStreams.Columns.Add(_colStrFrames);
+        _lstStreams.Dock = DockStyle.Fill;
+        _lstStreams.FullRowSelect = true;
+        _lstStreams.GridLines = true;
+        _lstStreams.HideSelection = false;
+        _lstStreams.Name = "_lstStreams";
+        _lstStreams.View = View.Details;
+        _lstStreams.SelectedIndexChanged += LstStreams_SelectedIndexChanged;
+
+        _colStrTime.Text = "Time";
+        _colStrTime.Width = 70;
+        _colStrKind.Text = "Type";
+        _colStrKind.Width = 50;
+        _colStrMethod.Text = "Method";
+        _colStrMethod.Width = 55;
+        _colStrPath.Text = "Path";
+        _colStrPath.Width = 130;
+        _colStrModel.Text = "Model";
+        _colStrModel.Width = 150;
+        _colStrState.Text = "State";
+        _colStrState.Width = 80;
+        _colStrUp.Text = "Up";
+        _colStrUp.Width = 65;
+        _colStrDown.Text = "Down";
+        _colStrDown.Width = 65;
+        _colStrFrames.Text = "Frames";
+        _colStrFrames.Width = 55;
+
+        // _splitStreams — vertical: raw upstream (left) | forwarded (right)
+        _splitStreams.Dock = DockStyle.Fill;
+        _splitStreams.Name = "_splitStreams";
+        _splitStreams.Orientation = Orientation.Vertical;
+        _splitStreams.SplitterDistance = 400;
+
+        // Panel1: Raw upstream
+        _lblStreamRaw.AutoSize = true;
+        _lblStreamRaw.Dock = DockStyle.Top;
+        _lblStreamRaw.Text = "Raw Upstream:";
+        _txtStreamRaw.Dock = DockStyle.Fill;
+        _txtStreamRaw.ReadOnly = true;
+        _txtStreamRaw.WordWrap = false;
+        _txtStreamRaw.BackColor = SystemColors.Window;
+        _txtStreamRaw.Font = new Font("Consolas", 9F);
+        _splitStreams.Panel1.Controls.Add(_lblStreamRaw);
+        _splitStreams.Panel1.Controls.Add(_txtStreamRaw);
+
+        // Panel2: Forwarded
+        _lblStreamForwarded.AutoSize = true;
+        _lblStreamForwarded.Dock = DockStyle.Top;
+        _lblStreamForwarded.Text = "Forwarded:";
+        _txtStreamForwarded.Dock = DockStyle.Fill;
+        _txtStreamForwarded.ReadOnly = true;
+        _txtStreamForwarded.WordWrap = false;
+        _txtStreamForwarded.BackColor = SystemColors.Window;
+        _txtStreamForwarded.Font = new Font("Consolas", 9F);
+        _splitStreams.Panel2.Controls.Add(_lblStreamForwarded);
+        _splitStreams.Panel2.Controls.Add(_txtStreamForwarded);
 
         // _flpLogsButtons
         _flpLogsButtons.AutoSize = true;
@@ -2713,6 +2816,23 @@ partial class MainForm
     private ColumnHeader _colNpStatus;
     private ColumnHeader _colNpDuration;
     private ColumnHeader _colNpBytes;
+        private TabPage _logStreamsPage;
+        private TableLayoutPanel _tlpStreams;
+        private ListView _lstStreams;
+        private ColumnHeader _colStrTime;
+        private ColumnHeader _colStrKind;
+        private ColumnHeader _colStrMethod;
+        private ColumnHeader _colStrPath;
+        private ColumnHeader _colStrModel;
+        private ColumnHeader _colStrState;
+        private ColumnHeader _colStrUp;
+        private ColumnHeader _colStrDown;
+        private ColumnHeader _colStrFrames;
+        private SplitContainer _splitStreams;
+        private Label _lblStreamRaw;
+        private RichTextBox _txtStreamRaw;
+        private Label _lblStreamForwarded;
+        private RichTextBox _txtStreamForwarded;
     private ListView _lstMcpLogs;
     private ColumnHeader _colMcpTime;
     private ColumnHeader _colMcpMethod;

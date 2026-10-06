@@ -485,21 +485,38 @@ internal sealed record PersistEntry(RequestLog? Entry, Exception? Exception)
 /// groups of fields that must not be updated by each other's code paths:
 /// <list type="bullet">
 /// <item><see cref="Count"/> and <see cref="LastSentUtcTicks"/> count client-facing SSE keep-alive
-/// frames, and are the only fields persisted to the store.</item>
-/// <item><see cref="Attempts"/>, <see cref="Failures"/>, <see cref="LastAttemptUtcTicks"/>,
-/// <see cref="LastStatus"/> and <see cref="LastError"/> describe the periodic upstream liveness
-/// probe and are in-memory only.</item>
+/// frames, and are the only fields persisted to the store. Update via Interlocked.</item>
+/// <item><see cref="Attempts"/>, <see cref="Failures"/>, <see cref="LastAttemptUtcTicks"/> describe
+/// the periodic upstream liveness probe and are in-memory only. All <c>long</c> fields on this class
+/// MUST be accessed through Interlocked (Increment / Exchange / Read).</item>
+/// <item><see cref="LastStatus"/> and <see cref="LastError"/> are plain reference-type writes; the
+/// writer is always a single thread (the heartbeat timer). Reads are eventually consistent.</item>
 /// </list>
+/// External code should consume the snapshot (<see cref="ConnectionHealthSnapshot"/>) rather than
+/// reading fields directly.
 /// </summary>
 internal sealed class ConnectionHealthStat
 {
-    public long Attempts;
-    public long Count;
-    public long Failures;
-    public long LastAttemptUtcTicks;
-    public long LastSentUtcTicks;
-    public string LastStatus = "Not checked";
-    public string LastError = string.Empty;
+    /// <summary>Keep-alive frame count for this model. Access via <see cref="Interlocked"/>.</summary>
+    internal long Count;
+
+    /// <summary>Ticks of the last keep-alive frame sent. Access via <see cref="Interlocked"/>.</summary>
+    internal long LastSentUtcTicks;
+
+    /// <summary>Number of liveness-probe attempts. Access via <see cref="Interlocked"/>.</summary>
+    internal long Attempts;
+
+    /// <summary>Number of liveness-probe failures. Access via <see cref="Interlocked"/>.</summary>
+    internal long Failures;
+
+    /// <summary>Ticks of the last liveness-probe attempt. Access via <see cref="Interlocked"/>.</summary>
+    internal long LastAttemptUtcTicks;
+
+    /// <summary>Last probe result label. Written from timer thread; read eventually consistent.</summary>
+    internal string LastStatus = "Not checked";
+
+    /// <summary>Last probe error text. Written from timer thread; read eventually consistent.</summary>
+    internal string LastError = string.Empty;
 }
 
 /// <summary>Immutable snapshot of connection-health activity for a single model.</summary>

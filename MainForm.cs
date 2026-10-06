@@ -39,7 +39,9 @@ internal partial class MainForm : Form
     /// </summary>
     private readonly StatisticsService _nonProxiedStats;
 
-    // Tabs injected by loaded modules
+        private readonly StreamMonitor? _streamMonitor;
+
+        // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
     private readonly Dictionary<string, TabPage> _moduleTabs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TabPage> _moduleHelpPages = new(StringComparer.OrdinalIgnoreCase);
@@ -83,7 +85,7 @@ internal partial class MainForm : Form
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
     {
         _settings = settings;
         _stats = stats;
@@ -95,8 +97,12 @@ internal partial class MainForm : Form
         _mcpServer = mcpServer;
         _mcpStats = mcpServer.Statistics;
         _nonProxiedStats = nonProxiedStats;
+        _streamMonitor = streamMonitor;
 
-        InitializeComponent();
+                if (_streamMonitor is not null)
+                    _streamMonitor.StreamsChanged += OnStreamsChanged;
+
+                InitializeComponent();
         Icon = Program.GetApplicationIcon();
 
         // Inject configuration tabs for already-loaded modules and track module registry
@@ -283,10 +289,10 @@ internal partial class MainForm : Form
 
         UpdateMcpApiExplorerUrlLabel();
         SaveMcpSettingsFromForm();
-        ApplyMcpServerSettingsAsync();
+        _ = ApplyMcpServerSettingsAsync();
     }
 
-    private async void ApplyMcpServerSettingsAsync()
+    private async Task ApplyMcpServerSettingsAsync()
     {
         if (_applyingMcpSettings)
         {
@@ -1423,6 +1429,8 @@ internal partial class MainForm : Form
             RefreshNonProxiedLogs();
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             RefreshSystemLogs();
+        else if (_logSubTabs.SelectedTab == _logStreamsPage)
+            RefreshStreams();
         else
             RefreshLogs();
     }
@@ -1441,6 +1449,118 @@ internal partial class MainForm : Form
             return;
         }
         RefreshHeartbeats();
+    }
+
+    // ── Streams tab ────────────────────────────────────────────────────────
+
+    private void OnStreamsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke(RefreshStreams);
+            return;
+        }
+        RefreshStreams();
+    }
+
+    private void LstStreams_SelectedIndexChanged(object? sender, EventArgs e) =>
+        UpdateStreamLivePanes();
+
+    private void RefreshStreams()
+    {
+        if (IsDisposed || !IsHandleCreated || _streamMonitor is null)
+            return;
+
+        IReadOnlyList<StreamSnapshot> streams = _streamMonitor.Snapshot();
+
+        // Remember the selected request ID so we can restore it after rebuild.
+        string? selectedId = _lstStreams.SelectedItems.Count > 0
+            ? (_lstStreams.SelectedItems[0].Tag as StreamSnapshot)?.RequestId
+            : null;
+
+        _lstStreams.BeginUpdate();
+        try
+        {
+            _lstStreams.Items.Clear();
+            foreach (StreamSnapshot s in streams)
+            {
+                var item = new ListViewItem(s.StartedUtc.ToLocalTime().ToString("HH:mm:ss"));
+                item.SubItems.Add(s.Kind.ToString());
+                item.SubItems.Add(s.Method);
+                item.SubItems.Add(s.Path);
+                item.SubItems.Add(s.Model);
+                item.SubItems.Add(FormatStreamStateText(s.State));
+                item.SubItems.Add(FormatBytesCompact(s.UpstreamBytes));
+                item.SubItems.Add(FormatBytesCompact(s.ClientBytes));
+                item.SubItems.Add(s.FrameCount.ToString());
+                item.Tag = s;
+
+                item.ForeColor = s.State switch
+                {
+                    StreamState.Streaming => Color.Green,
+                    StreamState.Waiting => Color.DarkOrange,
+                    _ => SystemColors.WindowText,
+                };
+
+                _lstStreams.Items.Add(item);
+            }
+
+            // Restore selection.
+            if (selectedId is not null)
+            {
+                foreach (ListViewItem row in _lstStreams.Items)
+                {
+                    if ((row.Tag as StreamSnapshot)?.RequestId == selectedId)
+                    {
+                        row.Selected = true;
+                        break;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            _lstStreams.EndUpdate();
+        }
+
+        UpdateStreamLivePanes();
+    }
+
+    private void UpdateStreamLivePanes()
+    {
+        if (_lstStreams.SelectedItems.Count == 0)
+        {
+            _txtStreamRaw.Clear();
+            _txtStreamForwarded.Clear();
+            return;
+        }
+
+        if (_lstStreams.SelectedItems[0].Tag is not StreamSnapshot snapshot)
+            return;
+
+        _txtStreamRaw.Text = snapshot.RawUpstreamText;
+        _txtStreamForwarded.Text = snapshot.ForwardedText;
+
+        _txtStreamRaw.Select(_txtStreamRaw.TextLength, 0);
+        _txtStreamRaw.ScrollToCaret();
+        _txtStreamForwarded.Select(_txtStreamForwarded.TextLength, 0);
+        _txtStreamForwarded.ScrollToCaret();
+    }
+
+    private static string FormatStreamStateText(StreamState state) => state switch
+    {
+        StreamState.Connecting => "Connecting",
+        StreamState.Streaming => "Streaming",
+        StreamState.Waiting => "Waiting",
+        _ => state.ToString(),
+    };
+
+    private static string FormatBytesCompact(long bytes)
+    {
+        if (bytes >= 1024 * 1024) return $"{bytes / (1024.0 * 1024.0):F1}M";
+        if (bytes >= 1024) return $"{bytes / 1024.0:F1}K";
+        return bytes.ToString();
     }
 
     private void RefreshHeartbeats()

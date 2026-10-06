@@ -20,7 +20,7 @@ namespace Kaeo.LlmProxy.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed partial class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null) : IDisposable
+internal sealed partial class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null, StreamMonitor? streamMonitor = null) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -49,7 +49,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         /// presentation concern in hosts that do not wire one.
         /// </summary>
         private readonly StatisticsService _nonProxiedStats = nonProxiedStats ?? stats;
-    private readonly ModuleHost _moduleHost = moduleHost;
+
+                /// <summary>
+                /// Tracks streaming responses while they are in flight so the dashboard can show them live.
+                /// Null when the host does not wire a monitor (tests, headless hosts); every use is guarded so
+                /// the streaming paths carry no cost in that case.
+                /// </summary>
+                private readonly StreamMonitor? _streamMonitor = streamMonitor;
+            private readonly ModuleHost _moduleHost = moduleHost;
     private readonly McpServerService _mcpServer = mcpServer;
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
     private readonly AutoCompactionService _autoCompactionService = CreateAutoCompactionService(settings);
@@ -2534,6 +2541,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
         if (isServerSentEvents)
         {
+            using var streamSession = _streamMonitor?.Begin(log, StreamKind.Sse);
             if (shouldMirrorReasoningContent)
             {
                 // The chat-completions stream is rewritten (thinking mode, XML tool calls), so
@@ -2559,6 +2567,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     declaredToolNames: passthroughDeclaredTools,
                     terminator: streamTerminator,
                     tokenCounts: tokenCounts,
+                    session: streamSession,
                     useIrTranslation: _settings.UseIrTranslation);
 
                 if (rawCapture is not null)
@@ -2583,7 +2592,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage,
                     streamTerminator,
-                    tokenCounts);
+                    tokenCounts,
+                    session: streamSession);
 
                 string forwardedText = captureStream.GetCapturedText();
                 if (collectResponse)
@@ -2602,7 +2612,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     () => _stats.IncrementSseKeepAlive(originalModel),
                     onUsage,
                     streamTerminator,
-                    tokenCounts);
+                    tokenCounts,
+                    session: streamSession);
             }
         }
         else
@@ -3065,6 +3076,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// Supplies the prompt/completion token totals for a synthesized usage chunk. Read only after the
     /// usage sniffer has flushed, so counts captured from the upstream's own frames are included.
     /// </param>
+    /// <param name="session">
+    /// Reports upstream/forwarded bytes and keep-alive frames to the live-stream dashboard. Null when
+    /// no monitor is wired.
+    /// </param>
     private static async Task CopyStreamWithSseKeepAliveAsync(
         Stream source,
         Stream destination,
@@ -3074,7 +3089,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         Action? onKeepAliveSent = null,
         Action<LlamaCppStreamChunk>? onUsage = null,
         OpenAiStreamTerminator? terminator = null,
-        Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null)
+        Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null,
+        StreamMonitorSession? session = null)
     {
         byte[] buffer = new byte[81920];
         TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
@@ -3095,23 +3111,29 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 await destination.WriteAsync(SseKeepAliveFrameBytes, ct);
                 await destination.FlushAsync(ct);
                 onKeepAliveSent?.Invoke();
+                session?.OnKeepAlive();
             }
 
             int bytesRead = await readTask;
             if (bytesRead == 0)
                 break;
 
-            // Decoded once and shared: this path forwards raw bytes rather than lines, so both the
-            // usage sniffer and the terminator need the text form of the same chunk.
-            if (usageSniffer is not null || terminator is not null)
+            // Decoded once and shared: this path forwards raw bytes rather than lines, so the usage
+            // sniffer, the terminator, and the stream monitor all need the text form of the same chunk.
+            string? chunkText = null;
+            if (usageSniffer is not null || terminator is not null || session is not null)
             {
-                string chunkText = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                chunkText = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 usageSniffer?.Feed(chunkText);
                 terminator?.Feed(chunkText);
             }
 
+            session?.OnUpstreamChunk(chunkText ?? string.Empty, bytesRead);
+
             await destination.WriteAsync(buffer.AsMemory(0, bytesRead), ct);
             await destination.FlushAsync(ct);
+            // This path is verbatim, so what the client receives is byte-for-byte the upstream chunk.
+            session?.OnForwarded(chunkText ?? string.Empty);
         }
 
         // Flush the sniffer first so the token totals it captured from the upstream's own usage frame
@@ -3139,6 +3161,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// rewriter. Defaults to false so the legacy path stays the coding default until the IR route has
     /// held under live traffic.
     /// </param>
+    /// <param name="session">
+    /// Reports upstream lines, forwarded frames, and keep-alive frames to the live-stream dashboard.
+    /// Null when no monitor is wired.
+    /// </param>
     private static async Task CopyOpenAiChatCompletionSseStreamAsync(
         Stream source,
         Stream destination,
@@ -3152,7 +3178,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         IReadOnlySet<string>? declaredToolNames = null,
         OpenAiStreamTerminator? terminator = null,
         Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null,
-        bool useIrTranslation = false)
+        bool useIrTranslation = false,
+        StreamMonitorSession? session = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
@@ -3179,11 +3206,15 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 await destination.WriteAsync(SseKeepAliveFrameBytes, ct);
                 await destination.FlushAsync(ct);
                 onKeepAliveSent?.Invoke();
+                session?.OnKeepAlive();
             }
 
             string? line = await readTask;
             if (line is null)
                 break;
+
+            // The raw upstream frame, before any thinking/tool-call rewriting is applied.
+            session?.OnUpstreamLine(line);
 
             usageSniffer?.Feed(line + "\n");
             // The rewriter forwards [DONE] and usage frames verbatim, so observing the inbound line is
@@ -3206,6 +3237,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             {
                 byte[] lineBytes = Encoding.UTF8.GetBytes(outgoingLine + "\n\n");
                 await destination.WriteAsync(lineBytes, ct);
+                session?.OnForwarded(outgoingLine + "\n\n");
             }
             await destination.FlushAsync(ct);
         }
@@ -5117,6 +5149,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
             if (IsServerSentEventsResponse(upstreamResp))
             {
+                using var streamSession = _streamMonitor?.Begin(log, StreamKind.Sse);
                 void onUsage(LlamaCppStreamChunk chunk) => FillTokenStats(log, chunk);
 
                 // Guarantee the compaction stream reaches its terminal event, for the same reason the
@@ -5138,7 +5171,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                         () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
                         onUsage,
                         streamTerminator,
-                        tokenCounts);
+                        tokenCounts,
+                        session: streamSession);
 
                     string forwardedText = captureStream.GetCapturedText();
                     if (collectResponse)
@@ -5157,7 +5191,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                         () => _stats.IncrementSseKeepAlive(targetMapping.ProxyName),
                         onUsage,
                         streamTerminator,
-                        tokenCounts);
+                        tokenCounts,
+                        session: streamSession);
                 }
             }
             else
@@ -6002,6 +6037,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             resp.ContentType = "application/x-ndjson";
             resp.SendChunked = true;
             resp.KeepAlive = true; // Keep connection alive during long thinking periods
+            using var streamSession = _streamMonitor?.Begin(log, StreamKind.Ollama);
             await StreamCompletionToOllamaAsync(
                 upstreamResp,
                 resp,
@@ -6010,7 +6046,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 _settings.CollectResponseDetails,
                 responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
                 sw,
-                ct);
+                ct,
+                session: streamSession);
         }
         else
         {
@@ -6281,20 +6318,22 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // than SSE, so the keep-alive is an empty Ollama chunk rather than a comment frame.
             resp.KeepAlive = true;
 
-            await StreamChatToOllamaAsync(
-                upstreamResp,
-                resp,
-                ollamaReq.Model,
-                log,
-                _settings.CollectResponseDetails,
-                responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
-                ShouldEmitSseKeepAlive(ollamaReq.Model),
-                _settings.SseKeepAliveIntervalSeconds,
-                mapping?.ThinkingMode ?? ThinkingMode.LeaveInline,
-                sw,
-                ct,
-                () => _stats.IncrementSseKeepAlive(ollamaReq.Model),
-                collectRawUpstream: _settings.DebugMode);
+                        using var streamSession = _streamMonitor?.Begin(log, StreamKind.Ollama);
+                        await StreamChatToOllamaAsync(
+                            upstreamResp,
+                            resp,
+                            ollamaReq.Model,
+                            log,
+                            _settings.CollectResponseDetails,
+                            responseText => RedactResponseBodyForLog(responseText, ollamaReq.Model),
+                            ShouldEmitSseKeepAlive(ollamaReq.Model),
+                            _settings.SseKeepAliveIntervalSeconds,
+                            mapping?.ThinkingMode ?? ThinkingMode.LeaveInline,
+                            sw,
+                            ct,
+                            () => _stats.IncrementSseKeepAlive(ollamaReq.Model),
+                            session: streamSession,
+                            collectRawUpstream: _settings.DebugMode);
         }
         else
         {
@@ -6472,7 +6511,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         bool collectResponse,
         Func<string, string> redactResponse,
         Stopwatch sw,
-        CancellationToken ct)
+        CancellationToken ct,
+        StreamMonitorSession? session = null)
     {
         await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream, Encoding.UTF8);
@@ -6520,6 +6560,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     ollamaJsonAccumulator?.Append('\n');
                     await writer.WriteLineAsync(errorJson);
                     await writer.FlushAsync(CancellationToken.None);
+                    session?.OnForwarded(errorJson + "\n");
                 }
                 catch
                 {
@@ -6529,6 +6570,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             }
             if (line is null) break;          // end of stream
             if (string.IsNullOrWhiteSpace(line)) continue;
+
+            session?.OnUpstreamLine(line);
 
             // SSE format: "data: {...}" or "data: [DONE]"
             if (line.StartsWith("data: ", StringComparison.Ordinal))
@@ -6559,6 +6602,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 stopReason ??= "stop";
                 await writer.WriteLineAsync(doneJson);
                 await writer.FlushAsync(ct);
+                session?.OnForwarded(doneJson + "\n");
                 break;
             }
 
@@ -6593,13 +6637,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
             if (done) terminalChunkSent = true;
 
-            string chunkJson = JsonSerializer.Serialize(ollamaChunk, _jsonOptions);
-            responseBytes += Encoding.UTF8.GetByteCount(chunkJson);
-            ollamaJsonAccumulator?.Append(chunkJson);
-            ollamaJsonAccumulator?.Append('\n');
-            await writer.WriteLineAsync(chunkJson);
-            await writer.FlushAsync(ct);
-        }
+                        string chunkJson = JsonSerializer.Serialize(ollamaChunk, _jsonOptions);
+                        responseBytes += Encoding.UTF8.GetByteCount(chunkJson);
+                        ollamaJsonAccumulator?.Append(chunkJson);
+                        ollamaJsonAccumulator?.Append('\n');
+                        await writer.WriteLineAsync(chunkJson);
+                        await writer.FlushAsync(ct);
+                        session?.OnForwarded(chunkJson + "\n");
+                    }
 
         if (ollamaJsonAccumulator is not null)
             log.ResponseBody = redactResponse(ollamaJsonAccumulator.ToString());
@@ -6627,18 +6672,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         Stopwatch sw,
         CancellationToken ct,
         Action? onKeepAliveSent = null,
-        bool collectRawUpstream = false)
-    {
-        await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
-        using StreamReader reader = new(stream, Encoding.UTF8);
-        await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
+        bool collectRawUpstream = false,
+                StreamMonitorSession? session = null)
+            {
+                await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
+                using StreamReader reader = new(stream, Encoding.UTF8);
+                await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
 
-        // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
-        // the "after" of the OpenAI→Ollama response translation (not just the content text).
-        using PooledCharBuffer? ollamaJsonAccumulator = collectResponse ? new PooledCharBuffer() : null;
-        // When debug capture is on, accumulate the raw upstream (OpenAI) SSE data lines so the
-        // "before" of the response translation is visible alongside the Ollama "after".
-        using PooledCharBuffer? rawUpstreamAccumulator = collectRawUpstream ? new PooledCharBuffer() : null;
+                // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
+                // the "after" of the OpenAI→Ollama response translation (not just the content text).
+                using PooledCharBuffer? ollamaJsonAccumulator = collectResponse ? new PooledCharBuffer() : null;
+                // When debug capture is on, accumulate the raw upstream (OpenAI) SSE data lines so the
+                // "before" of the response translation is visible alongside the Ollama "after".
+                using PooledCharBuffer? rawUpstreamAccumulator = collectRawUpstream ? new PooledCharBuffer() : null;
         bool reachedDone = false;
         bool terminalChunkSent = false;
         bool upstreamFailed = false;
@@ -6702,6 +6748,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     ollamaJsonAccumulator?.Append('\n');
                     await writer.WriteLineAsync(errorJson);
                     await writer.FlushAsync(CancellationToken.None);
+                    session?.OnForwarded(errorJson + "\n");
                 }
                 catch
                 {
@@ -6718,6 +6765,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // Capture the raw OpenAI upstream chunk (the "before" of the response translation).
             rawUpstreamAccumulator?.Append(line);
             rawUpstreamAccumulator?.Append('\n');
+            session?.OnUpstreamLine(line);
 
             if (line == "[DONE]")
             {
@@ -6745,6 +6793,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 stopReason ??= "stop";
                 await writer.WriteLineAsync(doneJson);
                 await writer.FlushAsync(ct);
+                session?.OnForwarded(doneJson + "\n");
                 break;
             }
 
@@ -6828,6 +6877,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             ollamaJsonAccumulator?.Append('\n');
             await writer.WriteLineAsync(chunkJson);
             await writer.FlushAsync(ct);
+            session?.OnForwarded(chunkJson + "\n");
         }
 
         // Drain any text the extractor held back because the stream ended inside an unterminated
@@ -6861,6 +6911,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 stopReason ??= "stop";
                 await writer.WriteLineAsync(tailJson);
                 await writer.FlushAsync(ct);
+                session?.OnForwarded(tailJson + "\n");
             }
         }
 
@@ -7459,7 +7510,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
     // Short-lived client used only to fetch OpenAPI documents reported by loaded modules when
     // rendering the explorer page. Only module-reported URLs are ever fetched (never user input).
-    private static readonly HttpClient _explorerSpecClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+    private static readonly HttpClient _explorerSpecClient = new(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            MaxConnectionsPerServer = 4,
+        })
+        { Timeout = TimeSpan.FromSeconds(5) };
 
     private const string ApiExplorerHtmlTemplate = """
         <!DOCTYPE html>

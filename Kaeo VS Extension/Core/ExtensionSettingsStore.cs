@@ -91,7 +91,7 @@ internal sealed class ExtensionSettingsStore
                 catch (Exception ex) { DebugLog.Warn($"Could not back up settings before save: {ex.Message}"); }
             }
 
-            await Task.Run(() => WriteWithRetry(_path, text)).ConfigureAwait(false);
+            await WriteWithRetryAsync(_path, text).ConfigureAwait(false);
         }
         finally
         {
@@ -112,7 +112,7 @@ internal sealed class ExtensionSettingsStore
     /// or an antivirus/indexer scan. After the retries are exhausted the exception propagates
     /// so the caller can surface it.
     /// </summary>
-    private static void WriteWithRetry(string path, string text)
+    private static async Task WriteWithRetryAsync(string path, string text)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -132,7 +132,7 @@ internal sealed class ExtensionSettingsStore
             }
             catch (IOException) when (attempt < maxAttempts)
             {
-                Thread.Sleep(50 * attempt); // 50, 100, 150 ... ms
+                await Task.Delay(50 * attempt).ConfigureAwait(false);
             }
         }
     }

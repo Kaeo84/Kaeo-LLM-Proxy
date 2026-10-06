@@ -90,6 +90,7 @@ public static class MeaiAdapter
         if (result is not null)
         {
             json["tool_call_id"] = result.CallId;
+            // Note: result.Result is FunctionResultContent.Result (object?), NOT Task.Result.
             json["content"] = result.Result?.ToString() ?? content;
         }
 
