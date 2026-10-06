@@ -2187,12 +2187,12 @@ internal partial class MainForm : Form
     /// Writes the current in-memory settings, credentials, mappings, and instruction sets to
     /// their stores. Shared by the immediate-save paths and the listener save button.
     /// </summary>
-    private void PersistSettingsCore()
+    private bool PersistSettingsCore()
     {
         // Encrypt credential secrets for persistence while keeping plaintext in memory for the
         // running proxy. Model mappings only reference credentials by name and carry no secrets.
         if (!TryEncryptCredentialsForSave(out List<StoredCredential> persistedCredentials))
-            return;
+            return false;
 
         _database.SaveModelMappings(_settings.ModelMappings);
         _database.SaveCredentials(persistedCredentials);
@@ -2200,6 +2200,7 @@ internal partial class MainForm : Form
         _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
         _settings.Save();
         _handler.UpdateSettings(_settings);
+        return true;
     }
 
     /// <summary>
@@ -2779,12 +2780,28 @@ internal partial class MainForm : Form
         }
 
         _settings.Credentials.Add(newCredential);
-        RefreshCredentials();
 
-        // Persisted immediately like every other settings section: there is no global Save button
-        // and closing the window only hides to the tray, so a credential left in memory here would
-        // never reach the database.
-        PersistSettingsCore();
+                // Persist BEFORE refreshing the UI — same reasoning as BtnEditCredential_Click: a passphrase
+                // prompt (or any save failure) that occurs after the list is updated leaves the user with
+                // values in the list they assume are saved, but they vanish on restart.
+                bool saved;
+                try
+                {
+                    saved = PersistSettingsCore();
+                }
+                catch (Exception ex)
+                {
+                    saved = false;
+                    Log.Error(ex, "Failed to persist new credential '{CredentialName}'", newCredential.Name);
+                    MessageBox.Show(
+                        $"The credential could not be saved to the database.\n\n{ex.Message}",
+                        "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+
+                if (!saved)
+                    _settings.Credentials.Remove(newCredential);
+
+                RefreshCredentials();
     }
 
     private void BtnEditCredential_Click(object? sender, EventArgs e)
@@ -2805,31 +2822,66 @@ internal partial class MainForm : Form
 
         string oldName = existing.Name;
 
-        if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase)
-            && _settings.Credentials.Any(c => c != existing
-                && string.Equals(c.Name, edited.Name, StringComparison.OrdinalIgnoreCase)))
-        {
-            MessageBox.Show($"A credential named '{edited.Name}' already exists.", "Duplicate Name",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
+                if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase)
+                    && _settings.Credentials.Any(c => c != existing
+                        && string.Equals(c.Name, edited.Name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    MessageBox.Show($"A credential named '{edited.Name}' already exists.", "Duplicate Name",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
-        existing.Name = edited.Name;
-        existing.Secret = edited.Secret;
-        existing.Description = edited.Description;
-        existing.Username = edited.Username;
-        existing.PrivateKey = edited.PrivateKey;
-        existing.Certificate = edited.Certificate;
+                // Save old values so we can revert if the persist step fails (e.g. passphrase cancelled).
+                string oldSecret = existing.Secret;
+                string? oldDescription = existing.Description;
+                string? oldUsername = existing.Username;
+                string? oldPrivateKey = existing.PrivateKey;
+                string? oldCertificate = existing.Certificate;
 
-        if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase))
-            PropagateCredentialReferenceChange(oldName, edited.Name);
+                existing.Name = edited.Name;
+                existing.Secret = edited.Secret;
+                existing.Description = edited.Description;
+                existing.Username = edited.Username;
+                existing.PrivateKey = edited.PrivateKey;
+                existing.Certificate = edited.Certificate;
 
-        RefreshCredentials();
+                bool renamed = !string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase);
+                if (renamed)
+                    PropagateCredentialReferenceChange(oldName, edited.Name);
 
-        // The edited secret and any other field only update the in-memory list until this runs.
-        // Without it, clicking OK in the dialog appeared to do nothing because the database kept
-        // the previous value and the next launch read that back.
-        PersistSettingsCore();
+                // Persist BEFORE refreshing the UI so a passphrase prompt (or any save failure) does not
+                // leave the list showing values that were never written to the database. On restart the
+                // old values would reload and the user would never know the save was lost.
+                bool saved;
+                try
+                {
+                    saved = PersistSettingsCore();
+                }
+                catch (Exception ex)
+                {
+                    saved = false;
+                    Log.Error(ex, "Failed to persist edited credential '{CredentialName}'", oldName);
+                    MessageBox.Show(
+                        $"The credential could not be saved to the database.\n\n{ex.Message}",
+                        "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+
+                if (!saved)
+                {
+                    // Passphrase was cancelled or save failed — revert in-memory changes so the list does
+                    // not show values that will be lost on the next restart.
+                    existing.Name = oldName;
+                    existing.Secret = oldSecret;
+                    existing.Description = oldDescription;
+                    existing.Username = oldUsername;
+                    existing.PrivateKey = oldPrivateKey;
+                    existing.Certificate = oldCertificate;
+
+                    if (renamed)
+                        PropagateCredentialReferenceChange(edited.Name, oldName);
+                }
+
+                RefreshCredentials();
     }
 
     private void BtnRemoveCredential_Click(object? sender, EventArgs e)
