@@ -6,11 +6,11 @@ obj/
 # Application data folder (portable mode)
 # All runtime configuration, logs, and database files
 Data/
-copilot-sdk/
+docs/docs/copilot-sdk/
 ollama-docs/
 openai-docs/
 vercel-ai-sdk*/
-API Specs/
+docs/docs/API Specs/
 
 # Visual Studio
 .vs/

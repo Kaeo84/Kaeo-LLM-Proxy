@@ -1,18 +1,20 @@
 <Solution>
-  <Project Path="Kaeo LLM Proxy.csproj" />
-  <Folder Name="/Notes/">
-    <File Path="Notes.txt" />
+  <Project Path="src/Kaeo LLM Proxy/Kaeo LLM Proxy.csproj" />
+  <Folder Name="/docs/">
+	<File Path="docs/Notes.txt" />
+	<File Path="docs/code-review-report.html" />
+	<File Path="docs/Proxy API Mapping Documentation.html" />
+	<File Path="docs/PROXY_DATA_FLOW.html" />
   </Folder>
-  <Project Path="Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
-  <Project Path="Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
-  <Project Path="Kaeo LLM Proxy Services/Kaeo LLM Proxy Services.csproj" />
-  <Project Path="Kaeo LLM Proxy VS Extension.Core/Kaeo LLM Proxy VS Extension.Core.csproj" />
-  <Project Path="Kaeo LLM Proxy Module Code Vector Store/Kaeo LLM Proxy Module Code Vector Store.csproj" />
-  <Project Path="Kaeo LLM Proxy Module Web Search/Kaeo LLM Proxy Module Web Search.csproj" />
-  <Project Path="Kaeo LLM Proxy Module SSH/Kaeo LLM Proxy Module SSH.csproj" />
-  <Project Path="Kaeo LLM Proxy.Tests/Kaeo LLM Proxy.Tests.csproj" />
-  <Project Path="Kaeo VS Extension/Kaeo VS Extension.csproj" Id="f102ae08-2c8a-4ab2-b513-b47b3c132edb">
-    <Deploy />
+  <Project Path="src/Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
+  <Project Path="src/Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
+  <Project Path="src/Kaeo LLM Proxy Services/Kaeo LLM Proxy Services.csproj" />
+  <Project Path="src/Kaeo LLM Proxy VS Extension.Core/Kaeo LLM Proxy VS Extension.Core.csproj" />
+  <Project Path="src/Kaeo LLM Proxy Module Code Vector Store/Kaeo LLM Proxy Module Code Vector Store.csproj" />
+  <Project Path="src/Kaeo LLM Proxy Module Web Search/Kaeo LLM Proxy Module Web Search.csproj" />
+  <Project Path="src/Kaeo LLM Proxy Module SSH/Kaeo LLM Proxy Module SSH.csproj" />
+  <Project Path="src/Kaeo LLM Proxy.Tests/Kaeo LLM Proxy.Tests.csproj" />
+  <Project Path="src/Kaeo VS Extension/Kaeo VS Extension.csproj" Id="f102ae08-2c8a-4ab2-b513-b47b3c132edb">
+	<Deploy />
   </Project>
 </Solution>
-

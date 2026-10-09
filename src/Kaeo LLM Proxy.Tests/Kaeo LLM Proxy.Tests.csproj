@@ -26,7 +26,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\Kaeo LLM Proxy.csproj" />
+		<ProjectReference Include="..\Kaeo LLM Proxy\Kaeo LLM Proxy.csproj" />
 	</ItemGroup>
 
 </Project>

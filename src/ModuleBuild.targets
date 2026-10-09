@@ -152,10 +152,11 @@
 			AfterTargets="Build"
 			Condition="'$(IsModuleProject)' == 'true'">
 
-	<!-- The host lives at the repo root (where this targets file is). All projects share
-		 the same TFM/RID, so the host's Modules/ folder is at a predictable path. -->
+	<!-- The host project lives at src\Kaeo LLM Proxy (a sibling of this targets file). All
+		 projects share the same TFM/RID, so the host's Modules/ folder is at a predictable
+		 path relative to this file. -->
 	<PropertyGroup>
-		<_HostModulesDir>$(MSBuildThisFileDirectory)bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\Modules</_HostModulesDir>
+		<_HostModulesDir>$(MSBuildThisFileDirectory)Kaeo LLM Proxy\bin\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\Modules</_HostModulesDir>
 	</PropertyGroup>
 
 	<MakeDir Directories="$(_HostModulesDir)" />

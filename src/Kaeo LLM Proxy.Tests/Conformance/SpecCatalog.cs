@@ -16,10 +16,10 @@ internal static class SpecCatalog
     private static readonly Lazy<string> RepositoryRoot = new(FindRepositoryRoot);
 
     private static readonly Lazy<VendorSpec?> OpenAi = new(() => LoadIfPresent(
-        Path.Combine("API Specs", "openai-openapi", "openai-openapi", "openapi.json")));
+        Path.Combine("docs\\API Specs", "openai-openapi", "openai-openapi", "openapi.json")));
 
     private static readonly Lazy<VendorSpec?> Cohere = new(() => LoadIfPresent(
-        Path.Combine("API Specs", "cohere-developer-experience", "cohere-openapi.yaml")));
+        Path.Combine("docs\\API Specs", "cohere-developer-experience", "cohere-openapi.yaml")));
 
     /// <summary>The repository root that contains the solution file.</summary>
     public static string Root => RepositoryRoot.Value;
@@ -38,7 +38,7 @@ internal static class SpecCatalog
     /// parse, so its presence is asserted without attempting to read it.
     /// </summary>
     public static bool HasCohereSpec => Cohere.Value is not null || File.Exists(Path.Combine(
-        Root, "API Specs", "cohere-developer-experience", "cohere-openapi.yaml"));
+        Root, "docs\\API Specs", "cohere-developer-experience", "cohere-openapi.yaml"));
 
     private static VendorSpec? LoadIfPresent(string relativePath)
     {
