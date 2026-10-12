@@ -1180,10 +1180,17 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// <c>0.0.0.0</c> or a NIC IP turns "whatever the client sent" into an exfiltration primitive.
     /// </para>
     /// </remarks>
-    private static void StripUnoptedClientAuthorization(HttpRequestMessage request, ModelMapping mapping)
+    private static void StripUnoptedClientAuthorization(HttpRequestMessage request, ModelMapping mapping, string? apiKey)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(mapping);
+
+        // A mapping with its own credential (apiKey non-null) has already had its Authorization
+        // header set by ApplyApiKey above. Removing it here would defeat the configured credential
+        // and force every mapping with a key to also check ForwardClientAuthorization — a checkbox
+        // that is about relaying the *client's* token, not the mapping's own.
+        if (!string.IsNullOrWhiteSpace(apiKey))
+            return;
 
         if (mapping.ForwardClientAuthorization || IsLoopbackUpstream(mapping.UpstreamUrl))
             return;
@@ -2271,7 +2278,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ModelMapping upstreamMapping = ResolveMapping(originalModel);
         var (baseUrl, timeout, apiKey) = ResolveUpstream(upstreamMapping);
         ApplyApiKey(upstreamReq, apiKey);
-        StripUnoptedClientAuthorization(upstreamReq, upstreamMapping);
+        StripUnoptedClientAuthorization(upstreamReq, upstreamMapping, apiKey);
 
         // Append upstream routing info to the debug summary so it's visible which server
         // the request is actually being sent to, including after compact redirects.
