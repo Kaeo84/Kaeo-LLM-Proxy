@@ -376,22 +376,13 @@ internal partial class MainForm : Form
     /// Builds the MCP API Explorer (Scalar) URL from the form's listen address and port,
     /// substituting localhost for wildcard bind addresses.
     /// </summary>
-    private string BuildMcpApiExplorerUrl() => BuildMcpUrl(McpServerHost.ScalarPath);
+    private string BuildMcpApiExplorerUrl() => FormatLocalBaseUrl(_cboMcpListenAddress.Text, (int)_nudMcpPort.Value, McpServerHost.ScalarPath);
 
-    /// <summary>
-    /// Builds the MCP OpenAPI specification (JSON) URL from the form's listen address and
-    /// port, substituting localhost for wildcard bind addresses.
-    /// </summary>
-    private string BuildMcpSpecUrl() => BuildMcpUrl(McpServerHost.SpecPath);
-
-    private string BuildMcpUrl(string path)
-    {
-        string host = _cboMcpListenAddress.Text.Trim();
-        if (host is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
-            host = "localhost";
-
-        return $"http://{host}:{(int)_nudMcpPort.Value}{path}";
-    }
+        /// <summary>
+        /// Builds the MCP OpenAPI specification (JSON) URL from the form's listen address and
+        /// port, substituting localhost for wildcard bind addresses.
+        /// </summary>
+        private string BuildMcpSpecUrl() => FormatLocalBaseUrl(_cboMcpListenAddress.Text, (int)_nudMcpPort.Value, McpServerHost.SpecPath);
 
     /// <summary>
     /// Updates the MCP API Explorer and OpenAPI spec URL note labels based on the current
@@ -453,22 +444,26 @@ internal partial class MainForm : Form
     /// Builds the proxy API Explorer (Scalar) URL from the persisted listener settings,
     /// substituting localhost for wildcard bind addresses.
     /// </summary>
-    private string BuildApiExplorerUrl() => BuildProxyUrl("/scalar");
+    private string BuildApiExplorerUrl() => FormatLocalBaseUrl(_settings.ListenAddress, _settings.ListenPort, EndpointPaths.Scalar);
 
-    /// <summary>
-    /// Builds the proxy OpenAPI specification (JSON) URL from the persisted listener settings,
-    /// substituting localhost for wildcard bind addresses.
-    /// </summary>
-    private string BuildApiSpecUrl() => BuildProxyUrl("/openapi/v1/openapi.json");
+            /// <summary>
+            /// Builds the proxy OpenAPI specification (JSON) URL from the persisted listener settings,
+            /// substituting localhost for wildcard bind addresses.
+            /// </summary>
+            private string BuildApiSpecUrl() => FormatLocalBaseUrl(_settings.ListenAddress, _settings.ListenPort, EndpointPaths.OpenApiSpec);
 
-    private string BuildProxyUrl(string path)
-    {
-        string host = _settings.ListenAddress.Trim();
-        if (host is "0.0.0.0" or "+" or "")
-            host = "localhost";
+        /// <summary>
+        /// Formats a local HTTP URL, substituting "localhost" for any wildcard bind address
+        /// so the generated link is always clickable from this machine.
+        /// </summary>
+        private static string FormatLocalBaseUrl(string host, int port, string path)
+        {
+            string h = (host ?? "").Trim();
+            if (h is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
+                h = "localhost";
 
-        return $"http://{host}:{_settings.ListenPort}{path}";
-    }
+            return $"http://{h}:{port}{path}";
+        }
 
     /// <summary>
     /// Updates the API Explorer and OpenAPI spec URL note labels based on the current enable
@@ -2204,6 +2199,36 @@ internal partial class MainForm : Form
     }
 
     /// <summary>
+    /// Calls <see cref="PersistSettingsCore"/>, logs and shows a message box on failure, and
+    /// runs <paramref name="revert"/> when the save does not complete (passphrase cancelled,
+    /// database error, etc.). Returns true when the settings were persisted.
+    /// </summary>
+    /// <param name="credentialName">Name used in the error log message.</param>
+    /// <param name="revert">Action that restores the in-memory credential state to what it was before the save attempt.</param>
+    /// <param name="action">Describes what was being attempted, for the log message (e.g. "new", "edited").</param>
+    private bool TryPersistCredentialChange(string credentialName, Action revert, string action)
+    {
+        bool saved;
+        try
+        {
+            saved = PersistSettingsCore();
+        }
+        catch (Exception ex)
+        {
+            saved = false;
+            Log.Error(ex, "Failed to persist {Action} credential '{CredentialName}'", action, credentialName);
+            MessageBox.Show(
+                $"The credential could not be saved to the database.\n\n{ex.Message}",
+                "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        if (!saved)
+            revert();
+
+        return saved;
+    }
+
+    /// <summary>
     /// Rebuilds <see cref="AppSettings.ModelMappings"/> from the mappings grid and persists the
     /// change immediately. Called whenever a mapping row is added, removed, duplicated, or
     /// edited. Shows a warning and leaves the previous mappings in place when the grid is invalid.
@@ -2781,25 +2806,8 @@ internal partial class MainForm : Form
 
         _settings.Credentials.Add(newCredential);
 
-                // Persist BEFORE refreshing the UI — same reasoning as BtnEditCredential_Click: a passphrase
-                // prompt (or any save failure) that occurs after the list is updated leaves the user with
-                // values in the list they assume are saved, but they vanish on restart.
-                bool saved;
-                try
-                {
-                    saved = PersistSettingsCore();
-                }
-                catch (Exception ex)
-                {
-                    saved = false;
-                    Log.Error(ex, "Failed to persist new credential '{CredentialName}'", newCredential.Name);
-                    MessageBox.Show(
-                        $"The credential could not be saved to the database.\n\n{ex.Message}",
-                        "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-
-                if (!saved)
-                    _settings.Credentials.Remove(newCredential);
+                if (!TryPersistCredentialChange(newCredential.Name, () => _settings.Credentials.Remove(newCredential), "new"))
+                    return;
 
                 RefreshCredentials();
     }
@@ -2849,27 +2857,8 @@ internal partial class MainForm : Form
                 if (renamed)
                     PropagateCredentialReferenceChange(oldName, edited.Name);
 
-                // Persist BEFORE refreshing the UI so a passphrase prompt (or any save failure) does not
-                // leave the list showing values that were never written to the database. On restart the
-                // old values would reload and the user would never know the save was lost.
-                bool saved;
-                try
+                if (!TryPersistCredentialChange(oldName, () =>
                 {
-                    saved = PersistSettingsCore();
-                }
-                catch (Exception ex)
-                {
-                    saved = false;
-                    Log.Error(ex, "Failed to persist edited credential '{CredentialName}'", oldName);
-                    MessageBox.Show(
-                        $"The credential could not be saved to the database.\n\n{ex.Message}",
-                        "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-
-                if (!saved)
-                {
-                    // Passphrase was cancelled or save failed — revert in-memory changes so the list does
-                    // not show values that will be lost on the next restart.
                     existing.Name = oldName;
                     existing.Secret = oldSecret;
                     existing.Description = oldDescription;
@@ -2879,6 +2868,10 @@ internal partial class MainForm : Form
 
                     if (renamed)
                         PropagateCredentialReferenceChange(edited.Name, oldName);
+                }, "edited"))
+                {
+                    RefreshCredentials();
+                    return;
                 }
 
                 RefreshCredentials();

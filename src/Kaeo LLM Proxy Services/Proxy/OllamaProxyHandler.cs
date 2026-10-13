@@ -455,8 +455,42 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     }
 
     /// <summary>
+    /// Resolves the effective model for a /compact redirect, logs the redirect (or skip reason),
+    /// and returns the three values every handler needs: the effective model, whether a redirect
+    /// occurred, and the resolved upstream model name.
+    /// </summary>
+    /// <param name="surface">A short name for the request surface, used in log messages only — e.g. "chat", "generate", or "request".</param>
+    internal static (string EffectiveModel, bool CompactRedirected, string ResolvedModel) ResolveCompactRedirect(
+        AppSettings settings,
+        string originalModel,
+        string? firstMessageContent,
+        RequestLog log,
+        string surface)
+    {
+        string effectiveModel = ResolveEffectiveModel(settings, originalModel, firstMessageContent);
+        bool compactRedirected = !string.Equals(effectiveModel, originalModel, StringComparison.OrdinalIgnoreCase);
+
+        if (compactRedirected)
+        {
+            log.OriginalModel = originalModel;
+            Log.Debug(
+                "Context-summarize (/compact) {Surface} request for {OriginalModel} redirected to compaction model {CompactModel}",
+                surface, originalModel, effectiveModel);
+        }
+        else if (IsContextSummarizeRequest(firstMessageContent))
+        {
+            Log.Debug(
+                "Context-summarize (/compact) {Surface} request for {OriginalModel} is not redirected: {Reason}",
+                surface, originalModel,
+                DescribeCompactSkipReason(settings, originalModel, firstMessageContent));
+        }
+
+        return (effectiveModel, compactRedirected, settings.ResolveModelName(effectiveModel));
+    }
+
+    /// <summary>
     /// Extracts the first message's text content from an OpenAI-style request body root
-    /// (a <c>messages</c> array). Content may be a plain string or an array of typed parts
+    /// (a <c>messages</c> array).
     /// (e.g. <c>[{"type":"text","text":"..."}]</c>), which OpenAI-compatible clients such as
     /// Copilot commonly emit even for plain text; both shapes are handled so the compact-prompt
     /// signature is detected regardless of wire format. Returns null when the body has no
@@ -1192,31 +1226,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (!string.IsNullOrWhiteSpace(apiKey))
             return;
 
-        if (mapping.ForwardClientAuthorization || IsLoopbackUpstream(mapping.UpstreamUrl))
+        if (mapping.ForwardClientAuthorization || NetworkingHelpers.IsLoopbackHost(mapping.UpstreamUrl))
             return;
 
-        request.Headers.Remove(HttpAuthHeaderName);
+        request.Headers.Remove(HttpHeaderNames.Authorization);
     }
-
-    /// <summary>
-    /// Whether an upstream base URL names this machine rather than a remote host.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately conservative: an unparseable URL is not loopback, so an unopted mapping with a
-    /// malformed base URL drops the client credential instead of assuming the local case. Only the
-    /// host is inspected — a loopback host on any port is still this machine.
-    /// </remarks>
-    private static bool IsLoopbackUpstream(string upstreamUrl)
-    {
-        if (!Uri.TryCreate(upstreamUrl, UriKind.Absolute, out Uri? uri) || uri.Host is not { Length: > 0 } host)
-            return false;
-
-        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private const string HttpAuthHeaderName = "Authorization";
 
     private static HttpClient BuildHttpClient() =>
         new(new SocketsHttpHandler
@@ -1398,7 +1412,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (isGet && path == "/api/version")
             return NonProxiedCategory.VersionAndExplorer;
 
-        if (path is "/scalar" or "/scalar/" or "/openapi/v1/openapi.json")
+        if (path is "/scalar" or "/scalar/" || path == EndpointPaths.OpenApiSpec)
             return NonProxiedCategory.VersionAndExplorer;
 
         // Answered entirely from local mapping configuration, with no upstream call.
@@ -1523,7 +1537,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                     return;
                 }
 
-                if (path == "/openapi/v1/openapi.json")
+                if (path == EndpointPaths.OpenApiSpec)
                 {
                     RecordResponseStatus(resp, log, 200);
                     await WriteJsonRawAsync(resp, OpenApiSpec, ct);
@@ -3755,32 +3769,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 ? modelEl.GetString() ?? string.Empty
                 : string.Empty;
 
-            // Context-summarize (/compact) redirect: when the request is detected as a Copilot
-            // /compact summary request and the mapping opted in via RedirectManualCompaction with
-            // a usable compaction target, route the whole request to that target — its upstream,
-            // sampling, and instruction-set settings all apply.
+            // Context-summarize (/compact) redirect.
             string? firstContent = GetFirstMessageContent(root);
-            string effectiveModel = ResolveEffectiveModel(settings, original, firstContent);
-            bool compactRedirected = !string.Equals(effectiveModel, original, StringComparison.OrdinalIgnoreCase);
-
-            string resolved = settings.ResolveModelName(effectiveModel);
+            var (effectiveModel, compactRedirected, resolved) =
+                ResolveCompactRedirect(settings, original, firstContent, log, "request");
             log.Model = effectiveModel;
-            if (compactRedirected)
-            {
-                log.OriginalModel = original;
-                Log.Debug(
-                    "Context-summarize (/compact) request for {OriginalModel} redirected to compaction model {CompactModel}",
-                    original, effectiveModel);
-            }
-            else if (IsContextSummarizeRequest(firstContent))
-            {
-                // Only explain a non-redirect when the request actually WAS a /compact request.
-                // Logging this for every ordinary chat request claimed a redirect had been
-                // "not applied" to requests that never asked for compaction.
-                Log.Debug(
-                    "Context-summarize (/compact) request for {OriginalModel} is not redirected: {Reason}",
-                    original, DescribeCompactSkipReason(settings, original, firstContent));
-            }
             bool applyThinkingCompatibility = shouldApplyThinkingCompatibility?.Invoke(effectiveModel) ?? true;
             string? injectedInstructions = GetInstructionTextForModel(settings, effectiveModel);
             ModelMapping? normalizeMapping = settings.FindModelMapping(effectiveModel);
@@ -5929,29 +5922,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (ollamaReq is null)
             return;
 
-        // Context-summarize (/compact) redirect: route the request to the mapping's configured
-        // compaction model when the system/prompt is a Copilot session-summary prompt and the
-        // mapping opted in via RedirectManualCompaction.
+        // Context-summarize (/compact) redirect.
         string? firstContent = !string.IsNullOrEmpty(ollamaReq.System) ? ollamaReq.System : ollamaReq.Prompt;
-        string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, firstContent);
-        bool compactRedirected = !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase);
-
-        if (compactRedirected)
-        {
-            log.OriginalModel = ollamaReq.Model;
-            Log.Debug(
-                "Context-summarize (/compact) generate request for {OriginalModel} redirected to compaction model {CompactModel}",
-                ollamaReq.Model, effectiveModel);
-        }
-        else if (IsContextSummarizeRequest(firstContent))
-        {
-            Log.Debug(
-                "Context-summarize (/compact) generate request for {OriginalModel} is not redirected: {Reason}",
-                ollamaReq.Model,
-                DescribeCompactSkipReason(_settings, ollamaReq.Model, firstContent));
-        }
-
-        string resolvedModel = _settings.ResolveModelName(effectiveModel);
+        var (effectiveModel, compactRedirected, resolvedModel) =
+            ResolveCompactRedirect(_settings, ollamaReq.Model, firstContent, log, "generate");
         log.Model = resolvedModel;
         bool genDebug = _settings.DebugMode;
         StringBuilder? genDebugNotes = genDebug ? new StringBuilder() : null;
@@ -6103,30 +6077,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (ollamaReq is null)
             return;
 
-        // Context-summarize (/compact) redirect: route the request to the mapping's configured
-        // compaction model when the first message is a Copilot session-summary prompt and the
-        // mapping opted in via RedirectManualCompaction.
+        // Context-summarize (/compact) redirect.
         string? chatFirstContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
-        string effectiveModel = ResolveEffectiveModel(_settings, ollamaReq.Model, chatFirstContent);
-
-        bool compactRedirected = !string.Equals(effectiveModel, ollamaReq.Model, StringComparison.OrdinalIgnoreCase);
-
-        if (compactRedirected)
-        {
-            log.OriginalModel = ollamaReq.Model;
-            Log.Debug(
-                "Context-summarize (/compact) chat request for {OriginalModel} redirected to compaction model {CompactModel}",
-                ollamaReq.Model, effectiveModel);
-        }
-        else if (IsContextSummarizeRequest(chatFirstContent))
-        {
-            Log.Debug(
-                "Context-summarize (/compact) chat request for {OriginalModel} is not redirected: {Reason}",
-                ollamaReq.Model,
-                DescribeCompactSkipReason(_settings, ollamaReq.Model, chatFirstContent));
-        }
-
-        string resolvedModel = _settings.ResolveModelName(effectiveModel);
+        var (effectiveModel, compactRedirected, resolvedModel) =
+            ResolveCompactRedirect(_settings, ollamaReq.Model, chatFirstContent, log, "chat");
         log.Model = resolvedModel;
         bool debug = _settings.DebugMode;
         StringBuilder? debugNotes = debug ? new StringBuilder() : null;

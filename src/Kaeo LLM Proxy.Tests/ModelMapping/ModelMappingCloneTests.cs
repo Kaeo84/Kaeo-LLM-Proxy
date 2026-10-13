@@ -295,6 +295,85 @@ public class ModelMappingCloneTests
     }
 
     [Fact]
+    public void CloneCoversEveryPublicInstanceProperty()
+    {
+        // When a new public property is added to ModelMapping, it must be copied in Clone() or
+        // it silently resets to its default after a settings save. This test fails if any
+        // get/set property differs between a fully-populated source and its clone, forcing the
+        // developer to update Clone() alongside the new property.
+        ModelMapping source = CreateFullyPopulatedMapping();
+        ModelMapping clone = source.Clone();
+
+        foreach (System.Reflection.PropertyInfo prop in typeof(ModelMapping).GetProperties(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!prop.CanRead || !prop.CanWrite || prop.GetIndexParameters().Length > 0)
+                continue;
+
+            object? sourceValue = prop.GetValue(source);
+            object? cloneValue = prop.GetValue(clone);
+
+            // Reference-type collections must be distinct (deep-copied), not shared.
+            if (sourceValue is System.Collections.IList sourceList
+                && cloneValue is System.Collections.IList cloneList)
+            {
+                Assert.NotSame(sourceValue, cloneValue);
+                Assert.Equal(sourceList.Count, cloneList.Count);
+                // Compare element-by-element.
+                for (int i = 0; i < sourceList.Count; i++)
+                    Assert.Equal(sourceList[i], cloneList[i]);
+                continue;
+            }
+
+            // Value types and strings must be equal.
+            Assert.Equal(sourceValue, cloneValue);
+        }
+    }
+
+    private static ModelMapping CreateFullyPopulatedMapping()
+    {
+        ModelMapping m = new()
+        {
+            IsEnabled = true,
+            Hidden = true,
+            ProxyName = "clone-test",
+            ModelName = "clone-test-upstream",
+            EnableThinkingCompatibility = false,
+            EnableSseKeepAlive = true,
+            EnableHeartbeats = false,
+            CredentialName = "test-cred",
+            UpstreamType = UpstreamType.OpenAI,
+            ThinkingMode = ThinkingMode.MoveToReasoningContent,
+            UpstreamUrl = "https://api.example.com/v1",
+            UpstreamTimeoutSeconds = 120,
+            RepeatPenalty = 1.15,
+            TemperaturePriority = SamplingPriority.Proxy,
+            RepeatPenaltyPriority = SamplingPriority.Provider,
+            Temperature = 0.3,
+            ReasoningEffortPriority = SamplingPriority.Proxy,
+            ReasoningEffort = "high",
+            ReasoningEffortValues = ["low", "medium", "high"],
+            ReasoningEffortFormat = ReasoningEffortFormat.Legacy | ReasoningEffortFormat.Modern,
+            InstructionSetName = "test-instructions",
+            ContextSummarizeModelId = 7,
+            ContextSummarizeModelName = "compact-target",
+            RedactRequestBodies = true,
+            RedactResponseBodies = true,
+            RedactSensitiveJsonFields = false,
+            ContextWindowTokens = 128000,
+            ProactiveOverflowPercent = 90,
+            ProactiveOverflowTokens = 10000,
+            AutoCompactPaths = AutoCompactPaths.Both,
+            RedirectManualCompaction = true,
+            EnableCopilotCompatibility = false,
+            ForwardClientAuthorization = true,
+        };
+        m.Capabilities.AddRange(["vision", "function_calling"]);
+        m.EnsureId();
+        return m;
+    }
+
+    [Fact]
     public void ContextSummarizeReferenceSurvivesCommitStyleCloning()
     {
         // Simulates MainForm.TryCommitMappings: every row's mapping is cloned on commit, so
