@@ -10,7 +10,16 @@
         vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True"
         Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
         Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}">
-
+    <Window.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+            <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+        </Style>
+        <Style TargetType="Control">
+            <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+            <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+        </Style>
+    </Window.Resources>
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>

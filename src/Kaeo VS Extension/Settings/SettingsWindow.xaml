@@ -26,7 +26,18 @@
         -->
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
-        <!-- ThemedDialogStyleLoader (set on the root) already themes Button/CheckBox/
+        <!-- Inherit the Visual Studio environment font so all text matches the
+             rest of the IDE. -->
+        <Style TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+            <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+        </Style>
+        <Style TargetType="Control">
+            <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+            <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+        </Style>
+
+        <!-- ThemedDialogStyleLoader (set on the root) already themes
              TextBox/ComboBox/ListView/etc. - exactly how the tool window works. Only the
              DataGrid and the TabControl content surface need explicit brushes. -->
 
@@ -237,7 +248,7 @@
                                         </Grid>
 
                                         <TextBlock Text="{Binding RefreshError}" Margin="0,0,0,4"
-                                                   Foreground="#FFCE4747"
+                                                   Foreground="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}"
                                                    Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}" />
                                         <DataGrid ItemsSource="{Binding Models}"
                                                     AutoGenerateColumns="False"
@@ -483,7 +494,8 @@
                                    Visibility="{Binding HasStatus, Converter={StaticResource BoolToVis}}" />
 
                         <TextBlock Grid.Row="4"
-                                   Text="{Binding LastError}" Margin="0,0,0,4" Foreground="#FFCE4747"
+                                   Text="{Binding LastError}" Margin="0,0,0,4"
+                                   Foreground="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}"
                                    TextTrimming="CharacterEllipsis" Cursor="Hand"
                                    ToolTip="{Binding LastErrorTooltip}"
                                    MouseLeftButtonUp="McpError_MouseLeftButtonUp"

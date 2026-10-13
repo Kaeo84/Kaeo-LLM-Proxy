@@ -11,6 +11,16 @@
                        Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
              <UserControl.Resources>
                  <BooleanToVisibilityConverter x:Key="BoolToVis" />
+                 <!-- Inherit the Visual Studio environment font so all text matches the
+                      rest of the IDE. Consolas overrides on code blocks stay explicit. -->
+                 <Style TargetType="TextBlock">
+                     <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+                     <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+                 </Style>
+                 <Style TargetType="Control">
+                     <Setter Property="FontFamily" Value="{DynamicResource VsFont.EnvironmentFontFamily}" />
+                     <Setter Property="FontSize" Value="{DynamicResource VsFont.EnvironmentFontSize}" />
+                 </Style>
              </UserControl.Resources>
              <Grid>
         <Grid.RowDefinitions>
@@ -21,26 +31,28 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Alert bar for unhealthy MCP servers (expandable) -->
-        <Expander x:Name="McpAlertBar" Grid.Row="0"
-                  IsExpanded="False"
-                  Visibility="Collapsed"
-                  Background="#FFFFE4B5"
-                  BorderBrush="#FFFFA500"
-                  BorderThickness="1"
-                  Margin="4"
-                  Padding="8,4">
-            <Expander.Header>
-                <StackPanel Orientation="Horizontal">
-                    <TextBlock Text="⚠" FontSize="16" Margin="0,0,8,0" />
-                    <TextBlock x:Name="McpAlertText" Text="Some MCP servers are unavailable"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center" />
-                </StackPanel>
-            </Expander.Header>
-            <TextBlock x:Name="McpAlertDetails" TextWrapping="Wrap"
-                       Foreground="#FF333333" />
-        </Expander>
+        <!-- Alert bar for unhealthy MCP servers (expandable). Themed via info-bar
+                     brushes so it stays legible in light and dark color schemes. -->
+                <Expander x:Name="McpAlertBar" Grid.Row="0"
+                          IsExpanded="False"
+                          Visibility="Collapsed"
+                          Background="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}"
+                          BorderBrush="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}"
+                          BorderThickness="1"
+                          Margin="4"
+                          Padding="8,4">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⚠" FontSize="16" Margin="0,0,8,0" />
+                            <TextBlock x:Name="McpAlertText" Text="Some MCP servers are unavailable"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                        </StackPanel>
+                    </Expander.Header>
+                    <TextBlock x:Name="McpAlertDetails" TextWrapping="Wrap"
+                               Foreground="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                </Expander>
 
         <!-- Top toolbar: Debug on the left, Export on the right. -->
         <Border Grid.Row="1" Padding="4,2"
@@ -115,16 +127,22 @@
                                             <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
                                             <Setter Property="FontStyle" Value="Italic" />
                                         </DataTrigger>
+                                        <!-- Warning/permission/error use info-bar themed brushes so they
+                                             track the active VS color scheme and stay legible in both
+                                             light and dark themes. -->
                                         <DataTrigger Binding="{Binding Kind}" Value="warning">
-                                            <Setter Property="Foreground" Value="#FFFF8C00" />
+                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
                                             <Setter Property="FontWeight" Value="SemiBold" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding Kind}" Value="permission">
-                                            <Setter Property="Foreground" Value="#FFFF8C00" />
+                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
                                             <Setter Property="FontStyle" Value="Italic" />
                                         </DataTrigger>
                                         <DataTrigger Binding="{Binding Kind}" Value="error">
-                                            <Setter Property="Foreground" Value="#FFFF4500" />
+                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
                                             <Setter Property="FontWeight" Value="SemiBold" />
                                         </DataTrigger>
                                     </Style.Triggers>
