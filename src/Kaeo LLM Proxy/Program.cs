@@ -155,10 +155,7 @@ internal static class Program
     /// </summary>
     private static void ResolvePassphrase(AppSettings settings)
     {
-        bool hasEncrypted = settings.Credentials.Any(c =>
-            SecretProtector.IsEncrypted(c.Secret)
-            || SecretProtector.IsEncrypted(c.PrivateKey)
-            || SecretProtector.IsEncrypted(c.Certificate));
+        bool hasEncrypted = settings.Credentials.Any(c => SecretProtector.HasAnyEncryptedSecret(c));
 
         if (!hasEncrypted)
         {
@@ -225,7 +222,7 @@ internal static class Program
         // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).
         foreach (StoredCredential credential in settings.Credentials)
         {
-            foreach (string? value in SecretMaterialValues(credential))
+            foreach (string? value in SecretProtector.EnumerateSecretMaterial(credential))
             {
                 if (value is not null && SecretProtector.IsEncrypted(value)
                     && !SecretProtector.TryDecrypt(value, passphrase, out _))
@@ -249,14 +246,6 @@ internal static class Program
         }
 
         return true;
-    }
-
-    /// <summary>Enumerates the secret-bearing fields of a credential (may contain nulls/empties).</summary>
-    private static IEnumerable<string?> SecretMaterialValues(StoredCredential credential)
-    {
-        yield return credential.Secret;
-        yield return credential.PrivateKey;
-        yield return credential.Certificate;
     }
 
     internal static Icon GetApplicationIcon()

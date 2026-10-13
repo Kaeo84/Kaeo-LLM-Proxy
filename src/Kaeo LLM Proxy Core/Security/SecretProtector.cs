@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Kaeo.LlmProxy.Core.Models;
 
 namespace Kaeo.LlmProxy.Core.Security;
 
@@ -125,4 +126,34 @@ internal static class SecretProtector
             Iterations,
             HashAlgorithmName.SHA256,
             KeySize);
+
+    /// <summary>
+    /// The three field names on <see cref="StoredCredential"/> that carry secret material.
+    /// </summary>
+    internal static string[] SecretMaterialFields { get; } = ["Secret", "PrivateKey", "Certificate"];
+
+    /// <summary>
+    /// Returns true when any of the secret-bearing fields on <paramref name="credential"/>
+    /// carry an encrypted envelope.
+    /// </summary>
+    internal static bool HasAnyEncryptedSecret(StoredCredential credential)
+    {
+        foreach (string? value in EnumerateSecretMaterial(credential))
+        {
+            if (IsEncrypted(value))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Yields the three secret-material values (Secret, PrivateKey, Certificate) from
+    /// <paramref name="credential"/>, any of which may be null.
+    /// </summary>
+    internal static IEnumerable<string?> EnumerateSecretMaterial(StoredCredential credential)
+    {
+        yield return credential.Secret;
+        yield return credential.PrivateKey;
+        yield return credential.Certificate;
+    }
 }

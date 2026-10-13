@@ -1876,56 +1876,56 @@ internal sealed class AppSettings
         string dir = Path.GetDirectoryName(_settingsPath)!;
         Directory.CreateDirectory(dir);
 
-        string logDir = Logging.LogDirectory.Replace("\\", "\\\\");
+        string escapedDatabasePath = Logging.ApplicationDatabasePath.Replace("\\", "\\\\");
+        string escapedLogDir = Logging.LogDirectory.Replace("\\", "\\\\");
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("{");
-        sb.AppendLine("  // \u2500\u2500\u2500 Proxy \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
-        sb.AppendLine();
-        sb.AppendLine("  // Port the proxy listens on (Ollama clients connect here).");
-        sb.AppendLine("  // Min: 1  Max: 65535  Default: 11434");
-        sb.AppendLine($"  \"ListenPort\": {ListenPort},");
-        sb.AppendLine();
-        sb.AppendLine("  // IP address to bind the listener to.");
-        sb.AppendLine("  // Values: \"localhost\" (127.0.0.1 only), \"0.0.0.0\" (all interfaces), or a specific IP.");
-        sb.AppendLine("  // Note: Binding to \"0.0.0.0\" or specific IPs may require admin rights or netsh urlacl.");
-        sb.AppendLine("  // Default: \"localhost\"");
-        sb.AppendLine($"  \"ListenAddress\": \"{ListenAddress}\",");
+        string content = $$"""
+            {
+              // - Proxy ---------------------------------------------------------------
+              // Port the proxy listens on (Ollama clients connect here).
+              // Min: 1  Max: 65535  Default: 11434
+              "ListenPort": {{ListenPort}},
 
-        sb.AppendLine();
-        sb.AppendLine("  // Max recent request log entries kept in memory for the GUI.");
-        sb.AppendLine("  // Min: 10  Max: 100000  Default: 500");
-        sb.AppendLine($"  \"MaxLogEntries\": {MaxLogEntries},");
-        sb.AppendLine();
-        sb.AppendLine("  // \u2500\u2500\u2500 Logging \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
-        sb.AppendLine("  \"Logging\": {");
-        sb.AppendLine();
-        sb.AppendLine("    // Minimum Serilog severity level written to the app log.");
-        sb.AppendLine("    // Values: Verbose | Debug | Information | Warning | Error | Fatal");
-        sb.AppendLine($"    \"MinimumLevel\": \"{Logging.MinimumLevel}\",");
-        sb.AppendLine($"    \"HeartbeatMinimumLevel\": \"{Logging.HeartbeatMinimumLevel}\",");
-        sb.AppendLine();
-        sb.AppendLine("    // Roll the app log file when it reaches this size (MB).");
-        sb.AppendLine("    // Min: 1  Max: 1000  Default: 10");
-        sb.AppendLine($"    \"AppLogFileSizeLimitMb\": {Logging.AppLogFileSizeLimitMb},");
-        sb.AppendLine();
-        sb.AppendLine("    // How many rolled app log files to keep before deleting the oldest.");
-        sb.AppendLine("    // Min: 1  Max: 999  Default: 7");
-        sb.AppendLine($"    \"AppLogRetainedFileCount\": {Logging.AppLogRetainedFileCount},");
-        sb.AppendLine();
-        sb.AppendLine("    // Archive the LiteDB application database when it reaches this size (MB).");
-        sb.AppendLine("    // Min: 1  Max: 5000  Default: 50");
-        sb.AppendLine($"    \"RequestLogFileSizeLimitMb\": {Logging.RequestLogFileSizeLimitMb},");
-        sb.AppendLine();
-        sb.AppendLine("    // Full path to the central LiteDB application database file.");
-        sb.AppendLine("    // Empty uses Data/Database/kaeo_llm_proxy.db under the application directory.");
-        sb.AppendLine($"    \"ApplicationDatabasePath\": \"{Logging.ApplicationDatabasePath.Replace("\\", "\\\\")}\",");
-        sb.AppendLine();
-        sb.AppendLine("    // Root directory for text log files.");
-        sb.AppendLine($"    \"LogDirectory\": \"{logDir}\"");
-        sb.AppendLine("  }");
-        sb.AppendLine("}");
+              // IP address to bind the listener to.
+              // Values: "localhost" (127.0.0.1 only), "0.0.0.0" (all interfaces), or a specific IP.
+              // Note: Binding to "0.0.0.0" or specific IPs may require admin rights or netsh urlacl.
+              // Default: "localhost"
+              "ListenAddress": "{{ListenAddress}}",
 
-        File.WriteAllText(_settingsPath, sb.ToString());
+              // Max recent request log entries kept in memory for the GUI.
+              // Min: 10  Max: 100000  Default: 500
+              "MaxLogEntries": {{MaxLogEntries}},
+
+              // - Logging ---------------------------------------------------------------
+              "Logging": {
+
+                // Minimum Serilog severity level written to the app log.
+                // Values: Verbose | Debug | Information | Warning | Error | Fatal
+                "MinimumLevel": "{{Logging.MinimumLevel}}",
+                "HeartbeatMinimumLevel": "{{Logging.HeartbeatMinimumLevel}}",
+
+                // Roll the app log file when it reaches this size (MB).
+                // Min: 1  Max: 1000  Default: 10
+                "AppLogFileSizeLimitMb": {{Logging.AppLogFileSizeLimitMb}},
+
+                // How many rolled app log files to keep before deleting the oldest.
+                // Min: 1  Max: 999  Default: 7
+                "AppLogRetainedFileCount": {{Logging.AppLogRetainedFileCount}},
+
+                // Archive the LiteDB application database when it reaches this size (MB).
+                // Min: 1  Max: 5000  Default: 50
+                "RequestLogFileSizeLimitMb": {{Logging.RequestLogFileSizeLimitMb}},
+
+                // Full path to the central LiteDB application database file.
+                // Empty uses Data/Database/kaeo_llm_proxy.db under the application directory.
+                "ApplicationDatabasePath": "{{escapedDatabasePath}}",
+
+                // Root directory for text log files.
+                "LogDirectory": "{{escapedLogDir}}"
+              }
+            }
+            """;
+
+        File.WriteAllText(_settingsPath, content);
     }
 }
