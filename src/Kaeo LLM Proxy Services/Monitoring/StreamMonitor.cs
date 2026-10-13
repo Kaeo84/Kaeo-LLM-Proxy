@@ -53,6 +53,12 @@ internal sealed class StreamSnapshot
 
     /// <summary>Bounded rolling tail of the frames forwarded to the client.</summary>
     public string ForwardedText { get; set; } = string.Empty;
+
+    /// <summary>
+    /// When the stream ended and was moved to history. <see cref="DateTime.MinValue"/>
+    /// for live streams. History entries carry a real timestamp.
+    /// </summary>
+    public DateTime EndedUtc { get; set; } = DateTime.MinValue;
 }
 
 /// <summary>
@@ -77,12 +83,19 @@ internal sealed class StreamMonitor
 
     private readonly ConcurrentDictionary<string, StreamMonitorSession> _sessions = new(StringComparer.Ordinal);
 
-    /// <summary>
-    /// Raised when a stream is registered or removed. Deliberately not raised per frame — the UI
-    /// polls <see cref="Snapshot"/> on its refresh timer for the byte/live-data updates, so this
-    /// event only needs to signal membership changes.
-    /// </summary>
-    public event EventHandler? StreamsChanged;
+        /// <summary>Retention window for completed-stream history (in-memory only, no persistence).</summary>
+        private static readonly TimeSpan HistoryWindow = TimeSpan.FromMinutes(15);
+
+        private readonly object _historyLock = new();
+        private readonly List<StreamSnapshot> _history = [];
+
+        /// <summary>
+        /// Raised when a stream is registered, removed, or moved to history.
+        /// Deliberately not raised per frame — the UI polls <see cref="Snapshot"/>
+        /// and <see cref="RecentHistory"/> on its refresh timer for the byte/live-data
+        /// updates, so this event only needs to signal membership changes.
+        /// </summary>
+        public event EventHandler? StreamsChanged;
 
     /// <summary>Number of streams currently in flight.</summary>
     public int ActiveCount => _sessions.Count;
@@ -118,8 +131,39 @@ internal sealed class StreamMonitor
     /// <summary>Removes a session, but only if it is still the registered instance for its id.</summary>
     internal void Remove(StreamMonitorSession session)
     {
-        if (_sessions.TryRemove(new KeyValuePair<string, StreamMonitorSession>(session.RequestId, session)))
-            RaiseStreamsChanged();
+        if (!_sessions.TryRemove(new KeyValuePair<string, StreamMonitorSession>(session.RequestId, session)))
+            return;
+
+        // Capture a final snapshot for the short in-memory history before the session is gone.
+        StreamSnapshot final = session.ToSnapshot();
+        final.EndedUtc = DateTime.UtcNow;
+        AddToHistory(final);
+
+        RaiseStreamsChanged();
+    }
+
+    /// <summary>
+    /// Returns a stable, ordered copy of streams that completed within the last
+    /// <see cref="HistoryWindow"/>, newest first. Prunes expired entries on each call
+    /// so memory never grows without bound even if the UI stops polling.
+    /// </summary>
+    public IReadOnlyList<StreamSnapshot> RecentHistory()
+    {
+        DateTime cutoff = DateTime.UtcNow - HistoryWindow;
+
+        lock (_historyLock)
+        {
+            _history.RemoveAll(s => s.EndedUtc < cutoff);
+            return [.. _history];
+        }
+    }
+
+    private void AddToHistory(StreamSnapshot entry)
+    {
+        lock (_historyLock)
+        {
+            _history.Add(entry);
+        }
     }
 
     private void RaiseStreamsChanged()

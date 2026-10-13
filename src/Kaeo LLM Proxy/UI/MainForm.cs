@@ -1467,7 +1467,8 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated || _streamMonitor is null)
             return;
 
-        IReadOnlyList<StreamSnapshot> streams = _streamMonitor.Snapshot();
+        IReadOnlyList<StreamSnapshot> live = _streamMonitor.Snapshot();
+        IReadOnlyList<StreamSnapshot> history = _streamMonitor.RecentHistory();
 
         // Remember the selected request ID so we can restore it after rebuild.
         string? selectedId = _lstStreams.SelectedItems.Count > 0
@@ -1478,28 +1479,13 @@ internal partial class MainForm : Form
         try
         {
             _lstStreams.Items.Clear();
-            foreach (StreamSnapshot s in streams)
-            {
-                var item = new ListViewItem(s.StartedUtc.ToLocalTime().ToString("HH:mm:ss"));
-                item.SubItems.Add(s.Kind.ToString());
-                item.SubItems.Add(s.Method);
-                item.SubItems.Add(s.Path);
-                item.SubItems.Add(s.Model);
-                item.SubItems.Add(FormatStreamStateText(s.State));
-                item.SubItems.Add(FormatBytesCompact(s.UpstreamBytes));
-                item.SubItems.Add(FormatBytesCompact(s.ClientBytes));
-                item.SubItems.Add(s.FrameCount.ToString());
-                item.Tag = s;
 
-                item.ForeColor = s.State switch
-                {
-                    StreamState.Streaming => Color.Green,
-                    StreamState.Waiting => Color.DarkOrange,
-                    _ => SystemColors.WindowText,
-                };
+            // Live streams first, then completed history (newest completed first).
+            foreach (StreamSnapshot s in live)
+                AddStreamRow(s, live: true);
 
-                _lstStreams.Items.Add(item);
-            }
+            foreach (StreamSnapshot s in history)
+                AddStreamRow(s, live: false);
 
             // Restore selection.
             if (selectedId is not null)
@@ -1520,6 +1506,52 @@ internal partial class MainForm : Form
         }
 
         UpdateStreamLivePanes();
+    }
+
+    private void AddStreamRow(StreamSnapshot s, bool live)
+    {
+        string timeText = s.StartedUtc.ToLocalTime().ToString("HH:mm:ss");
+        string stateText;
+        Color rowColor;
+
+        if (live)
+        {
+            stateText = FormatStreamStateText(s.State);
+            rowColor = s.State switch
+            {
+                StreamState.Streaming => Color.Green,
+                StreamState.Waiting => Color.DarkOrange,
+                _ => SystemColors.WindowText,
+            };
+        }
+        else
+        {
+            TimeSpan dur = s.EndedUtc == DateTime.MinValue
+                ? TimeSpan.Zero
+                : s.EndedUtc - s.StartedUtc;
+
+            stateText = dur.TotalSeconds < 1
+                ? "Completed"
+                : dur.TotalMinutes >= 1
+                    ? $"Completed ({dur.TotalMinutes:F0}m {dur.Seconds}s)"
+                    : $"Completed ({dur.Seconds}s)";
+
+            rowColor = SystemColors.GrayText;
+        }
+
+        var item = new ListViewItem(timeText);
+        item.SubItems.Add(s.Kind.ToString());
+        item.SubItems.Add(s.Method);
+        item.SubItems.Add(s.Path);
+        item.SubItems.Add(s.Model);
+        item.SubItems.Add(stateText);
+        item.SubItems.Add(FormatBytesCompact(s.UpstreamBytes));
+        item.SubItems.Add(FormatBytesCompact(s.ClientBytes));
+        item.SubItems.Add(s.FrameCount.ToString());
+        item.Tag = s;
+        item.ForeColor = rowColor;
+
+        _lstStreams.Items.Add(item);
     }
 
     private void UpdateStreamLivePanes()
