@@ -23,7 +23,7 @@
     <VsixSourceManifestPath>$(MSBuildProjectDirectory)\source.extension.vsixmanifest</VsixSourceManifestPath>
     <LoadVsixManifest>true</LoadVsixManifest>
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
-    <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101</NoWarn>
+    <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101;CVSTBLD002</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectCapability Include="CreateVsixContainer" />
