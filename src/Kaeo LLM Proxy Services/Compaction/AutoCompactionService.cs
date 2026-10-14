@@ -545,7 +545,7 @@ internal sealed class AutoCompactionService
                 Log.Debug("Auto-compaction: summarizing chunk {ChunkNumber} ({MessageCount} messages, ~{Tokens} estimated tokens)",
                     chunkNumber, chunk.Count, estimatedChunkTokens);
 
-                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, isCopilotSummary, ct);
+                string? chunkSummary = await SummarizeChunkAsync(compactModelName, chunk, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, isCopilotSummary, ct).ConfigureAwait(false);
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
@@ -576,7 +576,7 @@ internal sealed class AutoCompactionService
             else
             {
                 Log.Debug("Auto-compaction: combining {SummaryCount} chunk summaries", chunkSummaries.Count);
-                finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
+                finalSummary = await CombineSummariesAsync(compactModelName, chunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct).ConfigureAwait(false);
             }
 
             // Build the compacted request body with the final summary
@@ -902,7 +902,7 @@ internal sealed class AutoCompactionService
                 }
 
                 var subChunk = chunkMessages.GetRange(subChunkStart, subChunkEnd - subChunkStart);
-                string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, isCopilotSummary, ct);
+                string? subSummary = await SummarizeSubChunkAsync(model, subChunk, baseUrl, apiKey, timeoutSeconds, maxTokensPerMessage, isCopilotSummary, ct).ConfigureAwait(false);
                 if (subSummary is not null)
                 {
                     subChunkSummaries.Add(subSummary);
@@ -915,7 +915,7 @@ internal sealed class AutoCompactionService
                 return null;
 
             // Combine sub-chunk summaries using the same reduce logic
-            return await CombineSummariesAsync(model, subChunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct);
+            return await CombineSummariesAsync(model, subChunkSummaries, baseUrl, apiKey, timeoutSeconds, compactModelContextWindow, ct).ConfigureAwait(false);
         }
 
         // Build a chat completion request to summarize this chunk.
@@ -966,17 +966,17 @@ internal sealed class AutoCompactionService
         try
         {
             using HttpResponseMessage response = await _httpClient.SendAsync(
-                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
-                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                string errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                 Log.Warning("Chunk summarization failed: HTTP {StatusCode} {Body}",
                     (int)response.StatusCode, errorBody);
                 return null;
             }
 
-            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            string responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using JsonDocument doc = JsonDocument.Parse(responseBody);
             if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
                 && choices.ValueKind == JsonValueKind.Array
@@ -1055,17 +1055,17 @@ internal sealed class AutoCompactionService
         try
         {
             using HttpResponseMessage response = await _httpClient.SendAsync(
-                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
-                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                string errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                 Log.Warning("Sub-chunk summarization failed: HTTP {StatusCode} {Body}",
                     (int)response.StatusCode, errorBody);
                 return null;
             }
 
-            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            string responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using JsonDocument doc = JsonDocument.Parse(responseBody);
             if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
                 && choices.ValueKind == JsonValueKind.Array
@@ -1200,7 +1200,7 @@ internal sealed class AutoCompactionService
             int combinedTokens = (int)(Encoding.UTF8.GetByteCount(combinedInput) / 4 * TokenEstimationSafetyFactor);
 
             if (combinedTokens <= maxTokensPerRequest)
-                return await CombineOnceAsync(model, combinedInput, baseUrl, apiKey, timeoutSeconds, ct);
+                return await CombineOnceAsync(model, combinedInput, baseUrl, apiKey, timeoutSeconds, ct).ConfigureAwait(false);
 
             if (pass >= MaxCombinePasses)
             {
@@ -1210,7 +1210,7 @@ internal sealed class AutoCompactionService
                 int maxChars = maxTokensPerRequest * 4;
                 return await CombineOnceAsync(model,
                     combinedInput[..Math.Min(combinedInput.Length, maxChars)] + "\n... [truncated]",
-                    baseUrl, apiKey, timeoutSeconds, ct);
+                    baseUrl, apiKey, timeoutSeconds, ct).ConfigureAwait(false);
             }
 
             // Split the summaries into batches that fit under the budget, summarize each
@@ -1240,7 +1240,7 @@ internal sealed class AutoCompactionService
             foreach (List<string> b in batches)
             {
                 string joined = string.Join("\n\n---\n\n", b.Select((s, i) => $"Part {i + 1}:\n{s}"));
-                next.Add(await CombineOnceAsync(model, joined, baseUrl, apiKey, timeoutSeconds, ct));
+                next.Add(await CombineOnceAsync(model, joined, baseUrl, apiKey, timeoutSeconds, ct).ConfigureAwait(false));
             }
             current = next;
         }
@@ -1300,18 +1300,18 @@ internal sealed class AutoCompactionService
         try
         {
             using HttpResponseMessage response = await _httpClient.SendAsync(
-                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token);
+                httpReq, HttpCompletionOption.ResponseContentRead, cts.Token).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
-                string errorBody = await response.Content.ReadAsStringAsync(ct);
+                string errorBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
                 Log.Warning("Summary combination failed: HTTP {StatusCode} {Body}",
                     (int)response.StatusCode, errorBody);
                 // Fallback: just return the concatenated summaries.
                 return combinedInput;
             }
 
-            string responseBody = await response.Content.ReadAsStringAsync(ct);
+            string responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             using JsonDocument doc = JsonDocument.Parse(responseBody);
             if (doc.RootElement.TryGetProperty("choices", out JsonElement choices)
                 && choices.ValueKind == JsonValueKind.Array
