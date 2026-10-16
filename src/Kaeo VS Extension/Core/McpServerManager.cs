@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Linq;
+using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
@@ -586,15 +589,196 @@ internal sealed class McpServerManager
 
     // --- stdio transport (JSON-RPC over stdin/stdout of a child process) ---
 
-    private static async Task<IReadOnlyList<McpTool>> PullToolsStdioAsync(McpServer server, CancellationToken ct)
-    {
-        // Placeholder: spawn the command, send initialize + tools/list, read response.
-        return Array.Empty<McpTool>();
-    }
+        /// <summary>
+        /// Spawns the configured command, sends MCP initialize + tools/list over stdin, and returns
+        /// the tool definitions read from stdout. The process is killed after the exchange.
+        /// </summary>
+        private static async Task<IReadOnlyList<McpTool>> PullToolsStdioAsync(McpServer server, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(server.Command))
+                return Array.Empty<McpTool>();
 
-    private static async Task<string> ExecuteToolStdioAsync(McpServer server, string toolName, string? argsJson, CancellationToken ct)
-    {
-        // Placeholder: spawn the command, send tools/call, read response.
-        return "stdio transport not yet implemented.";
+            var args = server.Args ?? Array.Empty<string>();
+            var process = StartProcess(server.Command, args);
+            try
+            {
+                // Send initialize request
+                var initJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = 0,
+                    ["method"] = "initialize",
+                    ["params"] = new JsonObject
+                    {
+                        ["protocolVersion"] = "2024-11-05",
+                        ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+                        ["capabilities"] = new JsonObject(),
+                    }
+                };
+
+                await WriteJsonRpcAsync(process, initJson, ct).ConfigureAwait(false);
+                var initResponse = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+
+                // Send initialized notification
+                var notifiedJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["method"] = "notifications/initialized"
+                };
+                await WriteJsonRpcAsync(process, notifiedJson, ct).ConfigureAwait(false);
+
+                // Send tools/list
+                var toolsListJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = 1,
+                    ["method"] = "tools/list",
+                    ["params"] = new JsonObject()
+                };
+                await WriteJsonRpcAsync(process, toolsListJson, ct).ConfigureAwait(false);
+                var toolsResponse = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+
+                var tools = new List<McpTool>();
+                if (toolsResponse?["result"]?["tools"] is JsonArray arr)
+                {
+                    foreach (var t in arr)
+                    {
+                        tools.Add(new McpTool
+                        {
+                            Name = t?["name"]?.GetValue<string>(),
+                            Description = t?["description"]?.GetValue<string>(),
+                            Schema = t?["inputSchema"],
+                            Enabled = true
+                        });
+                    }
+                }
+                return tools;
+            }
+            finally
+            {
+                KillProcess(process);
+            }
+        }
+
+        /// <summary>
+        /// Spawns the configured command, sends MCP initialize + tools/call over stdin, returns the
+        /// tool result from stdout. The process is killed after the exchange.
+        /// </summary>
+        private static async Task<string> ExecuteToolStdioAsync(McpServer server, string toolName, string? argsJson, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(server.Command))
+                return "No command configured for this stdio server.";
+
+            var commandArgs = server.Args ?? Array.Empty<string>();
+            var process = StartProcess(server.Command, commandArgs);
+            try
+            {
+                // Send initialize
+                var initJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = 0,
+                    ["method"] = "initialize",
+                    ["params"] = new JsonObject
+                    {
+                        ["protocolVersion"] = "2024-11-05",
+                        ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+                        ["capabilities"] = new JsonObject(),
+                    }
+                };
+                await WriteJsonRpcAsync(process, initJson, ct).ConfigureAwait(false);
+                await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+
+                // Send initialized notification
+                var notifiedJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["method"] = "notifications/initialized"
+                };
+                await WriteJsonRpcAsync(process, notifiedJson, ct).ConfigureAwait(false);
+
+                // Send tools/call
+                var callJson = new JsonObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = 2,
+                    ["method"] = "tools/call",
+                    ["params"] = new JsonObject
+                    {
+                        ["name"] = toolName,
+                        ["arguments"] = argsJson is null ? new JsonObject() : JsonNode.Parse(argsJson)
+                    }
+                };
+                await WriteJsonRpcAsync(process, callJson, ct).ConfigureAwait(false);
+                var response = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+
+                return response?["result"]?.ToJsonString() ?? string.Empty;
+            }
+            finally
+            {
+                KillProcess(process);
+            }
+        }
+
+        private static Process StartProcess(string command, string[] args)
+        {
+            var info = new ProcessStartInfo
+            {
+                FileName = command,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            // Join args with proper quoting
+            if (args.Length > 0)
+                info.Arguments = string.Join(" ", args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+
+            var process = new Process { StartInfo = info };
+            process.Start();
+            return process;
+        }
+
+        private static async Task WriteJsonRpcAsync(Process process, JsonObject body, CancellationToken ct)
+        {
+            var json = body.ToJsonString() + "\n";
+            var bytes = Encoding.UTF8.GetBytes(json);
+            await process.StandardInput.BaseStream.WriteAsync(bytes, 0, bytes.Length, ct).ConfigureAwait(false);
+            await process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
+        }
+
+        private static async Task<JsonNode?> ReadJsonRpcAsync(Process process, CancellationToken ct)
+            {
+                // net48: ReadLineAsync has no CancellationToken overload. Use a Task.Run with
+                // synchronous ReadLine so the CancellationToken can cancel the wait.
+                var readTask = Task.Run(() => process.StandardOutput.ReadLine(), ct);
+                var completed = await Task.WhenAny(readTask, Task.Delay(Timeout.Infinite, ct)).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                var line = await readTask.ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(line))
+                    return null;
+                return JsonNode.Parse(line);
+            }
+
+        private static void KillProcess(Process process)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // Process already gone.
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
     }
-}

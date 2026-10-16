@@ -443,6 +443,47 @@ internal static class BuiltInVsTools
                     },
                     ["required"] = new JsonArray { "name", "content" }
                 }
+            },
+            new()
+            {
+                Name = "vs_create_plan_file",
+                Description = "Create a markdown (.md) plan file. Only .md paths are accepted — use this to write implementation plans for user review. The directory will be created if it does not exist.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The .md file path to create (relative to solution root or absolute)"
+                        },
+                        ["content"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The markdown content to write"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "content" }
+                }
+            },
+            new()
+            {
+                Name = "vs_get_errors",
+                Description = "Get compilation errors in specific code files. Returns errors with file, line, column, and description.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The file path to get errors for"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath" }
+                }
             }
         };
     }
@@ -466,9 +507,11 @@ internal static class BuiltInVsTools
                 "vs_build" => await BuildAsync(args, ct),
                 "vs_run_tests" => await RunTestsAsync(args, ct),
                 "vs_get_diagnostics" => await GetDiagnosticsAsync(args, ct),
+                "vs_get_errors" => await GetErrorsAsync(args, ct),
                 "vs_get_active_file" => await GetActiveFileAsync(ct),
                 "vs_get_selection" => await GetSelectionAsync(ct),
                 "vs_create_file" => await CreateFileAsync(args, ct),
+                "vs_create_plan_file" => await CreatePlanFileAsync(args, ct),
                 "vs_replace_in_file" => await ReplaceInFileAsync(args, ct),
                 "vs_run_command" => await RunCommandAsync(args, ct),
                 "vs_get_output_logs" => await GetOutputLogsAsync(args, ct),
@@ -584,71 +627,163 @@ internal static class BuiltInVsTools
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
         var symbolName = args?["symbolName"]?.GetValue<string>() ?? throw new ArgumentException("symbolName is required");
-        var navigationType = args?["navigationType"]?.GetValue<int>() ?? 1;
+        var navigationType = args?["navigationType"]?.GetValue<int>() ?? 2; // default: Find All References
+        var filePath = args?["filePath"]?.GetValue<string>(); // optional: scope to one file
 
         var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
         if (dte?.Solution?.IsOpen != true)
             return "No solution is open.";
 
-        // This is a simplified implementation - full Roslyn integration would require more setup
-        var results = new List<string>();
-        SearchSymbolInSolution(dte.Solution, symbolName, results, 50);
-
-        return results.Count == 0
-            ? $"Symbol '{symbolName}' not found."
-            : $"Found {results.Count} location(s):\n" + string.Join("\n", results);
-    }
-
-    private static void SearchSymbolInSolution(Solution solution, string symbolName, List<string> results, int maxResults)
-    {
-        // Simplified: search for symbol name in file contents
-        foreach (Project project in solution.Projects)
+        // navigationType: 1 = Go To Definition, 2 = Find All References, 3 = Go To Implementation
+        switch (navigationType)
         {
-            if (results.Count >= maxResults) return;
-            SearchSymbolInProject(project, symbolName, results, maxResults);
+            case 1:
+                return await FindSymbolDefinitionAsync(dte, symbolName, filePath, ct);
+            case 2:
+                return await FindSymbolReferencesAsync(dte, symbolName, filePath, ct);
+            case 3:
+                return await FindSymbolImplementationsAsync(dte, symbolName, filePath, ct);
+            default:
+                return $"Unknown navigation type: {navigationType}. Use 1=Go To Definition, 2=Find All References, 3=Go To Implementation.";
         }
     }
 
-    private static void SearchSymbolInProject(Project project, string symbolName, List<string> results, int maxResults)
+    /// <summary>Uses DTE's Find to iterate all references, collecting file/line/column from TextSelection.</summary>
+    private static async Task<string> FindSymbolReferencesAsync(DTE2 dte, string symbolName, string? filePath, CancellationToken ct)
     {
-        if (project.ProjectItems == null) return;
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
-        foreach (ProjectItem item in project.ProjectItems)
+        // Remember where the user was so we can restore the caret.
+        var savedDoc = dte.ActiveDocument;
+        var savedSel = savedDoc?.Selection as TextSelection;
+        var savedLine = savedSel?.ActivePoint?.AbsoluteCharOffset ?? 0;
+
+        var find = dte.Find;
+
+        // Save current find state
+        var savedFindWhat = find.FindWhat;
+        var savedAction = find.Action;
+        var savedTarget = find.Target;
+        var savedMatchCase = find.MatchCase;
+        var savedMatchWholeWord = find.MatchWholeWord;
+        var savedPatternSyntax = find.PatternSyntax;
+        var savedSearchSubfolders = find.SearchSubfolders;
+        var savedFilesOfType = find.FilesOfType;
+
+        try
         {
-            if (results.Count >= maxResults) return;
-            SearchSymbolInItem(item, symbolName, results, maxResults);
-        }
-    }
+            find.FindWhat = symbolName;
+            find.Action = vsFindAction.vsFindActionFindAll;
+            find.Target = string.IsNullOrWhiteSpace(filePath)
+                ? vsFindTarget.vsFindTargetSolution
+                : vsFindTarget.vsFindTargetCurrentDocument;
+            find.MatchCase = true;
+            find.MatchWholeWord = true;
+            find.PatternSyntax = vsFindPatternSyntax.vsFindPatternSyntaxLiteral;
+            find.SearchSubfolders = true;
+            find.FilesOfType = "*.cs;*.vb;*.xaml;*.json;*.xml;*.csproj;*.props;*.targets;*.razor;*.cshtml";
 
-    private static void SearchSymbolInItem(ProjectItem item, string symbolName, List<string> results, int maxResults)
-    {
-        if (results.Count >= maxResults) return;
-
-        var fileName = item.FileNames[1];
-        if (fileName != null && File.Exists(fileName) && fileName.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-        {
-            try
+            if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
             {
-                var content = File.ReadAllText(fileName);
-                if (content.Contains(symbolName))
+                dte.ItemOperations.OpenFile(filePath);
+            }
+
+            var result = find.Execute();
+
+            if (result != vsFindResult.vsFindResultFound)
+                return $"Symbol '{symbolName}' not found.";
+
+            // Walk through matches using Find Next to collect file/line/col.
+            var lines = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            const int maxResults = 50;
+
+            find.Action = vsFindAction.vsFindActionFind;
+            do
+            {
+                var activeDoc = dte.ActiveDocument;
+                var sel = activeDoc?.Selection as TextSelection;
+                if (sel is null)
+                    break;
+
+                var f = activeDoc?.FullName ?? "(unknown)";
+                var l = sel.ActivePoint.Line;
+                var c = sel.ActivePoint.LineCharOffset;
+                var key = f + "(" + l + ")";
+                if (seen.Add(key))
                 {
-                    results.Add(fileName);
+                    // Capture one line of context from the match line
+                    var matchLine = sel.ActivePoint.CreateEditPoint().GetLines(l, l + 1).TrimEnd();
+                    lines.Add($"{f}({l},{c}): {matchLine}");
+                    if (lines.Count >= maxResults)
+                        break;
                 }
             }
-            catch
+            while (find.Execute() == vsFindResult.vsFindResultFound);
+
+            if (lines.Count == 0)
+                return $"Symbol '{symbolName}' not found.";
+
+            return $"Found {lines.Count} reference(s):\n" + string.Join("\n", lines);
+        }
+        catch (Exception ex)
+        {
+            return $"Symbol search failed: {ex.Message}";
+        }
+        finally
+        {
+            // Restore find state and caret
+            try
             {
-                // Skip files that can't be read
+                find.FindWhat = savedFindWhat;
+                find.Action = savedAction;
+                find.Target = savedTarget;
+                find.MatchCase = savedMatchCase;
+                find.MatchWholeWord = savedMatchWholeWord;
+                find.PatternSyntax = savedPatternSyntax;
+                find.SearchSubfolders = savedSearchSubfolders;
+                find.FilesOfType = savedFilesOfType;
+                if (savedDoc is not null && savedLine > 0)
+                {
+                    try { savedDoc.Activate(); } catch { }
+                    try { (savedDoc.Selection as TextSelection)?.MoveToAbsoluteOffset(savedLine); } catch { }
+                }
             }
+            catch { /* best-effort restore */ }
+        }
+    }
+
+    /// <summary>For Go To Definition, do a Find All and return the first file location — the model can inspect the file.</summary>
+    private static async Task<string> FindSymbolDefinitionAsync(DTE2 dte, string symbolName, string? filePath, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
+        {
+            dte.ItemOperations.OpenFile(filePath);
+            var find = dte.Find;
+            find.Target = vsFindTarget.vsFindTargetCurrentDocument;
+            find.FindWhat = symbolName;
+            find.MatchCase = true;
+            find.MatchWholeWord = true;
+            find.Action = vsFindAction.vsFindActionFind;
+            if (find.Execute() == vsFindResult.vsFindResultFound)
+            {
+                var sel = dte.ActiveDocument?.Selection as TextSelection;
+                if (sel is not null)
+                    return $"Definition: {filePath}, Line {sel.ActivePoint.Line}, Column {sel.ActivePoint.LineCharOffset}";
+            }
+            return $"Symbol '{symbolName}' not found in {filePath}.";
         }
 
-        if (item.ProjectItems != null)
-        {
-            foreach (ProjectItem subItem in item.ProjectItems)
-            {
-                if (results.Count >= maxResults) return;
-                SearchSymbolInItem(subItem, symbolName, results, maxResults);
-            }
-        }
+        // Without a specific file, search for the symbol using Find All and show the first hits.
+        return await FindSymbolReferencesAsync(dte, symbolName, null, ct);
+    }
+
+    /// <summary>Find implementations uses the same Find All approach; true implementation detection needs Roslyn.</summary>
+    private static async Task<string> FindSymbolImplementationsAsync(DTE2 dte, string symbolName, string? filePath, CancellationToken ct)
+    {
+        return await FindSymbolReferencesAsync(dte, symbolName, filePath, ct);
     }
 
     private static async Task<string> GetProjectsAsync(CancellationToken ct)
@@ -784,11 +919,100 @@ internal static class BuiltInVsTools
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
-        var filterType = args?["filterType"]?.GetValue<string>() ?? throw new ArgumentException("filterType is required");
-        var filterValue = args?["filterValue"]?.GetValue<string>() ?? throw new ArgumentException("filterValue is required");
+        var filterType = args?["filterType"]?.GetValue<string>() ?? "Project";
+        var filterValue = args?["filterValue"]?.GetValue<string>() ?? string.Empty;
 
-        // Test execution requires Test Explorer integration - simplified response for now
-        return $"Test execution with filter {filterType}={filterValue} is not yet fully implemented. Use the Test Explorer window directly.";
+        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        if (dte?.Solution?.IsOpen != true)
+            return "No solution is open.";
+
+        // Snapshot the Test output pane before running so we can detect the tail.
+        var outputWindow = dte.ToolWindows.OutputWindow;
+        OutputWindowPane? testPane = null;
+        foreach (OutputWindowPane p in outputWindow.OutputWindowPanes)
+        {
+            if (p.Name?.IndexOf("Test", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                testPane = p;
+                break;
+            }
+        }
+
+        if (testPane is null)
+        {
+            // No Test pane; try running and report status from the command.
+            try
+            {
+                dte.ExecuteCommand("TestExplorer.RunAllTests");
+                return "Tests started. Check the Test Explorer window for results.";
+            }
+            catch (Exception ex)
+            {
+                return $"Could not start tests: {ex.Message}";
+            }
+        }
+
+        // Clear the pane and capture its pre-run length so we can extract the tail after.
+        testPane.Clear();
+        // Activate the Test pane so output is visible.
+        testPane.Activate();
+
+        try
+        {
+            // Run tests. DTE commands:
+            //   TestExplorer.RunAllTests - runs everything
+            //   TestExplorer.RunTestsInContext - runs selected tests
+            dte.ExecuteCommand("TestExplorer.RunAllTests");
+
+            // Poll the test pane until the run finishes (output stabilizes).
+            string? lastText = null;
+            int stableCount = 0;
+            const int maxWaitMs = 120_000; // 2 minute timeout
+            const int pollIntervalMs = 2000;
+            var elapsed = 0;
+
+            while (elapsed < maxWaitMs)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(pollIntervalMs, ct).ConfigureAwait(true); // must stay on UI thread
+                elapsed += pollIntervalMs;
+
+                var textDoc = testPane.TextDocument;
+                if (textDoc is null)
+                    continue;
+
+                var currentText = textDoc.StartPoint.CreateEditPoint().GetText(textDoc.EndPoint) ?? string.Empty;
+                if (currentText == lastText)
+                {
+                    stableCount++;
+                    if (stableCount >= 3 && currentText.Length > 0)
+                        break; // output hasn't changed for 3 polls, run is done
+                }
+                else
+                {
+                    stableCount = 0;
+                    lastText = currentText;
+                }
+            }
+
+            var finalText = lastText ?? "No test output captured.";
+            var lines = finalText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+            // Try to extract summary: "Passed: X, Failed: Y, Skipped: Z"
+            var summaryLine = lines.LastOrDefault(l =>
+                l.Contains("Passed", StringComparison.OrdinalIgnoreCase) ||
+                l.Contains("Failed", StringComparison.OrdinalIgnoreCase) ||
+                l.Contains("No tests found", StringComparison.OrdinalIgnoreCase) ||
+                l.Contains("Test execution time", StringComparison.OrdinalIgnoreCase));
+
+            return summaryLine is not null
+                ? $"Test run complete.\n{summaryLine.Trim()}"
+                : $"Test run complete.\n{string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 10)))}";
+        }
+        catch (Exception ex)
+        {
+            return $"Test execution failed: {ex.Message}";
+        }
     }
 
     private static async Task<string> GetDiagnosticsAsync(JsonNode? args, CancellationToken ct)
@@ -883,6 +1107,53 @@ internal static class BuiltInVsTools
 
         File.WriteAllText(filePath, content);
         return Task.FromResult($"File created: {filePath}");
+    }
+
+    private static Task<string> CreatePlanFileAsync(JsonNode? args, CancellationToken ct)
+    {
+        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var content = args?["content"]?.GetValue<string>() ?? throw new ArgumentException("content is required");
+
+        if (!filePath.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+            return Task.FromResult("Plan files must have a .md extension.");
+
+        var directory = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(filePath, content);
+        return Task.FromResult($"Plan file created: {filePath}");
+    }
+
+    private static async Task<string> GetErrorsAsync(JsonNode? args, CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+
+        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+
+        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        if (dte == null)
+            return "Visual Studio DTE not available.";
+
+        var errorList = dte.ToolWindows.ErrorList;
+        var items = new List<string>();
+        for (int i = 1; i <= errorList.ErrorItems.Count; i++)
+        {
+            var e = errorList.ErrorItems.Item(i);
+            if (e.FileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) != true)
+                continue;
+            if (e.ErrorLevel != vsBuildErrorLevel.vsBuildErrorLevelHigh)
+                continue;
+
+            items.Add($"{e.FileName}({e.Line},{e.Column}): {e.ErrorLevel}: {e.Description}");
+        }
+
+        if (items.Count == 0)
+            return "No compilation errors found in this file.";
+
+        return $"Found {items.Count} error(s):\n" + string.Join("\n", items);
     }
 
     private static Task<string> ReplaceInFileAsync(JsonNode? args, CancellationToken ct)
