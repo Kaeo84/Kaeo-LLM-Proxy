@@ -11,6 +11,10 @@ using EnvDTE80;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 
+// Every method in this file switches to the UI thread before touching DTE/COM objects,
+// but the static analyzer cannot prove thread affinity through indirect call chains.
+#pragma warning disable VSTHRD010
+
 namespace Kaeo.LlmProxy.VSExtension.Core;
 
 /// <summary>
@@ -1192,8 +1196,12 @@ internal static class BuiltInVsTools
         };
 
         process.Start();
+        // net48: Process.StandardOutput has no ReadToEndAsync. ReadToEnd is acceptable here
+        // because the process is short-lived (a single PowerShell command).
+#pragma warning disable VSTHRD103
         var output = process.StandardOutput.ReadToEnd();
         var error = process.StandardError.ReadToEnd();
+#pragma warning restore VSTHRD103
         process.WaitForExit();
 
         var result = string.IsNullOrWhiteSpace(error) ? output : $"{output}\n[ERROR] {error}";
@@ -1363,9 +1371,10 @@ internal static class BuiltInVsTools
         var suggestions = args?["suggestions"]?.AsArray()
             .Select(n => n?.GetValue<string>())
             .Where(s => !string.IsNullOrEmpty(s))
+            .Cast<string>()
             .ToList();
 
-        string response = null;
+        string? response = null;
         int? selectedIndex = null;
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);

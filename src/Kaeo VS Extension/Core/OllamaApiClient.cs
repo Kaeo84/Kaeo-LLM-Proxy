@@ -61,7 +61,11 @@ internal sealed class OllamaApiClient : IUpstreamClient
         var body = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
         using (body)
         {
+            // net48: StreamReader has no ReadToEndAsync. ReadToEnd is acceptable because
+            // /api/tags responses are small (typically < 100KB).
+#pragma warning disable VSTHRD103
             var doc = JsonDocument.Parse(new StreamReader(body).ReadToEnd());
+#pragma warning restore VSTHRD103
 
             var list = new List<ModelInfo>();
             if (doc.RootElement.TryGetProperty("models", out var modelsEl) && modelsEl.ValueKind == JsonValueKind.Array)

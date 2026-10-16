@@ -179,7 +179,15 @@ public partial class ToolWindowControl : UserControl
         new WindowInteropHelper(wnd).Owner = hwndOwner;
 
         // Refresh the tool window's model list whenever the settings window persists a change.
-        Action? onModelsChanged = () => _ = _vm?.LoadAsync();
+        // Debounced: rapid-fire ModelChanged events (e.g., agent/MCP/instruction saves also fire
+        // it) are coalesced so the dropdowns only rebuild once instead of flickering on each edit.
+        var debounceCts = new CancellationTokenSource();
+        Action? onModelsChanged = () =>
+        {
+            debounceCts.Cancel();
+            var cts = debounceCts = new CancellationTokenSource();
+            _ = DebouncedReloadAsync(cts.Token);
+        };
         wnd.ModelsChanged += onModelsChanged;
         try
         {
@@ -188,6 +196,22 @@ public partial class ToolWindowControl : UserControl
         finally
         {
             wnd.ModelsChanged -= onModelsChanged;
+            debounceCts.Cancel();
+        }
+    }
+
+    /// <summary>Waits 250 ms then reloads, unless a newer reload cancels this one.</summary>
+    private async Task DebouncedReloadAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(250, ct);
+            if (_vm is not null)
+                await _vm.LoadAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a more recent change.
         }
     }
 

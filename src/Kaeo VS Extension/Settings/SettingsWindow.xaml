@@ -1,4 +1,4 @@
-<Window x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
+<vsui:DialogWindow x:Class="Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Kaeo.LlmProxy.VSExtension.Settings"
@@ -674,4 +674,4 @@
             </StackPanel>
         </Border>
     </Grid>
-</Window>
+</vsui:DialogWindow>

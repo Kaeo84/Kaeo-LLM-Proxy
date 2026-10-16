@@ -62,7 +62,7 @@
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
-    <PackageReference Include="MessagePack" Version="3.1.8" />
+    <PackageReference Include="MessagePack" Version="3.1.12" />
     <!-- Microsoft.Extensions.AI (IChatClient, ChatMessage, ChatResponseUpdate, content types
          incl. TextReasoningContent) ships net462/netstandard2.0 assets, so it loads in the
          net48 VS host. Like System.Text.Json above, VSSDK treats Microsoft.Extensions.* as

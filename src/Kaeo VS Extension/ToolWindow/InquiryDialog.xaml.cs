@@ -5,15 +5,16 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
 {
     public partial class InquiryDialog : Window
     {
-        public string Response { get; private set; }
+        public string? Response { get; private set; }
         public int? SelectedSuggestionIndex { get; private set; }
 
         public InquiryDialog()
         {
             InitializeComponent();
+            Response = null;
         }
 
-        public InquiryDialog(string question, List<string> suggestions = null)
+        public InquiryDialog(string question, List<string>? suggestions = null)
             : this()
         {
             QuestionText.Text = question;
@@ -24,7 +25,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
                 SuggestionsList.Visibility = Visibility.Visible;
                 SuggestionsList.SelectionChanged += (s, e) =>
                 {
-                    if (SuggestionsList.SelectedIndex >= 0)
+                    if (SuggestionsList.SelectedIndex >= 0 && suggestions is not null)
                     {
                         SelectedSuggestionIndex = SuggestionsList.SelectedIndex;
                         ResponseText.Text = suggestions[SuggestionsList.SelectedIndex];
@@ -42,7 +43,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
 
         private void CancelButton_Click(object sender, RoutedEventArgs e)
         {
-            Response = null;
+            Response = string.Empty;
             DialogResult = false;
             Close();
         }

@@ -298,8 +298,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             if (overrides.ContainsKey(a.Name!)) continue; // already applied as a built-in override
             Agents.Add(new AgentConfig
             {
-                Name = a.Name,
-                DisplayName = a.Name,
+                Name = a.Name!,
+                DisplayName = a.Name!,
                 Description = a.Description,
                 SystemPrompt = a.SystemPrompt ?? string.Empty,
                 Tools = a.Tools,
@@ -385,7 +385,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             ModelSelection? pick = _modelSelections.FirstOrDefault(sel => sel.IsDefault);
             if (pick is null && !string.IsNullOrEmpty(s.Defaults?.Model))
             {
-                var savedLabel = s.Defaults.Model;
+                var savedLabel = s.Defaults!.Model;
                 pick = _modelSelections.FirstOrDefault(sel => $"{sel.ConnectionName} / {sel.Name}" == savedLabel);
             }
             pick ??= _modelSelections.FirstOrDefault(sel => sel.SupportsTools);

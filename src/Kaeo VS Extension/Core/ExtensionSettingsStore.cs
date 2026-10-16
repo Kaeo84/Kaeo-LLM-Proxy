@@ -126,7 +126,10 @@ internal sealed class ExtensionSettingsStore
                 using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
                 using (var writer = new StreamWriter(stream, Encoding.UTF8))
                 {
+                    // net48: StreamWriter has no WriteAsync for strings (only for chars).
+#pragma warning disable VSTHRD103
                     writer.Write(text);
+#pragma warning restore VSTHRD103
                 }
                 return;
             }

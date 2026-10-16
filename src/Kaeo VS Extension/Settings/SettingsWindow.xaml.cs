@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings
@@ -15,8 +16,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     /// The extension's settings window. Manages Ollama connections and their models in a
     /// single "Models" tab. Every change auto-saves to the shared <see cref="ExtensionSettingsStore"/>
     /// (no explicit Save button); the built-in VS OK/Cancel command bar simply closes the window.
+    /// Inherits from <see cref="DialogWindow"/> so the title bar and chrome match the VS theme.
     /// </summary>
-    public partial class SettingsWindow : Window
+    public partial class SettingsWindow : DialogWindow
     {
         private readonly ExtensionSettingsStore _store;
         private readonly McpServerManager _mcpManager;
@@ -87,7 +89,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         Url = c.BaseUrl ?? string.Empty,
                         ApiKey = c.ApiKey ?? string.Empty,
                         Enabled = c.Enabled,
-                        Upstream = string.IsNullOrWhiteSpace(c.Upstream) ? "Ollama" : c.Upstream,
+                        Upstream = string.IsNullOrWhiteSpace(c.Upstream) ? "Ollama" : c.Upstream!,
                         IsExpanded = true,
                     };
                     foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
@@ -643,13 +645,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Schedules a debounced save (500 ms) to coalesce rapid edits.</summary>
         private void ScheduleSave()
         {
-            _saveTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-            _saveTimer.Stop();
-            _saveTimer.Tick += (_, _) =>
+            if (_saveTimer is null)
             {
-                _saveTimer.Stop();
-                SaveNow();
-            };
+                _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                _saveTimer.Tick += (_, _) =>
+                {
+                    _saveTimer.Stop();
+                    SaveNow();
+                };
+            }
+            _saveTimer.Stop();
             _saveTimer.Start();
         }
 
@@ -662,7 +667,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             _settings.Connections = _connections.Select(MapToConnection).ToArray();
             _settings.McpServers = _mcpServers.Select(MapToMcpServer).ToArray();
             _settings.Instructions = _instructions.Select(MapToInstructionEntry).ToArray();
-            PersistAsync();
+            PersistSave();
         }
 
         // ── Instructions Tab ──────────────────────────────────────────────────
@@ -928,10 +933,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 .Where(a => !a.IsBuiltin || a.Description != a.DefaultDescription || a.SystemPrompt != a.DefaultSystemPrompt)
                 .Select(MapToAgent)
                 .ToArray();
-            PersistAsync();
+            PersistSave();
         }
 
-        private void PersistAsync()
+        private void PersistSave()
         {
             _ = _store.SaveAsync(_settings).ContinueWith(t =>
             {
