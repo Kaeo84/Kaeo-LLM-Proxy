@@ -1,12 +1,52 @@
 ; Merged into the VSSDK-generated pkgdef (see <VsixPkgDefFile> in the .csproj).
 ;
-; GeneratePkgDefFile auto-registers only assemblies marked ForceIncludeInVSIX (the
-; Community.VisualStudio.Toolkit package). The Core project ships via IncludeInVSIX on the
-; ProjectReference, so VSSDK does NOT emit a codeBase entry for it. Without this entry the
-; net48 host (devenv.exe) resolves "Kaeo LLM Proxy VS Extension.Core" only by happenstance
-; of the extension folder being on the probing path; a partial deployment then fails with
-; "Could not load file or assembly" at the first send (MeaiAdapter's first type load).
-; Pinning the codeBase makes that resolution deterministic.
+; Binding redirects for BCL polyfills and MEAI assemblies that VS ships in older versions
+; than what we compile against. On .NET Framework, the CLR resolves assemblies by version
+; identity only the first time a type is referenced — once Microsoft.Bcl.AsyncInterfaces
+; 10.0.0.8 loads from VS's SharedAssemblies, any code referencing 10.0.0.12 fails with
+; FileNotFoundException. These redirects tell the CLR "map 10.0.0.x → 10.0.0.12" so every
+; request lands on our ForceIncludeInVSIX copy. System.Memory/Buffers/CompilerServices.Unsafe/
+; Threading.Tasks.Extensions DO NOT need redirects: VS ships the same assembly version we do
+; (4.0.5.0, 6.0.3.0, 4.2.4.0).
+[$RootKey$\RuntimeConfiguration\dependentAssembly\bindingRedirect\{Microsoft.Bcl.AsyncInterfaces}]
+"name"="Microsoft.Bcl.AsyncInterfaces"
+"publicKeyToken"="cc7b13ffcd2ddd51"
+"culture"="neutral"
+"oldVersion"="10.0.0.0-10.0.99.99"
+"newVersion"="10.0.0.12"
+
+[$RootKey$\RuntimeConfiguration\dependentAssembly\bindingRedirect\{System.Text.Json}]
+"name"="System.Text.Json"
+"publicKeyToken"="cc7b13ffcd2ddd51"
+"culture"="neutral"
+"oldVersion"="10.0.0.0-10.0.99.99"
+"newVersion"="10.0.0.12"
+
+[$RootKey$\RuntimeConfiguration\dependentAssembly\bindingRedirect\{System.IO.Pipelines}]
+"name"="System.IO.Pipelines"
+"publicKeyToken"="cc7b13ffcd2ddd51"
+"culture"="neutral"
+"oldVersion"="10.0.0.0-10.0.99.99"
+"newVersion"="10.0.0.12"
+
+; MEAI: VS ships 10.4.0, we compile against 10.8.3 and ForceIncludeInVSIX both assemblies.
+; Without redirects, the CLR loads VS's 10.4.0 copy and our Core adapter's ChatResponseUpdate
+; return type identity (10.8.3) doesn't match — MissingMethodException at runtime.
+[$RootKey$\RuntimeConfiguration\dependentAssembly\bindingRedirect\{Microsoft.Extensions.AI.Abstractions}]
+"name"="Microsoft.Extensions.AI.Abstractions"
+"publicKeyToken"="adb9793829ddae60"
+"culture"="neutral"
+"oldVersion"="10.0.0.0-10.99.99.99"
+"newVersion"="10.8.3.0"
+
+[$RootKey$\RuntimeConfiguration\dependentAssembly\bindingRedirect\{Microsoft.Extensions.AI}]
+"name"="Microsoft.Extensions.AI"
+"publicKeyToken"="adb9793829ddae60"
+"culture"="neutral"
+"oldVersion"="10.0.0.0-10.99.99.99"
+"newVersion"="10.8.3.0"
+
+; codeBase for the Core project assembly so it resolves deterministically from our folder.
 [$RootKey$\RuntimeConfiguration\dependentAssembly\codeBase\{KAEoCorePkgDefSection-0000-0000-0000-000000000001}]
 "name"="Kaeo LLM Proxy VS Extension.Core"
 "publicKeyToken"=""

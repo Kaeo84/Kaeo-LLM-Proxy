@@ -20,7 +20,7 @@
 
 	<ItemGroup>
 		<!-- ChatMessage / ChatResponseUpdate / content parts -->
-		<PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.0" />
+		<PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.3" />
 		<!-- netstandard2.0 lacks System.Text.Json; the extension already pins the same version
 				 into the VSIX payload, so keep the shared library on the identical pin. -->
 		<PackageReference Include="System.Text.Json" Version="10.0.12" />

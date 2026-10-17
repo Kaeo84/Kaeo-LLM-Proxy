@@ -15,6 +15,7 @@ namespace Kaeo.LlmProxy.VSExtension;
 [ProvideToolWindow(typeof(ToolWindowPaneImpl))]
 [ProvideToolWindow(typeof(DebugOutputPane))]
 [ProvideMenuResource("Menus.ctmenu", 1)]
+[ProvideBindingPath]
 [Guid(PackageGuidString)]
 public sealed class VsPackage : AsyncPackage
 {

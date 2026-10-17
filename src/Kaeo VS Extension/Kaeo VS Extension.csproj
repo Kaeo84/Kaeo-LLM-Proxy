@@ -41,26 +41,26 @@
          whole set in (resolved from the extension folder by VS's AppDomain assembly probing).
          Versions match the net48 restore graph (obj/project.assets.json). -->
     <PackageReference Include="System.Text.Json" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.Memory" Version="4.6.3">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.Buffers" Version="4.6.1">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="System.Memory" Version="4.6.3">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="System.Buffers" Version="4.6.1">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
     <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
     <PackageReference Include="MessagePack" Version="3.1.12" />
     <!-- Microsoft.Extensions.AI (IChatClient, ChatMessage, ChatResponseUpdate, content types
@@ -68,12 +68,12 @@
          net48 VS host. Like System.Text.Json above, VSSDK treats Microsoft.Extensions.* as
          shell-provided and strips version-mismatched copies from the payload; force the
          MEAI assemblies in so the agent's streaming path resolves from the extension folder. -->
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.10.0">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
+        <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.3">
+          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+        </PackageReference>
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
