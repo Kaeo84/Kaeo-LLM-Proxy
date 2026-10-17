@@ -1,5 +1,7 @@
 using System;
 using System.ComponentModel.Design;
+using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
@@ -34,10 +36,22 @@ public sealed class VsPackage : AsyncPackage
     /// <summary>View &gt; Kaeo Assistant command ID. Must match <c>cmdidOpenKaeoAssistant</c> in Commands.vsct.</summary>
     private const int OpenKaeoAssistantCommandId = 0x0100;
 
+    /// <summary>Extension install folder resolved once at package init so the resolve handler doesn't touch DTE.</summary>
+    private static string? _extensionFolder;
+
     protected override async Task InitializeAsync(System.Threading.CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
-        // The tool window is also reachable via View > Other Windows (from [ProvideToolWindow]).
-        // Register the explicit View-menu button from the compiled Commands.vsct command table.
+        // Snapshot our install folder before anything tries to load assemblies.
+        _extensionFolder = Path.GetDirectoryName(GetType().Assembly.Location);
+
+        // Hook early: VS loads BCL polyfills (Microsoft.Bcl.AsyncInterfaces, System.Text.Json,
+        // etc.) and MEAI abstractions before our pkgdef binding redirects are processed. .NET
+        // Framework resolves strong-named assemblies once — so when VS loads version 10.0.0.8,
+        // any code referencing 10.0.0.12 fails with FileNotFoundException. This handler catches
+        // those failures and redirects to our ForceIncludeInVSIX copies, which is the standard
+        // pattern for VS extensions that ship newer BCL polyfills than the host.
+        AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
+
         await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
 
         Instance = this;
@@ -49,6 +63,36 @@ public sealed class VsPackage : AsyncPackage
             var commandId = new CommandID(CommandSet, OpenKaeoAssistantCommandId);
             commandService.AddCommand(new OleMenuCommand(OnOpenKaeoAssistant, commandId));
         }
+    }
+
+    /// <summary>
+    /// Redirects failed assembly loads to the extension's local copies. VS ships older versions
+    /// of these assemblies; this handler catches resolution failures and loads from our folder.
+    /// Only assemblies we explicitly ship (ForceIncludeInVSIX) are redirected.
+    /// </summary>
+    private static Assembly? OnAssemblyResolve(object sender, ResolveEventArgs args)
+    {
+        if (_extensionFolder is null)
+            return null;
+
+        var name = new AssemblyName(args.Name);
+
+        // Only redirect assemblies we ship in the VSIX — everything else is VS-provided.
+        var localPath = name.Name switch
+        {
+            "Microsoft.Bcl.AsyncInterfaces" => Path.Combine(_extensionFolder, "Microsoft.Bcl.AsyncInterfaces.dll"),
+            "System.Text.Json" => Path.Combine(_extensionFolder, "System.Text.Json.dll"),
+            "System.IO.Pipelines" => Path.Combine(_extensionFolder, "System.IO.Pipelines.dll"),
+            "Microsoft.Extensions.AI.Abstractions" => Path.Combine(_extensionFolder, "Microsoft.Extensions.AI.Abstractions.dll"),
+            "Microsoft.Extensions.AI" => Path.Combine(_extensionFolder, "Microsoft.Extensions.AI.dll"),
+            "Kaeo LLM Proxy VS Extension.Core" => Path.Combine(_extensionFolder, "Kaeo LLM Proxy VS Extension.Core.dll"),
+            _ => null,
+        };
+
+        if (localPath is null || !File.Exists(localPath))
+            return null;
+
+        return Assembly.LoadFrom(localPath);
     }
 
     /// <summary>
