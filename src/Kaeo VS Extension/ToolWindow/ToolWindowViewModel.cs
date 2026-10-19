@@ -329,7 +329,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             if (!conn.Enabled || string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
 
             var kind = UpstreamKinds.Parse(conn.Upstream);
-            var client = UpstreamClientFactory.Create(kind, conn.BaseUrl, conn.ApiKey);
+            // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
+            var client = UpstreamClientFactory.Create(kind, conn.BaseUrl!, conn.ApiKey);
             var pinned = new HashSet<string>(
                 (conn.Models ?? Array.Empty<ModelEntry>()).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
                 StringComparer.Ordinal);

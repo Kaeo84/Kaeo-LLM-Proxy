@@ -11,15 +11,12 @@ internal sealed class OllamaApiClient : IUpstreamClient
 {
     private readonly HttpClient _http;
     private readonly string _baseUrl;
-    private readonly string? _apiKey;
 
     public OllamaApiClient(string baseUrl, string? apiKey = null, HttpClient? httpClient = null)
     {
         _baseUrl = baseUrl?.TrimEnd('/') ?? throw new ArgumentNullException(nameof(baseUrl));
-        _apiKey = apiKey;
         _http = httpClient ?? new HttpClient();
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            _http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        HttpHelpers.SetBearerAuth(_http, apiKey);
     }
 
     public Task<bool> HealthAsync(CancellationToken ct = default)
@@ -42,12 +39,11 @@ internal sealed class OllamaApiClient : IUpstreamClient
     }
 
     /// <summary>
-    /// Builds an endpoint URI without discarding a path in the base URL (the previous
-    /// <c>new Uri(base, "/path")</c> replaced any base path, so <c>https://host/kaeo</c>
-    /// silently became <c>https://host/path</c>).
+    /// Builds an endpoint URI without discarding a path in the base URL (see
+    /// <see cref="HttpHelpers.BuildEndpointUri"/>).
     /// </summary>
     private Uri BuildEndpointUri(string endpointPath)
-        => new Uri(new Uri(_baseUrl.TrimEnd('/') + "/"), endpointPath.TrimStart('/'));
+        => HttpHelpers.BuildEndpointUri(_baseUrl, endpointPath);
 
     public async Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
     {

@@ -24,7 +24,7 @@
     <LoadVsixManifest>true</LoadVsixManifest>
     <!-- WPF event handlers require async void; exceptions are handled in try/catch -->
     <NoWarn>$(NoWarn);VSTHRD100;VSTHRD101;CVSTBLD002</NoWarn>
-  </PropertyGroup>
+      </PropertyGroup>
   <ItemGroup>
     <ProjectCapability Include="CreateVsixContainer" />
   </ItemGroup>
@@ -41,19 +41,16 @@
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.4.0">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
-    <!-- net48 lacks the BCL polyfills that VS 2026 ships in SharedAssemblies. ForceIncludeInVSIX
-         ships our copies so they load alongside the extension. Assembly versions match VS exactly
-         (System.Memory 4.0.5.0, Unsafe 6.0.3.0, Buffers 4.0.5.0, Tasks.Extensions 4.2.4.0) so
-         no binding redirects needed. -->
-    <PackageReference Include="System.Text.Json" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
-    <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
-      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-    </PackageReference>
+    <!-- BCL polyfills: devenv.exe.config binds 0.0.0.0-10.0.0.8 to the SharedAssemblies copies
+         (assembly version 10.0.0.8). Pinning NuGet 10.0.8 makes our compile-time references land
+         exactly on that unified version, so IAsyncEnumerable<T> and friends are the same type
+         identity as VS's MEAI 10.4.0 sees them. Do NOT ship our own copies (no ForceIncludeInVSIX):
+         a second copy at a different version is what caused the TypeLoadException. -->
+    <PackageReference Include="System.Text.Json" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.8" />
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.8" />
+    <!-- 4.x/6.x polyfills: assembly versions match VS's SharedAssemblies copies exactly
+         (Memory 4.0.5.0, Unsafe 6.0.3.0, Buffers 4.0.5.0, Tasks.Extensions 4.2.4.0). -->
     <PackageReference Include="System.Memory" Version="4.6.3">
       <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>

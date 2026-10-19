@@ -493,6 +493,27 @@ internal static class BuiltInVsTools
     }
 
     /// <summary>
+    /// Switches to the UI thread and returns the DTE automation object, or null when the
+    /// service is unavailable. Callers that need an open solution use <see cref="GetOpenDteAsync"/>.
+    /// </summary>
+    private static async Task<DTE2?> GetDteAsync(CancellationToken ct)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        return Package.GetGlobalService(typeof(DTE)) as DTE2;
+    }
+
+    /// <summary>
+    /// Switches to the UI thread and returns the DTE automation object only when a solution
+    /// is open; null otherwise. Replaces the repeated
+    /// <c>SwitchToMainThreadAsync + GetGlobalService + IsOpen</c> guard in every tool method.
+    /// </summary>
+    private static async Task<DTE2?> GetOpenDteAsync(CancellationToken ct)
+    {
+        var dte = await GetDteAsync(ct);
+        return dte?.Solution?.IsOpen == true ? dte : null;
+    }
+
+    /// <summary>
     /// Execute a built-in VS tool by name with the given arguments.
     /// </summary>
     public static async Task<string> ExecuteAsync(string toolName, string? argumentsJson, CancellationToken ct = default)
@@ -1231,7 +1252,7 @@ internal static class BuiltInVsTools
             return "Available panes:\n" + string.Join("\n", panes);
         }
 
-        OutputWindowPane targetPane = null;
+        OutputWindowPane? targetPane = null;
         foreach (OutputWindowPane p in outputWindow.OutputWindowPanes)
         {
             if (p.Name?.Equals(paneName, StringComparison.OrdinalIgnoreCase) == true)

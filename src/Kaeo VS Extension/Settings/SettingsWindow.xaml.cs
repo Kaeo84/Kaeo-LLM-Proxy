@@ -903,7 +903,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private static string? NormalizeHexColor(string? text)
         {
             text = text?.Trim();
-            if (string.IsNullOrEmpty(text))
+            if (text is null || text.Length == 0)
                 return null;
             if ((text.Length == 7 || text.Length == 9) && text[0] == '#' && IsHexDigits(text, 1, text.Length - 1))
                 return text;

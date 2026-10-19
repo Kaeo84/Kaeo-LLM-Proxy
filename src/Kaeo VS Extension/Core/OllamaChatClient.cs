@@ -48,9 +48,7 @@ internal sealed class OllamaChatClient : IChatClient
             _ownsHttpClient = true;
         }
 
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            _http.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        HttpHelpers.SetBearerAuth(_http, apiKey);
     }
 
     /// <inheritdoc />
@@ -144,12 +142,11 @@ internal sealed class OllamaChatClient : IChatClient
     }
 
     /// <summary>
-    /// Builds the endpoint URI without discarding a path in the base URL: the previous
-    /// <c>new Uri(base, "/api/chat")</c> treats the absolute path as a replacement, so a
-    /// base like <c>https://host/kaeo</c> silently became <c>https://host/api/chat</c>.
+    /// Builds the endpoint URI without discarding a path in the base URL (see
+    /// <see cref="HttpHelpers.BuildEndpointUri"/>).
     /// </summary>
     private Uri BuildEndpointUri(string endpointPath)
-        => new Uri(new Uri(_baseUrl.TrimEnd('/') + "/"), endpointPath.TrimStart('/'));
+        => HttpHelpers.BuildEndpointUri(_baseUrl, endpointPath);
 
     private static string Truncate(string value, int max)
         => value.Length <= max ? value : value.Substring(0, max) + "…";

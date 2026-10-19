@@ -41,10 +41,12 @@ public sealed class VsPackage : AsyncPackage
 
     protected override async Task InitializeAsync(System.Threading.CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
-        // BCL polyfills: VS ships older versions (10.0.0.8) in SharedAssemblies; we compile
-        // against 10.0.0.12. This handler catches resolution failures and loads from our
-        // ForceIncludeInVSIX folder. MEAI is 10.4.0 in both VS and our project, so no handler
-        // needed for those — the CLR types match at runtime.
+        // Safety net for the Core adapter assembly: the pkgdef codeBase entry normally
+        // resolves it from the extension folder, but if that registration is missing
+        // (partial deployment) fall back to loading from our install folder. BCL polyfills
+        // and MEAI are NOT redirected here — devenv.exe.config already unifies them to the
+        // SharedAssemblies/PrivateAssemblies copies, and our compile-time pins match those
+        // assembly versions exactly.
         _extensionFolder = Path.GetDirectoryName(GetType().Assembly.Location);
         AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
 
@@ -62,11 +64,7 @@ public sealed class VsPackage : AsyncPackage
     }
 
     /// <summary>
-    /// Redirects failed assembly loads to the extension's local copies. VS ships older versions
-    /// of some BCL polyfills (10.0.0.8) in SharedAssemblies; we compile against 10.0.0.12.
-    /// .NET Framework resolves strong-named assemblies by version — if VS's 10.0.0.8 loads
-    /// first, any code referencing 10.0.0.12 fails. This handler catches those failures and
-    /// loads from our ForceIncludeInVSIX folder.
+    /// Fallback loader for the Core adapter assembly when the pkgdef codeBase entry is absent.
     /// </summary>
     private static Assembly? OnAssemblyResolve(object sender, ResolveEventArgs args)
     {
@@ -74,20 +72,11 @@ public sealed class VsPackage : AsyncPackage
             return null;
 
         var name = new AssemblyName(args.Name);
-
-        var localPath = name.Name switch
-        {
-            "Microsoft.Bcl.AsyncInterfaces" => Path.Combine(_extensionFolder, "Microsoft.Bcl.AsyncInterfaces.dll"),
-            "System.Text.Json" => Path.Combine(_extensionFolder, "System.Text.Json.dll"),
-            "System.IO.Pipelines" => Path.Combine(_extensionFolder, "System.IO.Pipelines.dll"),
-            "Kaeo LLM Proxy VS Extension.Core" => Path.Combine(_extensionFolder, "Kaeo LLM Proxy VS Extension.Core.dll"),
-            _ => null,
-        };
-
-        if (localPath is null || !File.Exists(localPath))
+        if (name.Name != "Kaeo LLM Proxy VS Extension.Core")
             return null;
 
-        return Assembly.LoadFrom(localPath);
+        var localPath = Path.Combine(_extensionFolder, "Kaeo LLM Proxy VS Extension.Core.dll");
+        return File.Exists(localPath) ? Assembly.LoadFrom(localPath) : null;
     }
 
     /// <summary>

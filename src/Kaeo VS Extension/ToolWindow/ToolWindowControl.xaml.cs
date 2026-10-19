@@ -77,6 +77,10 @@ public partial class ToolWindowControl : UserControl
         mcp.ServerHealthChanged += OnMcpServerHealthChanged; if (VsPackage.Instance is { } pkg) pkg.DisposalToken.Register(mcp.StopHeartbeat);
     }
 
+    // The health event arrives on a background thread (the manager uses ConfigureAwait(false));
+    // this is a plain WPF control with no package handle, so Dispatcher is the right marshal here
+    // (same trade-off as DebugOutputControl.OnLineWritten and RequestScroll below).
+#pragma warning disable VSTHRD001, VSTHRD110
     private void OnMcpServerHealthChanged(McpServer server, bool isHealthy)
     {
         // Must marshal to UI thread
@@ -342,4 +346,5 @@ public partial class ToolWindowControl : UserControl
                 MessageList.ScrollIntoView(MessageList.Items[MessageList.Items.Count - 1]);
         }), System.Windows.Threading.DispatcherPriority.Background);
     }
+#pragma warning restore VSTHRD001, VSTHRD110
 }

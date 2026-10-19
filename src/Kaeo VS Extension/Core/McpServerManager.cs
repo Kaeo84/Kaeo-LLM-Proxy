@@ -182,22 +182,9 @@ internal sealed class McpServerManager
     {
         using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
-        var body = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = 0,
-            ["method"] = "initialize",
-            ["params"] = new JsonObject
-            {
-                ["protocolVersion"] = "2024-11-05",
-                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
-                ["capabilities"] = new JsonObject(),
-            }
-        };
-
-        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
-        var info = doc?["result"]?["serverInfo"];
-        return (TextOf(info?["name"]), TextOf(info?["version"]));
+                var doc = await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
+                var info = doc?["result"]?["serverInfo"];
+                return (TextOf(info?["name"]), TextOf(info?["version"]));
     }
 
     /// <summary>Reads a JSON value as text without throwing when the server sends a non-string.</summary>
@@ -423,9 +410,71 @@ internal sealed class McpServerManager
     private static HttpClient CreateHttpClient(string url, string? apiKey)
     {
         var http = new HttpClient { BaseAddress = new Uri(url) };
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        HttpHelpers.SetBearerAuth(http, apiKey);
         return http;
+    }
+
+    /// <summary>Builds the MCP <c>initialize</c> JSON-RPC request body.</summary>
+    private static JsonObject CreateInitializeRequest(int id = 0) => new()
+    {
+        ["jsonrpc"] = "2.0",
+        ["id"] = id,
+        ["method"] = "initialize",
+        ["params"] = new JsonObject
+        {
+            ["protocolVersion"] = "2024-11-05",
+            ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
+            ["capabilities"] = new JsonObject(),
+        }
+    };
+
+    /// <summary>Builds the MCP <c>notifications/initialized</c> notification body (no id).</summary>
+    private static JsonObject CreateInitializedNotification() => new()
+    {
+        ["jsonrpc"] = "2.0",
+        ["method"] = "notifications/initialized"
+    };
+
+    /// <summary>Builds a <c>tools/list</c> JSON-RPC request body.</summary>
+    private static JsonObject CreateToolsListRequest(int id = 1) => new()
+    {
+        ["jsonrpc"] = "2.0",
+        ["id"] = id,
+        ["method"] = "tools/list",
+        ["params"] = new JsonObject()
+    };
+
+    /// <summary>Builds a <c>tools/call</c> JSON-RPC request body.</summary>
+    private static JsonObject CreateToolsCallRequest(string toolName, string? argsJson, int id = 2) => new()
+    {
+        ["jsonrpc"] = "2.0",
+        ["id"] = id,
+        ["method"] = "tools/call",
+        ["params"] = new JsonObject
+        {
+            ["name"] = toolName,
+            ["arguments"] = argsJson is null ? new JsonObject() : JsonNode.Parse(argsJson)
+        }
+    };
+
+    /// <summary>Parses a <c>tools/list</c> JSON-RPC response into enabled <see cref="McpTool"/> entries.</summary>
+    private static List<McpTool> ParseToolsList(JsonNode? response)
+    {
+        var tools = new List<McpTool>();
+        if (response?["result"]?["tools"] is JsonArray arr)
+        {
+            foreach (var t in arr)
+            {
+                tools.Add(new McpTool
+                {
+                    Name = t?["name"]?.GetValue<string>(),
+                    Description = t?["description"]?.GetValue<string>(),
+                    Schema = t?["inputSchema"],
+                    Enabled = true
+                });
+            }
+        }
+        return tools;
     }
 
     /// <summary>
@@ -492,100 +541,31 @@ internal sealed class McpServerManager
     {
         using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
-        // Perform initialize handshake and capture session ID
-        var initBody = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = 0,
-            ["method"] = "initialize",
-            ["params"] = new JsonObject
-            {
-                ["protocolVersion"] = "2024-11-05",
-                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
-                ["capabilities"] = new JsonObject(),
+                // Perform initialize handshake and capture session ID
+                await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
+
+                // Send initialized notification (no response expected)
+                await SendJsonRpcAsync(session, CreateInitializedNotification(), ct).ConfigureAwait(false);
+
+                // Now pull tools
+                var doc = await SendJsonRpcAsync(session, CreateToolsListRequest(), ct).ConfigureAwait(false);
+                return ParseToolsList(doc);
             }
-        };
-
-        var initDoc = await SendJsonRpcAsync(session, initBody, ct).ConfigureAwait(false);
-
-        // Send initialized notification (no response expected)
-        var notifiedBody = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["method"] = "notifications/initialized"
-        };
-        await SendJsonRpcAsync(session, notifiedBody, ct).ConfigureAwait(false);
-
-        // Now pull tools
-        var body = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = 1,
-            ["method"] = "tools/list",
-            ["params"] = new JsonObject()
-        };
-
-        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
-        var tools = new List<McpTool>();
-        if (doc?["result"]?["tools"] is JsonArray arr)
-        {
-            foreach (var t in arr)
-            {
-                tools.Add(new McpTool
-                {
-                    Name = t?["name"]?.GetValue<string>(),
-                    Description = t?["description"]?.GetValue<string>(),
-                    Schema = t?["inputSchema"],
-                    Enabled = true
-                });
-            }
-        }
-        return tools;
-    }
 
     private static async Task<string> ExecuteToolHttpAsync(string url, string? apiKey, string toolName, string? argsJson, CancellationToken ct)
     {
         using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
 
-        // Perform initialize handshake
-        var initBody = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = 0,
-            ["method"] = "initialize",
-            ["params"] = new JsonObject
-            {
-                ["protocolVersion"] = "2024-11-05",
-                ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
-                ["capabilities"] = new JsonObject(),
+                // Perform initialize handshake
+                await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
+
+                // Send initialized notification
+                await SendJsonRpcAsync(session, CreateInitializedNotification(), ct).ConfigureAwait(false);
+
+                // Call the tool
+                var doc = await SendJsonRpcAsync(session, CreateToolsCallRequest(toolName, argsJson), ct).ConfigureAwait(false);
+                return doc?["result"]?.ToJsonString() ?? string.Empty;
             }
-        };
-        await SendJsonRpcAsync(session, initBody, ct).ConfigureAwait(false);
-
-        // Send initialized notification
-        var notifiedBody = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["method"] = "notifications/initialized"
-        };
-        await SendJsonRpcAsync(session, notifiedBody, ct).ConfigureAwait(false);
-
-        // Call the tool
-        var body = new JsonObject
-        {
-            ["jsonrpc"] = "2.0",
-            ["id"] = 2,
-            ["method"] = "tools/call",
-            ["params"] = new JsonObject
-            {
-                ["name"] = toolName,
-                ["arguments"] = argsJson is null ? new JsonObject() : JsonNode.Parse(argsJson)
-            }
-        };
-
-        var doc = await SendJsonRpcAsync(session, body, ct).ConfigureAwait(false);
-        return doc?["result"]?.ToJsonString() ?? string.Empty;
-    }
 
     // --- stdio transport (JSON-RPC over stdin/stdout of a child process) ---
 
@@ -599,60 +579,22 @@ internal sealed class McpServerManager
                 return Array.Empty<McpTool>();
 
             var args = server.Args ?? Array.Empty<string>();
-            var process = StartProcess(server.Command, args);
+            // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
+            var process = StartProcess(server.Command!, args);
             try
             {
                 // Send initialize request
-                var initJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["id"] = 0,
-                    ["method"] = "initialize",
-                    ["params"] = new JsonObject
-                    {
-                        ["protocolVersion"] = "2024-11-05",
-                        ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
-                        ["capabilities"] = new JsonObject(),
-                    }
-                };
-
-                await WriteJsonRpcAsync(process, initJson, ct).ConfigureAwait(false);
-                var initResponse = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateInitializeRequest(), ct).ConfigureAwait(false);
+                await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
 
                 // Send initialized notification
-                var notifiedJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["method"] = "notifications/initialized"
-                };
-                await WriteJsonRpcAsync(process, notifiedJson, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateInitializedNotification(), ct).ConfigureAwait(false);
 
                 // Send tools/list
-                var toolsListJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["id"] = 1,
-                    ["method"] = "tools/list",
-                    ["params"] = new JsonObject()
-                };
-                await WriteJsonRpcAsync(process, toolsListJson, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateToolsListRequest(), ct).ConfigureAwait(false);
                 var toolsResponse = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
 
-                var tools = new List<McpTool>();
-                if (toolsResponse?["result"]?["tools"] is JsonArray arr)
-                {
-                    foreach (var t in arr)
-                    {
-                        tools.Add(new McpTool
-                        {
-                            Name = t?["name"]?.GetValue<string>(),
-                            Description = t?["description"]?.GetValue<string>(),
-                            Schema = t?["inputSchema"],
-                            Enabled = true
-                        });
-                    }
-                }
-                return tools;
+                return ParseToolsList(toolsResponse);
             }
             finally
             {
@@ -670,46 +612,19 @@ internal sealed class McpServerManager
                 return "No command configured for this stdio server.";
 
             var commandArgs = server.Args ?? Array.Empty<string>();
-            var process = StartProcess(server.Command, commandArgs);
+            // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
+            var process = StartProcess(server.Command!, commandArgs);
             try
             {
                 // Send initialize
-                var initJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["id"] = 0,
-                    ["method"] = "initialize",
-                    ["params"] = new JsonObject
-                    {
-                        ["protocolVersion"] = "2024-11-05",
-                        ["clientInfo"] = new JsonObject { ["name"] = "Kaeo LLM Proxy", ["version"] = "1.0" },
-                        ["capabilities"] = new JsonObject(),
-                    }
-                };
-                await WriteJsonRpcAsync(process, initJson, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateInitializeRequest(), ct).ConfigureAwait(false);
                 await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
 
                 // Send initialized notification
-                var notifiedJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["method"] = "notifications/initialized"
-                };
-                await WriteJsonRpcAsync(process, notifiedJson, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateInitializedNotification(), ct).ConfigureAwait(false);
 
                 // Send tools/call
-                var callJson = new JsonObject
-                {
-                    ["jsonrpc"] = "2.0",
-                    ["id"] = 2,
-                    ["method"] = "tools/call",
-                    ["params"] = new JsonObject
-                    {
-                        ["name"] = toolName,
-                        ["arguments"] = argsJson is null ? new JsonObject() : JsonNode.Parse(argsJson)
-                    }
-                };
-                await WriteJsonRpcAsync(process, callJson, ct).ConfigureAwait(false);
+                await WriteJsonRpcAsync(process, CreateToolsCallRequest(toolName, argsJson), ct).ConfigureAwait(false);
                 var response = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
 
                 return response?["result"]?.ToJsonString() ?? string.Empty;

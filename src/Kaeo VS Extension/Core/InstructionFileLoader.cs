@@ -49,8 +49,10 @@ internal static class InstructionFileLoader
                 {
                     result.Add(new InstructionFile
                     {
-                        Path = path,
-                        Content = File.ReadAllText(path),
+                        // net48: string.IsNullOrEmpty carries no nullable annotation, so the
+                        // guard above does not narrow `path`; assert non-null here.
+                        Path = path!,
+                        Content = File.ReadAllText(path!),
                         Scope = InstructionScope.Solution,
                         Name = Display(entry),
                     });
@@ -185,18 +187,23 @@ internal static class InstructionFileLoader
     }
 
     /// <summary>
-    /// Gets the solution root path from the current Visual Studio solution.
+    /// Gets the solution root path from the current Visual Studio solution, or null when no
+    /// solution is open or the path cannot be determined.
     /// </summary>
-    public static string GetSolutionRootPath()
+    public static string? GetSolutionRootPath()
     {
         try
         {
+            // Read-only DTE probe guarded by the catch below; callers run on background
+            // threads (agent runtime), so a UI-thread assert is not appropriate here.
+#pragma warning disable VSTHRD010
             var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
             var solutionPath = dte?.Solution?.FullName;
+#pragma warning restore VSTHRD010
             if (string.IsNullOrEmpty(solutionPath))
                 return null;
 
-            return Path.GetDirectoryName(solutionPath);
+            return Path.GetDirectoryName(solutionPath!);
         }
         catch
         {
@@ -212,16 +219,16 @@ internal static class InstructionFileLoader
 internal class InstructionFile
 {
     /// <summary>Full path to the instruction file.</summary>
-    public string Path { get; set; }
+    public string Path { get; set; } = string.Empty;
 
     /// <summary>Content of the instruction file.</summary>
-    public string Content { get; set; }
+    public string Content { get; set; } = string.Empty;
 
     /// <summary>Scope of the instructions (Solution or Project).</summary>
     public InstructionScope Scope { get; set; }
 
     /// <summary>Display name for the instruction file.</summary>
-    public string Name { get; set; }
+    public string Name { get; set; } = string.Empty;
 }
 
 /// <summary>
