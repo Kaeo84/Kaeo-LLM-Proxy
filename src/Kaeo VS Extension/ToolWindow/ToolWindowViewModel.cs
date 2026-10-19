@@ -660,6 +660,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // run-on line ("...coveredNow let me check..."). Insert a blank line before the first
         // text delta that follows a completed tool call so each iteration reads as a paragraph.
         var pendingSeparator = false;
+        var firstTextDelta = true;
 
         // Tool activity and thinking live inside the assistant line's foldable Processing
         // section instead of interleaving as separate transcript rows, so each turn reads
@@ -671,7 +672,15 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 if (pendingSeparator && streaming.Text.Length > 0)
                     streaming.Text += "\n\n";
                 pendingSeparator = false;
-                streaming.Text += delta;
+                // Strip leading whitespace from the very first text delta — models like Qwen
+                // commonly emit one or more blank lines before the first real content.
+                if (firstTextDelta)
+                {
+                    firstTextDelta = false;
+                    delta = delta.TrimStart();
+                }
+                if (delta.Length > 0)
+                    streaming.Text += delta;
             },
             ReasoningDelta = delta =>
             {
