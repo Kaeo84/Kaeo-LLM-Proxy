@@ -648,21 +648,71 @@
                         <TextBox x:Name="TempBox" Width="80" TextAlignment="Right" />
                     </StackPanel>
                     <CheckBox x:Name="AutoAttachCheck" Content="Auto-attach current file context" Margin="0,0,0,12" />
+
+                    <!-- Processing / Reasoning -->
+                    <TextBlock Text="Processing Section (Thinking)" FontWeight="SemiBold" Margin="0,0,0,6" />
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="Processing section (thinking):" Width="220" VerticalAlignment="Center"
-                                   ToolTip="How the turn's Processing section (thinking + tool activity) appears: Collapsed = folded by default, Inline = expanded, Hidden = thinking omitted (tool activity still shown)." />
+                        <TextBlock Text="Display mode:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="Collapsed = folded by default, Inline = always expanded, Hidden = thinking omitted (tool activity still shown)." />
                         <ComboBox x:Name="ReasoningDisplayBox" Width="120" VerticalAlignment="Center" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="Reasoning text color (#RRGGBB):" Width="220" VerticalAlignment="Center" />
-                        <TextBox x:Name="ReasoningFgBox" Width="120" VerticalAlignment="Center"
-                                 ToolTip="Optional override; leave empty to follow the VS theme." />
+                        <TextBlock Text="Text color:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ReasoningFgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.TextPresets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                        <TextBlock Text="Reasoning background (#RRGGBB):" Width="220" VerticalAlignment="Center" />
-                        <TextBox x:Name="ReasoningBgBox" Width="120" VerticalAlignment="Center"
-                                 ToolTip="Optional override; leave empty for the default transparent background." />
+                        <TextBlock Text="Background:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ReasoningBgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.Presets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
                     </StackPanel>
+
+                    <!-- User Message Style -->
+                    <TextBlock Text="User Messages" FontWeight="SemiBold" Margin="0,12,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Alignment:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="UserAlignBox" Width="120" VerticalAlignment="Center">
+                            <ComboBoxItem Content="Left" Tag="Left" />
+                            <ComboBoxItem Content="Right" Tag="Right" />
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Background:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="UserBgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.Presets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="Text color:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="UserFgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.TextPresets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
+                    </StackPanel>
+
+                    <!-- Agent Message Style -->
+                    <TextBlock Text="Agent Messages" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Alignment:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="AgentAlignBox" Width="120" VerticalAlignment="Center">
+                            <ComboBoxItem Content="Left" Tag="Left" />
+                            <ComboBoxItem Content="Right" Tag="Right" />
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Background:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="AgentBgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.Presets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="Text color:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="AgentFgBox" Width="160" VerticalAlignment="Center"
+                                  ItemsSource="{x:Static local:ColorOption.TextPresets}"
+                                  DisplayMemberPath="Name" SelectedIndex="0" />
+                    </StackPanel>
+
                     <Button Content="Save" Click="SavePreferences_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
                 </StackPanel>
             </TabItem>

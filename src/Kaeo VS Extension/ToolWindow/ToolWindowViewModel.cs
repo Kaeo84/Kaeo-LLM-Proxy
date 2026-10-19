@@ -121,6 +121,31 @@ internal sealed class ChatLine : INotifyPropertyChanged
     /// <summary>Whether this line shows the Allow/Always/Deny buttons (unanswered permission card).</summary>
     public bool ShowsApprovalButtons => Kind == "permission" && !_isAnswered;
 
+    /// <summary>Horizontal alignment for this message row ("Left" or "Right").</summary>
+    public string HorizontalAlignment { get; set; } = "Left";
+
+    /// <summary>Optional background color hex for this message; null = transparent.</summary>
+    public string? BackgroundHex { get; set; }
+
+    /// <summary>Optional text color hex for this message; null = theme default.</summary>
+    public string? ForegroundHex { get; set; }
+
+    /// <summary>Computed foreground brush from ForegroundHex; null means "use theme".</summary>
+    public System.Windows.Media.SolidColorBrush? ForegroundBrush
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(ForegroundHex))
+                return null;
+            try
+            {
+                return new System.Windows.Media.SolidColorBrush(
+                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ForegroundHex!));
+            }
+            catch { return null; }
+        }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -138,7 +163,13 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private bool _isBusy;
     private readonly Queue<string> _redirects = new();
 
-    /// <summary>True while a turn is streaming; drives the Send/Stop button toggle.</summary>
+        /// <summary>Current context window size from the selected model (0 = unknown).</summary>
+        private long _contextTokensMax;
+
+        /// <summary>Estimated token count of the current conversation history.</summary>
+        private int _contextTokensUsed;
+
+        /// <summary>True while a turn is streaming; drives the Send/Stop button toggle.</summary>
     public bool IsBusy
     {
         get => _isBusy;
@@ -151,7 +182,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// the connection's upstream kind, whether it is the single pinned default model, and the
     /// per-model reasoning-source override from settings ("Auto" when unset).
     /// </summary>
-    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault, string? ReasoningSource);
+    public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault, string? ReasoningSource, long ContextSize);
 
     private readonly List<ModelSelection> _modelSelections = new();
     private readonly SemaphoreSlim _loadGate = new(1, 1);
@@ -204,6 +235,13 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private string? _reasoningForegroundHex;
     private string? _reasoningBackgroundHex;
 
+    private string _userMessageAlignment = "Left";
+    private string? _userMessageBackgroundHex;
+    private string? _userMessageForegroundHex;
+    private string _agentMessageAlignment = "Left";
+    private string? _agentMessageBackgroundHex;
+    private string? _agentMessageForegroundHex;
+
     /// <summary>True when reasoning content is suppressed entirely (Defaults.ReasoningDisplay = "Hidden").</summary>
     public bool ReasoningHidden
     {
@@ -231,6 +269,72 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         get => _reasoningBackgroundHex;
         private set { _reasoningBackgroundHex = value; OnPropertyChanged(); }
     }
+
+    /// <summary>User message alignment: "Left" (default) or "Right".</summary>
+    public string UserMessageAlignment
+    {
+        get => _userMessageAlignment;
+        private set { _userMessageAlignment = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB background for user messages; null = transparent.</summary>
+    public string? UserMessageBackgroundHex
+    {
+        get => _userMessageBackgroundHex;
+        private set { _userMessageBackgroundHex = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB text color for user messages; null = theme.</summary>
+    public string? UserMessageForegroundHex
+    {
+        get => _userMessageForegroundHex;
+        private set { _userMessageForegroundHex = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Agent message alignment: "Left" (default) or "Right".</summary>
+    public string AgentMessageAlignment
+    {
+        get => _agentMessageAlignment;
+        private set { _agentMessageAlignment = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB background for agent messages; null = transparent.</summary>
+    public string? AgentMessageBackgroundHex
+    {
+        get => _agentMessageBackgroundHex;
+        private set { _agentMessageBackgroundHex = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Optional #RRGGBB text color for agent messages; null = theme.</summary>
+    public string? AgentMessageForegroundHex
+    {
+        get => _agentMessageForegroundHex;
+        private set { _agentMessageForegroundHex = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Estimated tokens used by current conversation history.</summary>
+    public int ContextTokensUsed
+    {
+        get => _contextTokensUsed;
+        private set { _contextTokensUsed = value; OnPropertyChanged(); OnPropertyChanged(nameof(ContextPercent)); OnPropertyChanged(nameof(ContextTooltip)); }
+    }
+
+    /// <summary>Model's maximum context window size in tokens.</summary>
+    public long ContextTokensMax
+    {
+        get => _contextTokensMax;
+        private set { _contextTokensMax = value; OnPropertyChanged(); OnPropertyChanged(nameof(ContextPercent)); OnPropertyChanged(nameof(ContextTooltip)); }
+    }
+
+    /// <summary>Percentage of context window used (0-100).</summary>
+    public double ContextPercent =>
+        _contextTokensMax > 0 ? Math.Min(100.0, (_contextTokensUsed * 100.0) / _contextTokensMax) : 0;
+
+    /// <summary>Tooltip for the context bar: "45% — 3,600 / 8,000 tokens".</summary>
+    public string ContextTooltip =>
+        _contextTokensMax > 0
+            ? $"{ContextPercent:F0}% — {_contextTokensUsed:N0} / {_contextTokensMax:N0} tokens"
+            : "Context size unknown for this model";
 
     /// <summary>Raised after <see cref="LoadAsync"/> finishes pulling the live model list.</summary>
     public event Action? ModelsLoaded;
@@ -299,6 +403,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         ReasoningInline = display == ReasoningDisplayKinds.Inline;
         ReasoningForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningForeground) ? null : reasoningDefaults.ReasoningForeground;
         ReasoningBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningBackground) ? null : reasoningDefaults.ReasoningBackground;
+        UserMessageAlignment = string.Equals(reasoningDefaults.UserMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? "Right" : "Left";
+        UserMessageBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.UserMessageBackground) ? null : reasoningDefaults.UserMessageBackground;
+        UserMessageForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.UserMessageForeground) ? null : reasoningDefaults.UserMessageForeground;
+        AgentMessageAlignment = string.Equals(reasoningDefaults.AgentMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? "Right" : "Left";
+        AgentMessageBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.AgentMessageBackground) ? null : reasoningDefaults.AgentMessageBackground;
+        AgentMessageForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.AgentMessageForeground) ? null : reasoningDefaults.AgentMessageForeground;
 
         // Connect to enabled MCP servers and pull their tool definitions (per-server
         // failures are swallowed inside; a dead server just contributes no tools).
@@ -399,7 +509,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 // Label disambiguates same-named models across connections.
                 var label = $"{conn.Name} / {m.Name}";
                 if (!seen.Add(label)) continue;
-                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools, kind, pinned.Contains(m.Name), entry?.ReasoningSource));
+                selections.Add(new ModelSelection(m.Name, conn.Name, conn.BaseUrl, conn.ApiKey, m.SupportsTools, kind, pinned.Contains(m.Name), entry?.ReasoningSource, entry?.ContextSize ?? 0));
                 labels.Add(label);
             }
         }
@@ -438,7 +548,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         }
 
         ModelsLoaded?.Invoke();
-    }
+                UpdateContextBar();
+            }
 
     /// <summary>
     /// Resolves the current model label back to its connection and a Microsoft.Extensions.AI
@@ -484,7 +595,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         }
 
         // Echo the prompt into the transcript so the user's side of the conversation is visible.
-        Lines.Add(new ChatLine { Kind = "user", Text = prompt });
+        Lines.Add(CreateLine("user", prompt));
 
         if (await RunTurnAsync(prompt))
         {
@@ -542,7 +653,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // arrived right after a tool line.
         _cts = new CancellationTokenSource();
         IsBusy = true;
-        var streaming = new ChatLine { Kind = "assistant", Text = string.Empty };
+        var streaming = CreateLine("assistant");
         Lines.Add(streaming);
 
         // Narration from successive tool-loop iterations would otherwise concatenate into one
@@ -594,6 +705,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             if (!result.Completed)
                 Lines.Add(new ChatLine { Kind = "status", Text = $"[stopped: tool iteration limit reached after {result.ToolCallsExecuted} tool calls — ask the model to continue]" });
             _history.Add(new ChatMessage(ChatRole.Assistant, result.FinalText));
+            UpdateContextBar();
             _ = PersistCurrentModelAsync();
             return true;
         }
@@ -725,7 +837,134 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
     public void Cancel() => _cts?.Cancel();
 
-    public event PropertyChangedEventHandler? PropertyChanged;
-    private void OnPropertyChanged([CallerMemberName] string? name = null)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        /// <summary>
+        /// Creates a ChatLine and applies the user/agent message style (alignment, background,
+        /// foreground) from the current view-model snapshot. Status/permission/redirect lines
+        /// keep their default theme rendering.
+        /// </summary>
+        private ChatLine CreateLine(string kind, string text = "")
+        {
+            var line = new ChatLine { Kind = kind, Text = text };
+            if (kind == "user")
+            {
+                line.HorizontalAlignment = _userMessageAlignment;
+                line.BackgroundHex = _userMessageBackgroundHex;
+                line.ForegroundHex = _userMessageForegroundHex;
+            }
+            else if (kind == "assistant")
+            {
+                line.HorizontalAlignment = _agentMessageAlignment;
+                line.BackgroundHex = _agentMessageBackgroundHex;
+                line.ForegroundHex = _agentMessageForegroundHex;
+            }
+            return line;
+        }
+
+        /// <summary>
+        /// Updates the context bar from the current conversation history + model size.
+        /// Called after each turn completes and after model selection changes.
+        /// </summary>
+        private void UpdateContextBar()
+        {
+            var modelSelection = _modelSelections.FirstOrDefault(
+                m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
+            ContextTokensMax = modelSelection?.ContextSize ?? 0;
+            ContextTokensUsed = EstimateTokenCount(_history);
+        }
+
+        /// <summary>
+        /// Best-effort token count for a list of chat messages. Uses a simple
+        /// character-count heuristic (4 chars ≈ 1 token for English text) since
+        /// net48 has no tokenizer library available.
+        /// </summary>
+        private static int EstimateTokenCount(List<ChatMessage> messages)
+        {
+            var totalChars = 0;
+            foreach (var msg in messages)
+            {
+                totalChars += msg.Text?.Length ?? 0;
+                foreach (var content in msg.Contents)
+                {
+                    if (content is TextContent tc)
+                        totalChars += tc.Text?.Length ?? 0;
+                }
+            }
+            // Rough heuristic: ~4 characters per token for English text
+            return Math.Max(1, totalChars / 4);
+        }
+
+        /// <summary>
+        /// Sends a compaction request: asks the model to summarize the conversation so far,
+        /// replaces history with the compacted summary, and displays the compacted text
+        /// folded inside a new assistant line.
+        /// </summary>
+        public async Task CompactAsync()
+        {
+            if (_isBusy) return;
+
+            var resolved = ResolveCurrentModel();
+            if (resolved is null || resolved.Value.Client is null) return;
+
+            var (client, modelName, _) = resolved.Value;
+
+            var compactionPrompt = "Please summarize the conversation so far concisely. "
+                + "Include all key facts, decisions, and actions. "
+                + "This summary will replace the full conversation history to save context. "
+                + "Provide ONLY the summary text, no commentary.";
+
+            var compactionHistory = new List<ChatMessage>(_history)
+            {
+                new ChatMessage(ChatRole.User, compactionPrompt)
+            };
+
+            IsBusy = true;
+            var streaming = CreateLine("assistant");
+            Lines.Add(streaming);
+
+            try
+            {
+                var result = await _engine.RunAsync(
+                    client, Agents.FirstOrDefault(a => a.Name == CurrentAgent) ?? Agents[0],
+                    modelName, AgentMode.Interactive, compactionHistory,
+                    compactionPrompt,
+                    new AgentEvents
+                    {
+                        TextDelta = delta => streaming.Text += delta,
+                        TurnComplete = r =>
+                        {
+                            // Replace history with just the system prompt (from original history)
+                            // plus the compaction result.
+                            var systemMsg = _history.FirstOrDefault(m => m.Role == ChatRole.System);
+                            _history.Clear();
+                            if (systemMsg is not null)
+                                _history.Add(systemMsg);
+                            _history.Add(new ChatMessage(ChatRole.User,
+                                "[Conversation compacted — previous summary:]"));
+                            _history.Add(new ChatMessage(ChatRole.Assistant, r.FinalText));
+
+                            streaming.Text = r.FinalText;
+                            UpdateContextBar();
+                        },
+                    });
+
+                // Show the compacted text folded under a status line
+                Lines.Add(new ChatLine
+                {
+                    Kind = "status",
+                    Text = $"[context compacted: {ContextTokensUsed:N0} / {ContextTokensMax:N0} tokens ({ContextPercent:F0}%)]"
+                });
+            }
+            catch (Exception ex)
+            {
+                streaming.Text = $"[compaction error] {ex.Message}";
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+        private void OnPropertyChanged([CallerMemberName] string? name = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

@@ -218,8 +218,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 AutoAttachCheck.IsChecked = d.AutoAttachContext;
                 ReasoningDisplayBox.ItemsSource = ReasoningDisplayKinds.DisplayNames;
                 ReasoningDisplayBox.SelectedItem = ReasoningDisplayKinds.Parse(d.ReasoningDisplay);
-                ReasoningFgBox.Text = d.ReasoningForeground ?? string.Empty;
-                ReasoningBgBox.Text = d.ReasoningBackground ?? string.Empty;
+                ReasoningFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.ReasoningForeground);
+                ReasoningBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.ReasoningBackground);
+                UserAlignBox.SelectedIndex = string.Equals(d.UserMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                UserBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.UserMessageBackground);
+                UserFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.UserMessageForeground);
+                AgentAlignBox.SelectedIndex = string.Equals(d.AgentMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                AgentBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.AgentMessageBackground);
+                AgentFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.AgentMessageForeground);
 
                 _loaded = true;
             }
@@ -891,8 +897,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 d.DefaultTemperature = temp;
             d.AutoAttachContext = AutoAttachCheck.IsChecked == true;
             d.ReasoningDisplay = ReasoningDisplayKinds.Parse(ReasoningDisplayBox.SelectedItem as string);
-            d.ReasoningForeground = NormalizeHexColor(ReasoningFgBox.Text);
-            d.ReasoningBackground = NormalizeHexColor(ReasoningBgBox.Text);
+            d.ReasoningForeground = (ReasoningFgBox.SelectedItem as ColorOption)?.Hex;
+            d.ReasoningBackground = (ReasoningBgBox.SelectedItem as ColorOption)?.Hex;
+            d.UserMessageAlignment = (UserAlignBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Left";
+            d.UserMessageBackground = (UserBgBox.SelectedItem as ColorOption)?.Hex;
+            d.UserMessageForeground = (UserFgBox.SelectedItem as ColorOption)?.Hex;
+            d.AgentMessageAlignment = (AgentAlignBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Left";
+            d.AgentMessageBackground = (AgentBgBox.SelectedItem as ColorOption)?.Hex;
+            d.AgentMessageForeground = (AgentFgBox.SelectedItem as ColorOption)?.Hex;
 
             _saveTimer?.Stop();
             SaveNow();

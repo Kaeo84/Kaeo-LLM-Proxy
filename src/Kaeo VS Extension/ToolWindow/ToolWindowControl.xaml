@@ -5,12 +5,16 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
              xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:local="clr-namespace:Kaeo.LlmProxy.VSExtension.ToolWindow"
              mc:Ignorable="d"
              d:DesignHeight="400" d:DesignWidth="600"
              Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
                        Foreground="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True">
              <UserControl.Resources>
                  <BooleanToVisibilityConverter x:Key="BoolToVis" />
+                 <local:HexToBrushConverter x:Key="HexToBrush" />
+                 <local:StringToHorizontalAlignmentConverter x:Key="AlignConv" />
+                 <local:InvertBoolConverter x:Key="InvertBool" />
                  <!-- Inherit the Visual Studio environment font so all text matches the
                       rest of the IDE. Consolas overrides on code blocks stay explicit. -->
                  <Style TargetType="TextBlock">
@@ -27,6 +31,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -101,7 +106,9 @@
             </ListView.ContextMenu>
             <ListView.ItemTemplate>
                 <DataTemplate>
-                    <StackPanel Margin="8,4">
+                    <StackPanel Margin="8,4"
+                                HorizontalAlignment="{Binding HorizontalAlignment, Converter={StaticResource AlignConv}}"
+                                MaxWidth="520">
                         <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
                         <!-- Processing section: folds the turn's thinking + tool activity under the
                              assistant message. Collapsed by default; the Preferences
@@ -114,11 +121,10 @@
                             <StackPanel Margin="12,2,0,2">
                                 <!-- Model reasoning (thinking), when visible. -->
                                 <Border Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
-                                        Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}}">
+                                        Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}">
                                     <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
                                                FontStyle="Italic" FontSize="12"
-                                               Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, TargetNullValue={x:Null}}"
-                                               TextOptions.TextFormattingMode="Ideal" />
+                                               Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}, TargetNullValue={x:Null}}" />
                                 </Border>
                                 <!-- Tool-activity timeline. -->
                                 <ItemsControl ItemsSource="{Binding Processing}">
@@ -132,38 +138,36 @@
                                 </ItemsControl>
                             </StackPanel>
                         </Expander>
-                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
-                                   FontFamily="Consolas" FontSize="13">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding Kind}" Value="redirect">
-                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
-                                            <Setter Property="FontStyle" Value="Italic" />
-                                        </DataTrigger>
-                                        <!-- Warning/permission/error use info-bar themed brushes so they
-                                             track the active VS color scheme and stay legible in both
-                                             light and dark themes. -->
-                                        <DataTrigger Binding="{Binding Kind}" Value="warning">
-                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
-                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
-                                            <Setter Property="FontWeight" Value="SemiBold" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding Kind}" Value="permission">
-                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
-                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
-                                            <Setter Property="FontStyle" Value="Italic" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding Kind}" Value="error">
-                                            <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
-                                            <Setter Property="Background" Value="{DynamicResource {x:Static shell:VsBrushes.InfoBackgroundKey}}" />
-                                            <Setter Property="FontWeight" Value="SemiBold" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
+                        <!-- Message text wrapped in a border so user/agent background colors render. -->
+                        <Border Background="{Binding BackgroundHex, Converter={StaticResource HexToBrush}}"
+                                CornerRadius="4" Padding="4,2">
+                            <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
+                                       FontFamily="Consolas" FontSize="13">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Kind}" Value="redirect">
+                                                <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                                <Setter Property="FontStyle" Value="Italic" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Kind}" Value="warning">
+                                                <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Kind}" Value="permission">
+                                                <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                                <Setter Property="FontStyle" Value="Italic" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Kind}" Value="error">
+                                                <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.InfoTextKey}}" />
+                                                <Setter Property="FontWeight" Value="SemiBold" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Border>
                         <!-- Inline permission card actions: live until answered, then collapse. -->
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
                                     Visibility="{Binding ShowsApprovalButtons, Converter={StaticResource BoolToVis}}">
@@ -176,8 +180,41 @@
             </ListView.ItemTemplate>
         </ListView>
 
-        <!-- Message input row -->
-        <Grid Grid.Row="3" Margin="6">
+                <!-- Context usage bar: thin blue progress bar above the input row. Click = request compaction. -->
+                <Grid Grid.Row="3" Margin="6,2,6,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <ProgressBar x:Name="ContextBar" Grid.Column="0" Height="6"
+                                 Minimum="0" Maximum="100"
+                                 Value="{Binding ContextPercent, Mode=OneWay}"
+                                 ToolTip="{Binding ContextTooltip}"
+                                 MouseLeftButtonUp="ContextBar_Click"
+                                 Cursor="Hand"
+                                 Foreground="#FF3A6EA5"
+                                 BorderThickness="0">
+                        <ProgressBar.Style>
+                            <Style TargetType="ProgressBar">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ContextPercent}" Value="0">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ProgressBar.Style>
+                    </ProgressBar>
+                    <Button x:Name="CompactButton" Grid.Column="1" Width="80" Height="20"
+                            FontSize="10" Padding="4,0" Margin="6,0,0,0"
+                            Content="Compact"
+                            ToolTip="Request the model to summarize the conversation to reduce context usage"
+                            Click="CompactButton_Click"
+                            Visibility="{Binding ContextPercent, Converter={StaticResource BoolToVis}}"
+                            IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}" />
+                </Grid>
+
+                <!-- Message input row -->
+        <Grid Grid.Row="4" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
@@ -213,7 +250,7 @@
              fits Interactive/Bypass/AutoPilot but can never grow; the model combo takes whatever
              width is left and clips long names instead of pushing the bar past the window edge.
         -->
-        <Grid Grid.Row="4" Margin="6">
+        <Grid Grid.Row="5" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />

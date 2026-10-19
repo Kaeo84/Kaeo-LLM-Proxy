@@ -347,4 +347,33 @@ public partial class ToolWindowControl : UserControl
         }), System.Windows.Threading.DispatcherPriority.Background);
     }
 #pragma warning restore VSTHRD001, VSTHRD110
+
+    /// <summary>Click on the context progress bar requests compaction.</summary>
+    private async void ContextBar_Click(object sender, MouseButtonEventArgs e)
+    {
+        await CompactContextAsync();
+    }
+
+    /// <summary>Click on the Compact button requests compaction.</summary>
+    private async void CompactButton_Click(object sender, RoutedEventArgs e)
+    {
+        await CompactContextAsync();
+    }
+
+    /// <summary>Sends a compaction request to the model, replaces history with the summary.</summary>
+    private async System.Threading.Tasks.Task CompactContextAsync()
+    {
+        if (_vm is null || _vm.IsBusy) return;
+
+        // Confirm with the user
+        var result = System.Windows.MessageBox.Show(
+            "Request the model to summarize the conversation to reduce context usage?",
+            "Compact Context",
+            System.Windows.MessageBoxButton.OKCancel,
+            System.Windows.MessageBoxImage.Question);
+
+        if (result != System.Windows.MessageBoxResult.OK) return;
+
+        await _vm.CompactAsync();
+    }
 }

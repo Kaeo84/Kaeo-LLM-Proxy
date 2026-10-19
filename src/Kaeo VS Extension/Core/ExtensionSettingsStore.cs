@@ -194,6 +194,24 @@ internal sealed class Defaults
 
     /// <summary>Optional #RRGGBB background behind reasoning content. Null = follow the theme.</summary>
     public string? ReasoningBackground { get; set; }
+
+    /// <summary>User message alignment: "Left" (default) or "Right".</summary>
+    public string? UserMessageAlignment { get; set; } = "Left";
+
+    /// <summary>Optional #RRGGBB background for user messages. Null = follow the theme.</summary>
+    public string? UserMessageBackground { get; set; }
+
+    /// <summary>Optional #RRGGBB text color for user messages. Null = follow the theme.</summary>
+    public string? UserMessageForeground { get; set; }
+
+    /// <summary>Agent message alignment: "Left" (default) or "Right".</summary>
+    public string? AgentMessageAlignment { get; set; } = "Left";
+
+    /// <summary>Optional #RRGGBB background for agent (assistant) messages. Null = follow the theme.</summary>
+    public string? AgentMessageBackground { get; set; }
+
+    /// <summary>Optional #RRGGBB text color for agent messages. Null = follow the theme.</summary>
+    public string? AgentMessageForeground { get; set; }
 }
 
 internal sealed class Connection
