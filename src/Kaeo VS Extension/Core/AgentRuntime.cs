@@ -91,7 +91,7 @@ internal sealed class AgentRuntime
     private readonly ExtensionSettingsStore _settings;
 
     /// <summary>Maximum tool-call iterations per turn (prevents infinite tool loops).</summary>
-    private const int MaxToolIterations = 10;
+    private const int MaxToolIterations = 50;
 
     /// <summary>Default AutoPilot continuation budget.</summary>
     private const int DefaultAutoPilotBudget = 5;

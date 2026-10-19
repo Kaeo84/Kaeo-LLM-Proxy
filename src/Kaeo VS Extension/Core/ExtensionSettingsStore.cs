@@ -53,6 +53,7 @@ internal sealed class ExtensionSettingsStore
                 var loaded = JsonSerializer.Deserialize<ExtensionSettings>(text);
                 if (loaded is not null)
                 {
+                    Migrate(loaded);
                     _loadFailed = false;
                     return loaded;
                 }
@@ -72,6 +73,20 @@ internal sealed class ExtensionSettingsStore
             _loadFailed = true;
             return new ExtensionSettings();
         }
+    }
+
+    /// <summary>
+    /// One-time upgrades for settings persisted by older builds. The shipped default for
+    /// MaxToolIterations was raised from 10 to 50 (10 truncated multi-file agent tasks like
+    /// code reviews); settings files that still carry the old default get the new one so
+    /// existing installs are not stuck at the old cap. A user who deliberately set a custom
+    /// value keeps it.
+    /// </summary>
+    private static void Migrate(ExtensionSettings settings)
+    {
+        settings.Defaults ??= new Defaults();
+        if (settings.Defaults.MaxToolIterations == 10)
+            settings.Defaults.MaxToolIterations = 50;
     }
 
     public async Task SaveAsync(ExtensionSettings settings)
@@ -165,7 +180,7 @@ internal sealed class Defaults
     public int HeartbeatMinutes { get; set; } = 5;
 
     /// <summary>Maximum tool-call iterations before a turn is forced to conclude.</summary>
-    public int MaxToolIterations { get; set; } = 10;
+    public int MaxToolIterations { get; set; } = 50;
 
     /// <summary>How model reasoning (thinking) shows in the transcript: "Collapsed" (an
     /// expandable section, the default), "Inline" (always visible), or "Hidden".</summary>

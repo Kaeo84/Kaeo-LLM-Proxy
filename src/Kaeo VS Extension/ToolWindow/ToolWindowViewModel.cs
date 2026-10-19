@@ -505,9 +505,20 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         var streaming = new ChatLine { Kind = "assistant", Text = string.Empty };
         Lines.Add(streaming);
 
+        // Narration from successive tool-loop iterations would otherwise concatenate into one
+        // run-on line ("...coveredNow let me check..."). Insert a blank line before the first
+        // text delta that follows a completed tool call so each iteration reads as a paragraph.
+        var pendingSeparator = false;
+
         var events = new AgentEvents
         {
-            TextDelta = delta => streaming.Text += delta,
+            TextDelta = delta =>
+            {
+                if (pendingSeparator && streaming.Text.Length > 0)
+                    streaming.Text += "\n\n";
+                pendingSeparator = false;
+                streaming.Text += delta;
+            },
             ReasoningDelta = delta =>
             {
                 if (ReasoningHidden) return;
@@ -515,8 +526,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 streaming.IsReasoningVisible = true;
             },
             DrainRedirects = TakeRedirects,
-            ToolCallStart = tc => Lines.Add(new ChatLine { Kind = "tool", Text = $"→ {tc.Name}({tc.Arguments?.ToJsonString()})" }),
-            ToolCallComplete = (tc, ok, res) => Lines.Add(new ChatLine { Kind = "tool", Text = ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {res}" }),
+            ToolCallStart = tc => Lines.Add(new ChatLine { Kind = "tool", Text = $"→ {tc.Name}({TruncateArgs(tc.Arguments)})" }),
+            ToolCallComplete = (tc, ok, res) =>
+            {
+                pendingSeparator = true;
+                Lines.Add(new ChatLine { Kind = "tool", Text = ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {TruncateForLine(res)}" });
+            },
             // Interactive mode: an inline permission card in the transcript - the GUI stays
             // live (scroll, stop, steer) while the runtime awaits the user's answer.
             RequestPermission = RequestPermissionAsync,
@@ -531,6 +546,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             // reassigning would duplicate it.
             if (streaming.Text.Length == 0 && result.FinalText.Length > 0)
                 streaming.Text = result.FinalText;
+            // The tool-iteration budget ran out: the turn ended with no final answer. Say so
+            // explicitly instead of leaving the transcript looking like it stopped mid-thought.
+            if (!result.Completed)
+                Lines.Add(new ChatLine { Kind = "status", Text = $"[stopped: tool iteration limit reached after {result.ToolCallsExecuted} tool calls — ask the model to continue]" });
             _history.Add(new ChatMessage(ChatRole.Assistant, result.FinalText));
             _ = PersistCurrentModelAsync();
             return true;
@@ -577,6 +596,24 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         lock (_redirects) { _redirects.Clear(); }
     }
 
+    /// <summary>Compact one-line rendering of tool arguments for the transcript tool rows.</summary>
+    private static string TruncateArgs(System.Text.Json.Nodes.JsonNode? arguments)
+    {
+        if (arguments is null)
+            return string.Empty;
+        var json = arguments.ToJsonString();
+        return json.Length <= 120 ? json : json.Substring(0, 120) + "…";
+    }
+
+    /// <summary>Collapses a tool result to a single short line (failures only show a summary).</summary>
+    private static string TruncateForLine(string? result)
+    {
+        if (result is null || result.Length == 0)
+            return string.Empty;
+        var first = result.Split('\n')[0].Trim();
+        return first.Length <= 160 ? first : first.Substring(0, 160) + "…";
+    }
+
     private bool _alwaysAllowSession;
 
     /// <summary>
@@ -593,7 +630,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         Lines.Add(new ChatLine
         {
             Kind = "permission",
-            Text = $"Allow the model to run \"{tc.Name}\"? {tc.Arguments?.ToJsonString()}",
+            Text = $"Allow the model to run \"{tc.Name}\"? {TruncateArgs(tc.Arguments)}",
             Approval = tcs,
         });
 
