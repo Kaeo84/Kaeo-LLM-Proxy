@@ -213,6 +213,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 var d = _settings.Defaults ??= new Defaults();
                 HeartbeatBox.Text = d.HeartbeatMinutes.ToString();
                 MaxIterBox.Text = d.MaxToolIterations.ToString();
+                AutoPilotBudgetBox.Text = d.AutoPilotBudget.ToString();
                 TempBox.Text = d.DefaultTemperature.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 AutoAttachCheck.IsChecked = d.AutoAttachContext;
                 ReasoningDisplayBox.ItemsSource = ReasoningDisplayKinds.DisplayNames;
@@ -884,6 +885,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 d.HeartbeatMinutes = hb;
             if (int.TryParse(MaxIterBox.Text, out var mi) && mi >= 1)
                 d.MaxToolIterations = mi;
+            if (int.TryParse(AutoPilotBudgetBox.Text, out var ab) && ab >= 1)
+                d.AutoPilotBudget = ab;
             if (double.TryParse(TempBox.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var temp) && temp >= 0 && temp <= 2)
                 d.DefaultTemperature = temp;
             d.AutoAttachContext = AutoAttachCheck.IsChecked == true;

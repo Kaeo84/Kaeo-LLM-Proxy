@@ -128,7 +128,7 @@ internal sealed class AgentRuntime
         var maxIterations = defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
         var toolCallsExecuted = 0;
         var autoPilotContinued = false;
-        var autopilotBudget = DefaultAutoPilotBudget;
+        var autopilotBudget = defaults.AutoPilotBudget > 0 ? defaults.AutoPilotBudget : DefaultAutoPilotBudget;
 
         // MCP tools are projected as AIFunctions so the request payload carries their
         // schemas; execution stays manual (not middleware-driven) so each call passes the

@@ -639,6 +639,11 @@
                         <TextBox x:Name="MaxIterBox" Width="80" TextAlignment="Right" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="AutoPilot auto-continue limit:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="How many times AutoPilot mode can auto-continue when the model signals 'not done' before the turn stops." />
+                        <TextBox x:Name="AutoPilotBudgetBox" Width="80" TextAlignment="Right" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Default temperature (0-2):" Width="220" VerticalAlignment="Center" />
                         <TextBox x:Name="TempBox" Width="80" TextAlignment="Right" />
                     </StackPanel>

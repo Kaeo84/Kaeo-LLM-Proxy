@@ -182,6 +182,9 @@ internal sealed class Defaults
     /// <summary>Maximum tool-call iterations before a turn is forced to conclude.</summary>
     public int MaxToolIterations { get; set; } = 50;
 
+    /// <summary>Maximum AutoPilot auto-continuations per turn (prevents infinite "not done" loops).</summary>
+    public int AutoPilotBudget { get; set; } = 5;
+
     /// <summary>How model reasoning (thinking) shows in the transcript: "Collapsed" (an
     /// expandable section, the default), "Inline" (always visible), or "Hidden".</summary>
     public string? ReasoningDisplay { get; set; } = "Collapsed";
