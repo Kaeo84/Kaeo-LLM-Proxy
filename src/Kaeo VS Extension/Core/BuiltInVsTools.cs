@@ -558,13 +558,11 @@ internal static class BuiltInVsTools
 
     private static async Task<string> FileSearchAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var query = args?["query"]?.GetValue<string>() ?? throw new ArgumentException("query is required");
         var maxResults = args?["maxResults"]?.GetValue<int>() ?? 20;
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         var results = new List<string>();
@@ -649,14 +647,12 @@ internal static class BuiltInVsTools
 
     private static async Task<string> FindSymbolAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var symbolName = args?["symbolName"]?.GetValue<string>() ?? throw new ArgumentException("symbolName is required");
         var navigationType = args?["navigationType"]?.GetValue<int>() ?? 2; // default: Find All References
         var filePath = args?["filePath"]?.GetValue<string>(); // optional: scope to one file
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         // navigationType: 1 = Go To Definition, 2 = Find All References, 3 = Go To Implementation
@@ -813,10 +809,8 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetProjectsAsync(CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         var projects = new List<string>();
@@ -835,12 +829,10 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetFilesInProjectAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var projectName = args?["projectName"]?.GetValue<string>() ?? throw new ArgumentException("projectName is required");
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         Project? targetProject = null;
@@ -893,10 +885,8 @@ internal static class BuiltInVsTools
 
     private static async Task<string> BuildAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         var projectName = args?["projectName"]?.GetValue<string>();
@@ -942,13 +932,11 @@ internal static class BuiltInVsTools
 
     private static async Task<string> RunTestsAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var filterType = args?["filterType"]?.GetValue<string>() ?? "Project";
         var filterValue = args?["filterValue"]?.GetValue<string>() ?? string.Empty;
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         // Snapshot the Test output pane before running so we can detect the tail.
@@ -1042,14 +1030,12 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetDiagnosticsAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var filePath = args?["filePath"]?.GetValue<string>();
         var projectName = args?["projectName"]?.GetValue<string>();
         var severity = args?["severity"]?.GetValue<string>();
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen != true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
             return "No solution is open.";
 
         var errorList = dte.ToolWindows.ErrorList;
@@ -1085,9 +1071,7 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetActiveFileAsync(CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        var dte = await GetDteAsync(ct);
         var activeDoc = dte?.ActiveDocument;
 
         if (activeDoc == null)
@@ -1102,9 +1086,7 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetSelectionAsync(CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        var dte = await GetDteAsync(ct);
         var activeDoc = dte?.ActiveDocument;
 
         if (activeDoc == null)
@@ -1154,12 +1136,10 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetErrorsAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte == null)
+        var dte = await GetDteAsync(ct);
+        if (dte is null)
             return "Visual Studio DTE not available.";
 
         var errorList = dte.ToolWindows.ErrorList;
@@ -1231,13 +1211,11 @@ internal static class BuiltInVsTools
 
     private static async Task<string> GetOutputLogsAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var paneName = args?["paneName"]?.GetValue<string>();
         var tailLines = args?["tailLines"]?.GetValue<int>() ?? 200;
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte == null)
+        var dte = await GetDteAsync(ct);
+        if (dte is null)
             return "Visual Studio DTE not available.";
 
         var outputWindow = dte.ToolWindows.OutputWindow;
@@ -1321,15 +1299,13 @@ internal static class BuiltInVsTools
 
     private static async Task<string> RemoveFileAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
 
         if (!File.Exists(filePath))
             return $"File not found: {filePath}";
 
-        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-        if (dte?.Solution?.IsOpen == true)
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is not null)
         {
             var projectItem = FindProjectItem(dte.Solution, filePath);
             if (projectItem != null)
@@ -1427,12 +1403,10 @@ internal static class BuiltInVsTools
 
     private static async Task<string> DetectMemoriesAsync(JsonNode? args, CancellationToken ct)
     {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-
         var filePath = args?["filePath"]?.GetValue<string>();
         if (string.IsNullOrEmpty(filePath))
         {
-            var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+            var dte = await GetDteAsync(ct);
             filePath = dte?.ActiveDocument?.FullName;
         }
 
