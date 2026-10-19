@@ -103,20 +103,35 @@
                 <DataTemplate>
                     <StackPanel Margin="8,4">
                         <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
-                        <!-- Model reasoning (thinking). Visibility/expansion come from the
-                             ReasoningDisplay preference snapshotted onto the line/VM; the
-                             brushes fall back to the VS theme when no override is set. -->
-                        <Border Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
-                                Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}}">
-                            <Expander IsExpanded="{Binding DataContext.ReasoningInline, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
-                                      Header="thinking" FontSize="11" FontStyle="Italic" Margin="0,0,0,2"
-                                      Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
-                                <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
-                                           FontStyle="Italic" FontSize="12"
-                                           Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, TargetNullValue={x:Null}}"
-                                           TextOptions.TextFormattingMode="Ideal" />
-                            </Expander>
-                        </Border>
+                        <!-- Processing section: folds the turn's thinking + tool activity under the
+                             assistant message. Collapsed by default; the Preferences
+                             "Model reasoning (thinking)" setting (Inline) auto-expands it. -->
+                        <Expander Visibility="{Binding HasProcessing, Converter={StaticResource BoolToVis}}"
+                                  IsExpanded="{Binding DataContext.ReasoningInline, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
+                                  Header="{Binding ProcessingHeader}"
+                                  FontSize="11" FontStyle="Italic" Margin="0,0,0,4"
+                                  Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
+                            <StackPanel Margin="12,2,0,2">
+                                <!-- Model reasoning (thinking), when visible. -->
+                                <Border Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
+                                        Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}}">
+                                    <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
+                                               FontStyle="Italic" FontSize="12"
+                                               Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, TargetNullValue={x:Null}}"
+                                               TextOptions.TextFormattingMode="Ideal" />
+                                </Border>
+                                <!-- Tool-activity timeline. -->
+                                <ItemsControl ItemsSource="{Binding Processing}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" FontSize="11" TextWrapping="NoWrap"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Expander>
                         <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
                                    FontFamily="Consolas" FontSize="13">
                             <TextBlock.Style>

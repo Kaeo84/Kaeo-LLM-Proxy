@@ -20,6 +20,19 @@ internal sealed class ChatLine : INotifyPropertyChanged
     private string _reasoning = string.Empty;
     private bool _isReasoningVisible;
     private bool _isAnswered;
+    private readonly System.Collections.ObjectModel.ObservableCollection<string> _processing = new();
+
+    public ChatLine()
+    {
+        // Any processing-entry change re-renders the section header/visibility and
+        // scrolls the transcript (the control hooks PropertyChanged for scrolling).
+        _processing.CollectionChanged += (_, _) =>
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Processing)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasProcessing)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProcessingHeader)));
+        };
+    }
 
     public string Kind { get; init; } = "assistant"; // "user" | "assistant" | "tool" | "status" | "redirect" | "permission"
 
@@ -41,7 +54,7 @@ internal sealed class ChatLine : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Model reasoning (thinking) streamed for this line, shown as an expandable section.</summary>
+    /// <summary>Model reasoning (thinking) streamed for this line, shown inside the Processing section.</summary>
     public string Reasoning
     {
         get => _reasoning;
@@ -50,10 +63,12 @@ internal sealed class ChatLine : INotifyPropertyChanged
             if (_reasoning == value) return;
             _reasoning = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Reasoning)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasProcessing)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProcessingHeader)));
         }
     }
 
-    /// <summary>Whether the reasoning section is shown (false when empty or the display pref is Hidden).</summary>
+    /// <summary>Whether the reasoning text is shown (false when empty or the display pref is Hidden).</summary>
     public bool IsReasoningVisible
     {
         get => _isReasoningVisible;
@@ -62,6 +77,31 @@ internal sealed class ChatLine : INotifyPropertyChanged
             if (_isReasoningVisible == value) return;
             _isReasoningVisible = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsReasoningVisible)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasProcessing)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProcessingHeader)));
+        }
+    }
+
+    /// <summary>
+    /// Tool-activity timeline for this turn ("→ name(args)", "✓ name", "✗ name: error"),
+    /// rendered inside the foldable Processing section under the assistant message.
+    /// </summary>
+    public System.Collections.ObjectModel.ObservableCollection<string> Processing => _processing;
+
+    /// <summary>True when the Processing section has anything to show (tool activity or visible reasoning).</summary>
+    public bool HasProcessing => _processing.Count > 0 || (_isReasoningVisible && _reasoning.Length > 0);
+
+    /// <summary>Header text for the Processing expander, summarizing its contents.</summary>
+    public string ProcessingHeader
+    {
+        get
+        {
+            var tools = _processing.Count;
+            var thinking = _isReasoningVisible && _reasoning.Length > 0;
+            var toolLabel = tools == 1 ? "1 tool call" : $"{tools} tool calls";
+            if (thinking && tools > 0) return $"Processing — thinking + {toolLabel}";
+            if (thinking) return "Processing — thinking";
+            return $"Processing — {toolLabel}";
         }
     }
 
@@ -510,6 +550,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // text delta that follows a completed tool call so each iteration reads as a paragraph.
         var pendingSeparator = false;
 
+        // Tool activity and thinking live inside the assistant line's foldable Processing
+        // section instead of interleaving as separate transcript rows, so each turn reads
+        // as: user message, assistant message, [Processing].
         var events = new AgentEvents
         {
             TextDelta = delta =>
@@ -526,11 +569,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 streaming.IsReasoningVisible = true;
             },
             DrainRedirects = TakeRedirects,
-            ToolCallStart = tc => Lines.Add(new ChatLine { Kind = "tool", Text = $"→ {tc.Name}({TruncateArgs(tc.Arguments)})" }),
+            ToolCallStart = tc => streaming.Processing.Add($"→ {tc.Name}({TruncateArgs(tc.Arguments)})"),
             ToolCallComplete = (tc, ok, res) =>
             {
                 pendingSeparator = true;
-                Lines.Add(new ChatLine { Kind = "tool", Text = ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {TruncateForLine(res)}" });
+                streaming.Processing.Add(ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {TruncateForLine(res)}");
             },
             // Interactive mode: an inline permission card in the transcript - the GUI stays
             // live (scroll, stop, steer) while the runtime awaits the user's answer.
