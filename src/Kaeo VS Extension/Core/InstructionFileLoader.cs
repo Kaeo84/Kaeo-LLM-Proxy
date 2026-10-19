@@ -123,10 +123,12 @@ internal static class InstructionFileLoader
     /// <summary>
     /// Recreates any default, file-backed instruction whose file is missing on disk, so the seeded
     /// defaults always exist. Safe to call repeatedly; existing files are left untouched.
+    /// When <paramref name="solutionRoot"/> is null (no solution open), skips silently — there
+    /// is no known root to resolve the relative file path against.
     /// </summary>
     public static void EnsureDefaultFiles(IEnumerable<InstructionEntry>? entries, string? solutionRoot)
     {
-        if (entries is null)
+        if (entries is null || solutionRoot is null)
             return;
 
         foreach (var entry in entries)

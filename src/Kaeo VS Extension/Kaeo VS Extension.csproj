@@ -32,52 +32,45 @@
   <ItemGroup>
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.551" />
     <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
-    <!-- ModelContextProtocol brings in netstandard2.0 polyfills needed by net48 -->
-    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-    <!-- net48 lacks System.Text.Json and the modern BCL polyfills; ModelContextProtocol and
-         System.Text.Json pull them in transitively. VSSDK strips "shell-provided" assemblies
-         from the VSIX payload, but the devenv copy has a different assembly version than these
-         pins, so the extension's JSON/async save path throws FileNotFound at runtime. Force the
-         whole set in (resolved from the extension folder by VS's AppDomain assembly probing).
-         Versions match the net48 restore graph (obj/project.assets.json). -->
-    <PackageReference Include="System.Text.Json" Version="10.0.12">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="System.Memory" Version="4.6.3">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="System.Buffers" Version="4.6.1">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-    <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
-    <PackageReference Include="MessagePack" Version="3.1.12" />
-    <!-- Microsoft.Extensions.AI (IChatClient, ChatMessage, ChatResponseUpdate, content types
-         incl. TextReasoningContent) ships net462/netstandard2.0 assets, so it loads in the
-         net48 VS host. Like System.Text.Json above, VSSDK treats Microsoft.Extensions.* as
-         shell-provided and strips version-mismatched copies from the payload; force the
-         MEAI assemblies in so the agent's streaming path resolves from the extension folder. -->
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-        <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.8.3">
-          <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
-        </PackageReference>
-    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    <!-- MEAI: pin to 10.4.0 exactly — VS 2026 ships this version in PrivateAssemblies so the
+         types our code compiles against are the same ones the CLR loads at runtime. No binding
+         redirects or AssemblyResolve handlers needed. -->
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.4.0">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
     </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.4.0">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <!-- net48 lacks the BCL polyfills that VS 2026 ships in SharedAssemblies. ForceIncludeInVSIX
+         ships our copies so they load alongside the extension. Assembly versions match VS exactly
+         (System.Memory 4.0.5.0, Unsafe 6.0.3.0, Buffers 4.0.5.0, Tasks.Extensions 4.2.4.0) so
+         no binding redirects needed. -->
+    <PackageReference Include="System.Text.Json" Version="10.0.12">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.IO.Pipelines" Version="10.0.12">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Memory" Version="4.6.3">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Buffers" Version="4.6.1">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3">
+      <ForceIncludeInVSIX>true</ForceIncludeInVSIX>
+    </PackageReference>
+    <PackageReference Include="MessagePack" Version="3.1.12" />
+        <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034">
+          <PrivateAssets>all</PrivateAssets>
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
   </ItemGroup>
 
   <!-- Shared wire-format <-> MEAI adapter (netstandard2.0, net48-compatible). IncludeInVSIX
@@ -103,7 +96,16 @@
     </VSCTCompile>
   </ItemGroup>
 
-  <!-- Append a codeBase entry for the Core project assembly to the generated pkgdef.
+  <!-- Auto-generate build timestamp so every compile stamps itself. -->
+    <Target Name="GenerateBuildInfo" BeforeTargets="BeforeBuild">
+      <ItemGroup>
+        <_BuildTimestampLine Include="// Auto-generated — do not commit." />
+        <_BuildTimestampLine Include="namespace Kaeo.LlmProxy.VSExtension { internal static class BuildInfo { public const string Timestamp = &quot;$([System.DateTime]::UtcNow.ToString(yyyy-MM-dd HH:mm:ss)) UTC&quot;$([MSBuild]::Escape(';')) } }" />
+      </ItemGroup>
+      <WriteLinesToFile File="$(MSBuildProjectDirectory)\BuildInfo.cs" Lines="@(_BuildTimestampLine)" Overwrite="true" />
+    </Target>
+
+    <!-- Append a codeBase entry for the Core project assembly to the generated pkgdef.
        GeneratePkgDefFile only auto-registers ForceIncludeInVSIX packages (the Toolkit),
        so the IncludeInVSIX project reference (Kaeo LLM Proxy VS Extension.Core) would
        otherwise have no codeBase entry and the net48 host could fail to resolve it at the

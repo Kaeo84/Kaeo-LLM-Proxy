@@ -41,22 +41,18 @@ public sealed class VsPackage : AsyncPackage
 
     protected override async Task InitializeAsync(System.Threading.CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
-        // Snapshot our install folder before anything tries to load assemblies.
+        // BCL polyfills: VS ships older versions (10.0.0.8) in SharedAssemblies; we compile
+        // against 10.0.0.12. This handler catches resolution failures and loads from our
+        // ForceIncludeInVSIX folder. MEAI is 10.4.0 in both VS and our project, so no handler
+        // needed for those — the CLR types match at runtime.
         _extensionFolder = Path.GetDirectoryName(GetType().Assembly.Location);
-
-        // Hook early: VS loads BCL polyfills (Microsoft.Bcl.AsyncInterfaces, System.Text.Json,
-        // etc.) and MEAI abstractions before our pkgdef binding redirects are processed. .NET
-        // Framework resolves strong-named assemblies once — so when VS loads version 10.0.0.8,
-        // any code referencing 10.0.0.12 fails with FileNotFoundException. This handler catches
-        // those failures and redirects to our ForceIncludeInVSIX copies, which is the standard
-        // pattern for VS extensions that ship newer BCL polyfills than the host.
         AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
 
         await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
 
         Instance = this;
         HookGlobalExceptionLogging();
-        DebugLog.Info("Kaeo LLM Proxy package loaded.");
+        DebugLog.Info($"Kaeo LLM Proxy package loaded — {BuildInfo.Timestamp}.");
 
         if (await GetServiceAsync(typeof(IMenuCommandService)) is OleMenuCommandService commandService)
         {
@@ -67,8 +63,10 @@ public sealed class VsPackage : AsyncPackage
 
     /// <summary>
     /// Redirects failed assembly loads to the extension's local copies. VS ships older versions
-    /// of these assemblies; this handler catches resolution failures and loads from our folder.
-    /// Only assemblies we explicitly ship (ForceIncludeInVSIX) are redirected.
+    /// of some BCL polyfills (10.0.0.8) in SharedAssemblies; we compile against 10.0.0.12.
+    /// .NET Framework resolves strong-named assemblies by version — if VS's 10.0.0.8 loads
+    /// first, any code referencing 10.0.0.12 fails. This handler catches those failures and
+    /// loads from our ForceIncludeInVSIX folder.
     /// </summary>
     private static Assembly? OnAssemblyResolve(object sender, ResolveEventArgs args)
     {
@@ -77,14 +75,11 @@ public sealed class VsPackage : AsyncPackage
 
         var name = new AssemblyName(args.Name);
 
-        // Only redirect assemblies we ship in the VSIX — everything else is VS-provided.
         var localPath = name.Name switch
         {
             "Microsoft.Bcl.AsyncInterfaces" => Path.Combine(_extensionFolder, "Microsoft.Bcl.AsyncInterfaces.dll"),
             "System.Text.Json" => Path.Combine(_extensionFolder, "System.Text.Json.dll"),
             "System.IO.Pipelines" => Path.Combine(_extensionFolder, "System.IO.Pipelines.dll"),
-            "Microsoft.Extensions.AI.Abstractions" => Path.Combine(_extensionFolder, "Microsoft.Extensions.AI.Abstractions.dll"),
-            "Microsoft.Extensions.AI" => Path.Combine(_extensionFolder, "Microsoft.Extensions.AI.dll"),
             "Kaeo LLM Proxy VS Extension.Core" => Path.Combine(_extensionFolder, "Kaeo LLM Proxy VS Extension.Core.dll"),
             _ => null,
         };
@@ -96,7 +91,7 @@ public sealed class VsPackage : AsyncPackage
     }
 
     /// <summary>
-    /// Shows (creating if needed) and focuses the Kaeo Debug tool window. Exposed here because
+    /// Shows (creating if needed)
     /// <c>ShowToolWindowAsync</c> needs the package's protected <c>DisposalToken</c>.
     /// </summary>
     public Task ShowDebugWindowAsync()
