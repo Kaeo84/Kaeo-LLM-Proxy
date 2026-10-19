@@ -50,11 +50,28 @@ internal sealed class McpServerManager
             if (string.Equals(server.Transport, "builtin", StringComparison.OrdinalIgnoreCase))
                 continue;
             _servers[server.Name!] = server;
-            _ = PullAndCacheAsync(server, ct);
+            Observe(PullAndCacheAsync(server, ct));
         }
 
         // Start heartbeat monitoring
         StartHeartbeat();
+    }
+
+    /// <summary>
+    /// Attaches a fault observer to a fire-and-forget task so a failure is logged instead of
+    /// surfacing later as an UnobservedTaskException from the finalizer thread.
+    /// </summary>
+    private static void Observe(Task task)
+    {
+        // The continuation only logs; DebugLog never throws, so the continuation task
+        // itself cannot fault and needs no further observation.
+#pragma warning disable VSTHRD110
+        task.ContinueWith(
+            t => DebugLog.Error("Background MCP operation failed.", t.Exception),
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+#pragma warning restore VSTHRD110
     }
 
     /// <summary>
@@ -64,7 +81,7 @@ internal sealed class McpServerManager
     {
         StopHeartbeat();
         _heartbeatTimer = new Timer(
-            _ => _ = HeartbeatAsync(),
+            _ => Observe(HeartbeatAsync()),
             null,
             _heartbeatInterval,
             _heartbeatInterval);

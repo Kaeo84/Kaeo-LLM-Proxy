@@ -95,9 +95,49 @@ public sealed class VsPackage : AsyncPackage
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             DebugLog.Error("Unhandled exception", e.ExceptionObject as Exception);
 
-        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
-            DebugLog.Error("Unobserved task exception", e.Exception);
+        System.Threading.Tasks.TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
     }
+
+    /// <summary>
+    /// Logs unobserved task exceptions, but filters out known-benign infrastructure faults that
+    /// originate outside our code: VS's ServiceBroker/ServiceHub named-pipe teardown raises
+    /// "Pipe is broken" IOExceptions through Nerdbank.Streams when a ServiceHub host recycles,
+    /// and net48's StreamReader has a benign race (NullReferenceException in ReadBufferAsync)
+    /// when a stream is disposed mid-read. These are unavoidable in the devenv process and
+    /// would otherwise flood the debug window with ERROR noise. Anything else is logged, and
+    /// benign faults are marked observed so the finalizer does not rethrow them.
+    /// </summary>
+    private static void OnUnobservedTaskException(object sender, System.Threading.Tasks.UnobservedTaskExceptionEventArgs e)
+    {
+        if (IsBenignInfrastructureFault(e.Exception))
+        {
+            e.SetObserved();
+            DebugLog.Verbose($"Suppressed benign unobserved task exception: {e.Exception.GetBaseException().GetType().Name}");
+            return;
+        }
+
+        DebugLog.Error("Unobserved task exception", e.Exception);
+    }
+
+    /// <summary>True when every inner exception is a known-benign VS/net48 infrastructure fault.</summary>
+    private static bool IsBenignInfrastructureFault(AggregateException ex)
+    {
+        foreach (var inner in ex.InnerExceptions)
+        {
+            if (!IsBenign(inner))
+                return false;
+        }
+        return ex.InnerExceptions.Count > 0;
+    }
+
+    private static bool IsBenign(Exception ex) => ex switch
+    {
+        // VS ServiceBroker/ServiceHub named-pipe teardown (Nerdbank.Streams UsePipeWriter).
+        System.IO.IOException io when io.Message.Contains("Pipe is broken") => true,
+        // net48 StreamReader race on dispose-mid-read.
+        NullReferenceException nre when nre.StackTrace?.Contains("System.IO.StreamReader") == true => true,
+        _ => false,
+    };
 
     /// <summary>Finds (creating if needed) and shows the Kaeo Assistant tool window.</summary>
     private void OnOpenKaeoAssistant(object sender, EventArgs e)
