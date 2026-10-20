@@ -230,6 +230,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 AgentBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.AgentMessageBackground);
                 AgentFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.AgentMessageForeground);
 
+                AlwaysAllowedList.Items.Clear();
+                if (d.AlwaysAllowedTools is not null)
+                {
+                    foreach (var t in d.AlwaysAllowedTools)
+                        if (!string.IsNullOrWhiteSpace(t))
+                            AlwaysAllowedList.Items.Add(t);
+                }
+
                 _loaded = true;
             }
             catch (Exception ex)
@@ -910,6 +918,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             d.AgentMessageAlignment = (AgentAlignBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Left";
             d.AgentMessageBackground = (AgentBgBox.SelectedItem as ColorOption)?.Hex;
             d.AgentMessageForeground = (AgentFgBox.SelectedItem as ColorOption)?.Hex;
+            d.AlwaysAllowedTools = AlwaysAllowedList.Items.Cast<string>()
+                .Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
 
             _saveTimer?.Stop();
             SaveNow();
@@ -940,6 +950,21 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             }
 
             return true;
+        }
+
+        /// <summary>Removes the selected tool from the always-allowed list and persists.</summary>
+        private void RemoveAlwaysAllowed_Click(object sender, RoutedEventArgs e)
+        {
+            if (AlwaysAllowedList.SelectedItem is string tool && !string.IsNullOrWhiteSpace(tool))
+                AlwaysAllowedList.Items.Remove(tool);
+            ScheduleSave();
+        }
+
+        /// <summary>Clears all always-allowed tools and persists.</summary>
+        private void ClearAlwaysAllowed_Click(object sender, RoutedEventArgs e)
+        {
+            AlwaysAllowedList.Items.Clear();
+            ScheduleSave();
         }
 
         /// <summary>Persists the agent list (structural changes and explicit Save clicks).</summary>

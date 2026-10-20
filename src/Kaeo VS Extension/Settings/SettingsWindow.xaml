@@ -741,7 +741,22 @@
                     </StackPanel>
 
                     <Button Content="Save" Click="SavePreferences_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
-                </StackPanel>
+
+                                        <!-- Always-Allowed Tools -->
+                                        <TextBlock Text="Permanently Allowed Tools" FontWeight="SemiBold" Margin="0,16,0,6" />
+                                        <TextBlock Text="These tools are auto-approved in Interactive mode. Clear a tool to require permission again."
+                                                   FontSize="11" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                                        <ListBox x:Name="AlwaysAllowedList" MinHeight="60" MaxHeight="120" Margin="0,0,0,6"
+                                                 SelectionMode="Single">
+                                            <ListBox.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="Remove" Click="RemoveAlwaysAllowed_Click" />
+                                                    <MenuItem Header="Clear All" Click="ClearAlwaysAllowed_Click" />
+                                                </ContextMenu>
+                                            </ListBox.ContextMenu>
+                                        </ListBox>
+                                        <Button Content="Clear All" Click="ClearAlwaysAllowed_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
+                                    </StackPanel>
             </TabItem>
         </TabControl>
 

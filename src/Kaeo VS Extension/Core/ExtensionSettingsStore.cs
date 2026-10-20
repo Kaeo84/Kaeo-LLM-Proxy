@@ -195,6 +195,9 @@ internal sealed class Defaults
     /// <summary>Default state of the Tools sub-expander: "Collapsed" (default) or "Expanded".</summary>
     public string? ToolsDefault { get; set; } = "Collapsed";
 
+    /// <summary>Tool names that have been permanently "always allowed" across sessions.</summary>
+    public string[]? AlwaysAllowedTools { get; set; } = Array.Empty<string>();
+
     /// <summary>Optional #RRGGBB overrides for reasoning text/background. Null = follow the theme.</summary>
     public string? ReasoningForeground { get; set; }
 

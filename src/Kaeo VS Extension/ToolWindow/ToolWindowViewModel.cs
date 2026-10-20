@@ -173,6 +173,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         /// <summary>Estimated token count of the current conversation history.</summary>
         private int _contextTokensUsed;
 
+        /// <summary>Tool names permanently always-allowed (from settings).</summary>
+        private readonly HashSet<string> _alwaysAllowed = new(StringComparer.Ordinal);
+
         /// <summary>Estimated tokens used by system prompt/instructions only.</summary>
         private int _contextTokensSystem;
 
@@ -446,6 +449,13 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         ReasoningExpanded = display == ReasoningDisplayKinds.Expanded;
         ProcessingExpanded = string.Equals(reasoningDefaults.ProcessingDefault, "Expanded", StringComparison.OrdinalIgnoreCase);
         ToolsExpanded = string.Equals(reasoningDefaults.ToolsDefault, "Expanded", StringComparison.OrdinalIgnoreCase);
+        _alwaysAllowed.Clear();
+        if (reasoningDefaults.AlwaysAllowedTools is not null)
+        {
+            foreach (var t in reasoningDefaults.AlwaysAllowedTools)
+                if (!string.IsNullOrWhiteSpace(t))
+                    _alwaysAllowed.Add(t);
+        }
         ReasoningForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningForeground) ? null : reasoningDefaults.ReasoningForeground;
         ReasoningBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningBackground) ? null : reasoningDefaults.ReasoningBackground;
         UserMessageAlignment = string.Equals(reasoningDefaults.UserMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? "Right" : "Left";
@@ -747,6 +757,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             // appear chronologically — before the response they gate, not after it.
             RequestPermission = async tc =>
             {
+                if (_alwaysAllowed.Contains(tc.Name, StringComparer.Ordinal))
+                    return true;
+
                 var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 var card = new ChatLine
                 {
@@ -845,13 +858,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         return first.Length <= 160 ? first : first.Substring(0, 160) + "…";
     }
 
-    private bool _alwaysAllowSession;
-
     /// <summary>
     /// Resolves a permission card (called by its buttons, or by cancellation denial below).
-    /// "Always allow" flips the session flag and records that visibly in the transcript.
+    /// "Always allow" persists the tool name to settings so it stays allowed across sessions.
     /// </summary>
-    public void AnswerPermission(ChatLine line, bool allow, bool always)
+    public async void AnswerPermission(ChatLine line, bool allow, bool always)
     {
         if (line.Approval is null || line.IsAnswered)
             return;
@@ -861,13 +872,47 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             ? (always ? " - always allowed" : " - allowed")
             : " - denied";
 
-        if (allow && always && !_alwaysAllowSession)
+        if (allow && always)
         {
-            _alwaysAllowSession = true;
-            Lines.Add(new ChatLine { Kind = "status", Text = "Tool calls auto-allowed for the rest of this session." });
+            // Extract tool name from the permission card text: "Allow the model to run \"toolName\"? ..."
+            var toolName = ExtractToolName(line.Text);
+            if (!string.IsNullOrEmpty(toolName) && _alwaysAllowed.Add(toolName!))
+            {
+                await PersistAlwaysAllowedAsync();
+                Lines.Add(new ChatLine { Kind = "status", Text = $"\"{toolName}\" always allowed (saved to preferences)." });
+            }
         }
 
         line.Approval.TrySetResult(allow);
+    }
+
+    /// <summary>Extracts the tool name from a permission card text like
+    /// "Allow the model to run \"search_code\"? ...".</summary>
+    private static string? ExtractToolName(string text)
+    {
+        // text format: "Allow the model to run "toolName"? {args}"
+        const string prefix = "Allow the model to run \"";
+        var start = text.IndexOf(prefix, StringComparison.Ordinal);
+        if (start < 0) return null;
+        start += prefix.Length;
+        var end = text.IndexOf('"', start);
+        return end > start ? text.Substring(start, end - start) : null;
+    }
+
+    /// <summary>Persists the current _alwaysAllowed set to settings.</summary>
+    private async Task PersistAlwaysAllowedAsync()
+    {
+        try
+        {
+            var settings = await _settings.LoadAsync();
+            settings.Defaults ??= new Defaults();
+            settings.Defaults.AlwaysAllowedTools = _alwaysAllowed.ToArray();
+            await _settings.SaveAsync(settings);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"Failed to persist always-allowed tools: {ex.Message}");
+        }
     }
 
     /// <summary>
