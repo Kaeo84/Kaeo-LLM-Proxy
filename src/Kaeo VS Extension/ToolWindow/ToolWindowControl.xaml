@@ -199,7 +199,6 @@
                             Content="Compact"
                             ToolTip="Request the model to summarize the conversation to reduce context usage"
                             Click="CompactButton_Click"
-                            Visibility="{Binding IsContextKnown, Converter={StaticResource BoolToVis}}"
                             IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}" />
                 </Grid>
 
