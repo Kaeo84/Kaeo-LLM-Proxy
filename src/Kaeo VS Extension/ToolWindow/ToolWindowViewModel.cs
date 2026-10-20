@@ -655,12 +655,17 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         IsBusy = true;
         var streaming = CreateLine("assistant");
         Lines.Add(streaming);
+        var streamingIndex = Lines.Count - 1; // for inserting permission cards above this line
 
         // Narration from successive tool-loop iterations would otherwise concatenate into one
         // run-on line ("...coveredNow let me check..."). Insert a blank line before the first
         // text delta that follows a completed tool call so each iteration reads as a paragraph.
         var pendingSeparator = false;
-        var firstTextDelta = true;
+        var seenRealContent = false;
+
+        // Permission cards insert above the streaming assistant line so they appear
+        // chronologically (before the response they gate). Track the next insertion slot.
+        var permissionInsertAt = streamingIndex;
 
         // Tool activity and thinking live inside the assistant line's foldable Processing
         // section instead of interleaving as separate transcript rows, so each turn reads
@@ -672,12 +677,13 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 if (pendingSeparator && streaming.Text.Length > 0)
                     streaming.Text += "\n\n";
                 pendingSeparator = false;
-                // Strip leading whitespace from the very first text delta — models like Qwen
-                // commonly emit one or more blank lines before the first real content.
-                if (firstTextDelta)
+                // Strip all leading whitespace until the first real character arrives.
+                // Models (especially Qwen) emit one or more blank-line deltas before content.
+                if (!seenRealContent)
                 {
-                    firstTextDelta = false;
                     delta = delta.TrimStart();
+                    if (delta.Length > 0)
+                        seenRealContent = true;
                 }
                 if (delta.Length > 0)
                     streaming.Text += delta;
@@ -695,9 +701,28 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 pendingSeparator = true;
                 streaming.Processing.Add(ok ? $"✓ {tc.Name}" : $"✗ {tc.Name}: {TruncateForLine(res)}");
             },
-            // Interactive mode: an inline permission card in the transcript - the GUI stays
-            // live (scroll, stop, steer) while the runtime awaits the user's answer.
-            RequestPermission = RequestPermissionAsync,
+            // Interactive mode: permission cards insert above the assistant line so they
+            // appear chronologically — before the response they gate, not after it.
+            RequestPermission = async tc =>
+            {
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var card = new ChatLine
+                {
+                    Kind = "permission",
+                    Text = $"Allow the model to run \"{tc.Name}\"? {TruncateArgs(tc.Arguments)}",
+                    Approval = tcs,
+                };
+                Lines.Insert(permissionInsertAt, card);
+                permissionInsertAt++;
+                streamingIndex++; // assistant line shifted down
+
+                var cts = _cts;
+                using var registration = cts is null
+                    ? default
+                    : cts.Token.Register(() => tcs.TrySetResult(false));
+
+                return await tcs.Task;
+            },
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
         };
 
@@ -779,34 +804,6 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     }
 
     private bool _alwaysAllowSession;
-
-    /// <summary>
-    /// Shows an inline permission card instead of a modal dialog and awaits its answer, so
-    /// the transcript stays interactive while the tool loop is gated. Session "always allow"
-    /// short-circuits before any card is created.
-    /// </summary>
-    private async Task<bool> RequestPermissionAsync(ToolCallRequest tc)
-    {
-        if (_alwaysAllowSession)
-            return true;
-
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Lines.Add(new ChatLine
-        {
-            Kind = "permission",
-            Text = $"Allow the model to run \"{tc.Name}\"? {TruncateArgs(tc.Arguments)}",
-            Approval = tcs,
-        });
-
-        // Stop must release the runtime loop too: cancelling the turn resolves the card as
-        // denied so the await never dangles on an unanswered prompt.
-        var cts = _cts;
-        using var registration = cts is null
-            ? default
-            : cts.Token.Register(() => tcs.TrySetResult(false));
-
-        return await tcs.Task;
-    }
 
     /// <summary>
     /// Resolves a permission card (called by its buttons, or by cancellation denial below).
