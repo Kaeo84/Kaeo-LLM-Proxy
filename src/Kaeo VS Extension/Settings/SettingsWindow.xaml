@@ -74,9 +74,11 @@
                                     BorderThickness="1"
                                     KeyboardNavigation.TabIndex="2"
                                     KeyboardNavigation.DirectionalNavigation="Contained">
-                                <ContentPresenter x:Name="PART_SelectedContentHost"
-                                                  ContentSource="SelectedContent"
-                                                  Margin="{TemplateBinding Padding}" />
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ContentPresenter x:Name="PART_SelectedContentHost"
+                                                      ContentSource="SelectedContent"
+                                                      Margin="{TemplateBinding Padding}" />
+                                </ScrollViewer>
                             </Border>
                         </Grid>
                     </ControlTemplate>
