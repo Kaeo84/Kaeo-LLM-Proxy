@@ -323,7 +323,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public long ContextTokensMax
     {
         get => _contextTokensMax;
-        private set { _contextTokensMax = value; OnPropertyChanged(); OnPropertyChanged(nameof(ContextPercent)); OnPropertyChanged(nameof(ContextTooltip)); }
+        private set { _contextTokensMax = value; OnPropertyChanged(); OnPropertyChanged(nameof(ContextPercent)); OnPropertyChanged(nameof(ContextTooltip)); OnPropertyChanged(nameof(IsContextKnown)); }
     }
 
     /// <summary>Percentage of context window used (0-100).</summary>
