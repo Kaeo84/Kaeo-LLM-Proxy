@@ -305,7 +305,9 @@ partial class OllamaProxyHandler
         {
             Method = new HttpMethod(req.HttpMethod),
             // RequestUri is set to relative path; SendUpstreamAsync will make it absolute.
-            RequestUri = new Uri(req.Url!.PathAndQuery, UriKind.Relative),
+            RequestUri = req.Url is not null
+                ? new Uri(req.Url.PathAndQuery, UriKind.Relative)
+                : new Uri("/", UriKind.Relative),
         };
 
         // Copy request headers, skipping hop-by-hop headers the HttpClient manages itself and

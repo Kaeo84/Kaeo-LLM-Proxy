@@ -310,18 +310,17 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         _concurrencyGate?.Dispose();
         _concurrencyGate = null;
 
-        // Wait for the accept loop to complete with a timeout
+        // Wait for the accept loop to complete with a timeout.
+        // Use WaitAsync().GetAwaiter().GetResult() instead of .Wait() to avoid
+        // SynchronizationContext deadlock (Dispose may be called from a UI thread
+        // that captures the context).
         if (listenTask is not null)
         {
             try
             {
-                listenTask.Wait(TimeSpan.FromSeconds(5));
+                listenTask.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
             }
             catch (OperationCanceledException)
-            {
-                // Expected when cancellation occurs
-            }
-            catch (AggregateException ex) when (ex.InnerException is OperationCanceledException)
             {
                 // Expected when cancellation occurs
             }

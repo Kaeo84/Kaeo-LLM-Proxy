@@ -604,7 +604,7 @@ internal static class BuiltInVsTools
         var name = item.Name ?? "";
         if (name.Contains(query, StringComparison.OrdinalIgnoreCase))
         {
-            var path = item.FileNames[1] ?? name;
+            var path = item.FileCount > 1 ? item.FileNames[1] : name;
             results.Add(path);
         }
 
@@ -868,7 +868,7 @@ internal static class BuiltInVsTools
 
     private static void CollectItemFiles(ProjectItem item, List<string> files)
     {
-        var fileName = item.FileNames[1];
+        var fileName = item.FileCount > 1 ? item.FileNames[1] : null;
         if (fileName != null)
         {
             files.Add(fileName);
@@ -1189,7 +1189,9 @@ internal static class BuiltInVsTools
         process.StartInfo = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -Command \"{command.Replace("\"", "\\\"")}\"",
+            // Use Base64-encoded command to prevent PowerShell injection through
+            // model-generated content containing metacharacters ($, `, ", etc.).
+            Arguments = $"-NoProfile -EncodedCommand {Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(command))}",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -1346,7 +1348,7 @@ internal static class BuiltInVsTools
 
     private static ProjectItem? FindItemRecursive(ProjectItem item, string filePath)
     {
-        var fileName = item.FileNames[1];
+        var fileName = item.FileCount > 1 ? item.FileNames[1] : null;
         if (fileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true)
             return item;
 

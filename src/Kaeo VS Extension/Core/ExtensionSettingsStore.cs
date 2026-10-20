@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -53,6 +54,7 @@ internal sealed class ExtensionSettingsStore
                 var loaded = JsonSerializer.Deserialize<ExtensionSettings>(text);
                 if (loaded is not null)
                 {
+                    DecryptApiKeys(loaded);
                     Migrate(loaded);
                     _loadFailed = false;
                     return loaded;
@@ -91,7 +93,19 @@ internal sealed class ExtensionSettingsStore
 
     public async Task SaveAsync(ExtensionSettings settings)
     {
-        var text = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+        // Encrypt API keys before serialization. The in-memory copy is temporarily modified,
+        // so we decrypt back after the serialized text is produced so callers still see
+        // plaintext keys.
+        EncryptApiKeys(settings);
+        string text;
+        try
+        {
+            text = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
+        }
+        finally
+        {
+            DecryptApiKeys(settings);
+        }
 
         await _writeLock.WaitAsync().ConfigureAwait(false);
         try
@@ -153,6 +167,98 @@ internal sealed class ExtensionSettingsStore
                 await Task.Delay(50 * attempt).ConfigureAwait(false);
             }
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // DPAPI helpers — encrypt Connection.ApiKey / McpServer.ApiKey at rest so they
+    // are never written as plaintext to settings.jsonc. The in-memory objects always
+    // carry decrypted values; encryption only happens on the wire-to-disk path.
+    // ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Marker prefix prepended to Base64-encoded DPAPI ciphertext so we can distinguish
+    /// encrypted values from plaintext (including legacy plaintext keys from older builds).
+    /// </summary>
+    private const string DpapiMarker = "!dpapi!";
+
+    /// <summary>
+    /// DPAPI entropy bytes bound to this application so a ciphertext blob stolen from
+    /// one app cannot be decrypted by a different application under the same user account.
+    /// </summary>
+    private static readonly byte[] s_dpapiEntropy = Encoding.UTF8.GetBytes("Kaeo.LlmProxy.VSExtension.settings");
+
+    /// <summary>
+    /// Encrypts all <see cref="Connection.ApiKey"/> and <see cref="McpServer.ApiKey"/>
+    /// values in-place using DPAPI (<see cref="ProtectedData.Protect"/>). Already-encrypted
+    /// values (carrying the <see cref="DpapiMarker"/> prefix) are left alone.
+    /// </summary>
+    private static void EncryptApiKeys(ExtensionSettings settings)
+    {
+#pragma warning disable CS8602 // Array element nullability not tracked through foreach + local
+        if (settings.Connections is not null)
+        {
+            foreach (var conn in settings.Connections)
+            {
+                var key = conn?.ApiKey;
+                if (!string.IsNullOrEmpty(key) && !key.StartsWith(DpapiMarker, StringComparison.Ordinal))
+                    conn.ApiKey = ProtectString(key);
+            }
+        }
+
+        if (settings.McpServers is not null)
+        {
+            foreach (var mcp in settings.McpServers)
+            {
+                var key = mcp?.ApiKey;
+                if (!string.IsNullOrEmpty(key) && !key.StartsWith(DpapiMarker, StringComparison.Ordinal))
+                    mcp.ApiKey = ProtectString(key);
+            }
+        }
+#pragma warning restore CS8602
+    }
+
+    /// <summary>
+    /// Decrypts all <see cref="Connection.ApiKey"/> and <see cref="McpServer.ApiKey"/>
+    /// values in-place that carry the <see cref="DpapiMarker"/> prefix. Non-prefixed
+    /// values (legacy plaintext) are left as-is and will be encrypted on the next save.
+    /// </summary>
+    private static void DecryptApiKeys(ExtensionSettings settings)
+    {
+#pragma warning disable CS8602 // Array element nullability not tracked through foreach + local
+        if (settings.Connections is not null)
+        {
+            foreach (var conn in settings.Connections)
+            {
+                var key = conn?.ApiKey;
+                if (!string.IsNullOrEmpty(key) && key.StartsWith(DpapiMarker, StringComparison.Ordinal))
+                    conn.ApiKey = UnprotectString(key.Substring(DpapiMarker.Length));
+            }
+        }
+
+        if (settings.McpServers is not null)
+        {
+            foreach (var mcp in settings.McpServers)
+            {
+                var key = mcp?.ApiKey;
+                if (!string.IsNullOrEmpty(key) && key.StartsWith(DpapiMarker, StringComparison.Ordinal))
+                    mcp.ApiKey = UnprotectString(key.Substring(DpapiMarker.Length));
+            }
+        }
+#pragma warning restore CS8602
+    }
+
+    private static string ProtectString(string plaintext)
+    {
+        byte[] plainBytes = Encoding.UTF8.GetBytes(plaintext);
+        byte[] protectedBytes = ProtectedData.Protect(plainBytes, s_dpapiEntropy, DataProtectionScope.CurrentUser);
+        return DpapiMarker + Convert.ToBase64String(protectedBytes);
+    }
+
+    private static string UnprotectString(string protectedBase64)
+    {
+        byte[] protectedBytes = Convert.FromBase64String(protectedBase64);
+        byte[] plainBytes = ProtectedData.Unprotect(protectedBytes, s_dpapiEntropy, DataProtectionScope.CurrentUser);
+        return Encoding.UTF8.GetString(plainBytes);
     }
 }
 

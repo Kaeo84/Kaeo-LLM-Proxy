@@ -43,7 +43,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
 
         private void CancelButton_Click(object sender, RoutedEventArgs e)
         {
-            Response = string.Empty;
+            Response = null;
             DialogResult = false;
             Close();
         }

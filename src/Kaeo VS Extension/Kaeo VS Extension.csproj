@@ -70,6 +70,11 @@
         </PackageReference>
   </ItemGroup>
 
+  <!-- Framework references -->
+  <ItemGroup>
+    <Reference Include="System.Security" />
+  </ItemGroup>
+
   <!-- Shared wire-format <-> MEAI adapter (netstandard2.0, net48-compatible). IncludeInVSIX
        ships its dll in the extension payload so it resolves from the extension folder like
        the forced-in BCL packages above. -->

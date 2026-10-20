@@ -1397,6 +1397,14 @@ internal sealed class AppSettings
     /// When set, encrypted API keys are decrypted automatically at startup without prompting.
     /// Leave null to require the user to enter the passphrase each launch.
     /// </summary>
+    /// <remarks>
+    /// <para><b>Security warning:</b> This passphrase is stored as plaintext in
+    /// <c>settings.jsonc</c> on disk. Anyone with read access to the settings file can
+    /// decrypt all stored API keys. For stronger at-rest protection, consider using
+    /// the Windows Data Protection API (DPAPI) with <c>DataProtectionScope.CurrentUser</c>
+    /// via <see cref="System.Security.Cryptography.ProtectedData"/> to encrypt this value,
+    /// or store it in the Windows Credential Manager.</para>
+    /// </remarks>
     public string? SecurityPassphrase { get; set; }
 
     /// <summary>
@@ -1422,7 +1430,19 @@ internal sealed class AppSettings
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "Failed to load settings from {Path}, using defaults", _settingsPath);
+            // The on-disk file exists but is unreadable (corrupt JSON, encoding issue, etc.).
+            // Before silently falling back to defaults, back up the original file so the
+            // user's settings are recoverable rather than permanently lost without notice.
+            string backupPath = _settingsPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss");
+            try { File.Copy(_settingsPath, backupPath, overwrite: false); }
+            catch { /* Best-effort backup; don't block the fallback. */ }
+
+            Log.Error(ex,
+                "Failed to load settings from {Path} — configuration is corrupt or unreadable. " +
+                "A backup was saved to {BackupPath}. Falling back to defaults. " +
+                "Your previous settings have NOT been applied. Restart the application after " +
+                "restoring the backup to recover your configuration.",
+                _settingsPath, backupPath);
             return new AppSettings();
         }
     }

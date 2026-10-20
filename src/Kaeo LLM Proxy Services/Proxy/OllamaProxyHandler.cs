@@ -251,7 +251,28 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     public void Dispose()
     {
         StopHeartbeatMonitors();
-        _httpClient.Dispose();
+
+        // Mirror the same in-flight guard used in UpdateSettings: wait for active
+        // requests to drain before disposing the HttpClient to avoid
+        // ObjectDisposedException on streams still being consumed.
+        HttpClient clientToDispose = _httpClient;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+                while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
+                    await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Best-effort wait; always dispose below.
+            }
+            finally
+            {
+                clientToDispose.Dispose();
+            }
+        });
     }
 
     /// <summary>
