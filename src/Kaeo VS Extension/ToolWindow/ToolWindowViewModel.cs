@@ -336,6 +336,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             ? $"{ContextPercent:F0}% — {_contextTokensUsed:N0} / {_contextTokensMax:N0} tokens"
             : "Context size unknown for this model";
 
+    /// <summary>True when the model's context window size is known (set in Settings → Models).</summary>
+    public bool IsContextKnown => _contextTokensMax > 0;
+
     /// <summary>Raised after <see cref="LoadAsync"/> finishes pulling the live model list.</summary>
     public event Action? ModelsLoaded;
 
@@ -551,7 +554,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 UpdateContextBar();
             }
 
-    /// <summary>
+            /// <summary>
     /// Resolves the current model label back to its connection and a Microsoft.Extensions.AI
     /// chat client for it. Only the Ollama protocol (the proxy) has a chat client today; the
     /// stub upstream kinds surface a clear status line instead of failing mid-stream.

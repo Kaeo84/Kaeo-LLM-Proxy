@@ -181,39 +181,29 @@
         </ListView>
 
                 <!-- Context usage bar: thin blue progress bar above the input row. Click = request compaction. -->
-                <Grid Grid.Row="3" Margin="6,2,6,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <ProgressBar x:Name="ContextBar" Grid.Column="0" Height="6"
-                                 Minimum="0" Maximum="100"
-                                 Value="{Binding ContextPercent, Mode=OneWay}"
-                                 ToolTip="{Binding ContextTooltip}"
-                                 MouseLeftButtonUp="ContextBar_Click"
-                                 Cursor="Hand"
-                                 Foreground="#FF3A6EA5"
-                                 BorderThickness="0">
-                        <ProgressBar.Style>
-                            <Style TargetType="ProgressBar">
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding ContextPercent}" Value="0">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </ProgressBar.Style>
-                    </ProgressBar>
-                    <Button x:Name="CompactButton" Grid.Column="1" Width="80" Height="20"
-                            FontSize="10" Padding="4,0" Margin="6,0,0,0"
-                            Content="Compact"
-                            ToolTip="Request the model to summarize the conversation to reduce context usage"
-                            Click="CompactButton_Click"
-                            Visibility="{Binding ContextPercent, Converter={StaticResource BoolToVis}}"
-                            IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}" />
-                </Grid>
+                        <Grid Grid.Row="3" Margin="6,2,6,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ProgressBar x:Name="ContextBar" Grid.Column="0" Height="6"
+                                         Minimum="0" Maximum="100"
+                                         Value="{Binding ContextPercent, Mode=OneWay}"
+                                         ToolTip="{Binding ContextTooltip}"
+                                         MouseLeftButtonUp="ContextBar_Click"
+                                         Cursor="Hand"
+                                         Foreground="#FF3A6EA5"
+                                         BorderThickness="0" />
+                            <Button x:Name="CompactButton" Grid.Column="1" Width="80" Height="20"
+                                    FontSize="10" Padding="4,0" Margin="6,0,0,0"
+                                    Content="Compact"
+                                    ToolTip="Request the model to summarize the conversation to reduce context usage"
+                                    Click="CompactButton_Click"
+                                    Visibility="{Binding IsContextKnown, Converter={StaticResource BoolToVis}}"
+                                    IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}" />
+                        </Grid>
 
-                <!-- Message input row -->
+                        <!-- Message input row -->
         <Grid Grid.Row="4" Margin="6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
