@@ -269,6 +269,7 @@
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="Model Name" Binding="{Binding Name}" Width="*" IsReadOnly="True" />
                                                 <DataGridTextColumn Header="Model ID" Binding="{Binding ModelId}" Width="*" IsReadOnly="True" />
+                                                <DataGridTextColumn Header="Context" Binding="{Binding ContextSize, StringFormat={}{0:N0}}" Width="Auto" />
                                                 <DataGridTextColumn Header="Capabilities" Binding="{Binding Capabilities}" Width="*" IsReadOnly="True" />
                                                 <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="Auto" />
                                                 <DataGridComboBoxColumn Header="Reasoning" Width="Auto"

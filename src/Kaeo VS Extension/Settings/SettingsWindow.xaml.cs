@@ -102,6 +102,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                             Enabled = m.Enabled,
                             IsPinned = m.Pinned,
                             ReasoningSource = string.IsNullOrWhiteSpace(m.ReasoningSource) ? "Auto" : m.ReasoningSource!,
+                            ContextSize = m.ContextSize,
                         });
                     }
                     WireForSave(vm);
@@ -1037,6 +1038,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         .Select(s => s.Trim())
                         .Where(s => s.Length > 0)
                         .ToArray(),
+                    ContextSize = m.ContextSize,
                     Pinned = m.IsPinned,
                     Enabled = m.Enabled,
                     ReasoningSource = string.Equals(m.ReasoningSource, "Auto", StringComparison.Ordinal) ? null : m.ReasoningSource,

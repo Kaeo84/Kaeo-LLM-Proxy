@@ -140,6 +140,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         Name = m.Name,
                         ModelId = m.Name,
                         Capabilities = string.Join(", ", m.Capabilities),
+                        ContextSize = m.ContextLength,
                     };
                     if (previous.TryGetValue(m.Name, out var old))
                     {

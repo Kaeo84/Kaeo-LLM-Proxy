@@ -65,6 +65,16 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             set { _reasoningSource = value; OnPropertyChanged(); }
         }
 
+        private long _contextSize;
+
+        /// <summary>Model context window size in tokens (0 = unknown). Populated from
+        /// the proxy's /api/tags details.context_length and editable in the grid.</summary>
+        public long ContextSize
+        {
+            get => _contextSize;
+            set { _contextSize = value; OnPropertyChanged(); }
+        }
+
         public event PropertyChangedEventHandler? PropertyChanged;
 
         private void OnPropertyChanged([CallerMemberName] string? name = null)
