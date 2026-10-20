@@ -158,6 +158,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #24: Hardcoded placeholder secret in source code <span class="line-num">SeedData.cs:92</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -487,6 +488,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #4: req.InputStream read without HasEntityBody check <span class="line-num">OllamaProxyHandler.Helpers.cs:382-403</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -499,6 +501,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #5: Fire-and-forget task with unobserved exception <span class="line-num">OllamaProxyHandler.cs:121-137</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -511,6 +514,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #6: Mutating shared JsonObject root across choices <span class="line-num">OpenAiSseFrameTranslation.cs:94-116</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -523,6 +527,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #9: Partial tag buffer uses work.Length - len instead of start <span class="line-num">ThinkTagExtractor.cs:162</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -535,6 +540,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #10: Header copy may add to wrong target <span class="line-num">OllamaProxyHandler.Passthrough.cs:328-331</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -547,11 +553,12 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #12: JSON injection risk in SSE error frames <span class="line-num">Multiple files</span></span>
+  <span class="fixed-badge">✅ REVIEWED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
   <div class="file-path">OllamaProxyHandler.Passthrough.cs, Compaction.cs</div>
-  <p>All SSE error frame construction uses <code>JsonSerializer.Serialize(message)</code> for the message, which is safe. No injection vulnerability found on deeper inspection — the patterns are correct. (False alarm withdrawn.)</p>
+  <p><strong>False alarm.</strong> All SSE error frame construction uses <code>JsonSerializer.Serialize(message)</code> for the message, which is safe. No injection vulnerability found on deeper inspection.</p>
   <div class="fix">N/A — code is correct.</div>
 </div>
 </div>
@@ -559,6 +566,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #11: Truncated GUID IDs collision risk <span class="line-num">OllamaRequestTranslation.cs:50,94</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">

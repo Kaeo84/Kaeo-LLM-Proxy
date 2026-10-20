@@ -13,6 +13,15 @@ namespace Kaeo.LlmProxy.Core.Security;
 internal static class SecretProtector
 {
     private const string EnvelopePrefix = "kaeo-enc:v1:";
+
+    /// <summary>
+    /// Prefix for a SHA-256 hash of the user's passphrase stored in
+    /// <see cref="AppSettings.SecurityPassphrase"/>. When this prefix is present the stored
+    /// value is a one-way hash, not the raw passphrase. The hash itself is used as PBKDF2
+    /// input so that decryption works without prompting.
+    /// </summary>
+    private const string HashPrefix = "!pwh!";
+
     private const int SaltSize = 16;
     private const int NonceSize = 12; // AES-GCM standard nonce size
     private const int TagSize = 16;   // AES-GCM tag size
@@ -126,6 +135,48 @@ internal static class SecretProtector
             Iterations,
             HashAlgorithmName.SHA256,
             KeySize);
+
+    /// <summary>
+    /// Returns the SHA-256 hash of <paramref name="passphrase"/> as a Base64 string
+    /// prefixed with <c>!pwh!</c> so it can be distinguished from a raw passphrase stored
+    /// in <see cref="AppSettings.SecurityPassphrase"/>.
+    /// </summary>
+    internal static string HashPassphrase(string passphrase)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(passphrase);
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(passphrase));
+        return HashPrefix + Convert.ToBase64String(hash);
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="value"/> is a hashed passphrase (prefixed with
+    /// <c>!pwh!</c>), as opposed to a legacy raw passphrase.
+    /// </summary>
+    internal static bool IsHashedPassphrase(string? value) =>
+        !string.IsNullOrEmpty(value) && value.StartsWith(HashPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Strips the <c>!pwh!</c> prefix from a hashed passphrase, returning the raw Base64
+    /// SHA-256 hash suitable for use as PBKDF2 key material.
+    /// </summary>
+    internal static string StripHashPrefix(string hashed)
+    {
+        if (!IsHashedPassphrase(hashed))
+            throw new ArgumentException("Value is not a hashed passphrase.", nameof(hashed));
+        return hashed[HashPrefix.Length..];
+    }
+
+    /// <summary>
+    /// Resolves the effective passphrase material to use for encryption/decryption.
+    /// If <paramref name="stored"/> is already hashed (<c>!pwh!</c>), returns the hash
+    /// stripped of its prefix. If it is a legacy raw passphrase, returns it as-is.
+    /// </summary>
+    internal static string ResolvePassphraseMaterial(string? stored)
+    {
+        if (string.IsNullOrEmpty(stored))
+            return string.Empty;
+        return IsHashedPassphrase(stored) ? StripHashPrefix(stored) : stored;
+    }
 
     /// <summary>
     /// The three field names on <see cref="StoredCredential"/> that carry secret material.

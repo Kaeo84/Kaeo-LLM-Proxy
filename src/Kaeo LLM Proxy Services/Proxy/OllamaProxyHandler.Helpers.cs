@@ -93,7 +93,7 @@ partial class OllamaProxyHandler
             ToolCalls = m.ToolCalls is not null
                 ? [.. m.ToolCalls.Select(tc => new LlamaCppToolCall
                     {
-                        Id = string.IsNullOrWhiteSpace(tc.Id) ? Guid.NewGuid().ToString("N")[..8] : tc.Id!,
+                        Id = string.IsNullOrWhiteSpace(tc.Id) ? Guid.NewGuid().ToString("N") : tc.Id!,
                         Function = tc.Function is null ? null : new LlamaCppToolCallFunction
                         {
                             Name = tc.Function.Name,
@@ -381,6 +381,11 @@ partial class OllamaProxyHandler
 
         private async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
     {
+        // GET and HEAD requests have no entity body; reading InputStream would block
+        // until the client closes the connection or the request times out.
+        if (!req.HasEntityBody)
+            return string.Empty;
+
         long limit = _settings.MaxRequestBodyBytes;
 
         // Fast path: a declared Content-Length over the limit is rejected without reading the body.

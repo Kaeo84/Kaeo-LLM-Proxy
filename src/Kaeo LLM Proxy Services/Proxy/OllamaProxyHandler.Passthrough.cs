@@ -312,6 +312,10 @@ partial class OllamaProxyHandler
 
         // Copy request headers, skipping hop-by-hop headers the HttpClient manages itself and
         // proxy/forwarding headers that a direct-access client could spoof (see ShouldSkipRequestHeader).
+        // Headers that can't be placed on the request message (e.g. because Content is null yet);
+        // they'll be applied after Content is assigned below.
+        Dictionary<string, string>? deferredContentHeaders = null;
+
         foreach (string? name in req.Headers.AllKeys)
         {
             if (name is null) continue;
@@ -328,8 +332,15 @@ partial class OllamaProxyHandler
             // mapping, unless the mapping opted in or its base URL is this machine.
 
             string value = req.Headers[name] ?? string.Empty;
+            // Content is assigned later downstream; if the header can't be placed on the
+            // request message, store it and apply it after Content is created instead of
+            // falling back to Content?.Headers which is always null at this point.
             if (!upstreamReq.Headers.TryAddWithoutValidation(name, value))
-                upstreamReq.Content?.Headers.TryAddWithoutValidation(name, value);
+            {
+                if (deferredContentHeaders is null)
+                    deferredContentHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                deferredContentHeaders[name] = value;
+            }
         }
 
         // Track which original model was requested so we can resolve the upstream URL.
@@ -479,6 +490,14 @@ partial class OllamaProxyHandler
                 upstreamReq.Content = new StreamContent(req.InputStream);
                 if (!string.IsNullOrEmpty(req.ContentType))
                     upstreamReq.Content.Headers.TryAddWithoutValidation("Content-Type", req.ContentType);
+            }
+
+            // Apply headers that couldn't be placed on the request message earlier
+            // because Content was null; now Content is assigned.
+            if (deferredContentHeaders is not null)
+            {
+                foreach (var kvp in deferredContentHeaders)
+                    upstreamReq.Content?.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value);
             }
         }
 

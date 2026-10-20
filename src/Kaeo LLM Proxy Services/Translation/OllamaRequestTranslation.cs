@@ -47,7 +47,7 @@ internal static class OllamaRequestTranslation
                     foreach (OllamaToolCall tc in m.ToolCalls)
                     {
                         contents.Add(new FunctionCallContent(
-                            string.IsNullOrWhiteSpace(tc.Id) ? Guid.NewGuid().ToString("N")[..8] : tc.Id!,
+                            string.IsNullOrWhiteSpace(tc.Id) ? Guid.NewGuid().ToString("N") : tc.Id!,
                             tc.Function?.Name ?? string.Empty,
                             ToArgumentsDictionary(tc.Function?.Arguments)));
                     }

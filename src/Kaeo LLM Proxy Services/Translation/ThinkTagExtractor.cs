@@ -150,10 +150,19 @@ internal sealed class ThinkTagExtractor
     }
 
     /// <summary>
-    /// Returns the number of trailing characters (from <paramref name="start"/> onward) that
-    /// form a proper prefix of <paramref name="tag"/>. This is the amount to buffer rather than
-    /// emit, so a tag split across fragments is still recognised on the next call.
+    /// Returns the number of trailing characters that form a proper prefix of
+    /// <paramref name="tag"/>. This is the amount to buffer rather than emit, so a tag split
+    /// across fragments is still recognised on the next call.
+    /// The check always inspects the absolute tail of <paramref name="work"/> because partial
+    /// tags can only appear at fragment boundaries.
     /// </summary>
+    /// <param name="work">The current fragment being processed.</param>
+    /// <param name="start">
+    /// The index in <paramref name="work"/> where the current scan began. Supplied by callers
+    /// for potential range-bounded matching, but the implementation always uses the absolute
+    /// tail via <c>work.Length - len</c> regardless of this value. Retained for future flexibility.
+    /// </param>
+    /// <param name="tag">The full tag string (open or close) to match against.</param>
     private static int PartialTagSuffixLength(string work, int start, string tag)
     {
         int max = Math.Min(tag.Length - 1, work.Length - start);

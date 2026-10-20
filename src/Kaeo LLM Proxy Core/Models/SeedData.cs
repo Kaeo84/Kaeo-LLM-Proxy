@@ -86,10 +86,11 @@ internal static class SeedData
     private const string QwenCloudUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 
     /// <summary>
-    /// Placeholder secret for the seeded credential. It is not a usable key: the mapping works only
-    /// once the real token is entered on the Credentials tab, at which point it is encrypted at rest.
+    /// Deliberately empty placeholder for the seeded credential. Replace with a real token on
+    /// the Credentials tab before any mapping that references this credential can authenticate.
+    /// The empty string ensures no accidental usage of a hardcoded value as a real API key.
     /// </summary>
-    private const string PlaceholderSecret = "seed-placeholder-replace-with-real-token";
+    private const string PlaceholderSecret = "";
 
     private const string QwenCloudDescription =
         "Seeded placeholder for the Qwen Cloud token-plan endpoint. Replace with a real token.";

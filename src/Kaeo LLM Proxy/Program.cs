@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Principal;
 using Kaeo.LlmProxy.Core.Models;
@@ -160,29 +160,62 @@ internal static class Program
     private static void ResolvePassphrase(AppSettings settings)
     {
         bool hasEncrypted = settings.Credentials.Any(c => SecretProtector.HasAnyEncryptedSecret(c));
+        bool isHashed = SecretProtector.IsHashedPassphrase(settings.SecurityPassphrase);
+        bool isLegacy = !string.IsNullOrEmpty(settings.SecurityPassphrase) && !isHashed;
+
+        if (!hasEncrypted && isHashed)
+        {
+            // No encrypted secrets yet; carry the hash forward for future saves.
+            settings.RuntimePassphrase = SecretProtector.StripHashPrefix(settings.SecurityPassphrase!);
+            return;
+        }
+
+        if (!hasEncrypted && isLegacy)
+        {
+            // Migrate legacy plaintext to hash without prompting (no encrypted data to break).
+            string raw = settings.SecurityPassphrase!;
+            settings.SecurityPassphrase = SecretProtector.HashPassphrase(raw);
+            settings.RuntimePassphrase = SecretProtector.StripHashPrefix(settings.SecurityPassphrase);
+            settings.Save();
+            return;
+        }
 
         if (!hasEncrypted)
         {
-            // No encrypted secrets yet; carry the stored passphrase forward for future saves.
             settings.RuntimePassphrase = settings.SecurityPassphrase;
             return;
         }
 
-        // Try the stored passphrase first.
-        if (!string.IsNullOrEmpty(settings.SecurityPassphrase))
+        if (isHashed)
         {
-            if (TryDecryptAllSecrets(settings, settings.SecurityPassphrase))
+            string hash = SecretProtector.StripHashPrefix(settings.SecurityPassphrase!);
+            if (TryDecryptAllSecrets(settings, hash))
             {
-                settings.RuntimePassphrase = settings.SecurityPassphrase;
+                settings.RuntimePassphrase = hash;
                 return;
             }
 
-            // Stored passphrase is wrong; remove it so it is not reused on next launch.
+            Log.Warning("Stored passphrase hash could not decrypt secrets; prompting for new passphrase.");
+            settings.SecurityPassphrase = null;
+            settings.Save();
+        }
+        else if (isLegacy)
+        {
+            string raw = settings.SecurityPassphrase!;
+            if (TryDecryptAllSecrets(settings, raw))
+            {
+                string hashed = SecretProtector.HashPassphrase(raw);
+                settings.SecurityPassphrase = hashed;
+                settings.RuntimePassphrase = SecretProtector.StripHashPrefix(hashed);
+                Log.Information("Migrated SecurityPassphrase from plaintext to SHA-256 hash.");
+                settings.Save();
+                return;
+            }
+
             settings.SecurityPassphrase = null;
             settings.Save();
         }
 
-        // Prompt until the user supplies a valid passphrase or cancels.
         while (true)
         {
             if (!PassphraseDialog.Prompt(
@@ -191,17 +224,17 @@ internal static class Program
                     out string passphrase,
                     out bool remember))
             {
-                // User cancelled — encrypted secrets stay encrypted; auth that needs them will fail.
                 return;
             }
 
             if (TryDecryptAllSecrets(settings, passphrase))
             {
-                settings.RuntimePassphrase = passphrase;
+                string hashed = SecretProtector.HashPassphrase(passphrase);
+                settings.RuntimePassphrase = SecretProtector.StripHashPrefix(hashed);
 
                 if (remember)
                 {
-                    settings.SecurityPassphrase = passphrase;
+                    settings.SecurityPassphrase = hashed;
                     settings.Save();
                 }
 
@@ -215,12 +248,6 @@ internal static class Program
                 MessageBoxIcon.Warning);
         }
     }
-
-    /// <summary>
-    /// Verifies that every encrypted secret-material field (secret, private key, certificate)
-    /// on every credential can be decrypted with <paramref name="passphrase"/>, then applies
-    /// the decryption in-place. Returns false if any secret fails authentication.
-    /// </summary>
     private static bool TryDecryptAllSecrets(AppSettings settings, string passphrase)
     {
         // First pass: verify all encrypted secrets can be decrypted (all-or-nothing).

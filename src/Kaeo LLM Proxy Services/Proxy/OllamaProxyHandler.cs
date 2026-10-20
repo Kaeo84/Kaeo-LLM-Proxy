@@ -126,9 +126,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
                     await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
                 // Best-effort wait; always dispose below.
+                Log.Debug(ex, "Error while waiting for in-flight requests before disposing old HttpClient");
             }
             finally
             {

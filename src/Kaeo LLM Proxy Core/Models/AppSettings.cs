@@ -1393,17 +1393,20 @@ internal sealed class AppSettings
     public LoggingSettings Logging { get; set; } = new();
 
     /// <summary>
-    /// Optional passphrase persisted in settings.jsonc used to decrypt model-mapping API keys.
-    /// When set, encrypted API keys are decrypted automatically at startup without prompting.
-    /// Leave null to require the user to enter the passphrase each launch.
+    /// SHA-256 hash of the user's passphrase, prefixed with <c>!pwh!</c>.
+    /// The hash itself — not the raw passphrase — is used as PBKDF2 input for
+    /// encrypting API keys. This avoids storing the raw passphrase on disk while
+    /// still allowing automatic decryption at startup without prompting.
+    /// When set, encrypted API keys are decrypted automatically at startup
+    /// without user interaction. Leave null to require the user to enter the
+    /// passphrase each launch.
     /// </summary>
     /// <remarks>
-    /// <para><b>Security warning:</b> This passphrase is stored as plaintext in
-    /// <c>settings.jsonc</c> on disk. Anyone with read access to the settings file can
-    /// decrypt all stored API keys. For stronger at-rest protection, consider using
-    /// the Windows Data Protection API (DPAPI) with <c>DataProtectionScope.CurrentUser</c>
-    /// via <see cref="System.Security.Cryptography.ProtectedData"/> to encrypt this value,
-    /// or store it in the Windows Credential Manager.</para>
+    /// <para><b>Security note:</b> The stored value is a one-way SHA-256 hash, not the
+    /// raw passphrase. An attacker with read access to <c>settings.jsonc</c> cannot
+    /// recover the original passphrase, but the hash can still decrypt API keys
+    /// stored in the same file. For strongest protection, leave this null and
+    /// enter the passphrase each launch.</para>
     /// </remarks>
     public string? SecurityPassphrase { get; set; }
 

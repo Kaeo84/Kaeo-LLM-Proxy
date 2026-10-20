@@ -109,7 +109,10 @@ internal sealed class OpenAiSseFrameTranslation
             ApplyFinishReason(choice, state);
         }
 
-        yield return $"data: {root.ToJsonString(InlineXmlToolCall.JsonOptions)}";
+        // Materialize the frame string before yielding so the shared root object is not
+        // mutated by subsequent choice iterations before the lazy enumeration runs.
+        string frame = $"data: {root.ToJsonString(InlineXmlToolCall.JsonOptions)}";
+        yield return frame;
 
         foreach (JsonObject extra in extraFrames)
             yield return $"data: {extra.ToJsonString(InlineXmlToolCall.JsonOptions)}";
