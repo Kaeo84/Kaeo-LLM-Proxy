@@ -680,33 +680,30 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // run-on line ("...coveredNow let me check..."). Insert a blank line before the first
         // text delta that follows a completed tool call so each iteration reads as a paragraph.
         var pendingSeparator = false;
-        var seenRealContent = false;
 
-        // Permission cards insert above the streaming assistant line so they appear
-        // chronologically (before the response they gate). Track the next insertion slot.
-        var permissionInsertAt = streamingIndex;
+                // Permission cards insert above the streaming assistant line so they appear
+                // chronologically (before the response they gate). Track the next insertion slot.
+                var permissionInsertAt = streamingIndex;
 
-        // Tool activity and thinking live inside the assistant line's foldable Processing
-        // section instead of interleaving as separate transcript rows, so each turn reads
-        // as: user message, assistant message, [Processing].
-        var events = new AgentEvents
-        {
-            TextDelta = delta =>
-            {
-                if (pendingSeparator && streaming.Text.Length > 0)
-                    streaming.Text += "\n\n";
-                pendingSeparator = false;
-                // Strip all leading whitespace until the first real character arrives.
-                // Models (especially Qwen) emit one or more blank-line deltas before content.
-                if (!seenRealContent)
+                // Tool activity and thinking live inside the assistant line's foldable Processing
+                // section instead of interleaving as separate transcript rows, so each turn reads
+                // as: user message, assistant message, [Processing].
+                var events = new AgentEvents
                 {
-                    delta = delta.TrimStart();
-                    if (delta.Length > 0)
-                        seenRealContent = true;
-                }
-                if (delta.Length > 0)
-                    streaming.Text += delta;
-            },
+                    TextDelta = delta =>
+                    {
+                        // Collapse contiguous whitespace: if the current text ends with whitespace
+                        // and the incoming delta starts with whitespace, trim the delta's leading
+                        // whitespace. Also trim leading whitespace when no real text exists yet.
+                        if (streaming.Text.Length == 0 || streaming.Text.EndsWith("\n") || streaming.Text.EndsWith(" ") || streaming.Text.EndsWith("\r"))
+                            delta = delta.TrimStart();
+                        if (delta.Length == 0) return;
+
+                        if (pendingSeparator && streaming.Text.Length > 0)
+                            streaming.Text += "\n\n";
+                        pendingSeparator = false;
+                        streaming.Text += delta;
+                    },
             ReasoningDelta = delta =>
             {
                 if (ReasoningHidden) return;
@@ -743,10 +740,6 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 return await tcs.Task;
             },
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
-                        // When a new tool-loop iteration starts (model is called again after tool
-                        // execution), reset the whitespace tracker so leading blank deltas from
-                        // the new stream batch are also stripped.
-                        IterationStarting = () => seenRealContent = false,
                     };
 
         try

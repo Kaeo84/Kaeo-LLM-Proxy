@@ -336,8 +336,10 @@ public partial class ToolWindowControl : UserControl
         private ScrollViewer? _scrollViewer;
 
         /// <summary>
-        /// Throttled scroll-to-bottom using pixel-based scrolling (CanContentScroll=false).
-        /// ScrollToBottom is a cheap property set; the throttle prevents per-token churn.
+        /// Auto-scrolls to bottom ONLY if the user is already near the bottom of the transcript.
+        /// If the user scrolled up to read earlier content, they stay put instead of being yanked
+        /// to the bottom on every token delta. The threshold (50 px) is generous enough that a
+        /// user tracking the latest content stays pinned through minor height changes.
         /// </summary>
         private void RequestScroll()
         {
@@ -347,11 +349,16 @@ public partial class ToolWindowControl : UserControl
             {
                 _scrollPending = false;
                 _scrollViewer ??= FindVisualChild<ScrollViewer>(MessageList);
-                _scrollViewer?.ScrollToBottom();
+                if (_scrollViewer is null) return;
+
+                // If the user is within 50 px of the bottom, they're "pinned" — auto-scroll.
+                // Otherwise they've intentionally scrolled up and we leave them alone.
+                double offsetFromBottom = _scrollViewer.ScrollableHeight - _scrollViewer.VerticalOffset;
+                if (offsetFromBottom <= 50.0)
+                    _scrollViewer.ScrollToBottom();
             }), System.Windows.Threading.DispatcherPriority.Background);
         }
 
-        /// <summary>Finds the first child of type T in the visual tree.</summary>
         private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
         {
             for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
