@@ -727,7 +727,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 return await tcs.Task;
             },
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
-        };
+                        // When a new tool-loop iteration starts (model is called again after tool
+                        // execution), reset the whitespace tracker so leading blank deltas from
+                        // the new stream batch are also stripped.
+                        IterationStarting = () => seenRealContent = false,
+                    };
 
         try
         {

@@ -66,6 +66,9 @@ internal sealed class AgentEvents
     public Func<IReadOnlyList<string>>? DrainRedirects;
     /// <summary>AutoPilot continuation requested (model signaled "not done").</summary>
     public Action<int>? AutoPilotContinuing;
+    /// <summary>Fires at the top of each tool-loop iteration after the first, so the UI
+    /// can reset streaming state (e.g. clear leading-whitespace tracking for the new batch).</summary>
+    public Action? IterationStarting;
     /// <summary>The turn has completed (final message or error).</summary>
     public Action<AgentTurnResult>? TurnComplete;
     /// <summary>An error occurred.</summary>
@@ -139,6 +142,11 @@ internal sealed class AgentRuntime
 
         for (var iteration = 0; iteration < maxIterations; iteration++)
         {
+            // Reset whitespace tracking at the start of each new model call so
+            // leading blank deltas from the second+ iteration are also stripped.
+            if (iteration > 0)
+                events.IterationStarting?.Invoke();
+
             // Steering: prompts the user submitted mid-run enter the conversation at a
             // clean iteration boundary, ahead of building the next request.
             if (events.DrainRedirects is { } drainRedirects)

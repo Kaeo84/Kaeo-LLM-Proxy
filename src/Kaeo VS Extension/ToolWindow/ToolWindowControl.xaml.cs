@@ -334,19 +334,40 @@ public partial class ToolWindowControl : UserControl
 
     private bool _scrollPending;
 
-    /// <summary>Coalesces scroll requests so per-token streaming updates scroll once per UI burst.</summary>
-    private void RequestScroll()
-    {
-        if (_scrollPending) return;
-        _scrollPending = true;
-        Dispatcher.BeginInvoke(new System.Action(() =>
+        /// <summary>
+        /// Throttled scroll-to-bottom using ScrollViewer.ScrollToEnd() instead of
+        /// ScrollIntoView. ScrollIntoView forces a full layout pass per call and tries to
+        /// bring the entire card into view — both cause stuttery jank during streaming.
+        /// ScrollToEnd is a cheap, smooth operation. The timer window (50 ms) batches
+        /// rapid per-token updates into one scroll per UI frame.
+        /// </summary>
+        private void RequestScroll()
         {
-            _scrollPending = false;
-            if (MessageList.Items.Count > 0)
-                MessageList.ScrollIntoView(MessageList.Items[MessageList.Items.Count - 1]);
-        }), System.Windows.Threading.DispatcherPriority.Background);
-    }
-#pragma warning restore VSTHRD001, VSTHRD110
+            if (_scrollPending) return;
+            _scrollPending = true;
+            Dispatcher.BeginInvoke(new System.Action(() =>
+            {
+                _scrollPending = false;
+                var scrollViewer = FindVisualChild<ScrollViewer>(MessageList);
+                scrollViewer?.ScrollToEnd();
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        /// <summary>Finds the first child of type T in the visual tree.</summary>
+        private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is T found)
+                    return found;
+                var descendant = FindVisualChild<T>(child);
+                if (descendant is not null)
+                    return descendant;
+            }
+            return null;
+        }
+    #pragma warning restore VSTHRD001, VSTHRD110
 
     /// <summary>Click on the context progress bar requests compaction.</summary>
     private async void ContextBar_Click(object sender, MouseButtonEventArgs e)
