@@ -169,6 +169,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         /// <summary>Estimated token count of the current conversation history.</summary>
         private int _contextTokensUsed;
 
+        /// <summary>Estimated tokens used by system prompt/instructions only.</summary>
+        private int _contextTokensSystem;
+
         /// <summary>True while a turn is streaming; drives the Send/Stop button toggle.</summary>
     public bool IsBusy
     {
@@ -330,11 +333,24 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public double ContextPercent =>
         _contextTokensMax > 0 ? Math.Min(100.0, (_contextTokensUsed * 100.0) / _contextTokensMax) : 0;
 
-    /// <summary>Tooltip for the context bar: "45% — 3,600 / 8,000 tokens".</summary>
-    public string ContextTooltip =>
-        _contextTokensMax > 0
-            ? $"{ContextPercent:F0}% — {_contextTokensUsed:N0} / {_contextTokensMax:N0} tokens"
-            : "Context size unknown for this model";
+    /// <summary>Tooltip for the context bar showing token breakdown.</summary>
+    public string ContextTooltip
+    {
+        get
+        {
+            if (_contextTokensMax > 0)
+            {
+                var sysPct = _contextTokensMax > 0 ? (_contextTokensSystem * 100.0) / _contextTokensMax : 0;
+                var convPct = _contextTokensMax > 0 ? ((_contextTokensUsed - _contextTokensSystem) * 100.0) / _contextTokensMax : 0;
+                return $"System: {_contextTokensSystem:N0} tokens ({sysPct:F0}%)\n"
+                     + $"Conversation: {_contextTokensUsed - _contextTokensSystem:N0} tokens ({convPct:F0}%)\n"
+                     + $"Total: {_contextTokensUsed:N0} / {_contextTokensMax:N0} tokens ({ContextPercent:F0}%)";
+            }
+            // Unknown model — still show token estimate
+            return $"Estimated tokens used: {_contextTokensUsed:N0}\n"
+                 + "(set model context size in Settings → Models for percentages)";
+        }
+    }
 
     /// <summary>True when the model's context window size is known (set in Settings → Models).</summary>
     public bool IsContextKnown => _contextTokensMax > 0;
@@ -882,32 +898,44 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             var modelSelection = _modelSelections.FirstOrDefault(
                 m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
             ContextTokensMax = modelSelection?.ContextSize ?? 0;
+
+            // System tokens: first message in history is the merged system prompt
+            var systemMsg = _history.FirstOrDefault(m => m.Role == ChatRole.System);
+            _contextTokensSystem = systemMsg is not null
+                ? Math.Max(1, ((systemMsg.Text?.Length ?? 0) + MessageContentChars(systemMsg)) / 4)
+                : 0;
+
             ContextTokensUsed = EstimateTokenCount(_history);
+            OnPropertyChanged(nameof(ContextTooltip));
         }
 
         /// <summary>
-        /// Best-effort token count for a list of chat messages. Uses a simple
-        /// character-count heuristic (4 chars ≈ 1 token for English text) since
-        /// net48 has no tokenizer library available.
-        /// </summary>
+        /// Best-effort token count for a list of chat messages.</summary>
         private static int EstimateTokenCount(List<ChatMessage> messages)
         {
             var totalChars = 0;
             foreach (var msg in messages)
             {
                 totalChars += msg.Text?.Length ?? 0;
-                foreach (var content in msg.Contents)
-                {
-                    if (content is TextContent tc)
-                        totalChars += tc.Text?.Length ?? 0;
-                }
+                totalChars += MessageContentChars(msg);
             }
-            // Rough heuristic: ~4 characters per token for English text
             return Math.Max(1, totalChars / 4);
         }
 
+        /// <summary>Character count of content items in a single message.</summary>
+        private static int MessageContentChars(ChatMessage msg)
+        {
+            var chars = 0;
+            foreach (var content in msg.Contents)
+            {
+                if (content is TextContent tc)
+                    chars += tc.Text?.Length ?? 0;
+            }
+            return chars;
+        }
+
         /// <summary>
-        /// Sends a compaction request: asks the model to summarize the conversation so far,
+        /// Sends a compaction request
         /// replaces history with the compacted summary, and displays the compacted text
         /// folded inside a new assistant line.
         /// </summary>

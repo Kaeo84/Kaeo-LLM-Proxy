@@ -333,13 +333,11 @@ public partial class ToolWindowControl : UserControl
     }
 
     private bool _scrollPending;
+        private ScrollViewer? _scrollViewer;
 
         /// <summary>
-        /// Throttled scroll-to-bottom using ScrollViewer.ScrollToEnd() instead of
-        /// ScrollIntoView. ScrollIntoView forces a full layout pass per call and tries to
-        /// bring the entire card into view — both cause stuttery jank during streaming.
-        /// ScrollToEnd is a cheap, smooth operation. The timer window (50 ms) batches
-        /// rapid per-token updates into one scroll per UI frame.
+        /// Throttled scroll-to-bottom using pixel-based scrolling (CanContentScroll=false).
+        /// ScrollToBottom is a cheap property set; the throttle prevents per-token churn.
         /// </summary>
         private void RequestScroll()
         {
@@ -348,8 +346,8 @@ public partial class ToolWindowControl : UserControl
             Dispatcher.BeginInvoke(new System.Action(() =>
             {
                 _scrollPending = false;
-                var scrollViewer = FindVisualChild<ScrollViewer>(MessageList);
-                scrollViewer?.ScrollToEnd();
+                _scrollViewer ??= FindVisualChild<ScrollViewer>(MessageList);
+                _scrollViewer?.ScrollToBottom();
             }), System.Windows.Threading.DispatcherPriority.Background);
         }
 

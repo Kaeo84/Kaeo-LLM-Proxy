@@ -86,11 +86,17 @@
             </DockPanel>
         </Border>
 
-        <!-- Transcript: rows are multi-selectable (Ctrl/Shift+click) so several messages can be copied at once. -->
-        <ListView x:Name="MessageList" Grid.Row="2" BorderThickness="0"
-                  SelectionMode="Extended"
-                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                  HorizontalContentAlignment="Stretch">
+        <!-- Transcript: rows are multi-selectable (Ctrl/Shift+click) so several messages can be copied at once.
+                     CanContentScroll="False" disables the default item-based scrolling (which jumps
+                     by item height) in favor of smooth pixel scrolling. VirtualizingStackPanel.IsVirtualizing="False"
+                     prevents the virtualizing panel from lazily measuring wrapped text, eliminating large scroll
+                     jumps and blank/partial cards during manual scrolling. -->
+                <ListView x:Name="MessageList" Grid.Row="2" BorderThickness="0"
+                          SelectionMode="Extended"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ScrollViewer.CanContentScroll="False"
+                          VirtualizingStackPanel.IsVirtualizing="False"
+                          HorizontalContentAlignment="Stretch">
             <ListView.CommandBindings>
                 <CommandBinding Command="ApplicationCommands.Copy"
                                 CanExecute="CopySelected_CanExecute" Executed="CopySelected_Executed" />
