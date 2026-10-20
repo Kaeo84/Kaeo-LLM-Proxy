@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kaeo LLM Proxy — Comprehensive Code Review Report</title>
+<style>
+:root {
+  --bg: #fff; --fg: #1a1a1a; --border: #ddd;
+  --crit-bg: #ffe0e0; --crit-fg: #c00;
+  --high-bg: #fff3cd; --high-fg: #856404;
+  --med-bg: #e0f0ff; --med-fg: #004085;
+  --low-bg: #e8e8e8; --low-fg: #555;
+  --project-bg: #f0f0f0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e; --fg: #d4d4d4; --border: #444;
+    --crit-bg: #4a1c1c; --crit-fg: #ff8080;
+    --high-bg: #4a3d1c; --high-fg: #ffd54f;
+    --med-bg: #1c2e4a; --med-fg: #80b4ff;
+    --low-bg: #333; --low-fg: #999;
+    --project-bg: #2a2a2a;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Segoe UI, Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; padding: 20px; max-width: 1400px; margin: 0 auto; }
+h1 { font-size: 2em; border-bottom: 3px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; }
+h2 { font-size: 1.5em; margin: 30px 0 15px; border-bottom: 2px solid var(--border); padding-bottom: 5px; }
+h3 { font-size: 1.15em; margin: 20px 0 10px; cursor: pointer; }
+h3:hover { text-decoration: underline; }
+.subtitle { color: var(--low-fg); margin-bottom: 25px; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-bottom: 30px; }
+.summary-card { border: 1px solid var(--border); border-radius: 8px; padding: 15px; }
+.summary-card h3 { margin: 0 0 10px; cursor: default; text-decoration: none; }
+.summary-card .count { font-size: 2.5em; font-weight: bold; }
+.crit { color: var(--crit-fg); }
+.high { color: var(--high-fg); }
+.med { color: var(--med-fg); }
+.low { color: var(--low-fg); }
+.toc { background: var(--project-bg); border: 1px solid var(--border); border-radius: 8px; padding: 15px 20px; margin-bottom: 30px; }
+.toc ul { list-style: none; }
+.toc li { padding: 3px 0; }
+.toc a { color: var(--med-fg); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.project-section { margin-bottom: 40px; }
+.severity-bar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.severity-pill { padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+.severity-pill.critical { background: var(--crit-bg); color: var(--crit-fg); }
+.severity-pill.high { background: var(--high-bg); color: var(--high-fg); }
+.severity-pill.medium { background: var(--med-bg); color: var(--med-fg); }
+.severity-pill.low { background: var(--low-bg); color: var(--low-fg); }
+.finding { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+.finding-header { padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
+.finding-header.critical { border-left: 5px solid var(--crit-fg); }
+.finding-header.high { border-left: 5px solid var(--high-fg); }
+.finding-header.medium { border-left: 5px solid var(--med-fg); }
+.finding-header.low { border-left: 5px solid var(--low-fg); }
+.finding-body { padding: 0 15px 15px; display: none; }
+.finding.open .finding-body { display: block; }
+.file-path { font-family: Consolas, 'Courier New', monospace; font-size: 0.85em; color: var(--low-fg); margin-bottom: 5px; }
+.finding-body p { margin-bottom: 8px; }
+.finding-body .fix { background: var(--project-bg); padding: 10px; border-radius: 4px; border: 1px solid var(--border); font-family: Consolas, 'Courier New', monospace; font-size: 0.85em; white-space: pre-wrap; overflow-x: auto; margin-top: 8px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 3px; font-size: 0.75em; margin-right: 6px; font-weight: 600; }
+.tag.bug { background: var(--crit-bg); color: var(--crit-fg); }
+.tag.error { background: var(--crit-bg); color: var(--crit-fg); }
+.tag.badcode { background: var(--high-bg); color: var(--high-fg); }
+.tag.security { background: var(--crit-bg); color: var(--crit-fg); }
+.collapse-all { margin-bottom: 15px; }
+.collapse-all button { padding: 6px 14px; margin-right: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; font-size: 0.9em; }
+.collapse-all button:hover { background: var(--project-bg); }
+.line-num { color: var(--low-fg); font-size: 0.8em; }
+</style>
+</head>
+<body>
+
+<h1>Kaeo LLM Proxy — Comprehensive Code Review Report</h1>
+<p class="subtitle">Generated 2026-10-20 &bull; 10 projects &bull; 147 findings</p>
+
+<div class="toc">
+<h3>Table of Contents</h3>
+<ul>
+<li><a href="#overview">Overview</a></li>
+<li><a href="#p1">Kaeo LLM Proxy Core</a> — 29 findings</li>
+<li><a href="#p2">Kaeo LLM Proxy Infrastructure</a> — 18 findings</li>
+<li><a href="#p3">Kaeo LLM Proxy Services</a> — 37 findings</li>
+<li><a href="#p4">Kaeo LLM Proxy (main) + SSH + Web Search + Code Vector Store modules</a> — 14 findings</li>
+<li><a href="#p5">Kaeo VS Extension + VS Extension.Core</a> — 16 findings</li>
+<li><a href="#p6">Kaeo LLM Proxy.Tests</a> — 18 findings</li>
+</ul>
+</div>
+
+<div class="collapse-all">
+<button onclick="document.querySelectorAll('.finding').forEach(f=>f.classList.add('open'))">Expand All</button>
+<button onclick="document.querySelectorAll('.finding').forEach(f=>f.classList.remove('open'))">Collapse All</button>
+</div>
+
+<h2 id="overview">Overview</h2>
+<div class="summary-grid">
+<div class="summary-card">
+  <h3>Total Findings</h3>
+  <div class="count">132</div>
+</div>
+<div class="summary-card">
+  <h3 class="crit">Critical</h3>
+  <div class="count crit">5</div>
+</div>
+<div class="summary-card">
+  <h3 class="high">High</h3>
+  <div class="count high">19</div>
+</div>
+<div class="summary-card">
+  <h3 class="med">Medium</h3>
+  <div class="count med">54</div>
+</div>
+<div class="summary-card">
+  <h3 class="low">Low</h3>
+  <div class="count low">54</div>
+</div>
+</div>
+
+<!-- ========================= PROJECT 1 ========================= -->
+<h2 id="p1">Kaeo LLM Proxy Core</h2>
+<div class="severity-bar">
+  <span class="severity-pill high">2 High</span>
+  <span class="severity-pill medium">10 Medium</span>
+  <span class="severity-pill low">17 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #2: SecurityPassphrase stored in plaintext <span class="line-num">AppSettings.cs:1400</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\AppSettings.cs ~line 1400</div>
+  <p>The <code>SecurityPassphrase</code> for encrypting/decrypting API keys is persisted in plaintext JSON on disk. If <code>settings.jsonc</code> is ever committed to source control, backed up unencrypted, or exfiltrated, encryption is trivially bypassed.</p>
+  <div class="fix">Use OS-level credential storage (DPAPI on Windows, <code>ProtectedData.Protect</code>). Alternatively, prominently warn that this is only for development.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #3: Silent settings reset on JSON deserialization failure <span class="line-num">AppSettings.cs:1420-1421</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\AppSettings.cs lines 1420-1421</div>
+  <p><code>JsonSerializer.Deserialize&lt;AppSettings&gt;(json, _readOptions) ?? new AppSettings()</code> returns a new <code>AppSettings</code> on deserialization failure, silently resetting all settings. A settings file containing <code>[1,2,3]</code> (non-object root) silently becomes defaults.</p>
+  <div class="fix">Check json is not null/empty first. Or use <code>JsonDocument.TryParse</code> before deserialization, and log a warning when deserialization returns null.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #24: Hardcoded placeholder secret in source code <span class="line-num">SeedData.cs:92</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\SeedData.cs line 92</div>
+  <p>Hardcoded <code>PlaceholderSecret = "seed-placeholder-replace-with-real-token"</code> in compiled code normalizes hardcoded secrets pattern.</p>
+  <div class="fix">Use empty string with comment, or generate a random GUID at seed time.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #4: Broad exception catch on file load <span class="line-num">AppSettings.cs:1420-1427</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\AppSettings.cs lines 1420-1427</div>
+  <p><code>catch (Exception ex)</code> catches catastrophic failures (OutOfMemoryException, etc.), masking them as "using defaults".</p>
+  <div class="fix">Restrict to <code>catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #5: Null-forgiving Path.GetDirectoryName without validation <span class="line-num">AppSettings.cs:1437-1439</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\AppSettings.cs lines 1437-1439</div>
+  <p><code>Path.GetDirectoryName(_settingsPath)!</code> null-forgiving operator suppresses warning but doesn't guard. If path is a root like <code>C:\</code>, <code>Directory.CreateDirectory(null!)</code> throws confusing ArgumentNullException.</p>
+  <div class="fix">Guard: <code>string? dir = Path.GetDirectoryName(_settingsPath); if (dir is null) throw new InvalidOperationException("...");</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #11: LlamaCppEmbeddingsRequest.Input typed as object <span class="line-num">OllamaTypes.cs:473</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\OllamaTypes.cs line 473</div>
+  <p><code>public object Input { get; set; } = string.Empty;</code> — type is <code>object</code> but can be <code>string</code> or <code>string[]</code>. STJ can't deserialize into <code>object</code> with correct runtime type without a custom converter.</p>
+  <div class="fix">Use <code>JsonElement?</code> instead of <code>object</code>, or add a custom <code>JsonConverter</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #16: Decrypted plaintext not zeroed after decrypt <span class="line-num">SecretProtector.cs:100</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Security\SecretProtector.cs line 100</div>
+  <p><code>Encoding.UTF8.GetString(plaintext)</code> returns string. The <code>plaintext</code> byte array is never zeroed — only <code>key</code> is zeroed. Decrypted plaintext remains in memory until GC.</p>
+  <div class="fix">Add <code>CryptographicOperations.ZeroMemory(plaintext)</code> in the <code>finally</code> block alongside the key zeroing.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #19: Timestamp timezone mismatch <span class="line-num">RequestLog.cs:41</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\RequestLog.cs line 41</div>
+  <p><code>Timestamp</code> defaults to <code>DateTime.Now</code> (local time), but <code>ExceptionDetail.Timestamp</code> uses <code>DateTime.UtcNow</code>. Inconsistent time zones make time-based queries unreliable.</p>
+  <div class="fix">Change <code>Timestamp</code> to <code>DateTime.UtcNow</code> for consistency.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #22: No null-check in FromException <span class="line-num">ExceptionDetail.cs:23</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\ExceptionDetail.cs line 23</div>
+  <p><code>FromException</code> doesn't null-check <code>ex</code> or <code>log</code> parameters. <code>ex.GetType()</code> would NRE if ex is null.</p>
+  <div class="fix">Add <code>ArgumentNullException.ThrowIfNull(ex)</code> and <code>ArgumentNullException.ThrowIfNull(log)</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #25: ID collision risk in seed data <span class="line-num">SeedData.cs:101-126</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\SeedData.cs lines 101-126</div>
+  <p><code>CreateModelMappings()</code> calls <code>EnsureId()</code> after creating mappings, but static counter starts at 0. If DB already has ID 0, collision possible.</p>
+  <div class="fix">Initialize <code>ModelMapping._nextId</code> from database max ID before calling <code>CreateModelMappings()</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #29: DisplayFor returns null for unknown tokens <span class="line-num">ModelCapabilities.cs:35-36</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Models\ModelCapabilities.cs lines 35-36</div>
+  <p><code>DisplayFor</code> uses <code>FirstOrDefault</code> on value tuples. Default returns <code>(null, null)</code> → <code>.Display</code> returns null. Callers may not null-check.</p>
+  <div class="fix">Document null return. Consider returning token as-is when unknown.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #33: WinForms dependency in contracts assembly <span class="line-num">IKaeoModule.cs:36</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Modules\IKaeoModule.cs line 36</div>
+  <p><code>CreateConfigPage()</code> returns <code>System.Windows.Forms.TabPage</code>, coupling Core contracts to WinForms. Modules must also reference WinForms.</p>
+  <div class="fix">Consider returning an abstraction instead of a WinForms type.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>17 Low-severity findings — indentation, performance, minor edge cases</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#1:</strong> Empty <code>Configuration\AppSettings.cs</code> (0 bytes) — dead code, should be removed</li>
+    <li><strong>#7:</strong> <code>Clone()</code> calls <code>EnsureId()</code> unnecessarily</li>
+    <li><strong>#8:</strong> Inconsistent indentation throughout <code>AppSettings.cs</code></li>
+    <li><strong>#9:</strong> Linear O(n) scan for model name lookups — use Dictionary index</li>
+    <li><strong>#10:</strong> <code>Directory.CreateDirectory</code> outside try/catch in Save/CreateDefaultFile</li>
+    <li><strong>#12:</strong> <code>object?</code> typed properties for polymorphic JSON fields in OllamaTypes</li>
+    <li><strong>#14:</strong> <code>LlamaCppTimings</code> not used in non-streaming response path</li>
+    <li><strong>#15:</strong> <code>SecretProtector.Encrypt</code> — plaintext string not zeroed (minor)</li>
+    <li><strong>#17:</strong> Iterator in <code>EnumerateSecretMaterial</code> not a real issue</li>
+    <li><strong>#18:</strong> <code>internal static</code> SecretProtector exposes all public members</li>
+    <li><strong>#20–21:</strong> <code>MaxHeaderBlockChars</code> enforcement and <code>RequestLog</code> dual-purpose model</li>
+    <li><strong>#23:</strong> Defensive <code>FullName ?? Name</code> pattern is fine</li>
+    <li><strong>#26:</strong> Hardcoded developer-specific file paths in seed data</li>
+    <li><strong>#27:</strong> <code>IsLoopbackHost</code> doesn't check IPv6 <code>::1</code></li>
+    <li><strong>#30:</strong> O(n²) in <code>Normalize</code> — convert to HashSet</li>
+    <li><strong>#31:</strong> <code>#if DEBUG</code> blocks in McpServerSettings — behavior differs debug vs release</li>
+    <li><strong>#32:</strong> Loose <code>.Contains("kimi-k3")</code> matching in ReasoningEffortProfiles</li>
+  </ul>
+</div>
+</div>
+
+<!-- Remaining Core findings -->
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #34: HostInfo constructor no null validation <span class="line-num">ModuleContext.cs:45-51</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Modules\ModuleContext.cs lines 45-51</div>
+  <p><code>HostInfo</code> doesn't validate <code>listenAddress</code>. <code>DisplayHost</code> calls <code>.Trim()</code> which NREs on null.</p>
+  <div class="fix">Add <code>ArgumentNullException.ThrowIfNullOrWhiteSpace(listenAddress)</code>.</div>
+</div>
+</div>
+
+<!-- ========================= PROJECT 2 ========================= -->
+<h2 id="p2">Kaeo LLM Proxy Infrastructure</h2>
+<div class="severity-bar">
+  <span class="severity-pill medium">7 Medium</span>
+  <span class="severity-pill low">11 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #1: Sensitive data leak via uncleared ArrayPool return <span class="line-num">PooledCharBuffer.cs:68,78</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Utilities\PooledCharBuffer.cs lines 68, 78</div>
+  <p><code>ArrayPool&lt;char&gt;.Shared.Return(_buffer)</code> without zeroing. Arrays from pool not cleared on return. LLM response content persists in returned array readable by next consumer.</p>
+  <div class="fix">Call <code>Array.Clear(_buffer, 0, _length)</code> before each <code>Return</code> call.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #6: Exception filter discards legitimate errors <span class="line-num">ModuleHost.cs:350-355</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Modules\ModuleHost.cs lines 350-355</div>
+  <p>Catch filter <code>ex is not InvalidOperationException</code> meant for missing parameterless constructor, but <code>Activator.CreateInstance</code> can throw <code>InvalidOperationException</code> for type initialization failures too.</p>
+  <div class="fix">Catch <code>MissingMethodException</code> specifically instead of exclusion filter.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #7: Potential NullReferenceException in ModuleAssemblyLoadContext <span class="line-num">ModuleAssemblyLoadContext.cs:33</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Modules\ModuleAssemblyLoadContext.cs line 33</div>
+  <p><code>Assembly.GetEntryAssembly()!.Location</code> — in unit tests or single-file publish, <code>GetEntryAssembly()</code> can return null, causing NRE.</p>
+  <div class="fix">Guard: <code>(Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly()).Location</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #10: Table creation on every Emit call <span class="line-num">SystemLogDbSink.cs:83,147,156-173</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Logging\SystemLogDbSink.cs lines 83, 147, 156-173</div>
+  <p><code>EnsureTableExists</code> runs <code>CREATE TABLE IF NOT EXISTS</code> + two <code>CREATE INDEX IF NOT EXISTS</code> on every single log emission — 3 SQLite round-trips per event.</p>
+  <div class="fix">Cache a <code>_tableEnsured</code> boolean flag and only run DDL once. Reset flag on DB health-recovery.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #12: Sensitive data in plaintext fallback log file <span class="line-num">SystemLogDbSink.cs:175-198</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Logging\SystemLogDbSink.cs lines 175-198</div>
+  <p>When DB unavailable, log messages rendered to plaintext CLEF file. May contain API keys, request bodies, credentials. No encryption, no auto-cleanup.</p>
+  <div class="fix">Sanitize messages before writing, encrypt the fallback file, or add retention/deletion.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #18: Unsynchronized _loadedModules access <span class="line-num">ModuleHost.cs:40,60,84-107,206-210,315</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Modules\ModuleHost.cs various lines</div>
+  <p><code>_loadedModules</code> List accessed from multiple methods without synchronization. Concurrent enumeration + modification = <code>InvalidOperationException</code>.</p>
+  <div class="fix">Use <code>lock</code> or replace with <code>ConcurrentDictionary</code> / <code>ImmutableList</code> with atomic swap.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #4: Hardcoded HttpClient timeout <span class="line-num">UpstreamModelMetadata.cs:23</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Upstream\UpstreamModelMetadata.cs line 23</div>
+  <p><code>Timeout = TimeSpan.FromSeconds(10)</code> hardcoded. No configuration option. Slow upstream providers may fail model discovery spuriously.</p>
+  <div class="fix">Make timeout configurable via AppSettings.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>11 Low-severity findings — minor issues across PooledCharBuffer, ModuleHost, McpServer, logging</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#2:</strong> Integer overflow risk in <code>PooledCharBuffer</code> capacity calculation</li>
+    <li><strong>#3:</strong> Static HttpClient never disposed in <code>UpstreamModelMetadata</code></li>
+    <li><strong>#5:</strong> Indentation inconsistency in <code>ModuleHost.LoadModule</code></li>
+    <li><strong>#8:</strong> Race condition in <code>ModuleAssemblyLoadContext</code> event handler registration</li>
+    <li><strong>#9:</strong> Repeated assembly enumeration O(n) on every load resolution</li>
+    <li><strong>#11:</strong> Potential FileStream leak in <code>OpenFallbackWriter</code></li>
+    <li><strong>#13:</strong> Confusing unit naming in <code>AppLogger</code> file size limit (Mb vs MiB)</li>
+    <li><strong>#14:</strong> No input validation on stored MCP settings (<code>ListenAddress</code>)</li>
+    <li><strong>#15:</strong> <code>LateBoundActivityLog</code> silently drops messages before binding</li>
+    <li><strong>#16:</strong> Unsafe reflection on module-contributed types in <code>McpServerOptionsFactory</code></li>
+    <li><strong>#17:</strong> Fragile <code>SourceContext</code> parsing relying on Serilog internal ToString format</li>
+  </ul>
+</div>
+</div>
+
+<!-- ========================= PROJECT 3 ========================= -->
+<h2 id="p3">Kaeo LLM Proxy Services</h2>
+<div class="severity-bar">
+  <span class="severity-pill critical">3 Critical</span>
+  <span class="severity-pill high">8 High</span>
+  <span class="severity-pill medium">9 Medium</span>
+  <span class="severity-pill low">15 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #1: .Wait() on async task in Dispose blocks thread <span class="line-num">ProxyServer.cs:318</span></span>
+  <span class="severity-pill critical">Critical</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\ProxyServer.cs line 318</div>
+  <p><code>listenTask.Wait(TimeSpan.FromSeconds(5))</code> synchronously blocks the disposing thread up to 5 seconds. If Dispose is called from UI thread or under lock, causes deadlock or UI freeze. <code>StopAsync()</code> correctly uses <code>await listenTask</code>.</p>
+  <div class="fix">Use <code>listenTask.WaitAsync(TimeSpan.FromSeconds(5))</code> or make <code>Dispose()</code> async.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #2: HttpClient disposed while in-flight <span class="line-num">OllamaProxyHandler.cs:251-255</span></span>
+  <span class="severity-pill critical">Critical</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\OllamaProxyHandler.cs lines 251-255</div>
+  <p><code>Dispose()</code> calls <code>_httpClient.Dispose()</code> unconditionally without checking <code>_inFlightRequests</code>. Active streams will get <code>ObjectDisposedException</code>.</p>
+  <div class="fix">Mirror the in-flight guard used in <code>UpdateSettings</code>: poll <code>_inFlightRequests</code> before disposing, or use reference swap with delayed disposal.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #3: Null-forgiving req.Url! without null check <span class="line-num">OllamaProxyHandler.Passthrough.cs:308</span></span>
+  <span class="severity-pill critical">Critical</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\OllamaProxyHandler.Passthrough.cs line 308</div>
+  <p><code>req.Url!.PathAndQuery</code> — <code>HttpListenerRequest.Url</code> can be null for malformed requests. Null-forgiving <code>!</code> will throw NRE.</p>
+  <div class="fix">Add null guard before using <code>req.Url</code>, returning 400.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #4: req.InputStream read without HasEntityBody check <span class="line-num">OllamaProxyHandler.Helpers.cs:382-403</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\OllamaProxyHandler.Helpers.cs lines 382-403</div>
+  <p><code>ReadBodyAsync</code> always reads from <code>req.InputStream</code>, but for GET requests with no body, this blocks until client closes or timeout.</p>
+  <div class="fix">Check <code>req.HasEntityBody</code> before reading, or set <code>req.InputStream.ReadTimeout</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #5: Fire-and-forget task with unobserved exception <span class="line-num">OllamaProxyHandler.cs:121-137</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\OllamaProxyHandler.cs lines 121-137</div>
+  <p>Fire-and-forget <code>Task.Run</code> in <code>UpdateSettings</code> has empty catch silently swallowing all exceptions. If old HttpClient Dispose throws, it's silently eaten.</p>
+  <div class="fix">At minimum, log the exception. Better: register the old client for disposal without fire-and-forget.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #6: Mutating shared JsonObject root across choices <span class="line-num">OpenAiSseFrameTranslation.cs:94-116</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Translation\OpenAiSseFrameTranslation.cs lines 94-116</div>
+  <p><code>yield return root.ToJsonString(...)</code> runs lazily. The shared <code>root</code> object may be further mutated by subsequent iterations before serialization actually occurs.</p>
+  <div class="fix">Deep-clone <code>root</code> before yielding, or serialize immediately and yield the string.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #9: Partial tag buffer uses work.Length - len instead of start <span class="line-num">ThinkTagExtractor.cs:162</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Translation\ThinkTagExtractor.cs line 162</div>
+  <p><code>PartialTagSuffixLength</code>'s <code>start</code> parameter is misleading/unused — the method always checks the absolute end of the buffer. Functionally correct because <code>_pending</code> accumulates the tail, but the API is confusing.</p>
+  <div class="fix">Remove the unused <code>start</code> parameter or clarify the logic with documentation.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #10: Header copy may add to wrong target <span class="line-num">OllamaProxyHandler.Passthrough.cs:328-331</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Proxy\OllamaProxyHandler.Passthrough.cs lines 328-331</div>
+  <p>When <code>upstreamReq.Headers.TryAddWithoutValidation</code> fails, falls back to <code>upstreamReq.Content?.Headers</code>. But <code>Content</code> is null at this point (set later at line 472). Headers silently dropped.</p>
+  <div class="fix">Store headers in temporary collection, apply after <code>Content</code> assigned. Or move header copy after body processing.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #12: JSON injection risk in SSE error frames <span class="line-num">Multiple files</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">OllamaProxyHandler.Passthrough.cs, Compaction.cs</div>
+  <p>All SSE error frame construction uses <code>JsonSerializer.Serialize(message)</code> for the message, which is safe. No injection vulnerability found on deeper inspection — the patterns are correct. (False alarm withdrawn.)</p>
+  <div class="fix">N/A — code is correct.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #11: Truncated GUID IDs collision risk <span class="line-num">OllamaRequestTranslation.cs:50,94</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Translation\OllamaRequestTranslation.cs lines 50, 94</div>
+  <p><code>Guid.NewGuid().ToString("N")[..8]</code> uses only 32 bits of 128-bit GUID. ~4B values but collision probability not zero under high concurrency.</p>
+  <div class="fix">Use full <code>Guid.NewGuid().ToString("N")</code> or use an interlocked counter.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span>9 Medium-severity findings — heartbeat body drain, redundant code, inaccurate logging, etc.</span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#13:</strong> Heartbeat sends /v1/models with <code>ResponseHeadersRead</code> but never drains body — potential socket exhaustion</li>
+    <li><strong>#14:</strong> HttpClient MaxConnectionsPerServer may bottleneck under heavy load</li>
+    <li><strong>#15:</strong> Pipeline exception filter swallows <code>OperationCanceledException</code> incorrectly</li>
+    <li><strong>#16:</strong> OpenAiOutbound: result content overwrites role/content for non-tool messages</li>
+    <li><strong>#18:</strong> StreamMonitor trim can drop recent data if single huge append</li>
+    <li><strong>#19:</strong> ReadBodyAsync blocks indefinitely for chunked encoding with no Content-Length</li>
+    <li><strong>#21:</strong> Inaccurate byte logging after compaction (RequestBytes not updated)</li>
+    <li><strong>#22:</strong> Dual StatisticsService parameters in constructor — confusing for DI</li>
+    <li><strong>#28:</strong> HandleGenerateAsync and HandleChatAsync ~80% duplicated structure</li>
+  </ul>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>15 Low-severity findings — formatting, cosmetic, minor edge cases</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#20:</strong> Redundant null check in Discovery.cs</li>
+    <li><strong>#23:</strong> Duplicate using declarations across all partial OllamaProxyHandler files</li>
+    <li><strong>#24:</strong> Misaligned indentation in OpenAiSseFrameTranslation.cs</li>
+    <li><strong>#25:</strong> Duplicate XML doc comments in Helpers.cs</li>
+    <li><strong>#26:</strong> Redacted API key text visible in OpenAPI spec</li>
+    <li><strong>#27:</strong> Nullable parameter resolved to non-null — confusing</li>
+    <li><strong>#29:</strong> PerformanceService timer callback race with disposal (safe in practice)</li>
+    <li><strong>#30:</strong> Empty chat role fallback may produce invalid ChatRole</li>
+    <li><strong>#31:</strong> CallId fallback uses tool-call index only — not unique across choices</li>
+    <li><strong>#33:</strong> Fire-and-forget Task.Run for 503 rejection</li>
+    <li><strong>#34:</strong> Static HttpClient without PooledConnectionLifetime</li>
+    <li><strong>#35:</strong> Switch expression with .Contains patterns — intentional but surprising</li>
+    <li><strong>#36:</strong> OpenAiStreamTerminator fast-path check on "usage" string literal</li>
+    <li><strong>#37:</strong> Extra blank line between usings</li>
+  </ul>
+</div>
+</div>
+
+<!-- ========================= PROJECT 4 ========================= -->
+<h2 id="p4">Kaeo LLM Proxy (main app) + Module Projects (SSH, Web Search, Code Vector Store)</h2>
+<div class="severity-bar">
+  <span class="severity-pill high">1 High</span>
+  <span class="severity-pill medium">10 Medium</span>
+  <span class="severity-pill low">3 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #1: Mutex can be GC-collected, defeating single-instance guard <span class="line-num">Program.cs:73-91</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy\Program.cs lines 73-91</div>
+  <p>Named <code>Mutex</code> created as local variable, kept alive only with <code>GC.KeepAlive(mutex)</code>. After <code>if</code> block exits, JIT can determine mutex is unreachable. GC may collect it, releasing native handle and defeating single-instance guard while <code>Application.Run()</code> runs.</p>
+  <div class="fix">Store mutex in a field whose lifetime equals the process, or use <code>using Mutex</code> wrapping entire Main including Application.Run().</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #2: Fire-and-forget MCP server start <span class="line-num">TrayApplicationContext.cs:93</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy\TrayApplicationContext.cs line 93</div>
+  <p><code>_ = StartMcpServerAsync()</code> — if exception thrown synchronously before first await, goes unobserved and crashes process.</p>
+  <div class="fix">Wrap: <code>_ = Task.Run(async () => { try { await StartMcpServerAsync(); } catch { } });</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #3: Fire-and-forget module starts <span class="line-num">TrayApplicationContext.cs:127</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy\TrayApplicationContext.cs line 127</div>
+  <p>Same fire-and-forget pattern as #2, in foreach loop calling <code>StartModuleAsync()</code>.</p>
+  <div class="fix">Same pattern as #2.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #4: Multiple async void handlers in MainForm <span class="line-num">MainForm.cs:574,597,620,644,668+</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy\MainForm.cs multiple lines</div>
+  <p>Numerous <code>async void</code> event handlers (<code>BtnStop_Click</code>, <code>BtnRestart_Click</code>, MCP control buttons, module control buttons, <code>BtnTestSend_Click</code>). While most have try/catch, <code>async void</code> is inherently fragile — uncaught exceptions crash the process.</p>
+  <div class="fix">Wrap entire body with <code>try { await ... } catch (Exception ex) { Log.Error(ex); }</code> as outermost scope in every handler.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #5: async void handlers in ModelMappingDialog <span class="line-num">ModelMappingDialog.cs:1640,1708,1779</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy\ModelMappingDialog.cs lines 1640, 1708, 1779</div>
+  <p>Three <code>async void</code> handlers making HTTP calls. Same concerns as MainForm.</p>
+  <div class="fix">Extract logic into <code>async Task</code> helpers, wrap in catch-all at event handler level.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #8–9: Table name interpolated into SQL (SSH module) <span class="line-num">SshRepository.cs:168,176-179</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy Module SSH\SshRepository.cs lines 168, 176-179</div>
+  <p><code>$"SELECT key, value FROM {table}"</code> — table name from string interpolation. Currently safe (private method, hardcoded callers), but pattern is dangerous for future changes.</p>
+  <div class="fix">Add whitelist: <code>if (table != "mcp_ssh_settings") throw ...;</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #14–15: Table name interpolated into SQL (Web Search module) <span class="line-num">WebSearchRepository.cs:170,176-182</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy Module Web Search\WebSearchRepository.cs lines 170, 176-182</div>
+  <p>Identical pattern to SSH module — table name interpolation in SQL. Same risk and fix.</p>
+  <div class="fix">Add whitelist validation.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #21: Multiple table-name interpolations in SQL (Code Vector Store) <span class="line-num">CodeVectorDatabase.cs:162-502</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy Module Code Vector Store\CodeVectorDatabase.cs multiple lines</div>
+  <p>Table names from <code>VecTableName(colId, dimension)</code> interpolated into SQL at 8+ locations. Values from database (trusted), but pattern is risky.</p>
+  <div class="fix">Add regex validation: <code>if (!Regex.IsMatch(name, @"^cv_vec_\d+_\d+$")) throw ...;</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #26: URL exposed in exception message to MCP clients <span class="line-num">RemoteEmbeddingBackend.cs:62</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy Module Code Vector Store\RemoteEmbeddingBackend.cs line 62</div>
+  <p>Error exception message includes full URL: <code>throw new HttpRequestException($"...URL: {_url}...")</code>. Propagates to MCP clients through error returns.</p>
+  <div class="fix">Log URL separately, redact from exception: <code>throw new HttpRequestException($"Embedding request failed: {(int)resp.StatusCode}");</code></div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>3 Low-severity findings</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#22:</strong> Multiple PRAGMA statements in single CommandText — only first may execute (Code Vector DB)</li>
+    <li><strong>#20:</strong> No URL validation on endpoint input in ProviderConfigDialog (Web Search)</li>
+    <li><strong>#25:</strong> Full embedding URL logged at Debug level (Code Vector Store)</li>
+  </ul>
+</div>
+</div>
+
+<!-- ========================= PROJECT 5 ========================= -->
+<h2 id="p5">Kaeo VS Extension + VS Extension.Core</h2>
+<div class="severity-bar">
+  <span class="severity-pill critical">1 Critical</span>
+  <span class="severity-pill high">3 High</span>
+  <span class="severity-pill medium">6 Medium</span>
+  <span class="severity-pill low">7 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #1: Command injection in vs_run_command <span class="line-num">BuiltInVsTools.cs:1191-1192</span></span>
+  <span class="severity-pill critical">Critical</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo VS Extension\Core\BuiltInVsTools.cs lines 1191-1192</div>
+  <p>User-provided (model-generated) text passed directly into PowerShell command line with only backslash escaping. Double quotes, <code>$</code>, backticks, and other PowerShell metacharacters NOT escaped. Malicious prompt or model output could inject arbitrary shell code.</p>
+  <div class="fix">Use <code>EncodedCommand</code> with Base64, pass via temp .ps1 file, or use <code>-Command -</code> with stdin piping. Escape <code>"</code>, <code>$</code>, <code>`</code>, and <code>%</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #2: Plaintext API keys in settings file <span class="line-num">ExtensionSettingsStore.cs:34,229,263</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo VS Extension\Core\ExtensionSettingsStore.cs lines 34, 229, 263</div>
+  <p><code>Connection.ApiKey</code> and <code>McpServer.ApiKey</code> stored as plaintext in <code>%AppData%\KaeoVsExtension\settings.jsonc</code>.</p>
+  <div class="fix">Use <code>System.Security.Cryptography.ProtectedData</code> (<code>DataProtectionScope.CurrentUser</code>) or VS built-in credential store.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #3: IndexOutOfRangeException on ProjectItem.FileNames[1] <span class="line-num">BuiltInVsTools.cs:607,871,1349</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo VS Extension\Core\BuiltInVsTools.cs lines 607, 871, 1349</div>
+  <p>Three methods access <code>item.FileNames[1]</code> without checking <code>FileNames.Count</code>. Solution folders, virtual projects, or items with only short name can have 0 or 1 elements → <code>IndexOutOfRangeException</code>.</p>
+  <div class="fix">Guard: <code>item.FileNames?.Count > 1 ? item.FileNames[1] : null</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #4: Cancelled InquiryDialog returns empty string not null <span class="line-num">InquiryDialog.xaml.cs:47</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo VS Extension\ToolWindow\InquiryDialog.xaml.cs line 47</div>
+  <p><code>CancelButton_Click</code> sets <code>Response = string.Empty</code>, but caller checks <code>if (response == null)</code> to detect cancellation. Cancelled inquiries return empty string, silently feeding empty responses to model.</p>
+  <div class="fix">Change line 47 to <code>Response = null;</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span>6 Medium-severity findings</span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#5:</strong> Hardcoded color <code>#FF3A6EA5</code> on context ProgressBar — won't adapt to VS theme changes</li>
+    <li><strong>#6:</strong> Hardcoded gold star color <code>#FFFFC83D</code> in SettingsWindow.xaml — not legible in all themes</li>
+    <li><strong>#7:</strong> DTE accessed from background thread in InstructionFileLoader.cs — STA COM deadlock risk</li>
+    <li><strong>#8:</strong> <code>async void</code> in ContextBar_Click / CompactButton_Click — unhandled exceptions crash process</li>
+    <li><strong>#9:</strong> <code>async void AnswerPermission</code> in ViewModel — same fragility</li>
+    <li><strong>#10:</strong> HttpClient created per MCP operation in McpServerManager.cs — socket churn</li>
+  </ul>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>7 Low-severity findings</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#11:</strong> StreamReader not disposed in OllamaApiClient.cs</li>
+    <li><strong>#12:</strong> Event handler leak on ChatLine PropertyChanged (bounded, minor)</li>
+    <li><strong>#13:</strong> Culture-sensitive hex color parsing in HexToBrushConverter</li>
+    <li><strong>#14:</strong> Fixed-size NoResize dialog — may truncate at high DPI or with long questions</li>
+    <li><strong>#15:</strong> Fire-and-forget LoadAsync in constructors — unobserved exceptions leave empty UI</li>
+    <li><strong>#16:</strong> Case-sensitive "Right" comparison in StringToHorizontalAlignmentConverter</li>
+  </ul>
+</div>
+</div>
+
+<!-- ========================= PROJECT 6 ========================= -->
+<h2 id="p6">Kaeo LLM Proxy.Tests</h2>
+<div class="severity-bar">
+  <span class="severity-pill critical">1 Critical</span>
+  <span class="severity-pill high">5 High</span>
+  <span class="severity-pill medium">9 Medium</span>
+  <span class="severity-pill low">3 Low</span>
+</div>
+
+<div class="finding">
+<div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #1: Authorization header sends literal "******" not credential secret <span class="line-num">LiveModelSmokeTests.cs:71</span></span>
+  <span class="severity-pill critical">Critical</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\E2E\LiveModelSmokeTests.cs line 71</div>
+  <p><code>ApplyApiKey</code> loads credential from database, matches it, then sends literal string <code>"******"</code> as Authorization header instead of <code>cred.Secret</code>. Smoke test never actually authenticates.</p>
+  <div class="fix">Replace <code>$"******"</code> with <code>cred.Secret</code> on line 71.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #2: Flaky Task.Delay polling loops <span class="line-num">RequestLoggingCoverageTests.cs:112-183</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\Logging\RequestLoggingCoverageTests.cs lines 112-183</div>
+  <p>Three methods use tight polling with 10-25ms <code>Task.Delay</code> + 15s timeout. On overloaded CI, timeouts fire and <code>OperationCanceledException</code> silently swallowed — caller receives stale/null data. <code>SettleAsync</code> blindly sleeps 400ms with no condition check.</p>
+  <div class="fix">Replace polling with async signaling (<code>TaskCompletionSource</code> or <code>ManualResetEventSlim</code> triggered by statistics callback).</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #3: Recreates AppSettings and AppDatabase on every API key lookup <span class="line-num">LiveModelSmokeTests.cs:58-72</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\E2E\LiveModelSmokeTests.cs lines 58-72</div>
+  <p><code>ApplyApiKey</code> called for every HTTP request. Each call does <code>AppSettings.Load()</code> (disk I/O + JSON parse) + new <code>AppDatabase</code> (SQLite open). Performance bug and file-lock contention risk.</p>
+  <div class="fix">Load credential once during test init, cache it, reuse.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag badcode">BadCode</span> #4: Tautological tests that test nothing <span class="line-num">CompactEndpointTests.cs:86-396</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\Compaction\CompactEndpointTests.cs lines 86-396</div>
+  <p>Over a dozen tests assert local variables equal local literals — never call production code. Examples: <code>Assert.Equal("session_summary", expectedToolName)</code> where <code>expectedToolName</code> was just defined as that literal. <code>Scenario_*</code> tests only compare local variables without invoking class under test.</p>
+  <div class="fix">Delete these tests or rewrite to invoke actual production code. For constants tests, call the actual constant directly.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag bug">Bug</span> #5: Flaky Task.Delay in ConcurrencyProbeHandler <span class="line-num">CompactionConcurrencyTests.cs:73</span></span>
+  <span class="severity-pill high">High</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\Compaction\CompactionConcurrencyTests.cs line 73</div>
+  <p><code>await Task.Delay(120, cancellationToken)</code> to simulate request duration. On overloaded CI, 120ms may be shorter than task-scheduling latency → all tasks appear serialized → false-pass.</p>
+  <div class="fix">Use <code>TaskCompletionSource</code> that test controls explicitly — fire all requests, complete simultaneously after confirming they're all in-flight.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span>9 Medium-severity findings</span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#6:</strong> Flaky Task.Delay in CompactionKeepAliveTests — timing-dependent assertions + busy-wait polling</li>
+    <li><strong>#7:</strong> Static HttpClient in LiveModelSmokeTests — socket exhaustion + header leaking between tests</li>
+    <li><strong>#8:</strong> TOCTOU race: GetFreePort() binds port 0, releases, then Server.Start() — AddressInUseException</li>
+    <li><strong>#9:</strong> Hardcoded ports (18190, 18191) in E2EProxyIntegrationTests — conflicts with other processes</li>
+    <li><strong>#10:</strong> <code>.GetAwaiter().GetResult()</code> in Dispose — may deadlock on certain SynchronizationContexts</li>
+    <li><strong>#11:</strong> Windows-only hardcoded path <code>C:\temp\test.db</code> in AppSettingsCloneTests</li>
+    <li><strong>#12:</strong> RealDatabaseVerificationTests silently passes without verifying when env var not set</li>
+    <li><strong>#13:</strong> Repository root walking may fail in CI/docker — throws InvalidOperationException</li>
+    <li><strong>#14:</strong> DateTime.UtcNow dependency in SQL INSERT (low risk, no current timestamp assertions)</li>
+  </ul>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
+  <span><span class="tag security">Security</span> #15: Hardcoded internal IP and cloud endpoint in tests <span class="line-num">SeedDataTests.cs:136-143</span></span>
+  <span class="severity-pill medium">Medium</span>
+</div>
+<div class="finding-body">
+  <div class="file-path">Kaeo LLM Proxy.Tests\Schema\SeedDataTests.cs lines 136-143</div>
+  <p>Private IP <code>192.168.101.199</code> and Alibaba Cloud regional endpoint hardcoded — reveals network topology and cloud provider.</p>
+  <div class="fix">Replace with generic placeholders: <code>http://localhost:8080</code>, <code>https://api.example.com/v1</code>.</div>
+</div>
+</div>
+
+<div class="finding">
+<div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
+  <span>3 Low-severity findings</span>
+  <span class="severity-pill low">Low</span>
+</div>
+<div class="finding-body">
+  <ul>
+    <li><strong>#16:</strong> <code>"real-user-token"</code> placeholder looks like real credentials pattern</li>
+    <li><strong>#17:</strong> Empty catch blocks on File.Delete in cleanup — lost exceptions on locked files</li>
+    <li><strong>#18:</strong> Callee tests verify C# arithmetic rules, not production code</li>
+  </ul>
+</div>
+</div>
+
+<!-- ========================= TOP 10 MOST CRITICAL ========================= -->
+<h2>Top 10 Most Critical Issues to Fix</h2>
+<ol style="margin: 15px 0 30px 25px; line-height: 2;">
+<li><strong>[Critical]</strong> VS Extension: Command injection in <code>vs_run_command</code> (BuiltInVsTools.cs) — PowerShell metacharacters not escaped</li>
+<li><strong>[Critical]</strong> Services: <code>.Wait()</code> on async task in ProxyServer.Dispose blocks thread, risks deadlock</li>
+<li><strong>[Critical]</strong> Services: HttpClient disposed while in-flight requests active in OllamaProxyHandler</li>
+<li><strong>[Critical]</strong> Services: Null-forgiving <code>req.Url!</code> without null check — NRE on malformed requests</li>
+<li><strong>[Critical]</strong> Tests: LiveModelSmokeTests sends literal <code>"******"</code> instead of actual API key</li>
+<li><strong>[High]</strong> Core: SecurityPassphrase stored in plaintext <code>settings.jsonc</code> — defeats at-rest encryption</li>
+<li><strong>[High]</strong> Core: Silent settings reset on JSON deserialization failure — all config lost without notice</li>
+<li><strong>[High]</strong> VS Extension: Plaintext API keys in <code>settings.jsonc</code></li>
+<li><strong>[High]</strong> VS Extension: IndexOutOfRangeException on <code>ProjectItem.FileNames[1]</code> in three locations</li>
+<li><strong>[High]</strong> VS Extension: Cancelled InquiryDialog returns empty string, silently feeding empty responses to model</li>
+</ol>
+
+<hr style="margin: 40px 0;">
+<p style="text-align: center; color: var(--low-fg); font-size: 0.85em;">
+  Code Review Report &bull; Kaeo LLM Proxy &bull; 2026-10-20<br>
+  Review scope: 10 projects, ~147 findings across all severity levels
+</p>
+
+<script>
+// Expand all findings by default
+document.querySelectorAll('.finding').forEach(f => f.classList.add('open'));
+</script>
+</body>
+</html>
