@@ -138,7 +138,7 @@
                                             Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}">
                                         <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
                                                    FontStyle="Italic" FontSize="12"
-                                                   Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}, TargetNullValue={x:Null}}" />
+                                                   Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}" />
                                     </Border>
                                 </Expander>
                                 <!-- Level 3: Tool-activity timeline. -->
