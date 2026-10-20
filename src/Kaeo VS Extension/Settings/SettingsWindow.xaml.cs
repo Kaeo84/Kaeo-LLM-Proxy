@@ -218,6 +218,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 AutoAttachCheck.IsChecked = d.AutoAttachContext;
                 ReasoningDisplayBox.ItemsSource = ReasoningDisplayKinds.DisplayNames;
                 ReasoningDisplayBox.SelectedItem = ReasoningDisplayKinds.Parse(d.ReasoningDisplay);
+                ProcessingDefaultBox.SelectedIndex = string.Equals(d.ProcessingDefault, "Expanded", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+                ToolsDefaultBox.SelectedIndex = string.Equals(d.ToolsDefault, "Expanded", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
                 ReasoningFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.ReasoningForeground);
                 ReasoningBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.ReasoningBackground);
                 UserAlignBox.SelectedIndex = string.Equals(d.UserMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -897,6 +899,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 d.DefaultTemperature = temp;
             d.AutoAttachContext = AutoAttachCheck.IsChecked == true;
             d.ReasoningDisplay = ReasoningDisplayKinds.Parse(ReasoningDisplayBox.SelectedItem as string);
+            d.ProcessingDefault = (ProcessingDefaultBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Collapsed";
+            d.ToolsDefault = (ToolsDefaultBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Collapsed";
             d.ReasoningForeground = (ReasoningFgBox.SelectedItem as ColorOption)?.Hex;
             d.ReasoningBackground = (ReasoningBgBox.SelectedItem as ColorOption)?.Hex;
             d.UserMessageAlignment = (UserAlignBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Left";

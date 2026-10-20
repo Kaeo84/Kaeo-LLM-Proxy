@@ -116,32 +116,48 @@
                                 HorizontalAlignment="{Binding HorizontalAlignment, Converter={StaticResource AlignConv}}"
                                 MaxWidth="520">
                         <TextBlock Text="{Binding Kind}" FontSize="10" Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" Margin="0,0,0,2" />
-                        <!-- Processing section: folds the turn's thinking + tool activity under the
-                             assistant message. Collapsed by default; the Preferences
-                             "Model reasoning (thinking)" setting (Inline) auto-expands it. -->
+                        <!-- Processing section: 3-level nested expander.
+                             Level 1: entire Processing block (tools + thinking).
+                             Level 2: Thinking sub-expander (model reasoning).
+                             Level 3: Tools sub-expander (tool activity timeline).
+                             Each level defaults to collapsed; Preferences set the defaults. -->
                         <Expander Visibility="{Binding HasProcessing, Converter={StaticResource BoolToVis}}"
-                                  IsExpanded="{Binding DataContext.ReasoningInline, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
+                                  IsExpanded="{Binding DataContext.ProcessingExpanded, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
                                   Header="{Binding ProcessingHeader}"
                                   FontSize="11" FontStyle="Italic" Margin="0,0,0,4"
                                   Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
                             <StackPanel Margin="12,2,0,2">
-                                <!-- Model reasoning (thinking), when visible. -->
-                                <Border Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
-                                        Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}">
-                                    <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
-                                               FontStyle="Italic" FontSize="12"
-                                               Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}, TargetNullValue={x:Null}}" />
-                                </Border>
-                                <!-- Tool-activity timeline. -->
-                                <ItemsControl ItemsSource="{Binding Processing}">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding}" FontSize="11" TextWrapping="NoWrap"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
+                                <!-- Level 2: Model reasoning (thinking). -->
+                                <Expander x:Name="ThinkingExpander"
+                                          Visibility="{Binding IsReasoningVisible, Converter={StaticResource BoolToVis}}"
+                                          IsExpanded="{Binding DataContext.ReasoningExpanded, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
+                                          Header="Thinking"
+                                          FontSize="11" FontStyle="Italic" Margin="0,0,0,4"
+                                          Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
+                                    <Border Margin="0,4,0,0"
+                                            Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}">
+                                        <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
+                                                   FontStyle="Italic" FontSize="12"
+                                                   Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}, TargetNullValue={x:Null}}" />
+                                    </Border>
+                                </Expander>
+                                <!-- Level 3: Tool-activity timeline. -->
+                                <Expander x:Name="ToolsExpander"
+                                          Visibility="{Binding HasTools, Converter={StaticResource BoolToVis}}"
+                                          IsExpanded="{Binding DataContext.ToolsExpanded, RelativeSource={RelativeSource AncestorType=ListView}, Mode=OneWay}"
+                                          Header="{Binding ProcessingHeader}"
+                                          FontSize="11" FontStyle="Italic"
+                                          Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}">
+                                    <ItemsControl ItemsSource="{Binding Processing}" Margin="0,4,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}" FontSize="11" TextWrapping="NoWrap"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Foreground="{DynamicResource {x:Static shell:VsBrushes.GrayTextKey}}" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Expander>
                             </StackPanel>
                         </Expander>
                         <!-- Message text wrapped in a border so user/agent background colors render. -->

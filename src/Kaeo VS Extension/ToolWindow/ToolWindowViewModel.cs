@@ -30,6 +30,7 @@ internal sealed class ChatLine : INotifyPropertyChanged
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Processing)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasProcessing)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasTools)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProcessingHeader)));
         };
     }
@@ -90,6 +91,9 @@ internal sealed class ChatLine : INotifyPropertyChanged
 
     /// <summary>True when the Processing section has anything to show (tool activity or visible reasoning).</summary>
     public bool HasProcessing => _processing.Count > 0 || (_isReasoningVisible && _reasoning.Length > 0);
+
+    /// <summary>True when there are tool-call entries to show.</summary>
+    public bool HasTools => _processing.Count > 0;
 
     /// <summary>Header text for the Processing expander, summarizing its contents.</summary>
     public string ProcessingHeader
@@ -234,9 +238,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public ObservableCollection<string> Models { get; } = new();
 
     private bool _reasoningHidden;
-    private bool _reasoningInline;
+    private bool _reasoningExpanded;
     private string? _reasoningForegroundHex;
     private string? _reasoningBackgroundHex;
+
+    private bool _processingExpanded;
+    private bool _toolsExpanded;
 
     private string _userMessageAlignment = "Left";
     private string? _userMessageBackgroundHex;
@@ -245,19 +252,36 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private string? _agentMessageBackgroundHex;
     private string? _agentMessageForegroundHex;
 
-    /// <summary>True when reasoning content is suppressed entirely (Defaults.ReasoningDisplay = "Hidden").</summary>
+    /// <summary>True when reasoning content is suppressed entirely (ReasoningDisplay = "Hidden").</summary>
     public bool ReasoningHidden
     {
         get => _reasoningHidden;
         private set { _reasoningHidden = value; OnPropertyChanged(); }
     }
 
-    /// <summary>True when reasoning renders always-expanded ("Inline"); otherwise inside a collapsed expander.</summary>
-    public bool ReasoningInline
+    /// <summary>True when reasoning renders always-expanded (ReasoningDisplay = "Expanded").</summary>
+    public bool ReasoningExpanded
     {
-        get => _reasoningInline;
-        private set { _reasoningInline = value; OnPropertyChanged(); }
+        get => _reasoningExpanded;
+        private set { _reasoningExpanded = value; OnPropertyChanged(); }
     }
+
+    /// <summary>True to show the Processing expander expanded by default.</summary>
+    public bool ProcessingExpanded
+    {
+        get => _processingExpanded;
+        private set { _processingExpanded = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>True to show the Tools sub-expander expanded by default.</summary>
+    public bool ToolsExpanded
+    {
+        get => _toolsExpanded;
+        private set { _toolsExpanded = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Compatibility: still exposed for reasoning "Inline" XAML usage (maps to Expanded).</summary>
+    public bool ReasoningInline => _reasoningExpanded;
 
     /// <summary>Optional #RRGGBB override for reasoning text; null falls back to the VS theme.</summary>
     public string? ReasoningForegroundHex
@@ -419,7 +443,9 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         var reasoningDefaults = s.Defaults ?? new Defaults();
         string display = ReasoningDisplayKinds.Parse(reasoningDefaults.ReasoningDisplay);
         ReasoningHidden = display == ReasoningDisplayKinds.Hidden;
-        ReasoningInline = display == ReasoningDisplayKinds.Inline;
+        ReasoningExpanded = display == ReasoningDisplayKinds.Expanded;
+        ProcessingExpanded = string.Equals(reasoningDefaults.ProcessingDefault, "Expanded", StringComparison.OrdinalIgnoreCase);
+        ToolsExpanded = string.Equals(reasoningDefaults.ToolsDefault, "Expanded", StringComparison.OrdinalIgnoreCase);
         ReasoningForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningForeground) ? null : reasoningDefaults.ReasoningForeground;
         ReasoningBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.ReasoningBackground) ? null : reasoningDefaults.ReasoningBackground;
         UserMessageAlignment = string.Equals(reasoningDefaults.UserMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? "Right" : "Left";

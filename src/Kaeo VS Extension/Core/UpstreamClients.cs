@@ -40,14 +40,15 @@ internal static class UpstreamKinds
 internal static class ReasoningDisplayKinds
 {
     public const string Collapsed = "Collapsed";
-    public const string Inline = "Inline";
+    public const string Expanded = "Expanded";
     public const string Hidden = "Hidden";
 
-    public static readonly IReadOnlyList<string> DisplayNames = new[] { Collapsed, Inline, Hidden };
+    public static readonly IReadOnlyList<string> DisplayNames = new[] { Collapsed, Expanded, Hidden };
 
     public static string Parse(string? value) => value switch
     {
-        Inline => Inline,
+        "Inline" => Expanded,          // migrate old setting
+        Expanded => Expanded,
         Hidden => Hidden,
         _ => Collapsed,
     };

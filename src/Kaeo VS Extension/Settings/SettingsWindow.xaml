@@ -660,11 +660,27 @@
                     <CheckBox x:Name="AutoAttachCheck" Content="Auto-attach current file context" Margin="0,0,0,12" />
 
                     <!-- Processing / Reasoning -->
-                    <TextBlock Text="Processing Section (Thinking)" FontWeight="SemiBold" Margin="0,0,0,6" />
+                    <TextBlock Text="Processing Section (Thinking + Tools)" FontWeight="SemiBold" Margin="0,0,0,6" />
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <TextBlock Text="Display mode:" Width="220" VerticalAlignment="Center"
-                                   ToolTip="Collapsed = folded by default, Inline = always expanded, Hidden = thinking omitted (tool activity still shown)." />
+                        <TextBlock Text="Processing expander default:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="Collapsed = folded by default, Expanded = open by default." />
+                        <ComboBox x:Name="ProcessingDefaultBox" Width="120" VerticalAlignment="Center">
+                            <ComboBoxItem Content="Collapsed" Tag="Collapsed" />
+                            <ComboBoxItem Content="Expanded" Tag="Expanded" />
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Thinking display:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="Collapsed = folded sub-expander, Expanded = always visible, Hidden = thinking omitted." />
                         <ComboBox x:Name="ReasoningDisplayBox" Width="120" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Tools sub-expander default:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="Collapsed = folded by default, Expanded = open by default." />
+                        <ComboBox x:Name="ToolsDefaultBox" Width="120" VerticalAlignment="Center">
+                            <ComboBoxItem Content="Collapsed" Tag="Collapsed" />
+                            <ComboBoxItem Content="Expanded" Tag="Expanded" />
+                        </ComboBox>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                         <TextBlock Text="Text color:" Width="220" VerticalAlignment="Center" />

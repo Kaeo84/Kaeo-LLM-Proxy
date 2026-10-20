@@ -185,9 +185,15 @@ internal sealed class Defaults
     /// <summary>Maximum AutoPilot auto-continuations per turn (prevents infinite "not done" loops).</summary>
     public int AutoPilotBudget { get; set; } = 5;
 
-    /// <summary>How model reasoning (thinking) shows in the transcript: "Collapsed" (an
-    /// expandable section, the default), "Inline" (always visible), or "Hidden".</summary>
+    /// <summary>Default state of the Processing expander: "Collapsed" (default) or "Expanded".</summary>
+    public string? ProcessingDefault { get; set; } = "Collapsed";
+
+    /// <summary>How model reasoning (thinking) shows in the transcript: "Collapsed" (folded
+    /// sub-expander under Processing), "Expanded" (always visible), or "Hidden".</summary>
     public string? ReasoningDisplay { get; set; } = "Collapsed";
+
+    /// <summary>Default state of the Tools sub-expander: "Collapsed" (default) or "Expanded".</summary>
+    public string? ToolsDefault { get; set; } = "Collapsed";
 
     /// <summary>Optional #RRGGBB overrides for reasoning text/background. Null = follow the theme.</summary>
     public string? ReasoningForeground { get; set; }
