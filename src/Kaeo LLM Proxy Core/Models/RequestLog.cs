@@ -38,7 +38,7 @@ internal sealed class RequestLog
     /// </summary>
     public string RequestId { get; set; } = string.Empty;
 
-    public DateTime Timestamp { get; set; } = DateTime.Now;
+    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
     public string Method { get; set; } = string.Empty;
     public string OllamaPath { get; set; } = string.Empty;
     public string UpstreamPath { get; set; } = string.Empty;

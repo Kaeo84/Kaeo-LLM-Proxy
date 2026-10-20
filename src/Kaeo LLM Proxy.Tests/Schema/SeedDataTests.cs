@@ -134,7 +134,7 @@ public class SeedDataTests
 
         var expected = new (string ProxyName, string UpstreamUrl, string ModelName, int ContextWindowTokens, string? CredentialName)[]
         {
-            ("Desktop - Qwen", "http://192.168.101.199:8080",
+            ("Desktop - Qwen", "http://localhost:8080",
                 @"..\Model\Qwen3.8-Unsloth-NVFP4\Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf", 256_000, null),
             ("QC Qwen 3.7 Plus", qwenCloudUrl, "qwen3.7-plus", 1_000_000, SeedData.QwenCloudCredentialName),
             ("QC Qwen 3.8 Flash", qwenCloudUrl, "qwen3.8-flash", 1_000_000, SeedData.QwenCloudCredentialName),

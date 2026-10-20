@@ -1428,7 +1428,7 @@ internal sealed class AppSettings
             string json = File.ReadAllText(_settingsPath);
             return JsonSerializer.Deserialize<AppSettings>(json, _readOptions) ?? new AppSettings();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or InvalidOperationException)
         {
             // The on-disk file exists but is unreadable (corrupt JSON, encoding issue, etc.).
             // Before silently falling back to defaults, back up the original file so the

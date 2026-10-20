@@ -166,6 +166,11 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
 
     private Dictionary<string, string> LoadKeyValueTable(string table)
     {
+        // Only allow known safe table names to prevent SQL injection if
+        // callers are changed in the future to accept external input.
+        if (table is not ("mcp_web_search_settings" or "mcp_web_search_providers"))
+            throw new ArgumentException($"Unknown table name: {table}", nameof(table));
+
         IReadOnlyList<KeyValuePair<string, string>> rows = _database.Query(
             $"SELECT key, value FROM {table};",
             reader => new KeyValuePair<string, string>(reader.GetString(0), reader.GetString(1)));

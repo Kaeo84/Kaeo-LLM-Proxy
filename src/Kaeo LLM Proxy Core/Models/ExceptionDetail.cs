@@ -22,6 +22,9 @@ internal sealed class ExceptionDetail
     /// </summary>
     public static ExceptionDetail FromException(Exception ex, RequestLog log)
     {
+        ArgumentNullException.ThrowIfNull(ex);
+        ArgumentNullException.ThrowIfNull(log);
+
         var detail = new ExceptionDetail
         {
             ExceptionType = ex.GetType().FullName ?? ex.GetType().Name,

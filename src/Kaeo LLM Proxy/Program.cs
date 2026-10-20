@@ -15,6 +15,13 @@ internal static class Program
     private const string MutexName = "Global\\Kaeo.LlmProxy.SingleInstance";
     private static readonly string _appIconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "AppIcon.ico");
 
+    /// <summary>
+    /// Held as a static field so the GC does not finalize the mutex while the process is running.
+    /// A local variable inside Main would be eligible for collection after its last use;
+    /// keeping it rooted here ensures the single-instance lock is held for the full process lifetime.
+    /// </summary>
+    private static Mutex? _singleInstanceMutex;
+
     [STAThread]
     static void Main()
     {
@@ -72,7 +79,7 @@ internal static class Program
 
         if (!settings.AllowMultipleInstances)
         {
-            Mutex mutex = new(initiallyOwned: true, MutexName, out bool createdNew);
+            _singleInstanceMutex = new(initiallyOwned: true, MutexName, out bool createdNew);
 
             if (!createdNew)
             {
@@ -85,9 +92,6 @@ internal static class Program
                     MessageBoxIcon.Information);
                 return;
             }
-
-            // Keep the mutex alive for the lifetime of the process.
-            GC.KeepAlive(mutex);
         }
 
         // Load mappings and credentials early so we can resolve the passphrase and decrypt

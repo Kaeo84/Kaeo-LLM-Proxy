@@ -347,7 +347,7 @@ internal sealed class ModuleHost
             return (IKaeoModule)(Activator.CreateInstance(moduleType)
                 ?? throw new InvalidOperationException($"Failed to create an instance of '{moduleType.FullName}'."));
         }
-        catch (Exception ex) when (ex is not InvalidOperationException)
+        catch (MissingMethodException ex)
         {
             throw new InvalidOperationException(
                 $"The module '{moduleType.FullName}' could not be constructed (a parameterless constructor is required): {ex.Message}",

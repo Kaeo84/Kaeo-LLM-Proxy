@@ -65,6 +65,7 @@ internal sealed class PooledCharBuffer : IDisposable
 
         _buffer.AsSpan(0, _length).CopyTo(newBuffer);
 
+        Array.Clear(_buffer, 0, _length);
         ArrayPool<char>.Shared.Return(_buffer);
         _buffer = newBuffer;
     }
@@ -75,6 +76,7 @@ internal sealed class PooledCharBuffer : IDisposable
             return;
 
         _disposed = true;
+        Array.Clear(_buffer, 0, _length);
         ArrayPool<char>.Shared.Return(_buffer);
         _buffer = [];
     }

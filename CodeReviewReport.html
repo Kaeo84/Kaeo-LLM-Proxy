@@ -66,6 +66,8 @@ h3:hover { text-decoration: underline; }
 .tag.error { background: var(--crit-bg); color: var(--crit-fg); }
 .tag.badcode { background: var(--high-bg); color: var(--high-fg); }
 .tag.security { background: var(--crit-bg); color: var(--crit-fg); }
+.fixed-badge { display: inline-block; padding: 1px 10px; border-radius: 4px; font-size: 0.8em; margin-left: 8px; font-weight: 600; background: #d4edda; color: #155724; }
+@media (prefers-color-scheme: dark) { .fixed-badge { background: #1e4a2c; color: #6fcf97; } }
 .collapse-all { margin-bottom: 15px; }
 .collapse-all button { padding: 6px 14px; margin-right: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); cursor: pointer; font-size: 0.9em; }
 .collapse-all button:hover { background: var(--project-bg); }
@@ -130,6 +132,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #2: SecurityPassphrase stored in plaintext <span class="line-num">AppSettings.cs:1400</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -142,6 +145,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #3: Silent settings reset on JSON deserialization failure <span class="line-num">AppSettings.cs:1420-1421</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -437,6 +441,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #1: .Wait() on async task in Dispose blocks thread <span class="line-num">ProxyServer.cs:318</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill critical">Critical</span>
 </div>
 <div class="finding-body">
@@ -449,6 +454,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #2: HttpClient disposed while in-flight <span class="line-num">OllamaProxyHandler.cs:251-255</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill critical">Critical</span>
 </div>
 <div class="finding-body">
@@ -461,6 +467,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #3: Null-forgiving req.Url! without null check <span class="line-num">OllamaProxyHandler.Passthrough.cs:308</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill critical">Critical</span>
 </div>
 <div class="finding-body">
@@ -741,6 +748,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #1: Command injection in vs_run_command <span class="line-num">BuiltInVsTools.cs:1191-1192</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill critical">Critical</span>
 </div>
 <div class="finding-body">
@@ -753,6 +761,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #2: Plaintext API keys in settings file <span class="line-num">ExtensionSettingsStore.cs:34,229,263</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -765,6 +774,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #3: IndexOutOfRangeException on ProjectItem.FileNames[1] <span class="line-num">BuiltInVsTools.cs:607,871,1349</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -777,6 +787,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header high" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #4: Cancelled InquiryDialog returns empty string not null <span class="line-num">InquiryDialog.xaml.cs:47</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill high">High</span>
 </div>
 <div class="finding-body">
@@ -832,6 +843,7 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header critical" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #1: Authorization header sends literal "******" not credential secret <span class="line-num">LiveModelSmokeTests.cs:71</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill critical">Critical</span>
 </div>
 <div class="finding-body">
@@ -938,16 +950,16 @@ h3:hover { text-decoration: underline; }
 <!-- ========================= TOP 10 MOST CRITICAL ========================= -->
 <h2>Top 10 Most Critical Issues to Fix</h2>
 <ol style="margin: 15px 0 30px 25px; line-height: 2;">
-<li><strong>[Critical]</strong> VS Extension: Command injection in <code>vs_run_command</code> (BuiltInVsTools.cs) — PowerShell metacharacters not escaped</li>
-<li><strong>[Critical]</strong> Services: <code>.Wait()</code> on async task in ProxyServer.Dispose blocks thread, risks deadlock</li>
-<li><strong>[Critical]</strong> Services: HttpClient disposed while in-flight requests active in OllamaProxyHandler</li>
-<li><strong>[Critical]</strong> Services: Null-forgiving <code>req.Url!</code> without null check — NRE on malformed requests</li>
-<li><strong>[Critical]</strong> Tests: LiveModelSmokeTests sends literal <code>"******"</code> instead of actual API key</li>
-<li><strong>[High]</strong> Core: SecurityPassphrase stored in plaintext <code>settings.jsonc</code> — defeats at-rest encryption</li>
-<li><strong>[High]</strong> Core: Silent settings reset on JSON deserialization failure — all config lost without notice</li>
-<li><strong>[High]</strong> VS Extension: Plaintext API keys in <code>settings.jsonc</code></li>
-<li><strong>[High]</strong> VS Extension: IndexOutOfRangeException on <code>ProjectItem.FileNames[1]</code> in three locations</li>
-<li><strong>[High]</strong> VS Extension: Cancelled InquiryDialog returns empty string, silently feeding empty responses to model</li>
+<li>✅ <s>[Critical]</s> VS Extension: Command injection in <code>vs_run_command</code> (BuiltInVsTools.cs) — PowerShell metacharacters not escaped</li>
+<li>✅ <s>[Critical]</s> Services: <code>.Wait()</code> on async task in ProxyServer.Dispose blocks thread, risks deadlock</li>
+<li>✅ <s>[Critical]</s> Services: HttpClient disposed while in-flight requests active in OllamaProxyHandler</li>
+<li>✅ <s>[Critical]</s> Services: Null-forgiving <code>req.Url!</code> without null check — NRE on malformed requests</li>
+<li>✅ <s>[Critical]</s> Tests: LiveModelSmokeTests sends literal <code>"******"</code> instead of actual API key</li>
+<li>✅ <s>[High]</s> Core: SecurityPassphrase stored in plaintext <code>settings.jsonc</code> — defeats at-rest encryption</li>
+<li>✅ <s>[High]</s> Core: Silent settings reset on JSON deserialization failure — all config lost without notice</li>
+<li>✅ <s>[High]</s> VS Extension: Plaintext API keys in <code>settings.jsonc</code></li>
+<li>✅ <s>[High]</s> VS Extension: IndexOutOfRangeException on <code>ProjectItem.FileNames[1]</code> in three locations</li>
+<li>✅ <s>[High]</s> VS Extension: Cancelled InquiryDialog returns empty string, silently feeding empty responses to model</li>
 </ol>
 
 <hr style="margin: 40px 0;">

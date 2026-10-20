@@ -26,6 +26,7 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
     // Fallback file state
     private StreamWriter? _fallbackWriter;
     private bool _dbHealthy = true;
+    private bool _tableEnsured;
     private bool _disposed;
 
     /// <summary>
@@ -80,7 +81,11 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
             using SqliteConnection connection = new(_connectionString);
             connection.Open();
 
-            EnsureTableExists(connection);
+            if (!_tableEnsured)
+            {
+                EnsureTableExists(connection);
+                _tableEnsured = true;
+            }
 
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
@@ -93,11 +98,13 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
             command.Parameters.AddWithValue("$ctx", (object?)sourceContext ?? DBNull.Value);
             command.ExecuteNonQuery();
 
-            // Successful write — reset failure counter
+            // Successful write — reset failure counter and clear table-ensured
+            // flag so DDL retries on connection-recovery (e.g. DB recreated on disk).
             _consecutiveDbFailures = 0;
         }
         catch
         {
+            _tableEnsured = false;
             _consecutiveDbFailures++;
 
             if (_consecutiveDbFailures >= FailureThreshold)

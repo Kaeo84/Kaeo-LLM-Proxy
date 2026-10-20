@@ -30,7 +30,7 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             {
                 lock (_hostResolverLock)
                 {
-                    _hostResolver ??= new AssemblyDependencyResolver(Assembly.GetEntryAssembly()!.Location);
+                    _hostResolver ??= new AssemblyDependencyResolver((Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly()).Location);
                 }
             }
             return _hostResolver;
