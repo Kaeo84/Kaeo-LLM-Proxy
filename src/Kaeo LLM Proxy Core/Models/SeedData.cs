@@ -173,9 +173,12 @@ internal static class SeedData
         ReasoningEffortPriority = SamplingPriority.Proxy,
         ReasoningEffort = "medium",
         ReasoningEffortValues = ["medium"],
-        ReasoningEffortFormat = ReasoningEffortFormat.Modern
-            | ReasoningEffortFormat.QwenCloud
-            | ReasoningEffortFormat.ChatTemplateKwargs,
+        // The managed Alibaba Cloud Model Studio compatible-mode endpoint accepts the
+        // "reasoning" object format (Modern). The QwenCloud (extra_body) and
+        // ChatTemplateKwargs formats are designed for self-hosted inference servers
+        // (vLLM/SGLang/llama.cpp); sending them to the managed cloud API can cause
+        // the upstream to reject the request with a "Model not exist" error.
+        ReasoningEffortFormat = ReasoningEffortFormat.Modern,
 
         Capabilities = ["chat", "reasoning", "vision", "function_calling", "text"],
 
