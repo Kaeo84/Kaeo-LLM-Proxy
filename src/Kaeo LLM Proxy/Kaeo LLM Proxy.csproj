@@ -32,8 +32,10 @@
     <!-- The App uses Serilog directly (startup logging); the other packages now live in the
          Core / Infrastructure / Services libraries and flow in transitively. -->
     <PackageReference Include="Serilog" Version="4.4.0" />
-    <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities -->
-    <PackageReference Include="MessagePack" Version="3.1.8" />
+    <!-- Override transitive MessagePack (2.5.192) to resolve known vulnerabilities.
+         Kept in lockstep with Kaeo VS Extension: the two processes exchange MessagePack
+         payloads, so a version skew here is a wire-format risk, not just a build warning. -->
+    <PackageReference Include="MessagePack" Version="3.1.12" />
   </ItemGroup>
 
   <!-- Module system: copy all module outputs (DLL + large deps) to $(OutputPath)Modules/ -->
