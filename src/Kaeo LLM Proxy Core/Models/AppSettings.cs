@@ -1457,7 +1457,8 @@ internal sealed class AppSettings
 
         try
         {
-            string dir = Path.GetDirectoryName(_settingsPath)!;
+            string dir = Path.GetDirectoryName(_settingsPath)
+                ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
             Directory.CreateDirectory(dir);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(this, _writeOptions));
         }
@@ -1896,7 +1897,8 @@ internal sealed class AppSettings
     /// <summary>Writes the annotated default config template to disk on first run.</summary>
     private void CreateDefaultFile()
     {
-        string dir = Path.GetDirectoryName(_settingsPath)!;
+        string dir = Path.GetDirectoryName(_settingsPath)
+            ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
         Directory.CreateDirectory(dir);
 
         string escapedDatabasePath = Logging.ApplicationDatabasePath.Replace("\\", "\\\\");

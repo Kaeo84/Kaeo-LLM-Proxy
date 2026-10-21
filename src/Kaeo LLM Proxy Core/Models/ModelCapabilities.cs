@@ -31,9 +31,13 @@ internal static class ModelCapabilities
     /// </summary>
     public static readonly IReadOnlyList<string> Defaults = ["text", "chat", "function_calling"];
 
-    /// <summary>Display label for a wire token, or null when the token is not in the known set.</summary>
-    public static string? DisplayFor(string token)
-        => All.FirstOrDefault(c => string.Equals(c.Token, token, StringComparison.OrdinalIgnoreCase)).Display;
+    /// <summary>
+    /// Display label for a wire token. Unknown (custom) tokens are returned as-is so callers never
+    /// receive null and custom capabilities stay visible in the UI.
+    /// </summary>
+    public static string DisplayFor(string token)
+        => All.FirstOrDefault(c => string.Equals(c.Token, token, StringComparison.OrdinalIgnoreCase)).Display
+           ?? token;
 
     /// <summary>
     /// Orders an arbitrary set of capability tokens: known tokens first in canonical order, then

@@ -33,5 +33,13 @@ public interface IKaeoModule
     /// Called on the UI thread after <see cref="Initialize"/>. Return a fully built
     /// <see cref="System.Windows.Forms.TabPage"/> (the host adds it to its tab control).
     /// </summary>
+    /// <remarks>
+    /// The WinForms return type is a deliberate design decision, not an oversight: the host is a
+    /// WinForms application and modules render their configuration UI in-process inside the host's
+    /// tab control. A UI-framework-agnostic abstraction would force every module to build against
+    /// a second UI stack that the host then has to bridge, adding complexity with no second UI
+    /// technology to support. Modules therefore reference WinForms by design; the rest of this
+    /// contract stays UI-free.
+    /// </remarks>
     System.Windows.Forms.TabPage CreateConfigPage();
 }

@@ -44,6 +44,8 @@ public sealed class HostInfo
 {
     public HostInfo(string listenAddress, int listenPort, bool apiExplorerEnabled, string? openApiSpecUrl)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(listenAddress);
+
         ListenAddress = listenAddress;
         ListenPort = listenPort;
         ApiExplorerEnabled = apiExplorerEnabled;

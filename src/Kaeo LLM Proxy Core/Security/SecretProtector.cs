@@ -100,13 +100,15 @@ internal static class SecretProtector
         {
             using var aes = new AesGcm(key, TagSize);
             aes.Decrypt(nonce, ciphertext, tag, plaintext);
+            return Encoding.UTF8.GetString(plaintext);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(key);
+            // Scrub the decrypted bytes too; the returned string is immutable, but the buffer
+            // must not linger in memory until GC.
+            CryptographicOperations.ZeroMemory(plaintext);
         }
-
-        return Encoding.UTF8.GetString(plaintext);
     }
 
     /// <summary>

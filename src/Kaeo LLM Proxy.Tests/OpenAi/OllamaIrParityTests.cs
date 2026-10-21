@@ -12,7 +12,7 @@ namespace Kaeo.LlmProxy.Tests;
 /// Phase-B golden parity: the IR-routed request translation (OllamaRequestTranslation,
 /// behind AppSettings.UseIrTranslation) must produce structurally identical upstream
 /// messages to the legacy mapper (MapMessagesWithToolCorrelation) - id preservation,
-/// 8-hex id generation, and FIFO correlation of unlabelled tool replies. Generated ids
+/// full 32-hex GUID id generation, and FIFO correlation of unlabelled tool replies. Generated ids
 /// are normalized to GEN so runs are comparable; the pairing itself is asserted per path.
 /// </summary>
 public class OllamaIrParityTests
@@ -25,7 +25,7 @@ public class OllamaIrParityTests
     private static string Canonical(List<LlamaCppMessage> messages)
         => System.Text.RegularExpressions.Regex.Replace(
             JsonSerializer.Serialize(messages, Options),
-            @"""[0-9a-f]{8}""",
+            @"""[0-9a-f]{32}""",
             "GEN");
 
     private static void AssertParity(List<OllamaMessage> source)
@@ -96,8 +96,8 @@ public class OllamaIrParityTests
         {
             string firstId = path[1].ToolCalls![0].Id;
             string secondId = path[1].ToolCalls![1].Id;
-            Assert.Matches("^[0-9a-f]{8}$", firstId);
-            Assert.Matches("^[0-9a-f]{8}$", secondId);
+            Assert.Matches("^[0-9a-f]{32}$", firstId);
+            Assert.Matches("^[0-9a-f]{32}$", secondId);
             Assert.NotEqual(firstId, secondId);
             Assert.Equal(firstId, path[2].ToolCallId);
             Assert.Equal(secondId, path[3].ToolCallId);

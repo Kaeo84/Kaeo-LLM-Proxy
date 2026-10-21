@@ -109,7 +109,7 @@ internal static class SeedData
             CreateMapping(
                 "Desktop - Qwen",
                 @"..\Model\Qwen3.8-Unsloth-NVFP4\Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf",
-                "http://192.168.101.199:8080",
+                "http://localhost:8080",
                 credentialName: null,
                 contextWindowTokens: 256_000),
             CreateMapping(

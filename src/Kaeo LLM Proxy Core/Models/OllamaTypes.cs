@@ -469,7 +469,13 @@ internal sealed class LlamaCppCompletionTokensDetails
 internal sealed class LlamaCppEmbeddingsRequest
 {
     [JsonPropertyName("model")] public string Model { get; set; } = string.Empty;
-    /// <summary>Single string or array of strings.</summary>
+
+    /// <summary>
+    /// Single string or array of strings. Deliberately typed <c>object</c>: this request is only
+    /// ever serialized — System.Text.Json writes the runtime type (<c>string</c> or
+    /// <c>string[]</c>), which is exactly the polymorphic shape upstream <c>/v1/embeddings</c>
+    /// expects. There is no deserialization path for this type, so no converter is needed.
+    /// </summary>
     [JsonPropertyName("input")] public object Input { get; set; } = string.Empty;
 }
 
