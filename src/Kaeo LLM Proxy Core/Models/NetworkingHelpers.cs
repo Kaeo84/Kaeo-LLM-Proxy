@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace Kaeo.LlmProxy.Core.Models;
 
 /// <summary>
@@ -20,9 +22,17 @@ internal static class NetworkingHelpers
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || uri.Host is not { Length: > 0 } host)
             return false;
 
-        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase);
+            || host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // IPv6 loopback: Uri.Host returns the bracketed form ("[::1]"), and IPAddress.IsLoopback
+        // also covers the rest of 127.0.0.0/8 so "http://127.0.0.2:8080" counts as this machine.
+        return IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? address)
+            && IPAddress.IsLoopback(address);
     }
 }
 

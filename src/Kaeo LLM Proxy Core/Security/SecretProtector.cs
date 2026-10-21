@@ -130,13 +130,25 @@ internal static class SecretProtector
         }
     }
 
-    private static byte[] DeriveKey(string passphrase, byte[] salt) =>
-        Rfc2898DeriveBytes.Pbkdf2(
-            Encoding.UTF8.GetBytes(passphrase),
-            salt,
-            Iterations,
-            HashAlgorithmName.SHA256,
-            KeySize);
+    private static byte[] DeriveKey(string passphrase, byte[] salt)
+    {
+        byte[] passphraseBytes = Encoding.UTF8.GetBytes(passphrase);
+        try
+        {
+            return Rfc2898DeriveBytes.Pbkdf2(
+                passphraseBytes,
+                salt,
+                Iterations,
+                HashAlgorithmName.SHA256,
+                KeySize);
+        }
+        finally
+        {
+            // The passphrase string itself is immutable and cannot be scrubbed, but its UTF-8
+            // copy must not linger on the heap until the GC gets around to it.
+            CryptographicOperations.ZeroMemory(passphraseBytes);
+        }
+    }
 
     /// <summary>
     /// Returns the SHA-256 hash of <paramref name="passphrase"/> as a Base64 string
@@ -146,7 +158,17 @@ internal static class SecretProtector
     internal static string HashPassphrase(string passphrase)
     {
         ArgumentException.ThrowIfNullOrEmpty(passphrase);
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(passphrase));
+        byte[] passphraseBytes = Encoding.UTF8.GetBytes(passphrase);
+        byte[] hash;
+        try
+        {
+            hash = SHA256.HashData(passphraseBytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passphraseBytes);
+        }
+
         return HashPrefix + Convert.ToBase64String(hash);
     }
 

@@ -889,9 +889,11 @@ internal sealed class ModelMapping
     /// <summary>
     /// Creates a deep copy of this ModelMapping instance with all properties cloned,
     /// preserving the stable <see cref="Id"/> so cross-mapping references (e.g.
-    /// <see cref="ContextSummarizeModelId"/>) remain valid across clones. Call
-    /// <see cref="AssignNewId"/> on the result when a truly independent mapping is needed
-    /// (e.g. duplicating a row).
+    /// <see cref="ContextSummarizeModelId"/>) remain valid across clones. When the source has not
+    /// been assigned an <see cref="Id"/> yet (<c>0</c>), the clone receives a fresh one so every
+    /// mapping published through <see cref="AppSettings.Clone"/> is referenceable by cross-mapping
+    /// links. Call <see cref="AssignNewId"/> on the result when a truly independent mapping is
+    /// needed (e.g. duplicating a row).
     /// </summary>
     public ModelMapping Clone()
     {
@@ -932,9 +934,10 @@ internal sealed class ModelMapping
             RedirectManualCompaction = RedirectManualCompaction,
             EnableCopilotCompatibility = EnableCopilotCompatibility,
             ForwardClientAuthorization = ForwardClientAuthorization,
-                    };
-                    clone.EnsureId();
-                    return clone;
+        };
+
+        clone.EnsureId();
+        return clone;
     }
 
     /// <summary>
@@ -1923,12 +1926,26 @@ internal sealed class AppSettings
             : null;
     }
 
-    /// <summary>Writes the annotated default config template to disk on first run.</summary>
+    /// <summary>
+    /// Writes the annotated default config template to disk on first run. A failure to create the
+    /// directory or write the file (locked-down profile, read-only install) is logged and swallowed:
+    /// first launch must not crash, the app simply runs on the in-memory defaults and tries again
+    /// next launch.
+    /// </summary>
     private void CreateDefaultFile()
     {
-        string dir = Path.GetDirectoryName(_settingsPath)
-            ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
-        Directory.CreateDirectory(dir);
+        string dir;
+        try
+        {
+            dir = Path.GetDirectoryName(_settingsPath)
+                ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warning(ex, "Could not create the settings directory for {Path}; running on in-memory defaults.", _settingsPath);
+            return;
+        }
 
         string escapedDatabasePath = Logging.ApplicationDatabasePath.Replace("\\", "\\\\");
         string escapedLogDir = Logging.LogDirectory.Replace("\\", "\\\\");
@@ -1980,6 +1997,13 @@ internal sealed class AppSettings
             }
             """;
 
-        File.WriteAllText(_settingsPath, content);
+        try
+        {
+            File.WriteAllText(_settingsPath, content);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warning(ex, "Could not write the default settings template to {Path}; running on in-memory defaults.", _settingsPath);
+        }
     }
 }

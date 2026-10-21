@@ -287,28 +287,28 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>17 Low-severity findings — indentation, performance, minor edge cases</span>
+  <span>17 Low-severity findings — indentation, performance, minor edge cases <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#1:</strong> Empty <code>Configuration\AppSettings.cs</code> (0 bytes) — dead code, should be removed</li>
-    <li><strong>#7:</strong> <code>Clone()</code> calls <code>EnsureId()</code> unnecessarily</li>
-    <li><strong>#8:</strong> Inconsistent indentation throughout <code>AppSettings.cs</code></li>
-    <li><strong>#9:</strong> Linear O(n) scan for model name lookups — use Dictionary index</li>
-    <li><strong>#10:</strong> <code>Directory.CreateDirectory</code> outside try/catch in Save/CreateDefaultFile</li>
-    <li><strong>#12:</strong> <code>object?</code> typed properties for polymorphic JSON fields in OllamaTypes</li>
-    <li><strong>#14:</strong> <code>LlamaCppTimings</code> not used in non-streaming response path</li>
-    <li><strong>#15:</strong> <code>SecretProtector.Encrypt</code> — plaintext string not zeroed (minor)</li>
-    <li><strong>#17:</strong> Iterator in <code>EnumerateSecretMaterial</code> not a real issue</li>
-    <li><strong>#18:</strong> <code>internal static</code> SecretProtector exposes all public members</li>
-    <li><strong>#20–21:</strong> <code>MaxHeaderBlockChars</code> enforcement and <code>RequestLog</code> dual-purpose model</li>
-    <li><strong>#23:</strong> Defensive <code>FullName ?? Name</code> pattern is fine</li>
-    <li><strong>#26:</strong> Hardcoded developer-specific file paths in seed data</li>
-    <li><strong>#27:</strong> <code>IsLoopbackHost</code> doesn't check IPv6 <code>::1</code></li>
-    <li><strong>#30:</strong> O(n²) in <code>Normalize</code> — convert to HashSet</li>
-    <li><strong>#31:</strong> <code>#if DEBUG</code> blocks in McpServerSettings — behavior differs debug vs release</li>
-    <li><strong>#32:</strong> Loose <code>.Contains("kimi-k3")</code> matching in ReasoningEffortProfiles</li>
+    <li><strong>#1:</strong> Empty <code>Configuration\AppSettings.cs</code> (0 bytes) — dead code, should be removed <span class="fixed-badge">✅ FIXED</span> <em>(File deleted; it was empty and unreferenced.)</em></li>
+    <li><strong>#7:</strong> <code>Clone()</code> calls <code>EnsureId()</code> unnecessarily <span class="fixed-badge">✅ VERIFIED — INTENTIONAL</span> <em>(Clone preserves a non-zero Id; the EnsureId call is a backstop for Id==0 sources and is pinned by the CloneOfUnidentifiedMappingGetsFreshId test. XML doc updated to state this explicitly.)</em></li>
+    <li><strong>#8:</strong> Inconsistent indentation throughout <code>AppSettings.cs</code> <span class="fixed-badge">✅ FIXED</span> <em>(The only misindented block — the mangled 20-space closing of ModelMapping.Clone — was repaired; a deep-indent scan of the whole file found no other debris.)</em></li>
+    <li><strong>#9:</strong> Linear O(n) scan for model name lookups — use Dictionary index <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(ModelMappings holds dozens of entries; the per-request scan cost is negligible next to network I/O, and a cached index over a list the Settings UI mutates risks stale routing — a correctness regression worse than the micro-perf gain.)</em></li>
+    <li><strong>#10:</strong> <code>Directory.CreateDirectory</code> outside try/catch in Save/CreateDefaultFile <span class="fixed-badge">✅ FIXED</span> <em>(Save was already guarded; CreateDefaultFile now catches IOException/UnauthorizedAccessException around the directory create and the template write, logs a warning, and continues on in-memory defaults so first launch can't crash on a read-only location.)</em></li>
+    <li><strong>#12:</strong> <code>object?</code> typed properties for polymorphic JSON fields in OllamaTypes <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(format/think/input/tool_choice/arguments are genuinely polymorphic on the wire (string | object | string[]); System.Text.Json materializes them as JsonElement for lossless passthrough. Typed models or custom converters would add complexity without changing behavior.)</em></li>
+    <li><strong>#14:</strong> <code>LlamaCppTimings</code> not used in non-streaming response path <span class="fixed-badge">✅ VERIFIED — FALSE ALARM</span> <em>(Non-streaming bodies are parsed via TryParseChunk → FillTokenStats(log, chunk), which reads chunk.Timings (DraftN/DraftNAccepted) — wired at Passthrough.cs:877 and Compaction.cs:503.)</em></li>
+    <li><strong>#15:</strong> <code>SecretProtector.Encrypt</code> — plaintext string not zeroed (minor) <span class="fixed-badge">✅ FIXED</span> <em>(.NET strings are immutable and cannot be zeroed, but every derived byte buffer now is: Encrypt already scrubbed key + plaintextBytes; DeriveKey and HashPassphrase now scrub their passphrase UTF-8 copies in finally blocks via CryptographicOperations.ZeroMemory.)</em></li>
+    <li><strong>#17:</strong> Iterator in <code>EnumerateSecretMaterial</code> not a real issue <span class="fixed-badge">✅ VERIFIED — FALSE ALARM</span> <em>(Report itself concluded this; deferred iteration is intended and all callers fully enumerate.)</em></li>
+    <li><strong>#18:</strong> <code>internal static</code> SecretProtector exposes all public members <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(The class is internal, so "public" members are assembly-scoped; the public/internal split (crypto API vs. hash helpers) is deliberate.)</em></li>
+    <li><strong>#20–21:</strong> <code>MaxHeaderBlockChars</code> enforcement and <code>RequestLog</code> dual-purpose model <span class="fixed-badge">✅ VERIFIED — ENFORCED / BY DESIGN</span> <em>(#20: the header block is truncated at MaxHeaderBlockChars in Passthrough.cs:2492-2496 and pinned by HeaderLogFormattingTests. #21: the in-memory summary deliberately omits large fields while the detail view reloads the full row from SQLite — documented design, exercised by AttributionSurvivesADatabaseRoundTrip.)</em></li>
+    <li><strong>#23:</strong> Defensive <code>FullName ?? Name</code> pattern is fine <span class="fixed-badge">✅ VERIFIED — FALSE ALARM</span> <em>(Report itself concluded the pattern is fine.)</em></li>
+    <li><strong>#26:</strong> Hardcoded developer-specific file paths in seed data <span class="fixed-badge">✅ VERIFIED — ACKNOWLEDGED</span> <em>(The seeded "Desktop - Qwen"/"Svr Qwen3 Embedding 4B" mappings mirror the author's local llama.cpp deployments. Seeds run once on a fresh database and are editable/removable in the UI; they leak no secrets (paths only) and never re-apply over user edits.)</em></li>
+    <li><strong>#27:</strong> <code>IsLoopbackHost</code> doesn't check IPv6 <code>::1</code> <span class="fixed-badge">✅ FIXED</span> <em>(Now falls through to IPAddress.TryParse on the de-bracketed host + IPAddress.IsLoopback, covering ::1 and the whole 127.0.0.0/8 range (e.g. 127.0.0.2) in addition to the explicit localhost/127.0.0.1/host.docker.internal spellings.)</em></li>
+    <li><strong>#30:</strong> O(n²) in <code>Normalize</code> — convert to HashSet <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(Current Normalize is a single O(n) pass: clamps + one foreach over ModelMappings with per-mapping URL validation; no nested scan or duplicate-check remains.)</em></li>
+    <li><strong>#31:</strong> <code>#if DEBUG</code> blocks in McpServerSettings — behavior differs debug vs release <span class="fixed-badge">✅ VERIFIED — INTENTIONAL</span> <em>(CollectRequest/ResponseDetails default to true in development builds so captured bodies are readable while debugging, and false in release for privacy. They are defaults only — persisted user settings override them in both configurations.)</em></li>
+    <li><strong>#32:</strong> Loose <code>.Contains("kimi-k3")</code> matching in ReasoningEffortProfiles <span class="fixed-badge">✅ VERIFIED — INTENTIONAL</span> <em>(The substring match is documented as tolerant of provider prefixes/suffixes ("kimi/kimi-k3", "moonshot/kimi-k3-instruct", ":latest" tags); a model name incidentally containing "kimi-k3" that isn't K3-family is not a realistic collision.)</em></li>
   </ul>
 </div>
 </div>
