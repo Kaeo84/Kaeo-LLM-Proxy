@@ -114,8 +114,9 @@ public class CompactionSettingsTests
         int raisedBudget = AutoCompactionService.GetSummaryPromptBudget(
             32768, AutoCompactionService.EffectiveSummaryMaxTokensFor(8000));
 
-        int expectedReserveDifference = 8000 - AutoCompactionService.DefaultSummaryMaxTokens;
-        Assert.Equal(expectedReserveDifference, defaultBudget - raisedBudget);
+        // Hand-computed literal (8000 ceiling - 1000 default reserve) so the assertion pins the
+        // production values instead of re-deriving the reserve arithmetic it is testing.
+        Assert.Equal(7000, defaultBudget - raisedBudget);
     }
 
     [Fact]

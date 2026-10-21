@@ -980,14 +980,14 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>3 Low-severity findings</span>
+  <span>3 Low-severity findings <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#16:</strong> <code>"real-user-token"</code> placeholder looks like real credentials pattern</li>
-    <li><strong>#17:</strong> Empty catch blocks on File.Delete in cleanup — lost exceptions on locked files</li>
-    <li><strong>#18:</strong> Callee tests verify C# arithmetic rules, not production code</li>
+    <li><strong>#16:</strong> <code>"real-user-token"</code> placeholder looks like real credentials pattern <span class="fixed-badge">✅ FIXED</span> <em>(SeedDataTests now uses the obviously synthetic value <code>"placeholder-not-a-real-token"</code>; the round-trip assertion is unchanged)</em></li>
+    <li><strong>#17:</strong> Empty catch blocks on File.Delete in cleanup — lost exceptions on locked files <span class="fixed-badge">✅ FIXED</span> <em>(E2EProxyIntegrationTests cleanup now routes through a TryDeleteFile helper that keeps teardown non-fatal but writes the failure reason to stderr)</em></li>
+    <li><strong>#18:</strong> Callee tests verify C# arithmetic rules, not production code <span class="fixed-badge">✅ FIXED</span> <em>(no test named "callee" exists in the suite; read as the expectations that re-derived production formulas — CompactEndpointTests and CompactionSettingsTests now assert hand-computed literals (47652, 7000) so they pin production values instead of mirroring the arithmetic under test)</em></li>
   </ul>
 </div>
 </div>

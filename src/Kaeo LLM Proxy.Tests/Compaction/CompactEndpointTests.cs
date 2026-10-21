@@ -87,8 +87,10 @@ public class CompactEndpointTests
 		// reserve (DefaultSummaryMaxTokens = 1000) is held back for the summary itself.
 		Assert.Equal(48152, AutoCompactionService.GetSummaryPromptBudget(65536));
 
-		// A combine pass reserves the larger combine ceiling instead of the default.
-		Assert.Equal(49152 - AutoCompactionService.CombineMaxTokens,
+		// A combine pass reserves the larger combine ceiling (CombineMaxTokens = 1500) instead of
+		// the default: 49152 - 1500 = 47652. The expectation is a hand-computed literal so the
+		// assertion pins the production value instead of re-deriving the production formula.
+		Assert.Equal(47652,
 			AutoCompactionService.GetSummaryPromptBudget(65536, AutoCompactionService.CombineMaxTokens));
 	}
 

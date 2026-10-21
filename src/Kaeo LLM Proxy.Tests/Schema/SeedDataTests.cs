@@ -189,7 +189,7 @@ public class SeedDataTests
     public void SeedingDoesNotOverwriteAnExistingCredentialOfTheSameName()
     {
         string path = NewDatabasePath();
-        string userToken = "real-user-token";
+        string userToken = "placeholder-not-a-real-token";
 
         using (AppDatabase setup = OpenDatabase(path))
         {

@@ -115,9 +115,25 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         _database.Dispose();
         _upstream.Dispose();
 
-        try { File.Delete(_dbPath); } catch { }
-        try { File.Delete(_dbPath + "-shm"); } catch { }
-        try { File.Delete(_dbPath + "-wal"); } catch { }
+        TryDeleteFile(_dbPath);
+        TryDeleteFile(_dbPath + "-shm");
+        TryDeleteFile(_dbPath + "-wal");
+    }
+
+    /// <summary>
+    /// Best-effort cleanup: a locked or missing temp database must not fail an otherwise passing
+    /// test, but the reason is surfaced on stderr instead of being silently swallowed.
+    /// </summary>
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"E2E cleanup: could not delete '{path}': {ex.Message}");
+        }
     }
 
     /// <summary>
