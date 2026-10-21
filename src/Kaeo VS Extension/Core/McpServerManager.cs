@@ -197,7 +197,7 @@ internal sealed class McpServerManager
     /// <summary>Sends an MCP <c>initialize</c> request and returns the advertised server name/version.</summary>
     private static async Task<(string Name, string Version)> InitializeHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
+        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
 
                 var doc = await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
                 var info = doc?["result"]?["serverInfo"];
@@ -409,27 +409,38 @@ internal sealed class McpServerManager
     private const string McpSessionIdHeader = "Mcp-Session-Id";
 
     /// <summary>
-    /// Tracks an MCP session: the HttpClient and the session ID returned by initialize.
+    /// Tracks an MCP session: the (shared) HttpClient and the session ID returned by initialize.
+    /// The client is owned by <see cref="SharedHttpClients"/>, so a session never disposes it.
     /// </summary>
-    private sealed class McpHttpSession : IDisposable
+    private sealed class McpHttpSession
     {
         public HttpClient Http { get; }
         public string? SessionId { get; set; }
 
         public McpHttpSession(HttpClient http) => Http = http;
-
-        public void Dispose() => Http.Dispose();
     }
 
     /// <summary>
-    /// Creates an HttpClient configured for the given MCP endpoint with optional Bearer auth.
+    /// Shared HttpClient cache keyed by endpoint + credential. Creating a client per MCP
+    /// operation burned an ephemeral socket each time (TIME_WAIT churn) on busy sessions;
+    /// cached clients live for the process lifetime and reuse pooled connections. Per-session
+    /// state (Mcp-Session-Id) therefore rides on individual requests, never on
+    /// DefaultRequestHeaders, so concurrent sessions cannot corrupt each other.
     /// </summary>
-    private static HttpClient CreateHttpClient(string url, string? apiKey)
-    {
-        var http = new HttpClient { BaseAddress = new Uri(url) };
-        HttpHelpers.SetBearerAuth(http, apiKey);
-        return http;
-    }
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, HttpClient> SharedHttpClients =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns the shared HttpClient for the given MCP endpoint, created on first use with
+    /// optional Bearer auth.
+    /// </summary>
+    private static HttpClient GetSharedHttpClient(string url, string? apiKey) =>
+        SharedHttpClients.GetOrAdd(url + "|" + (apiKey ?? string.Empty), _ =>
+        {
+            var http = new HttpClient { BaseAddress = new Uri(url) };
+            HttpHelpers.SetBearerAuth(http, apiKey);
+            return http;
+        });
 
     /// <summary>Builds the MCP <c>initialize</c> JSON-RPC request body.</summary>
     private static JsonObject CreateInitializeRequest(int id = 0) => new()
@@ -530,33 +541,41 @@ internal sealed class McpServerManager
     /// </summary>
     private static async Task<JsonNode?> SendJsonRpcAsync(McpHttpSession session, JsonObject body, CancellationToken ct)
     {
-        // Add session ID header if we have one
-        if (!string.IsNullOrEmpty(session.SessionId))
+        // The client is shared across sessions, so the per-session ID must ride on the request
+        // itself instead of the client's DefaultRequestHeaders.
+        var request = new HttpRequestMessage(HttpMethod.Post, string.Empty)
         {
-            session.Http.DefaultRequestHeaders.Remove(McpSessionIdHeader);
-            session.Http.DefaultRequestHeaders.Add(McpSessionIdHeader, session.SessionId);
+            Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
+        };
+        if (!string.IsNullOrEmpty(session.SessionId))
+            request.Headers.TryAddWithoutValidation(McpSessionIdHeader, session.SessionId);
+
+        JsonNode? result;
+        using (request)
+        {
+            var resp = await session.Http.SendAsync(request, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+
+            // Capture session ID from response if present
+            if (resp.Headers.TryGetValues(McpSessionIdHeader, out var values))
+                session.SessionId = values.FirstOrDefault();
+
+            // Notifications return 202 Accepted with no body
+            if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)
+                return null;
+
+            var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+            // Parse SSE-framed response
+            result = ParseSseResponse(respText);
         }
 
-        var resp = await session.Http.PostAsync("", new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"), ct).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-
-        // Capture session ID from response if present
-        if (resp.Headers.TryGetValues(McpSessionIdHeader, out var values))
-            session.SessionId = values.FirstOrDefault();
-
-        // Notifications return 202 Accepted with no body
-        if (resp.StatusCode == System.Net.HttpStatusCode.Accepted)
-            return null;
-
-        var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-
-        // Parse SSE-framed response
-        return ParseSseResponse(respText);
+        return result;
     }
 
     private static async Task<IReadOnlyList<McpTool>> PullToolsHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
+        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
 
                 // Perform initialize handshake and capture session ID
                 await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
@@ -571,7 +590,7 @@ internal sealed class McpServerManager
 
     private static async Task<string> ExecuteToolHttpAsync(string url, string? apiKey, string toolName, string? argsJson, CancellationToken ct)
     {
-        using var session = new McpHttpSession(CreateHttpClient(url, apiKey));
+        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
 
                 // Perform initialize handshake
                 await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);

@@ -328,7 +328,8 @@
                             <ListView.ItemTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="&#x2605;" Width="16" Foreground="#FFFFC83D"
+                                        <TextBlock Text="&#x2605;" Width="16"
+                                                   Foreground="{DynamicResource {x:Static shell:VsBrushes.ControlEditRequiredHintTextKey}}"
                                                    Visibility="{Binding IsDefault, Converter={StaticResource BoolToVis}}" />
                                         <TextBlock Text="{Binding Name}" />
                                     </StackPanel>

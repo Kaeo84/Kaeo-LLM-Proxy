@@ -188,18 +188,22 @@ internal static class InstructionFileLoader
 
     /// <summary>
     /// Gets the solution root path from the current Visual Studio solution, or null when no
-    /// solution is open or the path cannot be determined.
+    /// solution is open or the path cannot be determined. DTE is STA-affinitized, so when the
+    /// caller is on a background thread (agent runtime) the read is marshaled to the UI thread
+    /// through the JoinableTaskFactory instead of touching COM cross-thread.
     /// </summary>
     public static string? GetSolutionRootPath()
     {
         try
         {
-            // Read-only DTE probe guarded by the catch below; callers run on background
-            // threads (agent runtime), so a UI-thread assert is not appropriate here.
-#pragma warning disable VSTHRD010
-            var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
-            var solutionPath = dte?.Solution?.FullName;
-#pragma warning restore VSTHRD010
+            var solutionPath = ThreadHelper.CheckAccess()
+                ? ReadSolutionFullName()
+                : ThreadHelper.JoinableTaskFactory.Run(async () =>
+                {
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                    return ReadSolutionFullName();
+                });
+
             if (string.IsNullOrEmpty(solutionPath))
                 return null;
 
@@ -209,6 +213,20 @@ internal static class InstructionFileLoader
         {
             return null;
         }
+    }
+
+    /// <summary>Reads <c>Solution.FullName</c> via DTE. Only ever called on the UI thread: either
+    /// directly behind <see cref="ThreadHelper.CheckAccess"/> or after
+    /// <c>SwitchToMainThreadAsync</c>. Kept free of <c>ThrowIfNotOnUIThread</c> so the analyzer
+    /// does not infer main-thread affinity for the whole (background-callable) call graph.</summary>
+    private static string? ReadSolutionFullName()
+    {
+        // Read-only DTE probe; any COM/thread failure degrades to "no solution open" via the
+        // caller's catch.
+#pragma warning disable VSTHRD010
+        var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+        return dte?.Solution?.FullName;
+#pragma warning restore VSTHRD010
     }
 
     }

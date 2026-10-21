@@ -864,26 +864,36 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// </summary>
     public async void AnswerPermission(ChatLine line, bool allow, bool always)
     {
-        if (line.Approval is null || line.IsAnswered)
-            return;
-
-        line.IsAnswered = true;
-        line.Text += allow
-            ? (always ? " - always allowed" : " - allowed")
-            : " - denied";
-
-        if (allow && always)
+        try
         {
-            // Extract tool name from the permission card text: "Allow the model to run \"toolName\"? ..."
-            var toolName = ExtractToolName(line.Text);
-            if (!string.IsNullOrEmpty(toolName) && _alwaysAllowed.Add(toolName!))
-            {
-                await PersistAlwaysAllowedAsync();
-                Lines.Add(new ChatLine { Kind = "status", Text = $"\"{toolName}\" always allowed (saved to preferences)." });
-            }
-        }
+            if (line.Approval is null || line.IsAnswered)
+                return;
 
-        line.Approval.TrySetResult(allow);
+            line.IsAnswered = true;
+            line.Text += allow
+                ? (always ? " - always allowed" : " - allowed")
+                : " - denied";
+
+            if (allow && always)
+            {
+                // Extract tool name from the permission card text: "Allow the model to run \"toolName\"? ..."
+                var toolName = ExtractToolName(line.Text);
+                if (!string.IsNullOrEmpty(toolName) && _alwaysAllowed.Add(toolName!))
+                {
+                    await PersistAlwaysAllowedAsync();
+                    Lines.Add(new ChatLine { Kind = "status", Text = $"\"{toolName}\" always allowed (saved to preferences)." });
+                }
+            }
+
+            line.Approval.TrySetResult(allow);
+        }
+        catch (Exception ex)
+        {
+            // async void: an escape here would crash devenv. Make sure the awaiting runtime
+            // loop is released even when the bookkeeping above failed.
+            DebugLog.Error("Answering the permission card failed.", ex);
+            try { line.Approval?.TrySetResult(allow); } catch { /* already completed */ }
+        }
     }
 
     /// <summary>Extracts the tool name from a permission card text like

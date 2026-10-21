@@ -214,7 +214,7 @@
                                  ToolTip="{Binding ContextTooltip}"
                                  MouseLeftButtonUp="ContextBar_Click"
                                  Cursor="Hand"
-                                 Foreground="#FF3A6EA5"
+                                 Foreground="{DynamicResource {x:Static shell:VsBrushes.AccentMediumKey}}"
                                  BorderThickness="0" />
                     <Button x:Name="CompactButton" Grid.Column="1" Width="80" Height="20"
                             FontSize="10" Padding="4,0" Margin="6,0,0,0"

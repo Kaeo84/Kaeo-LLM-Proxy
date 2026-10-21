@@ -400,6 +400,15 @@ public partial class ToolWindowControl : UserControl
 
         if (result != System.Windows.MessageBoxResult.OK) return;
 
-        await _vm.CompactAsync();
+        try
+        {
+            await _vm.CompactAsync();
+        }
+        catch (Exception ex)
+        {
+            // Callers are async void WPF handlers: an unhandled exception here would crash devenv.
+            DebugLog.Error("Context compaction failed.", ex);
+            await VS.MessageBox.ShowErrorAsync("Error", $"Error compacting context: {ex.Message}");
+        }
     }
 }

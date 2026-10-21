@@ -839,17 +839,17 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
-  <span>6 Medium-severity findings</span>
+  <span>6 Medium-severity findings</span> <span class="fixed-badge">✅ ALL FIXED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#5:</strong> Hardcoded color <code>#FF3A6EA5</code> on context ProgressBar — won't adapt to VS theme changes</li>
-    <li><strong>#6:</strong> Hardcoded gold star color <code>#FFFFC83D</code> in SettingsWindow.xaml — not legible in all themes</li>
-    <li><strong>#7:</strong> DTE accessed from background thread in InstructionFileLoader.cs — STA COM deadlock risk</li>
-    <li><strong>#8:</strong> <code>async void</code> in ContextBar_Click / CompactButton_Click — unhandled exceptions crash process</li>
-    <li><strong>#9:</strong> <code>async void AnswerPermission</code> in ViewModel — same fragility</li>
-    <li><strong>#10:</strong> HttpClient created per MCP operation in McpServerManager.cs — socket churn</li>
+    <li><strong>#5:</strong> Hardcoded color <code>#FF3A6EA5</code> on context ProgressBar — won't adapt to VS theme changes <span class="fixed-badge">✅ FIXED</span> <em>(now <code>DynamicResource VsBrushes.AccentMediumKey</code>, repaints on theme change)</em></li>
+    <li><strong>#6:</strong> Hardcoded gold star color <code>#FFFFC83D</code> in SettingsWindow.xaml — not legible in all themes <span class="fixed-badge">✅ FIXED</span> <em>(now <code>DynamicResource VsBrushes.ControlEditRequiredHintTextKey</code>, the themed amber hint brush)</em></li>
+    <li><strong>#7:</strong> DTE accessed from background thread in InstructionFileLoader.cs — STA COM deadlock risk <span class="fixed-badge">✅ FIXED</span> <em>(GetSolutionRootPath now marshals the DTE read to the UI thread via <code>ThreadHelper.CheckAccess</code> / <code>JoinableTaskFactory.Run + SwitchToMainThreadAsync</code>)</em></li>
+    <li><strong>#8:</strong> <code>async void</code> in ContextBar_Click / CompactButton_Click — unhandled exceptions crash process <span class="fixed-badge">✅ FIXED</span> <em>(shared <code>CompactContextAsync</code> now wraps the await in try/catch: logs via DebugLog and shows a non-blocking error dialog)</em></li>
+    <li><strong>#9:</strong> <code>async void AnswerPermission</code> in ViewModel — same fragility <span class="fixed-badge">✅ FIXED</span> <em>(body wrapped in try/catch; on failure the pending Approval TCS is still resolved so the runtime loop can never hang)</em></li>
+    <li><strong>#10:</strong> HttpClient created per MCP operation in McpServerManager.cs — socket churn <span class="fixed-badge">✅ FIXED</span> <em>(clients are now cached per endpoint+credential in a static ConcurrentDictionary; Mcp-Session-Id moved from DefaultRequestHeaders to per-request headers so shared clients are concurrency-safe)</em></li>
   </ul>
 </div>
 </div>
