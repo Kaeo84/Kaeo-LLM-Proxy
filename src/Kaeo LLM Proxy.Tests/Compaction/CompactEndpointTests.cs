@@ -8,391 +8,279 @@ using Xunit;
 namespace Kaeo.LlmProxy.Tests;
 
 /// <summary>
-/// Tests for compact endpoint functionality including format detection and output validation.
+/// Tests for compact endpoint functionality: the format enumeration, Copilot request detection,
+/// the production token/budget estimators, and the <see cref="AutoCompactionService.ShouldCompact"/>
+/// gate including its per-session circuit breaker. Structural assertions on the compacted bodies
+/// themselves live in <see cref="CompactBehaviorTests"/>, which drives the real map-reduce pipeline
+/// end-to-end against a stubbed upstream.
 /// </summary>
 public class CompactEndpointTests
 {
-    // ── CompactionFormat Enum Tests ──────────────────────────────────────
-
-    [Fact]
-    public void CompactionFormat_Proxy_IsDefined()
-    {
-        Assert.True(Enum.IsDefined(typeof(CompactionFormat), CompactionFormat.Proxy));
-    }
-
-    [Fact]
-    public void CompactionFormat_Ollama_IsDefined()
-    {
-        Assert.True(Enum.IsDefined(typeof(CompactionFormat), CompactionFormat.Ollama));
-    }
-
-    [Fact]
-    public void CompactionFormat_HasTwoValues()
-    {
-        var values = Enum.GetValues<CompactionFormat>();
-        Assert.Equal(2, values.Length);
-    }
-
-    // ── Format Detection Tests ───────────────────────────────────────────
-
-    [Fact]
-    public void CopilotDetection_WithCopilotUserAgent_ReturnsTrue()
-    {
-        var userAgent = "GitHub Copilot Chat/1.0";
-        Assert.True(OllamaProxyHandler.IsCopilotRequest(userAgent));
-    }
-
-    [Fact]
-    public void CopilotDetection_WithNonCopilotUserAgent_ReturnsFalse()
-    {
-        var userAgent = "Mozilla/5.0";
-        Assert.False(OllamaProxyHandler.IsCopilotRequest(userAgent));
-    }
-
-    [Fact]
-    public void CopilotDetection_WithNullUserAgent_ReturnsFalse()
-    {
-        Assert.False(OllamaProxyHandler.IsCopilotRequest(null));
-    }
-
-    [Fact]
-    public void CopilotDetection_WithEmptyUserAgent_ReturnsFalse()
-    {
-        Assert.False(OllamaProxyHandler.IsCopilotRequest(""));
-    }
-
-    [Fact]
-    public void CopilotDetection_WithGithubInUserAgent_ReturnsTrue()
-    {
-        var userAgent = "GitHub CLI/2.0";
-        Assert.True(OllamaProxyHandler.IsCopilotRequest(userAgent));
-    }
-
-    // ── Ollama Format Output Tests ───────────────────────────────────────
-
-    [Fact]
-    public void OllamaFormat_ContainsToolCallStructure()
-    {
-        // This test validates that Ollama format produces the expected structure
-        // The actual format includes:
-        // - Assistant message with tool_calls array
-        // - Tool response with tool_name and content
-        // - Content prefixed with compaction marker
-
-        string expectedToolName = "session_summary";
-        string expectedPrefix = "<conversation_summary>";
-
-        // Validate constants match Ollama's format
-        Assert.Equal("session_summary", expectedToolName);
-        Assert.Equal("<conversation_summary>", expectedPrefix);
-    }
-
-    [Fact]
-    public void ProxyFormat_ContainsSystemMessage()
-    {
-        // Proxy format uses a system message with summary
-        string expectedPrefix = "Previous conversation summary:";
-
-        Assert.Contains("Previous conversation summary:", expectedPrefix);
-    }
-
-    // ── Request Body Extraction Tests ────────────────────────────────────
-
-    [Fact]
-    public void ExtractModelName_ValidJson_ReturnsModel()
-    {
-        var requestBody = """{"model":"test-model","messages":[]}""";
-
-        using var doc = JsonDocument.Parse(requestBody);
-        var model = doc.RootElement.GetProperty("model").GetString();
-
-        Assert.Equal("test-model", model);
-    }
-
-    [Fact]
-    public void ExtractModelName_MissingModel_ReturnsNull()
-    {
-        var requestBody = """{"messages":[]}""";
-
-        using var doc = JsonDocument.Parse(requestBody);
-        var hasModel = doc.RootElement.TryGetProperty("model", out _);
-
-        Assert.False(hasModel);
-    }
-
-    [Fact]
-    public void ExtractModelName_InvalidJson_ThrowsException()
-    {
-        var requestBody = "not valid json";
-
-        Assert.ThrowsAny<JsonException>(() => JsonDocument.Parse(requestBody));
-    }
-
-    // ── Context Window Calculation Tests ─────────────────────────────────
-
-    [Fact]
-    public void ContextWindowFraction_Is75Percent()
-    {
-        Assert.Equal(0.75, AutoCompactionService.ContextWindowFraction);
-    }
-
-    [Fact]
-    public void MaxTokensPerChunk_CalculatedFromContextWindow()
-    {
-        int contextWindow = 65536;
-        int expected = (int)(contextWindow * 0.75);
-
-        Assert.Equal(49152, expected);
-    }
-
-    [Fact]
-    public void MaxTokensPerChunk_SmallContextWindow()
-    {
-        int contextWindow = 4096;
-        int expected = (int)(contextWindow * 0.75);
-
-        Assert.Equal(3072, expected);
-    }
-
-    // ── Session Key Generation Tests ─────────────────────────────────────
-
-    [Fact]
-    public void SessionKey_ForCompactEndpoint_HasPrefix()
-    {
-        string sessionKey = $"compact:test-model:ABC123";
-
-        Assert.StartsWith("compact:", sessionKey);
-    }
-
-    [Fact]
-    public void SessionKey_ForManualCompact_HasPrefix()
-    {
-        string sessionKey = $"manual-compact:test-model:ABC123";
-
-        Assert.StartsWith("manual-compact:", sessionKey);
-    }
-
-    // ── Token Estimation Tests ───────────────────────────────────────────
-
-    [Fact]
-    public void TokenEstimation_SimpleText()
-    {
-        string text = "Hello world";
-        int estimatedTokens = Encoding.UTF8.GetByteCount(text) / 4;
-
-        // Rough estimate: ~1 token per 4 bytes
-        Assert.True(estimatedTokens > 0);
-    }
-
-    [Fact]
-    public void TokenEstimation_LargeText()
-    {
-        string text = new string('x', 10000);
-        int estimatedTokens = Encoding.UTF8.GetByteCount(text) / 4;
-
-        Assert.Equal(2500, estimatedTokens);
-    }
-
-    // ── Circuit Breaker Tests ────────────────────────────────────────────
-
-    [Fact]
-    public void MaxCompactionAttempts_IsThree()
-    {
-        // The circuit breaker opens after 3 failed attempts
-        int maxAttempts = 3;
-
-        Assert.Equal(3, maxAttempts);
-    }
-
-    // ── Format Selection Logic Tests ─────────────────────────────────────
-
-    [Fact]
-    public void FormatSelection_CopilotRequest_UsesOllamaFormat()
-    {
-        bool isCopilot = true;
-        var expectedFormat = isCopilot ? CompactionFormat.Ollama : CompactionFormat.Proxy;
-
-        Assert.Equal(CompactionFormat.Ollama, expectedFormat);
-    }
-
-    [Fact]
-    public void FormatSelection_NonCopilotRequest_UsesProxyFormat()
-    {
-        bool isCopilot = false;
-        var expectedFormat = isCopilot ? CompactionFormat.Ollama : CompactionFormat.Proxy;
-
-        Assert.Equal(CompactionFormat.Proxy, expectedFormat);
-    }
-
-    // ── Message Structure Tests ──────────────────────────────────────────
-
-    [Fact]
-    public void OllamaFormat_HasAssistantToolCall()
-    {
-        // Ollama format should have an assistant message with tool_calls
-        var message = new
-        {
-            role = "assistant",
-            tool_calls = new[]
-            {
-                new
-                {
-                    id = "compaction_summary",
-                    type = "function",
-                    function = new
-                    {
-                        name = "session_summary",
-                        arguments = "{}"
-                    }
-                }
-            }
-        };
-
-        Assert.Equal("assistant", message.role);
-        Assert.Single(message.tool_calls);
-        Assert.Equal("session_summary", message.tool_calls[0].function.name);
-    }
-
-    [Fact]
-    public void OllamaFormat_HasToolResponse()
-    {
-        // Ollama format should have a tool response message
-        var message = new
-        {
-            role = "tool",
-            tool_name = "session_summary",
-            tool_call_id = "compaction_summary",
-            content = "<conversation_summary>Test summary"
-        };
-
-        Assert.Equal("tool", message.role);
-        Assert.Equal("session_summary", message.tool_name);
-        Assert.StartsWith("<conversation_summary>", message.content);
-    }
-
-    [Fact]
-    public void ProxyFormat_HasSystemMessage()
-    {
-        // Proxy format should have a system message with summary
-        var message = new
-        {
-            role = "system",
-            content = "Previous conversation summary:\n\nTest summary"
-        };
-
-        Assert.Equal("system", message.role);
-        Assert.StartsWith("Previous conversation summary:", message.content);
-    }
-
-    [Fact]
-    public void ProxyFormat_HasUserContinuation()
-    {
-        // Proxy format should have a user message for continuation
-        var message = new
-        {
-            role = "user",
-            content = "Continuing our conversation based on the summary above."
-        };
-
-        Assert.Equal("user", message.role);
-        Assert.Contains("Continuing", message.content);
-    }
-
-    // ── Error Handling Tests ─────────────────────────────────────────────
-
-    [Fact]
-    public void CompactEndpoint_InvalidJson_Returns400()
-    {
-        int expectedStatusCode = 400;
-        Assert.Equal(400, expectedStatusCode);
-    }
-
-    [Fact]
-    public void CompactEndpoint_ModelNotFound_Returns404()
-    {
-        int expectedStatusCode = 404;
-        Assert.Equal(404, expectedStatusCode);
-    }
-
-    [Fact]
-    public void CompactEndpoint_CompactionFails_Returns500()
-    {
-        int expectedStatusCode = 500;
-        Assert.Equal(500, expectedStatusCode);
-    }
-
-    // ── Integration Scenario Tests ───────────────────────────────────────
-
-    [Fact]
-    public void Scenario_SmallContext_NoCompactionNeeded()
-    {
-        // When context is small, compaction should not be triggered
-        int contextSize = 1000;
-        int threshold = 5000;
-
-        bool shouldCompact = contextSize > threshold;
-
-        Assert.False(shouldCompact);
-    }
-
-    [Fact]
-    public void Scenario_LargeContext_CompactionTriggered()
-    {
-        // When context exceeds threshold, compaction should be triggered
-        int contextSize = 10000;
-        int threshold = 5000;
-
-        bool shouldCompact = contextSize > threshold;
-
-        Assert.True(shouldCompact);
-    }
-
-    [Fact]
-    public void Scenario_OversizedMessage_Truncated()
-    {
-        // When a message is too large, it should be truncated
-        int maxTokensPerMessage = 5000;
-        int messageTokens = 10000;
-
-        bool shouldTruncate = messageTokens > maxTokensPerMessage;
-
-        Assert.True(shouldTruncate);
-    }
-
-    [Fact]
-    public void Scenario_MultipleChunks_AllSummarized()
-    {
-        // When context is split into chunks, all should be summarized
-        int chunkCount = 3;
-        var summaries = new List<string> { "Summary 1", "Summary 2", "Summary 3" };
-
-        Assert.Equal(chunkCount, summaries.Count);
-    }
-
-    [Fact]
-    public void Scenario_CircuitBreakerOpens_AfterThreeFailures()
-    {
-        // After 3 failed attempts, circuit breaker should open
-        int attempts = 3;
-        int maxAttempts = 3;
-
-        bool circuitOpen = attempts >= maxAttempts;
-
-        Assert.True(circuitOpen);
-    }
-
-    [Fact]
-    public void Scenario_CircuitBreakerResets_AfterSuccess()
-    {
-        // After a successful compaction, circuit breaker should reset
-        bool hadSuccess = true;
-        bool circuitOpen = false;
-
-        if (hadSuccess)
-        {
-            circuitOpen = false;
-        }
-
-        Assert.False(circuitOpen);
-    }
+	// ── CompactionFormat Enum Tests ──────────────────────────────────────
+
+	[Fact]
+	public void CompactionFormat_Proxy_IsDefined()
+	{
+		Assert.True(Enum.IsDefined(typeof(CompactionFormat), CompactionFormat.Proxy));
+	}
+
+	[Fact]
+	public void CompactionFormat_Ollama_IsDefined()
+	{
+		Assert.True(Enum.IsDefined(typeof(CompactionFormat), CompactionFormat.Ollama));
+	}
+
+	[Fact]
+	public void CompactionFormat_HasTwoValues()
+	{
+		var values = Enum.GetValues<CompactionFormat>();
+		Assert.Equal(2, values.Length);
+	}
+
+	// ── Format Detection Tests ───────────────────────────────────────────
+
+	[Fact]
+	public void CopilotDetection_WithCopilotUserAgent_ReturnsTrue()
+	{
+		var userAgent = "GitHub Copilot Chat/1.0";
+		Assert.True(OllamaProxyHandler.IsCopilotRequest(userAgent));
+	}
+
+	[Fact]
+	public void CopilotDetection_WithNonCopilotUserAgent_ReturnsFalse()
+	{
+		var userAgent = "Mozilla/5.0";
+		Assert.False(OllamaProxyHandler.IsCopilotRequest(userAgent));
+	}
+
+	[Fact]
+	public void CopilotDetection_WithNullUserAgent_ReturnsFalse()
+	{
+		Assert.False(OllamaProxyHandler.IsCopilotRequest(null));
+	}
+
+	[Fact]
+	public void CopilotDetection_WithEmptyUserAgent_ReturnsFalse()
+	{
+		Assert.False(OllamaProxyHandler.IsCopilotRequest(""));
+	}
+
+	[Fact]
+	public void CopilotDetection_WithGithubInUserAgent_ReturnsTrue()
+	{
+		var userAgent = "GitHub CLI/2.0";
+		Assert.True(OllamaProxyHandler.IsCopilotRequest(userAgent));
+	}
+
+	// ── Context Window / Compaction Budget Tests ─────────────────────────
+
+	[Fact]
+	public void ContextWindowFraction_Is75Percent()
+	{
+		Assert.Equal(0.75, AutoCompactionService.ContextWindowFraction);
+	}
+
+	[Fact]
+	public void GetSummaryPromptBudget_LargeWindow_ReservesRoomForTheReply()
+	{
+		// (int)(65536 * 0.75) = 49152 usable prompt+reply tokens; the default reply
+		// reserve (DefaultSummaryMaxTokens = 1000) is held back for the summary itself.
+		Assert.Equal(48152, AutoCompactionService.GetSummaryPromptBudget(65536));
+
+		// A combine pass reserves the larger combine ceiling instead of the default.
+		Assert.Equal(49152 - AutoCompactionService.CombineMaxTokens,
+			AutoCompactionService.GetSummaryPromptBudget(65536, AutoCompactionService.CombineMaxTokens));
+	}
+
+	[Fact]
+	public void GetSummaryPromptBudget_TinyWindow_FloorsAtTheMinimumPrompt()
+	{
+		// 512 * 0.75 - 1000 goes negative, so the minimum prompt floor wins.
+		Assert.Equal(AutoCompactionService.MinSummaryPromptTokens,
+			AutoCompactionService.GetSummaryPromptBudget(512));
+	}
+
+	[Fact]
+	public void EffectiveSummaryMaxTokensFor_RaisesSmallCeilingsToTheDefault()
+	{
+		Assert.Equal(AutoCompactionService.DefaultSummaryMaxTokens,
+			AutoCompactionService.EffectiveSummaryMaxTokensFor(0));
+		Assert.Equal(AutoCompactionService.DefaultSummaryMaxTokens,
+			AutoCompactionService.EffectiveSummaryMaxTokensFor(500));
+		Assert.Equal(2500,
+			AutoCompactionService.EffectiveSummaryMaxTokensFor(2500));
+	}
+
+	// ── Token Estimation Tests ───────────────────────────────────────────
+
+	[Fact]
+	public void EstimateTokenCount_UsesTheFourCharactersPerTokenRule()
+	{
+		Assert.Equal(2, AutoCompactionService.EstimateTokenCount("Hello world")); // 11 chars / 4
+		Assert.Equal(2500, AutoCompactionService.EstimateTokenCount(new string('x', 10_000)));
+	}
+
+	[Fact]
+	public void EstimateTokenCount_EmptyBody_IsZero()
+	{
+		Assert.Equal(0, AutoCompactionService.EstimateTokenCount(string.Empty));
+	}
+
+	// ── ShouldCompact Gate Tests ─────────────────────────────────────────
+
+	[Fact]
+	public void ShouldCompact_DisabledPaths_ReturnsFalseEvenForHugeBody()
+	{
+		using HttpClient http = new();
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping();
+		mapping.AutoCompactPaths = AutoCompactPaths.None;
+
+		string body = BuildBody(("user", "question " + new string('a', 200_000)));
+
+		Assert.False(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out _));
+	}
+
+	[Fact]
+	public void ShouldCompact_BelowThreshold_ReturnsFalseWithoutSessionKey()
+	{
+		using HttpClient http = new();
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping(); // threshold: 40,000 tokens
+
+		string body = BuildBody(("user", "hello"));
+
+		Assert.False(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string sessionKey));
+		Assert.Equal(string.Empty, sessionKey);
+	}
+
+	[Fact]
+	public void ShouldCompact_AboveThreshold_ReturnsTrueWithStablePerConversationSessionKey()
+	{
+		using HttpClient http = new();
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping();
+
+		// 200k chars ≈ 50k estimated tokens, above the 40k threshold.
+		string body = BuildBody(("user", "question " + new string('a', 200_000)));
+
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string first));
+		Assert.False(string.IsNullOrWhiteSpace(first));
+
+		// The same conversation must map to the same key so the circuit breaker is
+		// per-conversation rather than per-request.
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string second));
+		Assert.Equal(first, second);
+
+		// A different opening message is a different conversation and gets a different key.
+		string other = BuildBody(("user", "different " + new string('a', 200_000)));
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, other, out string third));
+		Assert.NotEqual(first, third);
+	}
+
+	[Fact]
+	public void ShouldCompact_BodyWithoutUserMessage_UsesModelScopedFallbackKey()
+	{
+		using HttpClient http = new();
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping();
+
+		string body = BuildBody(("assistant", new string('a', 200_000)));
+
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.OpenAI, body, out string sessionKey));
+		Assert.Equal("big-model:unknown", sessionKey);
+	}
+
+	[Fact]
+	public async Task ShouldCompact_ReturnsFalse_WhileTheSessionCircuitIsOpen()
+	{
+		FailingHandler stub = new();
+		using HttpClient http = new(stub);
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping();
+		string body = BuildBody(
+			("user", "question " + new string('d', 200_000)),
+			("user", "still here?"));
+
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string sessionKey));
+
+		// Three failed attempts accumulate without opening the breaker.
+		for (int i = 0; i < 3; i++)
+			Assert.Null(await CompactOnceAsync(service, mapping, body, sessionKey));
+
+		// The fourth attempt trips the breaker and short-circuits without touching upstream.
+		int callsBeforeFourth = stub.CallCount;
+		Assert.Null(await CompactOnceAsync(service, mapping, body, sessionKey));
+		Assert.Equal(callsBeforeFourth, stub.CallCount);
+
+		// The gate now refuses this session.
+		Assert.False(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out _));
+	}
+
+	[Fact]
+	public async Task RecordSuccess_ReopensTheGate_AndTheNextCompactionReachesUpstreamAgain()
+	{
+		FailingHandler stub = new();
+		using HttpClient http = new(stub);
+		AutoCompactionService service = new(http);
+		ModelMapping mapping = NewMapping();
+		string body = BuildBody(
+			("user", "question " + new string('d', 200_000)),
+			("user", "still here?"));
+
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string sessionKey));
+
+		for (int i = 0; i < 4; i++)
+			Assert.Null(await CompactOnceAsync(service, mapping, body, sessionKey));
+		Assert.False(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out _));
+
+		service.RecordSuccess(sessionKey);
+
+		Assert.True(service.ShouldCompact(mapping, AutoCompactPaths.Ollama, body, out string reopenedKey));
+		Assert.Equal(sessionKey, reopenedKey);
+
+		int callsBeforeRetry = stub.CallCount;
+		Assert.Null(await CompactOnceAsync(service, mapping, body, sessionKey));
+		Assert.True(stub.CallCount > callsBeforeRetry,
+			"A reset breaker must let the next attempt reach the upstream instead of short-circuiting.");
+	}
+
+	// ── Helpers ──────────────────────────────────────────────────────────
+
+	/// <summary>Upstream stub that always fails, to exercise circuit-breaker behavior.</summary>
+	private sealed class FailingHandler : HttpMessageHandler
+	{
+		public int CallCount { get; private set; }
+
+		protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+		{
+			CallCount++;
+			return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+			{
+				Content = new StringContent("""{"error":{"message":"boom"}}""", Encoding.UTF8, "application/json"),
+			});
+		}
+	}
+
+	private static ModelMapping NewMapping() => new()
+	{
+		ProxyName = "big-model",
+		ModelName = "upstream.gguf",
+		UpstreamUrl = "http://localhost:8080",
+		ContextWindowTokens = 65536,
+		ProactiveOverflowTokens = 40000,
+		AutoCompactPaths = AutoCompactPaths.Both,
+	};
+
+	private static string BuildBody(params (string Role, string Content)[] messages)
+	{
+		var list = messages.Select(m => new { role = m.Role, content = m.Content }).ToList();
+		return JsonSerializer.Serialize(new { model = "upstream.gguf", messages = list });
+	}
+
+	private static Task<string?> CompactOnceAsync(
+		AutoCompactionService service, ModelMapping mapping, string body, string sessionKey) =>
+		service.CompactAsync(
+			mapping, body, sessionKey, "http://localhost:8080", null, 30,
+			1000, "upstream.gguf", 65536, 65536, CancellationToken.None);
 }

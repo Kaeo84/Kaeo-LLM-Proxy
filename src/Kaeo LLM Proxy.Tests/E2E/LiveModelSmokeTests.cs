@@ -1,7 +1,9 @@
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
 using Xunit;
 
@@ -23,17 +25,54 @@ public sealed class LiveModelSmokeTests
     };
 
     /// <summary>
-    /// Picks the first model mapping whose upstream /v1/models probe last succeeded.
-    /// Returns null when no healthy mapping exists.
+    /// Snapshot of the app's configured state, loaded once for the whole test class: the enabled
+    /// model mappings plus every stored credential secret decrypted to plaintext. The previous
+    /// version called <see cref="AppSettings.Load"/> and opened a new <see cref="AppDatabase"/>
+    /// (SQLite) on every HTTP request, which wasted disk I/O and risked file-lock contention with a
+    /// concurrently running proxy instance.
     /// </summary>
-    private static ModelMapping? FindHealthyModel()
+    private sealed record Fixture(
+        IReadOnlyList<ModelMapping> Mappings,
+        IReadOnlyDictionary<string, string> DecryptedSecrets);
+
+    private static readonly Lazy<Fixture> _fixture = new(LoadFixture);
+
+    private static Fixture LoadFixture()
     {
         AppSettings settings = AppSettings.Load();
         using AppDatabase db = new(settings.Logging);
         settings.ApplyRuntimeSettings(db.LoadRuntimeSettings());
 
-        IReadOnlyList<ModelMapping> mappings = db.LoadModelMappings();
-        foreach (ModelMapping mapping in mappings
+        // Resolve the passphrase material once, then decrypt every credential secret so the smoke
+        // tests authenticate with the real key rather than sending its stored (possibly encrypted)
+        // form. A secret that is not encrypted is used as-is; one that cannot be decrypted (e.g. no
+        // passphrase available in this context) falls back to its stored value so the mapping
+        // simply fails to authenticate instead of throwing.
+        string passphrase = SecretProtector.ResolvePassphraseMaterial(settings.SecurityPassphrase);
+        Dictionary<string, string> secrets = new(StringComparer.OrdinalIgnoreCase);
+        foreach (StoredCredential cred in db.LoadCredentials())
+        {
+            if (string.IsNullOrWhiteSpace(cred.Secret))
+                continue;
+
+            secrets[cred.Name] = SecretProtector.IsEncrypted(cred.Secret)
+                && SecretProtector.TryDecrypt(cred.Secret, passphrase, out string? plain)
+                && plain is not null
+                    ? plain
+                    : cred.Secret;
+        }
+
+        return new Fixture(db.LoadModelMappings(), secrets);
+    }
+
+    /// <summary>
+    /// Picks the first model mapping whose upstream /v1/models probe succeeds.
+    /// Returns null when no healthy mapping exists.
+    /// </summary>
+    private static ModelMapping? FindHealthyModel()
+    {
+        Fixture fixture = _fixture.Value;
+        foreach (ModelMapping mapping in fixture.Mappings
                      .Where(m => m.IsEnabled)
                      .OrderBy(m => m.ProxyName, StringComparer.Ordinal))
         {
@@ -41,7 +80,7 @@ public sealed class LiveModelSmokeTests
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get,
                     $"{mapping.UpstreamUrl.TrimEnd('/')}/v1/models");
-                ApplyApiKey(request, mapping);
+                ApplyApiKey(request, mapping, fixture);
                 using HttpResponseMessage resp = _client.Send(request);
                 if (resp.IsSuccessStatusCode)
                     return mapping;
@@ -55,20 +94,16 @@ public sealed class LiveModelSmokeTests
         return null;
     }
 
-    private static void ApplyApiKey(HttpRequestMessage request, ModelMapping mapping)
+    private static void ApplyApiKey(HttpRequestMessage request, ModelMapping mapping, Fixture fixture)
     {
         if (string.IsNullOrWhiteSpace(mapping.CredentialName))
             return;
 
-        AppSettings settings = AppSettings.Load();
-        using AppDatabase db = new(settings.Logging);
-        IReadOnlyList<StoredCredential> credentials = db.LoadCredentials();
-        StoredCredential? cred = credentials
-            .FirstOrDefault(c => string.Equals(c.Name, mapping.CredentialName,
-                StringComparison.OrdinalIgnoreCase));
-
-        if (cred is not null && !string.IsNullOrWhiteSpace(cred.Secret))
-            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {cred.Secret}");
+        if (fixture.DecryptedSecrets.TryGetValue(mapping.CredentialName!, out string? secret)
+            && !string.IsNullOrWhiteSpace(secret))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        }
     }
 
     [Fact]
@@ -94,7 +129,7 @@ public sealed class LiveModelSmokeTests
         {
             Content = JsonContent.Create(payload),
         };
-        ApplyApiKey(request, model);
+        ApplyApiKey(request, model, _fixture.Value);
 
         using HttpResponseMessage resp = await _client.SendAsync(request);
         resp.EnsureSuccessStatusCode();
@@ -135,7 +170,7 @@ public sealed class LiveModelSmokeTests
         {
             Content = JsonContent.Create(payload),
         };
-        ApplyApiKey(request, model);
+        ApplyApiKey(request, model, _fixture.Value);
 
         using HttpResponseMessage resp = await _client.SendAsync(
             request, HttpCompletionOption.ResponseHeadersRead);

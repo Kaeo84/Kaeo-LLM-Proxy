@@ -104,22 +104,51 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     /// <remarks>
     /// A handler writes and closes the response before <c>HandleCoreAsync</c>'s logging
     /// <c>finally</c> runs, so the client can observe the status code while the entry does not exist
-    /// yet. Polling on <see cref="StatisticsService.TotalRequests"/> — which <c>AddLog</c> increments
-    /// after enqueueing — makes the assertion deterministic instead of a race that passes or fails
-    /// depending on scheduling. On timeout this returns silently so the assertion reports the real
-    /// state rather than a cancellation exception.
+    /// yet. Signaling off <see cref="StatisticsService.StatsChanged"/> — which <c>AddLog</c> raises
+    /// after incrementing <see cref="StatisticsService.TotalRequests"/> — makes the assertion
+    /// deterministic instead of a race that passes or fails depending on scheduling, and wakes the
+    /// waiter immediately rather than on a poll interval. On timeout this returns silently so the
+    /// assertion reports the real state rather than a cancellation exception.
     /// </remarks>
-    private async Task WaitForLogsAsync(int expected)
+    private Task WaitForLogsAsync(int expected) => WaitForCountAsync(_statistics, expected);
+
+    /// <summary>
+    /// Event-driven counterpart to the old <c>Task.Delay</c> polling loops: subscribes to
+    /// <see cref="StatisticsService.StatsChanged"/>, completes as soon as the counter reaches
+    /// <paramref name="expected"/>, and bounds the wait with a 15-second timeout.
+    /// </summary>
+    private static async Task WaitForCountAsync(StatisticsService stats, int expected)
     {
+        if (stats.TotalRequests >= expected)
+            return;
+
+        TaskCompletionSource tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void OnStatsChanged(object? sender, EventArgs e)
+        {
+            if (stats.TotalRequests >= expected)
+                tcs.TrySetResult();
+        }
+
+        stats.StatsChanged += OnStatsChanged;
         try
         {
+            // Re-check after subscribing so a signal that arrived in between is not missed.
+            if (stats.TotalRequests >= expected)
+                return;
+
             using CancellationTokenSource cts = new(TimeSpan.FromSeconds(15));
-            while (_statistics.TotalRequests < expected)
-                await Task.Delay(10, cts.Token);
+            using CancellationTokenRegistration registration =
+                cts.Token.Register(() => tcs.TrySetCanceled(cts.Token));
+            await tcs.Task.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Let the caller's assertion fail with the actual observed state.
+        }
+        finally
+        {
+            stats.StatsChanged -= OnStatsChanged;
         }
     }
 
@@ -130,14 +159,14 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     /// </summary>
     private async Task<RequestLog?> WaitForPersistedNonProxiedLogAsync()
     {
+        await WaitForCountAsync(_nonProxiedStatistics, 1).ConfigureAwait(false);
+
+        // AddLog enqueues for the background writer, so the row can lag the counter and the
+        // writer exposes no completion event. Retry within a bounded window until the persisted
+        // entry appears rather than assuming it is already there.
         try
         {
             using CancellationTokenSource cts = new(TimeSpan.FromSeconds(15));
-            while (_nonProxiedStatistics.TotalRequests < 1)
-                await Task.Delay(10, cts.Token);
-
-            // AddLog enqueues for the background writer, so the row can lag the counter. Retry until
-            // the persisted entry appears rather than assuming it is already there.
             while (!cts.IsCancellationRequested)
             {
                 RequestLog? summary = Last(_nonProxiedStatistics.GetRecentLogs());
@@ -147,7 +176,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
                     return full;
                 }
 
-                await Task.Delay(25, cts.Token);
+                await Task.Delay(25, cts.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
@@ -168,19 +197,8 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     /// Waits until <paramref name="expected"/> requests have reached the Non-proxied store, for the
     /// same response-before-finally reason as <see cref="WaitForLogsAsync"/>.
     /// </summary>
-    private async Task WaitForNonProxiedLogsAsync(int expected)
-    {
-        try
-        {
-            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(15));
-            while (_nonProxiedStatistics.TotalRequests < expected)
-                await Task.Delay(10, cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Let the caller's assertion fail with the actual observed state.
-        }
-    }
+    private Task WaitForNonProxiedLogsAsync(int expected) =>
+        WaitForCountAsync(_nonProxiedStatistics, expected);
 
     // ── Errors are logged with the code the client received ────────────────
 
