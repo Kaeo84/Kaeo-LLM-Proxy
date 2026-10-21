@@ -54,7 +54,7 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
         var requestBody = new { model = _model, input = texts.ToArray() };
         var json = JsonSerializer.Serialize(requestBody);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
-        Log.Debug("Embedding request: POST {Url} model={Model} count={Count}", _url, _model, texts.Count);
+        Log.Debug("Embedding request: POST {Url} model={Model} count={Count}", RedactUrl(_url), _model, texts.Count);
         using var response = await _httpClient.PostAsync(_url, content, ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -63,7 +63,7 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
             // model, and response body stay server-side in the log; clients see the status only.
             Log.Warning(
                 "Embedding request to {Url} (model {Model}) failed: {StatusCode} {ReasonPhrase} body={Body}",
-                _url, _model, (int)response.StatusCode, response.ReasonPhrase, errBody);
+                RedactUrl(_url), _model, (int)response.StatusCode, response.ReasonPhrase, errBody);
             throw new HttpRequestException($"Embedding request failed: {(int)response.StatusCode} {response.ReasonPhrase}");
         }
         var responseJson = await response.Content.ReadAsStringAsync(ct);
@@ -84,4 +84,14 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
     }
 
     public void Dispose() => _httpClient.Dispose();
+
+    /// <summary>
+    /// Strips the query string so a URL carrying a key (e.g. <c>?api_key=…</c>) is never logged;
+    /// scheme, host, and path remain for diagnostics.
+    /// </summary>
+    private static string RedactUrl(string url)
+    {
+        int queryStart = url.IndexOf('?');
+        return queryStart < 0 ? url : url[..queryStart] + "?…";
+    }
 }

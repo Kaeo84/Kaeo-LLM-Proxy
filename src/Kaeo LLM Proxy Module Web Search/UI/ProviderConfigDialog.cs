@@ -90,6 +90,15 @@ internal sealed class ProviderConfigDialog : Form
             return;
         }
 
+        // Providers append "?q=…" to this value verbatim, so it must be an absolute http/https URL.
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out Uri? endpointUri)
+            || (endpointUri.Scheme != Uri.UriSchemeHttp && endpointUri.Scheme != Uri.UriSchemeHttps))
+        {
+            MessageBox.Show(this, "The endpoint must be a valid absolute http:// or https:// URL.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
         _provider.IsEnabled = _chkEnabled.Checked;
         _provider.Endpoint = endpoint;
         _provider.CredentialName = _cmbCredential.SelectedIndex <= 0 ? null : _cmbCredential.SelectedItem as string;

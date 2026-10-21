@@ -764,14 +764,14 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>3 Low-severity findings</span>
+  <span>3 Low-severity findings <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#22:</strong> Multiple PRAGMA statements in single CommandText — only first may execute (Code Vector DB)</li>
-    <li><strong>#20:</strong> No URL validation on endpoint input in ProviderConfigDialog (Web Search)</li>
-    <li><strong>#25:</strong> Full embedding URL logged at Debug level (Code Vector Store)</li>
+    <li><strong>#22:</strong> Multiple PRAGMA statements in single CommandText — only first may execute (Code Vector DB) <span class="fixed-badge">✅ FIXED</span> <em>(each PRAGMA now runs in its own command and journal_mode is read back via ExecuteScalar, with a Warning logged if WAL did not apply — no reliance on multi-statement batch semantics)</em></li>
+    <li><strong>#20:</strong> No URL validation on endpoint input in ProviderConfigDialog (Web Search) <span class="fixed-badge">✅ FIXED</span> <em>(Ok_Click now requires an absolute http/https URL via Uri.TryCreate before accepting the dialog; invalid input shows a warning and keeps the dialog open)</em></li>
+    <li><strong>#25:</strong> Full embedding URL logged at Debug level (Code Vector Store) <span class="fixed-badge">✅ FIXED</span> <em>(new RedactUrl helper strips the query string before logging at both Debug and Warning levels, so a key embedded as ?api_key=… never reaches the log while scheme/host/path remain for diagnostics)</em></li>
   </ul>
 </div>
 </div>

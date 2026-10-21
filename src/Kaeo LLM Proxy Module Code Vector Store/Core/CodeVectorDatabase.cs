@@ -54,9 +54,20 @@ internal sealed class CodeVectorDatabase : IDisposable
         };
         _connection = new SqliteConnection(builder.ConnectionString);
         _connection.Open();
-        using var pragma = _connection.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;";
-        pragma.ExecuteNonQuery();
+        // Each PRAGMA runs as its own command and journal_mode is read back so both settings
+        // are verifiably applied instead of relying on multi-statement batch semantics.
+        using (var journal = _connection.CreateCommand())
+        {
+            journal.CommandText = "PRAGMA journal_mode=WAL;";
+            object? mode = journal.ExecuteScalar();
+            if (!string.Equals(mode as string, "wal", StringComparison.OrdinalIgnoreCase))
+                Log.Warning("CodeVector: SQLite journal_mode is {Mode}; WAL was not applied", mode);
+        }
+        using (var foreignKeys = _connection.CreateCommand())
+        {
+            foreignKeys.CommandText = "PRAGMA foreign_keys=ON;";
+            foreignKeys.ExecuteNonQuery();
+        }
         using var schema = _connection.CreateCommand();
         schema.CommandText = VectorSchema;
         schema.ExecuteNonQuery();
