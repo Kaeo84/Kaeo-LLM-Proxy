@@ -431,6 +431,13 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         {
             await LoadCoreAsync();
         }
+        catch (Exception ex)
+        {
+            // Kicked off fire-and-forget from the constructor: surface the failure in the
+            // debug log instead of leaving an unobserved task exception and a silently
+            // half-initialized tool window.
+            DebugLog.Error("ToolWindowViewModel.LoadAsync failed; the tool window may be missing settings, agents, or tools.", ex);
+        }
         finally
         {
             _loadGate.Release();

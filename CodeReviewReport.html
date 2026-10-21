@@ -856,17 +856,17 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>7 Low-severity findings</span>
+  <span>7 Low-severity findings <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#11:</strong> StreamReader not disposed in OllamaApiClient.cs</li>
-    <li><strong>#12:</strong> Event handler leak on ChatLine PropertyChanged (bounded, minor)</li>
-    <li><strong>#13:</strong> Culture-sensitive hex color parsing in HexToBrushConverter</li>
-    <li><strong>#14:</strong> Fixed-size NoResize dialog — may truncate at high DPI or with long questions</li>
-    <li><strong>#15:</strong> Fire-and-forget LoadAsync in constructors — unobserved exceptions leave empty UI</li>
-    <li><strong>#16:</strong> Case-sensitive "Right" comparison in StringToHorizontalAlignmentConverter</li>
+    <li><strong>#11:</strong> StreamReader not disposed in OllamaApiClient.cs <span class="fixed-badge">✅ FIXED</span> <em>(the StreamReader and the JsonDocument it feeds are now using declarations; the outer using(body) remains as a backstop)</em></li>
+    <li><strong>#12:</strong> Event handler leak on ChatLine PropertyChanged (bounded, minor) <span class="fixed-badge">✅ FIXED</span> <em>(a single reusable PropertyChangedEventHandler field replaces the per-line lambdas; removed ChatLines are unsubscribed and added ones subscribed on CollectionChanged)</em></li>
+    <li><strong>#13:</strong> Culture-sensitive hex color parsing in HexToBrushConverter <span class="fixed-badge">✅ FIXED</span> <em>(#RRGGBB/#AARRGGBB digits are now parsed with byte.Parse + NumberStyles.HexNumber + InvariantCulture; named colors still route through ColorConverter)</em></li>
+    <li><strong>#14:</strong> Fixed-size NoResize dialog — may truncate at high DPI or with long questions <span class="fixed-badge">✅ FIXED</span> <em>(InquiryDialog is now CanResizeWithGrip with MinWidth/MinHeight, and the question text is capped at 200 px inside a ScrollViewer so a long question can't squeeze out the response box)</em></li>
+    <li><strong>#15:</strong> Fire-and-forget LoadAsync in constructors — unobserved exceptions leave empty UI <span class="fixed-badge">✅ FIXED</span> <em>(ToolWindowViewModel.LoadAsync now catches faults and writes them to DebugLog so the constructor kick-off can't fail unobserved; SettingsWindow.LoadAsync already reported through ReportError)</em></li>
+    <li><strong>#16:</strong> Case-sensitive "Right" comparison in StringToHorizontalAlignmentConverter <span class="fixed-badge">✅ FIXED</span> <em>(comparison is now string.Equals with OrdinalIgnoreCase)</em></li>
   </ul>
 </div>
 </div>

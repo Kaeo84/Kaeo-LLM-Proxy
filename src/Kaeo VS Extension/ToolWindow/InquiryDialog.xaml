@@ -4,8 +4,9 @@
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
         xmlns:shell="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
         Title="Question" Height="400" Width="600"
+        MinHeight="320" MinWidth="480"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         ShowInTaskbar="False"
         vsui:ThemedDialogStyleLoader.UseDefaultThemedDialogStyles="True"
         Background="{DynamicResource {x:Static shell:VsBrushes.ToolWindowBackgroundKey}}"
@@ -29,9 +30,12 @@
         </Grid.RowDefinitions>
 
         <!-- Question Text -->
-        <TextBlock x:Name="QuestionText" Grid.Row="0"
-                   TextWrapping="Wrap" Margin="0,0,0,12"
-                   FontSize="14" FontWeight="SemiBold"/>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                      MaxHeight="200" Margin="0,0,0,12">
+            <TextBlock x:Name="QuestionText"
+                       TextWrapping="Wrap"
+                       FontSize="14" FontWeight="SemiBold"/>
+        </ScrollViewer>
 
         <!-- Suggestions List -->
         <ListBox x:Name="SuggestionsList" Grid.Row="1"

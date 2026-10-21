@@ -12,7 +12,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
     {
         public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
-            if (value is string s && s == "Right")
+            if (value is string s && string.Equals(s, "Right", StringComparison.OrdinalIgnoreCase))
                 return HorizontalAlignment.Right;
             return HorizontalAlignment.Left;
         }

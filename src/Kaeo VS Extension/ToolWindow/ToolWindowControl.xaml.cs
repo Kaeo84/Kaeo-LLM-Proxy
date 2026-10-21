@@ -16,6 +16,9 @@ public partial class ToolWindowControl : UserControl
 {
     private readonly ExtensionSettingsStore _settings = new();
     private ToolWindowViewModel? _vm;
+    // One reusable handler so a ChatLine removed from the transcript can be unsubscribed;
+    // per-line lambdas could never be detached and would pin the control for the line's lifetime.
+    private readonly System.ComponentModel.PropertyChangedEventHandler _lineChangedHandler;
 
     public ToolWindowControl()
     {
@@ -32,12 +35,16 @@ public partial class ToolWindowControl : UserControl
         DataContext = _vm;
 
         // Bind the transcript and pills.
+        _lineChangedHandler = (_, _) => RequestScroll();
         MessageList.ItemsSource = _vm.Lines;
         _vm.Lines.CollectionChanged += (_, e) =>
         {
-            if (e.NewItems is null) return;
-            foreach (ChatLine line in e.NewItems)
-                line.PropertyChanged += (_, _) => RequestScroll();
+            if (e.OldItems is not null)
+                foreach (ChatLine line in e.OldItems)
+                    line.PropertyChanged -= _lineChangedHandler;
+            if (e.NewItems is not null)
+                foreach (ChatLine line in e.NewItems)
+                    line.PropertyChanged += _lineChangedHandler;
             RequestScroll();
         };
         AgentCombo.ItemsSource = _vm.Agents;
