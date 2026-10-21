@@ -85,22 +85,37 @@ public class SeedDataTests
         List<ModelMapping> mappings = OpenAndLoad();
 
         Assert.Equal(
-            [(SamplingPriority.Proxy, "medium", "medium")],
+            [(SamplingPriority.Proxy, "medium", "off,low,medium,high,x-high")],
             mappings
                 .Select(m => (m.ReasoningEffortPriority, m.ReasoningEffort, string.Join(",", m.ReasoningEffortValues)))
                 .Distinct());
     }
 
+    /// <summary>
+    /// The managed Alibaba Cloud Model Studio compatible-mode endpoint accepts only the Modern
+    /// "reasoning" object, whereas the self-hosted llama.cpp endpoints additionally need
+    /// <c>chat_template_kwargs.enable_thinking</c> — omitting ChatTemplateKwargs there silently
+    /// disables thinking on the local models. The formats must therefore vary per upstream.
+    /// </summary>
     [Fact]
-    public void SeededMappingsEmitEveryNonLegacyEffortFormat()
+    public void SeededMappingsScopeEffortFormatsToTheirUpstream()
     {
         List<ModelMapping> mappings = OpenAndLoad();
 
-        ReasoningEffortFormat expected = ReasoningEffortFormat.Modern
+        const ReasoningEffortFormat local = ReasoningEffortFormat.Modern
             | ReasoningEffortFormat.QwenCloud
             | ReasoningEffortFormat.ChatTemplateKwargs;
 
-        Assert.Equal([expected], mappings.Select(m => m.ReasoningEffortFormat).Distinct());
+        foreach (ModelMapping mapping in mappings)
+        {
+            bool isLoopback = Uri.TryCreate(mapping.UpstreamUrl, UriKind.Absolute, out Uri? url)
+                              && url.IsLoopback;
+
+            Assert.Equal(isLoopback ? local : ReasoningEffortFormat.Modern, mapping.ReasoningEffortFormat);
+        }
+
+        // Guards the loop above from passing vacuously should the catalog ever collapse to one kind.
+        Assert.Equal(2, mappings.Select(m => m.ReasoningEffortFormat).Distinct().Count());
     }
 
     [Fact]

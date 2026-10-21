@@ -278,6 +278,52 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         Assert.Contains("Test", reply);
     }
 
+    /// <summary>
+    /// Regression test: the proxy rebuilds the request body into a fresh <c>ByteArrayContent</c>
+    /// that already carries <c>application/json</c>.  Real clients (the OpenAI SDK used by the VS
+    /// Extension) send <c>application/json; charset=utf-8</c>, which cannot be added to the
+    /// request headers and is therefore deferred and re-applied to the content afterwards.
+    /// <see cref="System.Net.Http.Headers.HttpContentHeaders.TryAddWithoutValidation"/> appends
+    /// rather than replaces, which used to yield the malformed two-valued header
+    /// <c>application/json, application/json; charset=utf-8</c>.  Lenient upstreams (including this
+    /// stub) accept it, but strict gateways reject it with a misleading
+    /// <c>400 "Model not exist."</c> — so the header itself must be asserted, not the status.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Chat_ViaOpenAiSurface_EmitsSingleContentTypeUpstream(bool stream)
+    {
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+        var payload = new
+        {
+            model = "test-model",
+            messages = new[]
+            {
+                new { role = "user", content = "Test" },
+            },
+            stream,
+        };
+
+        // StringContent with an explicit encoding produces "application/json; charset=utf-8",
+        // matching what the VS Extension sends.
+        using StringContent content = new(
+            JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/v1/chat/completions", content);
+
+        response.EnsureSuccessStatusCode();
+        await response.Content.ReadAsStringAsync();
+
+        string? upstreamContentType = _upstream.LastContentTypeHeader;
+
+        Assert.NotNull(upstreamContentType);
+        Assert.DoesNotContain(',', upstreamContentType);
+        Assert.StartsWith("application/json", upstreamContentType);
+    }
+
     [Fact]
     public async Task Chat_ViaOpenAiSurface_Streaming_ReturnsTestToken()
     {
@@ -336,6 +382,15 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         private readonly HttpListener _listener;
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _listenTask;
+        private volatile string? _lastContentTypeHeader;
+
+        /// <summary>
+        /// Raw <c>Content-Type</c> header seen on the most recent request, or <see langword="null"/>
+        /// when it carried none.  Exposed so tests can assert the proxy emits exactly one content
+        /// type; <see cref="HttpListener"/> silently accepts a malformed multi-valued header that a
+        /// strict real-world gateway would reject.
+        /// </summary>
+        public string? LastContentTypeHeader => _lastContentTypeHeader;
 
         public StubUpstreamServer(int port)
         {
@@ -359,10 +414,12 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
             }
         }
 
-        private static async Task HandleAsync(HttpListenerContext ctx)
+        private async Task HandleAsync(HttpListenerContext ctx)
         {
             try
             {
+                _lastContentTypeHeader = ctx.Request.Headers["Content-Type"];
+
                 string body;
                 using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
                     body = await reader.ReadToEndAsync();

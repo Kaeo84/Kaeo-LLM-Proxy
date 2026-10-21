@@ -86,6 +86,23 @@ internal static class SeedData
     private const string QwenCloudUrl = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 
     /// <summary>
+    /// Reasoning wire formats emitted for the managed Qwen Cloud mappings: only the "reasoning"
+    /// object format (Modern). The QwenCloud (extra_body) and ChatTemplateKwargs formats are built
+    /// for self-hosted inference servers (vLLM/SGLang/llama.cpp); sending them to the managed cloud
+    /// API can make the upstream reject the request with a "Model not exist" error.
+    /// </summary>
+    private const ReasoningEffortFormat QwenCloudReasoningFormats = ReasoningEffortFormat.Modern;
+
+    /// <summary>
+    /// Reasoning wire formats emitted for the self-hosted llama.cpp mappings: every non-legacy
+    /// shape. llama.cpp reads <c>chat_template_kwargs.enable_thinking</c>, so omitting
+    /// ChatTemplateKwargs here silently disables thinking on the local models even though the
+    /// mapping still advertises the "reasoning" capability.
+    /// </summary>
+    private const ReasoningEffortFormat LocalReasoningFormats =
+        ReasoningEffortFormat.Modern | ReasoningEffortFormat.QwenCloud | ReasoningEffortFormat.ChatTemplateKwargs;
+
+    /// <summary>
     /// Deliberately empty placeholder for the seeded credential. Replace with a real token on
     /// the Credentials tab before any mapping that references this credential can authenticate.
     /// The empty string ensures no accidental usage of a hardcoded value as a real API key.
@@ -111,13 +128,15 @@ internal static class SeedData
                 @"..\Model\Qwen3.8-Unsloth-NVFP4\Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf",
                 "http://localhost:8080",
                 credentialName: null,
-                contextWindowTokens: 256_000),
+                contextWindowTokens: 256_000,
+                reasoningEffortFormat: LocalReasoningFormats),
             CreateMapping(
                 "Svr Qwen3 Embedding 4B",
                 @"..\Model\hugger7326-Qwen3-Embedding-4B-Q8_0-GGUF\Qwen3-Embedding-4B-Q8_0.gguf",
                 "http://127.0.0.1:8081",
                 credentialName: null,
-                contextWindowTokens: 2_048),
+                contextWindowTokens: 2_048,
+                reasoningEffortFormat: LocalReasoningFormats),
         ];
 
         foreach (ModelMapping mapping in mappings)
@@ -138,7 +157,8 @@ internal static class SeedData
     ];
 
     private static ModelMapping CreateQwenCloudMapping(string proxyName, string modelName, int contextWindowTokens) =>
-        CreateMapping(proxyName, modelName, QwenCloudUrl, QwenCloudCredentialName, contextWindowTokens);
+        CreateMapping(proxyName, modelName, QwenCloudUrl, QwenCloudCredentialName, contextWindowTokens,
+                      QwenCloudReasoningFormats);
 
     /// <summary>
     /// Builds one seeded mapping. Everything the seed catalog holds in common — the Qwen
@@ -146,12 +166,18 @@ internal static class SeedData
     /// stay readable during development — is applied here so the per-model entries above carry only
     /// what actually differs.
     /// </summary>
+    /// <param name="reasoningEffortFormat">
+    /// Reasoning wire formats to emit. This deliberately varies per upstream — see
+    /// <see cref="QwenCloudReasoningFormats"/> and <see cref="LocalReasoningFormats"/> — because the
+    /// managed cloud endpoint and a self-hosted llama.cpp server accept different shapes.
+    /// </param>
     private static ModelMapping CreateMapping(
         string proxyName,
         string modelName,
         string upstreamUrl,
         string? credentialName,
-        int contextWindowTokens) => new()
+        int contextWindowTokens,
+        ReasoningEffortFormat reasoningEffortFormat) => new()
     {
         ProxyName = proxyName,
         ModelName = modelName,
@@ -172,13 +198,8 @@ internal static class SeedData
         // priorities pass the client's field through or omit it entirely.
         ReasoningEffortPriority = SamplingPriority.Proxy,
         ReasoningEffort = "medium",
-        ReasoningEffortValues = ["medium"],
-        // The managed Alibaba Cloud Model Studio compatible-mode endpoint accepts the
-        // "reasoning" object format (Modern). The QwenCloud (extra_body) and
-        // ChatTemplateKwargs formats are designed for self-hosted inference servers
-        // (vLLM/SGLang/llama.cpp); sending them to the managed cloud API can cause
-        // the upstream to reject the request with a "Model not exist" error.
-        ReasoningEffortFormat = ReasoningEffortFormat.Modern,
+        ReasoningEffortValues = ["off", "low", "medium", "high", "x-high"],
+        ReasoningEffortFormat = reasoningEffortFormat,
 
         Capabilities = ["chat", "reasoning", "vision", "function_calling", "text"],
 

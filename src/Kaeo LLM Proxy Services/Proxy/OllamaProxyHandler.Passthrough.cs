@@ -495,10 +495,23 @@ partial class OllamaProxyHandler
 
             // Apply headers that couldn't be placed on the request message earlier
             // because Content was null; now Content is assigned.
-            if (deferredContentHeaders is not null)
+            //
+            // A header the proxy already set on the content it built must be skipped rather than
+            // re-applied: HttpContentHeaders appends a second value instead of replacing, so
+            // re-adding the client's Content-Type over the one this method wrote for the rewritten
+            // body produced "application/json, application/json; charset=utf-8". Upstreams cannot
+            // route a request with two content types and rejected it with a 400 ("Model not exist."
+            // from the Alibaba compatible-mode endpoint). Content-Length is likewise owned by the
+            // content the proxy constructed and must not be taken from the inbound request.
+            if (deferredContentHeaders is not null && upstreamReq.Content is { } deferredTarget)
             {
                 foreach (var kvp in deferredContentHeaders)
-                    upstreamReq.Content?.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value);
+                {
+                    if (deferredTarget.Headers.Contains(kvp.Key))
+                        continue;
+
+                    deferredTarget.Headers.TryAddWithoutValidation(kvp.Key, kvp.Value);
+                }
             }
         }
 
