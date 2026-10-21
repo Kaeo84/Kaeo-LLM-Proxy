@@ -342,6 +342,7 @@ partial class OllamaProxyHandler
     /// are fully buffered protects the proxy from memory-exhaustion (DoS) attacks.
     /// </summary>
     /// <exception cref="RequestBodyTooLargeException">Thrown when the body exceeds the limit.</exception>
+    /// <exception cref="RequestBodyTimeoutException">Thrown when the client stalls mid-body longer than the idle window.</exception>
     /// <summary>
         /// Captures the request payload and proxy error body for a request the proxy rejected without
         /// handing it to a model. Called only on the reject branches, because reading the request body
@@ -379,6 +380,12 @@ partial class OllamaProxyHandler
                 log.ResponseBody = errorJson;
         }
 
+        /// <summary>
+        /// Idle window for a single read of an inbound request body. Every successful read resets
+        /// the window, so it bounds stalled clients without limiting slow-but-steady uploads.
+        /// </summary>
+        private static readonly TimeSpan BodyReadIdleTimeout = TimeSpan.FromSeconds(60);
+
         private async Task<string> ReadBodyAsync(HttpListenerRequest req, CancellationToken ct)
     {
         // GET and HEAD requests have no entity body; reading InputStream would block
@@ -396,8 +403,27 @@ partial class OllamaProxyHandler
         byte[] chunk = new byte[81920];
         long total = 0;
         int read;
-        while ((read = await req.InputStream.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
+
+        // A chunked request (no Content-Length) that stalls mid-body — or never delivers any data
+        // at all — would otherwise park this read for as long as the listener token lives. Bound
+        // each individual read with an idle window that every successful read resets, so only a
+        // truly stalled client trips it while a slow-but-steady upload completes normally.
+        using CancellationTokenSource idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        while (true)
         {
+            idleCts.CancelAfter(BodyReadIdleTimeout);
+            try
+            {
+                read = await req.InputStream.ReadAsync(chunk.AsMemory(), idleCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new RequestBodyTimeoutException(BodyReadIdleTimeout);
+            }
+
+            if (read <= 0)
+                break;
+
             total += read;
             if (total > limit)
                 throw new RequestBodyTooLargeException(limit, total);
@@ -414,6 +440,29 @@ partial class OllamaProxyHandler
     {
         public long Limit { get; } = limit;
         public long Actual { get; } = actual;
+    }
+
+    /// <summary>Indicates an inbound request body stalled longer than <see cref="BodyReadIdleTimeout"/>.</summary>
+    private sealed class RequestBodyTimeoutException(TimeSpan idleTimeout)
+        : Exception($"Request body stopped arriving for {idleTimeout.TotalSeconds:0} seconds and the request was abandoned.")
+    {
+    }
+
+    /// <summary>
+    /// Records the forwarded-body reduction when compaction rewrites a request. The request log's
+    /// RequestBytes stays the inbound size by definition; without this note, the (smaller) body
+    /// actually sent upstream after compaction would be invisible in the logs.
+    /// </summary>
+    private static void LogCompactionReduction(string model, string beforeBody, string afterBody)
+    {
+        if (ReferenceEquals(beforeBody, afterBody))
+            return;
+
+        Log.Debug(
+            "Compaction rewrote the request for model {Model}: {BeforeBytes} -> {AfterBytes} bytes forwarded upstream",
+            model,
+            Encoding.UTF8.GetByteCount(beforeBody),
+            Encoding.UTF8.GetByteCount(afterBody));
     }
 
     /// <summary>

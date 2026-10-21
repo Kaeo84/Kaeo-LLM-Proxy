@@ -364,6 +364,11 @@ internal sealed class StreamMonitorSession : IDisposable
     private void AppendBounded(StringBuilder buffer, string text)
     {
         buffer.Append(text);
+
+        // Trims to the tail, never the head: even when a single append overshoots the window,
+        // the most recent _maxLiveChars characters survive, so fresh frames are never dropped
+        // in favour of older ones. Trimming lazily (at _trimAtChars) amortises the Remove over
+        // many small appends instead of paying it on every frame.
         if (buffer.Length > _trimAtChars)
             buffer.Remove(0, buffer.Length - _maxLiveChars);
     }

@@ -64,10 +64,14 @@ internal static class RequestPayloadPipeline
             {
                 step.Apply(context);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 // A failing step must not take the request down: forward with the remaining steps
-                // applied, having recorded which step did not complete.
+                // applied, having recorded which step did not complete. Run is synchronous and no
+                // step observes the request's cancellation token, so even an
+                // OperationCanceledException escaping a step is an internal artifact (e.g. an
+                // embedded timeout) rather than a client cancellation — letting it propagate here
+                // would kill a request the pipeline contract says must survive.
                 Log.Warning(ex, "Request payload step {Step} failed; continuing with the payload as it stands", step.Name);
                 context.Log.DebugSummary = AppendNote(context.Log.DebugSummary, $"payload step '{step.Name}' failed: {ex.Message}");
             }

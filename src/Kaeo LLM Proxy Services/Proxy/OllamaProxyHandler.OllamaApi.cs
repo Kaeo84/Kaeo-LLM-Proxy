@@ -341,23 +341,11 @@ partial class OllamaProxyHandler
             Prompt = prompt,
             Stream = ollamaReq.Stream,
             ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
-            Temperature = ResolveSamplingValue(
-                    mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
-                    ollamaReq.Options?.Temperature,
-                    (float)(mapping?.Temperature ?? 0.7)),
-            TopP = ollamaReq.Options?.TopP,
-            TopK = ollamaReq.Options?.TopK,
-            MinP = ollamaReq.Options?.MinP,
-            MaxTokens = ollamaReq.Options?.NumPredict,
-            Stop = ollamaReq.Options?.Stop,
-            Seed = ollamaReq.Options?.Seed,
-            PresencePenalty = ollamaReq.Options?.PresencePenalty,
-            FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
-            RepeatPenalty = ResolveSamplingValue(
-                    mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
-                    ollamaReq.Options?.RepeatPenalty,
-                    (float)(mapping?.RepeatPenalty ?? 1.0)),
         };
+
+        // Sampling rules shared with /api/chat live in ApplySamplingOptions so the two
+        // translations cannot drift apart.
+        ApplySamplingOptions(llamaReq, mapping, ollamaReq.Options);
 
         string upstreamBody = JsonSerializer.Serialize(llamaReq, _jsonOptions);
         // Capture the upstream-bound (translated) body so proxy-injected values can be
@@ -524,27 +512,15 @@ partial class OllamaProxyHandler
             Stream = ollamaReq.Stream,
             Tools = MapTools(ollamaReq.Tools),
             ResponseFormat = ResolveResponseFormat(ollamaReq.Format),
-            Temperature = ResolveSamplingValue(
-                mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
-                ollamaReq.Options?.Temperature,
-                (float)(mapping?.Temperature ?? 0.7)),
-            TopP = ollamaReq.Options?.TopP,
-            TopK = ollamaReq.Options?.TopK,
-            MinP = ollamaReq.Options?.MinP,
-            MaxTokens = ollamaReq.Options?.NumPredict,
-            Stop = ollamaReq.Options?.Stop,
-            Seed = ollamaReq.Options?.Seed,
-            PresencePenalty = ollamaReq.Options?.PresencePenalty,
-            FrequencyPenalty = ollamaReq.Options?.FrequencyPenalty,
-            RepeatPenalty = ResolveSamplingValue(
-                mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
-                ollamaReq.Options?.RepeatPenalty,
-                (float)(mapping?.RepeatPenalty ?? 1.0)),
             Mirostat = ollamaReq.Options?.Mirostat,
             MirostatTau = ollamaReq.Options?.MirostatTau,
             MirostatEta = ollamaReq.Options?.MirostatEta,
             NCtx = ollamaReq.Options?.NumCtx,
         };
+
+        // Sampling rules shared with /api/generate live in ApplySamplingOptions so the two
+        // translations cannot drift apart.
+        ApplySamplingOptions(llamaReq, mapping, ollamaReq.Options);
 
         // Apply the reasoning effort in the mapping's wire format (legacy, modern, both, or
         // Qwen Cloud): the client's `think` field under Client App priority, or the
@@ -601,12 +577,14 @@ partial class OllamaProxyHandler
         // the target's own target and silently do nothing.
         if (compactRedirected && mapping is not null)
         {
-            upstreamBody = await BoundRedirectedCompactBodyAsync(
+            string boundedBody = await BoundRedirectedCompactBodyAsync(
                 mapping,
                 upstreamBody,
                 ollamaReq.Model,
                 CompactionFormat.Ollama,
                 ct);
+            LogCompactionReduction(effectiveModel, upstreamBody, boundedBody);
+            upstreamBody = boundedBody;
         }
         else
         {
@@ -617,7 +595,10 @@ partial class OllamaProxyHandler
             // notifications are not implemented for this path).
             string? compactedBody = await TryProactiveOverflowAsync(mapping, upstreamBody, effectiveModel, resp, AutoCompactPaths.Ollama, null, ct);
             if (compactedBody is not null)
+            {
+                LogCompactionReduction(effectiveModel, upstreamBody, compactedBody);
                 upstreamBody = compactedBody;
+            }
         }
 
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");

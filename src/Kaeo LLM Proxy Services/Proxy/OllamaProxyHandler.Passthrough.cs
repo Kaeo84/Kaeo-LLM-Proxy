@@ -475,6 +475,7 @@ partial class OllamaProxyHandler
                     string? compacted = await TryProactiveOverflowAsync(_settings.FindModelMapping(originalModel), rewritten, originalModel, resp, AutoCompactPaths.OpenAI, openCompactionStream, ct);
                     if (compacted is not null)
                     {
+                        LogCompactionReduction(originalModel, rewritten, compacted);
                         rewritten = compacted;
                         contextCompacted = true;
                     }

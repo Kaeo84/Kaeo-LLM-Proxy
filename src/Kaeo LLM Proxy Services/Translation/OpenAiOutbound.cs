@@ -18,7 +18,30 @@ internal static class OpenAiOutbound
     {
         JsonArray array = [];
         foreach (ChatMessage message in messages)
+        {
+            // OpenAI's wire shape carries one tool message per function result. A ChatMessage
+            // batching several results must fan out — ToOpenAiMessage's single-message shape
+            // keeps only the first, which would silently drop the rest.
+            List<FunctionResultContent> results = [.. message.Contents.OfType<FunctionResultContent>()];
+            if (results.Count > 1)
+            {
+                string text = string.Concat(message.Contents.OfType<TextContent>().Select(t => t.Text));
+                foreach (FunctionResultContent result in results)
+                {
+                    array.Add(new JsonObject
+                    {
+                        ["role"] = "tool",
+                        ["tool_call_id"] = result.CallId ?? string.Empty,
+                        ["content"] = result.Result?.ToString() ?? text,
+                    });
+                }
+
+                continue;
+            }
+
             array.Add(ToOpenAiMessage(message));
+        }
+
         return array;
     }
 
@@ -61,6 +84,10 @@ internal static class OpenAiOutbound
         FunctionResultContent? result = message.Contents.OfType<FunctionResultContent>().FirstOrDefault();
         if (result is not null)
         {
+            // A message carrying a function result IS a tool message on the OpenAI wire, so the
+            // role/content built above are deliberately overwritten (the text survives only as
+            // the fallback when Result is null). Batched results are fanned out by
+            // ToOpenAiMessages before this single-result shape is ever reached.
             json["role"] = "tool";
             json["tool_call_id"] = result.CallId ?? string.Empty;
             json["content"] = result.Result?.ToString() ?? content;

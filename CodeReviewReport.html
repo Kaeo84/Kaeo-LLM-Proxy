@@ -588,20 +588,20 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
-  <span>9 Medium-severity findings — heartbeat body drain, redundant code, inaccurate logging, etc.</span>
+  <span>9 Medium-severity findings — heartbeat body drain, redundant code, inaccurate logging, etc.</span> <span class="fixed-badge">✅ ALL FIXED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#13:</strong> Heartbeat sends /v1/models with <code>ResponseHeadersRead</code> but never drains body — potential socket exhaustion</li>
-    <li><strong>#14:</strong> HttpClient MaxConnectionsPerServer may bottleneck under heavy load</li>
-    <li><strong>#15:</strong> Pipeline exception filter swallows <code>OperationCanceledException</code> incorrectly</li>
-    <li><strong>#16:</strong> OpenAiOutbound: result content overwrites role/content for non-tool messages</li>
-    <li><strong>#18:</strong> StreamMonitor trim can drop recent data if single huge append</li>
-    <li><strong>#19:</strong> ReadBodyAsync blocks indefinitely for chunked encoding with no Content-Length</li>
-    <li><strong>#21:</strong> Inaccurate byte logging after compaction (RequestBytes not updated)</li>
-    <li><strong>#22:</strong> Dual StatisticsService parameters in constructor — confusing for DI</li>
-    <li><strong>#28:</strong> HandleGenerateAsync and HandleChatAsync ~80% duplicated structure</li>
+    <li><strong>#13:</strong> Heartbeat sends /v1/models with <code>ResponseHeadersRead</code> but never drains body — potential socket exhaustion <span class="fixed-badge">✅ FIXED</span> <em>(bounded 256 KB drain via LoadIntoBufferAsync before disposing; oversized body just loses connection reuse for that probe)</em></li>
+    <li><strong>#14:</strong> HttpClient MaxConnectionsPerServer may bottleneck under heavy load <span class="fixed-badge">✅ FIXED</span> <em>(raised 8 → 16 with headroom rationale; cap is a lazy ceiling, not a preallocation)</em></li>
+    <li><strong>#15:</strong> Pipeline exception filter swallows <code>OperationCanceledException</code> incorrectly <span class="fixed-badge">✅ FIXED</span> <em>(Run is synchronous and steps never observe the request token — an OCE from a step is an internal artifact, so the filter was removed and all step exceptions are caught as the contract intends)</em></li>
+    <li><strong>#16:</strong> OpenAiOutbound: result content overwrites role/content for non-tool messages <span class="fixed-badge">✅ FIXED</span> <em>(overwrite verified correct for the OpenAI tool wire shape and documented; real defect was batched FunctionResultContents collapsing to the first — ToOpenAiMessages now fans out one tool message per result)</em></li>
+    <li><strong>#18:</strong> StreamMonitor trim can drop recent data if single huge append <span class="fixed-badge">✅ VERIFIED — FALSE ALARM</span> <em>(AppendBounded trims to the tail, never the head: even a single oversized append keeps its most recent MaxLiveChars characters; clarifying comment added)</em></li>
+    <li><strong>#19:</strong> ReadBodyAsync blocks indefinitely for chunked encoding with no Content-Length <span class="fixed-badge">✅ FIXED</span> <em>(linked CTS with 60 s per-read idle window that every successful read resets; stalled client now gets a 408 via new RequestBodyTimeoutException — slow-but-steady uploads are unaffected)</em></li>
+    <li><strong>#21:</strong> Inaccurate byte logging after compaction (RequestBytes not updated) <span class="fixed-badge">✅ FIXED</span> <em>(RequestBytes stays the inbound size by definition; compaction rewrites now emit a Debug note with before → after byte counts on the chat redirect, chat proactive, and passthrough branches)</em></li>
+    <li><strong>#22:</strong> Dual StatisticsService parameters in constructor — confusing for DI <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(no constructor takes StatisticsService twice: McpServerHost, McpServerService, and McpActivityLogAdapter each receive exactly one instance — the single _mcpStats flows to all three by design)</em></li>
+    <li><strong>#28:</strong> HandleGenerateAsync and HandleChatAsync ~80% duplicated structure <span class="fixed-badge">✅ FIXED</span> <em>(the identical ~44-line sampling block extracted to ApplySamplingOptions via new ILlamaCppSamplingRequest interface on both wire types; full method merge rejected — prompt composition vs. message mapping, chat-only overflow/compaction, and differing error handling make the remaining similarity structural, not duplicated logic)</em></li>
   </ul>
 </div>
 </div>

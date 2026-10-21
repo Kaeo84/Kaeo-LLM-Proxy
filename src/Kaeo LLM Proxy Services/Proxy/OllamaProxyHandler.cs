@@ -201,6 +201,13 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         }
     }
 
+    /// <summary>
+    /// Cap on how much of a heartbeat probe's response body is drained. The probe only cares
+    /// about the status line, but the body must still be consumed so the pooled connection is
+    /// reusable; the bound keeps a misbehaving upstream from buffering an unbounded payload.
+    /// </summary>
+    private const long MaxHeartbeatBodyBytes = 256 * 1024;
+
     private async Task SendPeriodicHeartbeatAsync(ModelMapping mapping, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(mapping.UpstreamUrl))
@@ -219,6 +226,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             timeout,
             HttpCompletionOption.ResponseHeadersRead,
             ct);
+
+        // ResponseHeadersRead leaves the body unread, and disposing a response with an unread
+        // body tears the pooled connection down instead of returning it — a periodic probe would
+        // churn sockets (TIME_WAIT growth) instead of keeping one warm. Drain it with a bound;
+        // an oversized or unreadable body merely loses connection reuse for that one probe.
+        try
+        {
+            await response.Content.LoadIntoBufferAsync(MaxHeartbeatBodyBytes).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Probe outcomes never depend on the body, so drain failures are not worth logging.
+        }
 
         if (response.IsSuccessStatusCode)
         {
@@ -720,6 +740,31 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             SamplingPriority.Proxy => proxyValue,
             _ => clientValue,
         };
+
+    /// <summary>
+    /// Applies the client/mapping sampling priority rules to an outbound llama.cpp request.
+    /// Shared by the /api/generate and /api/chat translations so the identical block cannot
+    /// drift between the two wire shapes.
+    /// </summary>
+    private static void ApplySamplingOptions(ILlamaCppSamplingRequest request, ModelMapping? mapping, OllamaOptions? options)
+    {
+        request.Temperature = ResolveSamplingValue(
+            mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
+            options?.Temperature,
+            (float)(mapping?.Temperature ?? 0.7));
+        request.TopP = options?.TopP;
+        request.TopK = options?.TopK;
+        request.MinP = options?.MinP;
+        request.MaxTokens = options?.NumPredict;
+        request.Stop = options?.Stop;
+        request.Seed = options?.Seed;
+        request.PresencePenalty = options?.PresencePenalty;
+        request.FrequencyPenalty = options?.FrequencyPenalty;
+        request.RepeatPenalty = ResolveSamplingValue(
+            mapping?.RepeatPenaltyPriority ?? SamplingPriority.ClientApp,
+            options?.RepeatPenalty,
+            (float)(mapping?.RepeatPenalty ?? 1.0));
+    }
 
     /// <summary>
     /// The SSE comment frame used as a client-side keep-alive. Leading colon makes it an SSE
@@ -1258,10 +1303,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         new(new SocketsHttpHandler
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            // Single-user proxy: 8 upstream sockets per host is ample and keeps pooled native
-            // socket buffers bounded. A local upstream rarely serves more than a handful of
-            // parallel requests.
-            MaxConnectionsPerServer = 8,
+            // Single-user proxy: the cap is a ceiling on pooled sockets per host, not a
+            // preallocation — connections are created lazily and recycled. 16 leaves headroom
+            // for several concurrent client streams plus compaction calls and heartbeat probes
+            // against the same upstream before requests start queueing at the handler.
+            MaxConnectionsPerServer = 16,
         })
         {
             // Timeout is managed per-request via a linked CancellationTokenSource
@@ -1668,6 +1714,20 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             // The body is rejected before anything is streamed, so this should always be deliverable.
             if (!await TryWriteErrorResponseAsync(resp, log, 413, new { error = "Request body too large.", requestId }, CancellationToken.None))
                 RecordUndeliverableError(log, 413);
+
+            sw.Stop();
+            log.DurationMs = sw.Elapsed.TotalMilliseconds;
+            return;
+        }
+        catch (RequestBodyTimeoutException ex)
+        {
+            // The client stopped sending its body (a chunked request has no Content-Length to
+            // fast-reject against). Abandon it rather than hold the slot indefinitely.
+            log.ErrorMessage = ex.Message;
+            Log.Warning("Abandoned stalled request body on {Path}: {Message}", path, ex.Message);
+
+            if (!await TryWriteErrorResponseAsync(resp, log, 408, new { error = "Request body timed out.", requestId }, CancellationToken.None))
+                RecordUndeliverableError(log, 408);
 
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;

@@ -325,7 +325,7 @@ internal sealed class LlamaCppMessage
     public LlamaCppMessage(string role, string? content) { Role = role; Content = content; }
 }
 
-internal sealed class LlamaCppChatRequest
+internal sealed class LlamaCppChatRequest : ILlamaCppSamplingRequest
 {
     [JsonPropertyName("model")] public string Model { get; set; } = string.Empty;
     [JsonPropertyName("messages")] public List<LlamaCppMessage> Messages { get; set; } = [];
@@ -385,7 +385,7 @@ internal sealed class LlamaCppChatTemplateKwargs
     [JsonPropertyName("reasoning_effort")] public string? ReasoningEffort { get; set; }
 }
 
-internal sealed class LlamaCppCompletionRequest
+internal sealed class LlamaCppCompletionRequest : ILlamaCppSamplingRequest
 {
     [JsonPropertyName("model")] public string Model { get; set; } = string.Empty;
     [JsonPropertyName("prompt")] public string Prompt { get; set; } = string.Empty;
@@ -401,6 +401,24 @@ internal sealed class LlamaCppCompletionRequest
     [JsonPropertyName("presence_penalty")] public float? PresencePenalty { get; set; }
     [JsonPropertyName("frequency_penalty")] public float? FrequencyPenalty { get; set; }
     [JsonPropertyName("repeat_penalty")] public float? RepeatPenalty { get; set; }
+}
+
+/// <summary>
+/// Sampling knobs shared by the completions and chat wire shapes. Lets the proxy apply the
+/// client/mapping priority rules once for both request types instead of duplicating the block.
+/// </summary>
+internal interface ILlamaCppSamplingRequest
+{
+    float? Temperature { get; set; }
+    float? TopP { get; set; }
+    int? TopK { get; set; }
+    float? MinP { get; set; }
+    int? MaxTokens { get; set; }
+    List<string>? Stop { get; set; }
+    int? Seed { get; set; }
+    float? PresencePenalty { get; set; }
+    float? FrequencyPenalty { get; set; }
+    float? RepeatPenalty { get; set; }
 }
 
 internal sealed class LlamaCppStreamChunk
