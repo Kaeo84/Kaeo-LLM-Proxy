@@ -61,12 +61,14 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         lock (_moduleDirectoriesLock)
         {
             _moduleDirectories.Add(_moduleDirectory);
-        }
 
-        if (!_resolvingHandlerRegistered)
-        {
-            _resolvingHandlerRegistered = true;
-            AssemblyLoadContext.Default.Resolving += OnDefaultContextResolving;
+            // Registered under the same lock so two contexts constructed concurrently cannot
+            // both pass the flag check and subscribe the default-context handler twice.
+            if (!_resolvingHandlerRegistered)
+            {
+                _resolvingHandlerRegistered = true;
+                AssemblyLoadContext.Default.Resolving += OnDefaultContextResolving;
+            }
         }
 
         Unloading += ctx => { lock (_moduleDirectoriesLock) { _moduleDirectories.Remove(_moduleDirectory); } };

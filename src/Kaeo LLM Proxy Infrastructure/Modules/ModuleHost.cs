@@ -333,15 +333,16 @@ internal sealed class ModuleHost
 
         ModuleAssemblyLoadContext loadContext = new(entry.AssemblyPath);
         IKaeoModule module;
-            try
-            {
-                Assembly assembly = loadContext.LoadFromAssemblyPath(entry.AssemblyPath);
-                module = CreateModuleInstance(assembly);
-                // Derive the application's data directory from the configured DB path and pass it
-                string? appDbPath = _database.DatabasePath;
-                string dataDirectory = Path.GetDirectoryName(appDbPath) ?? AppContext.BaseDirectory;
-                module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, dataDirectory));
-            }
+        try
+        {
+            Assembly assembly = loadContext.LoadFromAssemblyPath(entry.AssemblyPath);
+            module = CreateModuleInstance(assembly);
+            // Derive the application's data directory from the configured DB path and pass it
+            // to the module so it stores its files beside the host database.
+            string? appDbPath = _database.DatabasePath;
+            string dataDirectory = Path.GetDirectoryName(appDbPath) ?? AppContext.BaseDirectory;
+            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, dataDirectory));
+        }
         catch
         {
             loadContext.Unload();

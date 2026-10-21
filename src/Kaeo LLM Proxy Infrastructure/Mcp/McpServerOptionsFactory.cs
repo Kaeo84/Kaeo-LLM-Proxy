@@ -3,6 +3,7 @@ using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Core.Modules;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Infrastructure.Mcp;
 
@@ -39,14 +40,24 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
 
         foreach (object target in _moduleHost.GetMcpToolTargets(session))
         {
-            foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+            try
             {
-                if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
-                    continue;
+                foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
+                        continue;
 
-                McpServerPrimitiveCollection<McpServerTool> toolCollection =
-                    options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
-                toolCollection.Add(McpServerTool.Create(method, target));
+                    McpServerPrimitiveCollection<McpServerTool> toolCollection =
+                        options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
+                    toolCollection.Add(McpServerTool.Create(method, target));
+                }
+            }
+            catch (Exception ex)
+            {
+                // Module-contributed targets live in foreign load contexts; reflection over them
+                // can throw (e.g. attributes whose types failed to unify). Skip the bad target
+                // instead of failing the whole MCP session build.
+                Log.Warning(ex, "Failed to enumerate MCP tools on target {Target}; skipping it.", target.GetType().FullName);
             }
         }
 

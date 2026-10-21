@@ -980,7 +980,11 @@ internal sealed class LoggingSettings
     /// </remarks>
     public string HeartbeatMinimumLevel { get; set; } = "Debug";
 
-    /// <summary>Maximum size in MB of a single app-log file before rolling. Min: 1, Max: 1000.</summary>
+    /// <summary>
+    /// Maximum size of a single app-log file before rolling. Despite the <c>Mb</c> suffix the
+    /// value is interpreted as mebibytes (multiplied by 1024×1024); the suffix is kept so
+    /// existing settings files continue to deserialize. Min: 1, Max: 1000.
+    /// </summary>
     public int AppLogFileSizeLimitMb { get; set; } = 10;
 
     /// <summary>Number of rolled app-log files to retain (oldest deleted first). Min: 1, Max: 999.</summary>
@@ -1975,7 +1979,7 @@ internal sealed class AppSettings
                 "MinimumLevel": "{{Logging.MinimumLevel}}",
                 "HeartbeatMinimumLevel": "{{Logging.HeartbeatMinimumLevel}}",
 
-                // Roll the app log file when it reaches this size (MB).
+                // Roll the app log file when it reaches this size (MiB - multiplied by 1024*1024).
                 // Min: 1  Max: 1000  Default: 10
                 "AppLogFileSizeLimitMb": {{Logging.AppLogFileSizeLimitMb}},
 

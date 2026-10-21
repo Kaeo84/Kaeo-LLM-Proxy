@@ -427,22 +427,22 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>11 Low-severity findings — minor issues across PooledCharBuffer, ModuleHost, McpServer, logging</span>
+  <span>11 Low-severity findings — minor issues across PooledCharBuffer, ModuleHost, McpServer, logging <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#2:</strong> Integer overflow risk in <code>PooledCharBuffer</code> capacity calculation</li>
-    <li><strong>#3:</strong> Static HttpClient never disposed in <code>UpstreamModelMetadata</code></li>
-    <li><strong>#5:</strong> Indentation inconsistency in <code>ModuleHost.LoadModule</code></li>
-    <li><strong>#8:</strong> Race condition in <code>ModuleAssemblyLoadContext</code> event handler registration</li>
-    <li><strong>#9:</strong> Repeated assembly enumeration O(n) on every load resolution</li>
-    <li><strong>#11:</strong> Potential FileStream leak in <code>OpenFallbackWriter</code></li>
-    <li><strong>#13:</strong> Confusing unit naming in <code>AppLogger</code> file size limit (Mb vs MiB)</li>
-    <li><strong>#14:</strong> No input validation on stored MCP settings (<code>ListenAddress</code>)</li>
-    <li><strong>#15:</strong> <code>LateBoundActivityLog</code> silently drops messages before binding</li>
-    <li><strong>#16:</strong> Unsafe reflection on module-contributed types in <code>McpServerOptionsFactory</code></li>
-    <li><strong>#17:</strong> Fragile <code>SourceContext</code> parsing relying on Serilog internal ToString format</li>
+    <li><strong>#2:</strong> Integer overflow risk in <code>PooledCharBuffer</code> capacity calculation <span class="fixed-badge">✅ FIXED</span> <em>(Capacity math is now done in 64-bit, the doubling is capped at Array.MaxLength, and an over-limit append throws InvalidOperationException instead of silently overflowing to a negative/int-wrapped size.)</em></li>
+    <li><strong>#3:</strong> Static HttpClient never disposed in <code>UpstreamModelMetadata</code> <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(An app-lifetime static HttpClient is the recommended pattern — it avoids socket exhaustion on repeated discovery calls, and disposing it would either be pointless at shutdown or break in-flight metadata fetches. The XML doc states the sharing/timeout rationale.)</em></li>
+    <li><strong>#5:</strong> Indentation inconsistency in <code>ModuleHost.LoadModule</code> <span class="fixed-badge">✅ FIXED</span> <em>(The try block's stray 4-space over-indent was normalized and the truncated comment about the module data directory restored to its full sentence.)</em></li>
+    <li><strong>#8:</strong> Race condition in <code>ModuleAssemblyLoadContext</code> event handler registration <span class="fixed-badge">✅ FIXED</span> <em>(The _resolvingHandlerRegistered check + subscribe now happens inside the existing _moduleDirectoriesLock, so two contexts constructed concurrently cannot both subscribe the default-context Resolving handler.)</em></li>
+    <li><strong>#9:</strong> Repeated assembly enumeration O(n) on every load resolution <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(Step 0 must see the default context's live assembly set — a cached snapshot would miss assemblies loaded later and break the type-unification guarantee that is the whole point of the check. Resolution only runs at module load, not per request, so the scan cost is irrelevant.)</em></li>
+    <li><strong>#11:</strong> Potential FileStream leak in <code>OpenFallbackWriter</code> <span class="fixed-badge">✅ FIXED</span> <em>(The FileStream is now created first and disposed in a catch if StreamWriter construction ever throws, instead of being passed inline where a failure would orphan the handle.)</em></li>
+    <li><strong>#13:</strong> Confusing unit naming in <code>AppLogger</code> file size limit (Mb vs MiB) <span class="fixed-badge">✅ FIXED</span> <em>(The property is multiplied by 1024×1024, i.e. mebibytes. Renaming would break existing settings.jsonc files, so the XML doc and the settings-template comment now state the MiB interpretation and why the Mb suffix is retained.)</em></li>
+    <li><strong>#14:</strong> No input validation on stored MCP settings (<code>ListenAddress</code>) <span class="fixed-badge">✅ FIXED</span> <em>(New SanitizeListenAddress restricts the user-editable stored value to wildcard forms (*, +, 0.0.0.0, ::, [::]), IP literals, or plain hostnames; anything with scheme/port/path/prefix-breaking characters falls back to localhost so a corrupted row can't make the MCP server unstartable.)</em></li>
+    <li><strong>#15:</strong> <code>LateBoundActivityLog</code> silently drops messages before binding <span class="fixed-badge">✅ FIXED</span> <em>(Dropping before binding remains correct (tool activity can't precede server start), but a dropped entry now emits a Serilog Debug line naming Source/Operation instead of vanishing without a trace.)</em></li>
+    <li><strong>#16:</strong> Unsafe reflection on module-contributed types in <code>McpServerOptionsFactory</code> <span class="fixed-badge">✅ FIXED</span> <em>(GetMethods/McpServerTool.Create per target is now wrapped in try/catch: a module type whose reflection throws (e.g. attribute types that failed to unify across load contexts) is skipped with a warning instead of failing the whole MCP session build.)</em></li>
+    <li><strong>#17:</strong> Fragile <code>SourceContext</code> parsing relying on Serilog internal ToString format <span class="fixed-badge">✅ FIXED</span> <em>(New GetSourceContext helper reads the property as a ScalarValue string directly; the rendered-then-unquoted ToString() form survives only as a fallback for unexpected non-scalar values, and both call sites share the helper.)</em></li>
   </ul>
 </div>
 </div>

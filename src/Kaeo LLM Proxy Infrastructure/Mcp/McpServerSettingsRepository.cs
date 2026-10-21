@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Net;
 using Kaeo.LlmProxy.Core.Models;
 
 namespace Kaeo.LlmProxy.Infrastructure.Mcp;
@@ -33,7 +34,7 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
         return new McpServerSettings
         {
             Enabled = ReadBool(values, ServerEnabledKey, false),
-            ListenAddress = ReadString(values, ServerListenAddressKey, "localhost"),
+            ListenAddress = SanitizeListenAddress(ReadString(values, ServerListenAddressKey, "localhost")),
             ListenPort = ClampPort(ReadInt(values, ServerListenPortKey, McpServerSettings.DefaultPort)),
             EnableApiExplorer = ReadBool(values, ServerApiExplorerKey, false),
             AuthCredentialName = ReadOptionalString(values, ServerAuthCredentialKey),
@@ -56,6 +57,34 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
     }
 
     private static int ClampPort(int port) => Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort);
+
+    /// <summary>
+    /// The stored listen address comes from a user-editable key/value table, so restrict it to
+    /// values that can form a valid HttpListener prefix host: a wildcard form understood by the
+    /// server, an IP literal, or a plain hostname. Scheme-qualified URLs, embedded ports/paths,
+    /// and values with prefix-breaking characters fall back to localhost so a corrupted row
+    /// cannot make the MCP server unstartable.
+    /// </summary>
+    private static string SanitizeListenAddress(string raw)
+    {
+        string host = raw.Trim();
+        if (host.Length == 0)
+            return "localhost";
+
+        if (host is "*" or "+" or "0.0.0.0" or "::" or "[::]")
+            return host;
+
+        if (IPAddress.TryParse(host.Trim('[', ']'), out _))
+            return host;
+
+        foreach (char c in host)
+        {
+            if (char.IsWhiteSpace(c) || c is '/' or '\\' or ':' or '#' or '?' or '@')
+                return "localhost";
+        }
+
+        return host;
+    }
 
     private Dictionary<string, string> LoadKeyValueTable()
     {

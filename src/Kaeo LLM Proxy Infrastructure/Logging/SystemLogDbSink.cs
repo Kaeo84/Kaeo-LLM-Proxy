@@ -69,10 +69,7 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
         string renderedMessage = logEvent.RenderMessage();
         string? exception = logEvent.Exception?.ToString();
-        string? sourceContext = logEvent.Properties
-            .TryGetValue(SourceContextKey, out var sc)
-                ? sc.ToString().Trim('"')
-                : null;
+        string? sourceContext = GetSourceContext(logEvent);
 
         lock (_lock)
         {
@@ -82,6 +79,16 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
                 TryEmitToFallback(logEvent);
         }
     }
+
+    /// <summary>
+    /// Reads the SourceContext property as its raw string value. The rendered-then-unquoted form
+    /// is kept only as a fallback for the unexpected non-scalar case, so the common path does not
+    /// depend on Serilog's <see cref="LogEventPropertyValue.ToString()"/> format.
+    /// </summary>
+    private static string? GetSourceContext(LogEvent logEvent) =>
+        logEvent.Properties.TryGetValue(SourceContextKey, out LogEventPropertyValue? property)
+            ? property is ScalarValue { Value: string context } ? context : property?.ToString().Trim('"')
+            : null;
 
     private void TryEmitToDb(LogEvent logEvent, string message, string? exception, string? sourceContext)
     {
@@ -144,9 +151,7 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
                 // Retry this event through the DB path
                 string msg = logEvent.RenderMessage();
-                TryEmitToDb(logEvent, msg, logEvent.Exception?.ToString(),
-                    logEvent.Properties.TryGetValue(SourceContextKey, out var sc)
-                        ? sc.ToString().Trim('"') : null);
+                TryEmitToDb(logEvent, msg, logEvent.Exception?.ToString(), GetSourceContext(logEvent));
                 return;
             }
         }
@@ -229,8 +234,18 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
         RollOverFallbackFileIfOversized();
 
-        _fallbackWriter = new StreamWriter(
-            File.Open(_fallbackFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+        FileStream stream = File.Open(_fallbackFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        try
+        {
+            _fallbackWriter = new StreamWriter(stream);
+        }
+        catch
+        {
+            // Don't leak the raw FileStream if the writer construction ever fails.
+            stream.Dispose();
+            throw;
+        }
+
         _fallbackBytesWritten = new FileInfo(_fallbackFilePath).Length;
     }
 

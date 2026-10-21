@@ -32,7 +32,7 @@ internal sealed class PooledCharBuffer : IDisposable
 
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        int required = _length + value.Length;
+        long required = (long)_length + value.Length;
         if (required > _buffer.Length)
             Grow(required);
 
@@ -46,7 +46,7 @@ internal sealed class PooledCharBuffer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (_length >= _buffer.Length)
-            Grow(_length + 1);
+            Grow((long)_length + 1);
 
         _buffer[_length++] = value;
     }
@@ -58,9 +58,16 @@ internal sealed class PooledCharBuffer : IDisposable
         return _length == 0 ? string.Empty : new string(_buffer, 0, _length);
     }
 
-    private void Grow(int requiredCapacity)
+    private void Grow(long requiredCapacity)
     {
-        int newCapacity = Math.Max(requiredCapacity, _buffer.Length * 2);
+        if (requiredCapacity > Array.MaxLength)
+            throw new InvalidOperationException(
+                $"Accumulated content would exceed the maximum buffer size of {Array.MaxLength} characters.");
+
+        // Both operands in 64-bit so neither the requirement nor the doubling can overflow;
+        // the doubling is capped so Rent() stays within Array.MaxLength.
+        long doubled = (long)_buffer.Length * 2;
+        int newCapacity = (int)Math.Max(requiredCapacity, Math.Min(doubled, Array.MaxLength));
         char[] newBuffer = ArrayPool<char>.Shared.Rent(newCapacity);
 
         _buffer.AsSpan(0, _length).CopyTo(newBuffer);
