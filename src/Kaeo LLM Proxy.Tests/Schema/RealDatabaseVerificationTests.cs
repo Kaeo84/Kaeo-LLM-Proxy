@@ -24,16 +24,17 @@ public class RealDatabaseVerificationTests
     private static string? ConfiguredPath =>
         Environment.GetEnvironmentVariable("KAEO_VERIFY_DB");
 
-    [Fact]
+    [RequiresRealDatabaseFact]
     public void RealDatabase_OpensAndReadsThroughTheReconciledSchema()
     {
         string? path = ConfiguredPath;
 
-        // No-op when the local database path is not supplied, so the suite stays runnable anywhere.
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-            return;
+        // The attribute skips visibly when the variable is unset. A set-but-missing path is a
+        // misconfigured explicit request for this verification, so it fails loudly instead of
+        // silently "passing" without checking anything.
+        Assert.True(File.Exists(path), $"KAEO_VERIFY_DB points to '{path}', which does not exist.");
 
-        using AppDatabase database = new(new LoggingSettings { ApplicationDatabasePath = path });
+        using AppDatabase database = new(new LoggingSettings { ApplicationDatabasePath = path! });
 
         // The crash this guards: LoadRuntimeSettings names copilot_compaction_model_name, which a
         // database predating that column does not have.
@@ -52,5 +53,21 @@ public class RealDatabaseVerificationTests
         RuntimeSettings reloaded = database.LoadRuntimeSettings();
         Assert.Equal(runtime.EnableCopilotCompactionRouting, reloaded.EnableCopilotCompactionRouting);
         Assert.Equal(runtime.CopilotCompactionModelName, reloaded.CopilotCompactionModelName);
+    }
+}
+
+/// <summary>
+/// A <see cref="FactAttribute"/> that is skipped unless <c>KAEO_VERIFY_DB</c> is set, so the test
+/// run reports the opt-in database check as skipped rather than as a silent no-op pass.
+/// </summary>
+internal sealed class RequiresRealDatabaseFactAttribute : FactAttribute
+{
+    public RequiresRealDatabaseFactAttribute()
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("KAEO_VERIFY_DB")))
+        {
+            Skip = "KAEO_VERIFY_DB is not set; this opt-in check verifies against the developer's "
+                + "real database file and is skipped.";
+        }
     }
 }

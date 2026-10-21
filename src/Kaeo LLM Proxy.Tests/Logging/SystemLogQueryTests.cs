@@ -21,6 +21,13 @@ public class SystemLogQueryTests
         Path.Combine(Path.GetTempPath(), $"kaeo-syslog-{Guid.NewGuid():N}.db");
 
     /// <summary>
+    /// Deterministic seed epoch: rows are stamped with strictly increasing timestamps derived from
+    /// it instead of <see cref="DateTime.UtcNow"/>, so the ORDER BY in the queries under test never
+    /// depends on clock resolution or on rows landing inside the same tick.
+    /// </summary>
+    private static readonly DateTime SeedEpoch = new(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>
     /// Inserts rows directly through SQLite so the test controls the exact level, message,
     /// exception, and source values the query has to filter on.
     /// </summary>
@@ -29,13 +36,15 @@ public class SystemLogQueryTests
         using SqliteConnection connection = new($"Data Source={path}");
         connection.Open();
 
-        foreach ((string level, string message, string? exception, string? source) in rows)
+        for (int i = 0; i < rows.Length; i++)
         {
+            (string level, string message, string? exception, string? source) = rows[i];
+
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 "INSERT INTO system_logs (timestamp_utc, level, message, exception, source_context) " +
                 "VALUES ($ts, $level, $message, $exception, $source);";
-            command.Parameters.AddWithValue("$ts", DateTime.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$ts", SeedEpoch.AddSeconds(i).ToString("O"));
             command.Parameters.AddWithValue("$level", level);
             command.Parameters.AddWithValue("$message", message);
             command.Parameters.AddWithValue("$exception", (object?)exception ?? DBNull.Value);

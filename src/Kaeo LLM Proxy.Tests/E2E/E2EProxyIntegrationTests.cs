@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
@@ -19,10 +20,15 @@ namespace Kaeo.LlmProxy.Tests;
 /// reply translation) works end‑to‑end.
 /// </summary>
 [Collection("AppLogger")]
-public sealed class E2EProxyIntegrationTests : IDisposable
+public sealed class E2EProxyIntegrationTests : IAsyncDisposable
 {
-    private const int StubUpstreamPort = 18190;
-    private const int ProxyListenPort = 18191;
+    /// <summary>
+    /// Ports are probed from the OS at construction time instead of hard-coded constants, so the
+    /// suite cannot collide with other processes (or parallel runs) already owning a fixed port.
+    /// The probe is inherently TOCTOU — see <see cref="GetFreePort"/> — so both binds retry.
+    /// </summary>
+    private readonly int _stubPort;
+    private readonly int _proxyPort;
 
     private readonly string _dbPath;
     private readonly AppSettings _settings;
@@ -37,14 +43,20 @@ public sealed class E2EProxyIntegrationTests : IDisposable
 
     public E2EProxyIntegrationTests()
     {
-        _upstream = new StubUpstreamServer(StubUpstreamPort);
+        (StubUpstreamServer upstream, int stubPort) = StartStubOnFreePort();
+        _upstream = upstream;
+        _stubPort = stubPort;
         _upstream.Start();
+
+        _proxyPort = GetFreePort();
+        while (_proxyPort == _stubPort)
+            _proxyPort = GetFreePort();
 
         // ── database + settings ─────────────────────────────────────────
         _dbPath = Path.Combine(Path.GetTempPath(), $"kaeo-e2e-{Guid.NewGuid():N}.db");
         _settings = new AppSettings
         {
-            ListenPort = ProxyListenPort,
+            ListenPort = _proxyPort,
             ListenAddress = "localhost",
             MaxLogEntries = 100,
             MaxConcurrentRequests = 4,
@@ -54,7 +66,7 @@ public sealed class E2EProxyIntegrationTests : IDisposable
                 {
                     ProxyName         = "test-model",
                     ModelName         = "test-model",
-                    UpstreamUrl       = $"http://localhost:{StubUpstreamPort}/v1",
+                    UpstreamUrl       = $"http://localhost:{_stubPort}/v1",
                     UpstreamType      = UpstreamType.OpenAI,
                     IsEnabled         = true,
                     ContextWindowTokens = 32_768,
@@ -72,14 +84,33 @@ public sealed class E2EProxyIntegrationTests : IDisposable
         _mcpServer = new McpServerService(_database, _settings, _moduleHost, _stats);
         _handler  = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
         _proxy    = new ProxyServer(_handler);
-        _proxy.Start(ProxyListenPort, "localhost", _settings.MaxConcurrentRequests);
+
+        // Same TOCTOU window as the stub bind: if another process claimed the probed port before
+        // the listener could reserve it, retry on a fresh one.
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                _proxy.Start(_proxyPort, "localhost", _settings.MaxConcurrentRequests);
+                break;
+            }
+            catch (HttpListenerException) when (attempt < 4)
+            {
+                _proxyPort = GetFreePort();
+                _settings.ListenPort = _proxyPort;
+            }
+        }
     }
 
-    public void Dispose()
+    /// <summary>
+    /// xUnit awaits this instead of blocking a thread-pool thread on
+    /// <c>_mcpServer.DisposeAsync().GetAwaiter().GetResult()</c> (VSTHRD002).
+    /// </summary>
+    public async ValueTask DisposeAsync()
     {
         _proxy.Dispose();
         _handler.Dispose();
-        _mcpServer.DisposeAsync().GetAwaiter().GetResult();
+        await _mcpServer.DisposeAsync();
         _stats.Dispose();
         _database.Dispose();
         _upstream.Dispose();
@@ -87,6 +118,34 @@ public sealed class E2EProxyIntegrationTests : IDisposable
         try { File.Delete(_dbPath); } catch { }
         try { File.Delete(_dbPath + "-shm"); } catch { }
         try { File.Delete(_dbPath + "-wal"); } catch { }
+    }
+
+    /// <summary>
+    /// OS-assigned loopback port. The port is only guaranteed free between the probe releasing it
+    /// and the real server re-binding it, so every bind in this class retries on conflict.
+    /// </summary>
+    private static int GetFreePort()
+    {
+        TcpListener probe = new(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    private static (StubUpstreamServer Server, int Port) StartStubOnFreePort()
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            int port = GetFreePort();
+            try
+            {
+                return (new StubUpstreamServer(port), port);
+            }
+            catch (HttpListenerException) when (attempt < 4)
+            {
+            }
+        }
     }
 
     // ── Tests ───────────────────────────────────────────────────────────
@@ -110,7 +169,7 @@ public sealed class E2EProxyIntegrationTests : IDisposable
             JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using HttpResponseMessage response = await client.PostAsync(
-            $"http://localhost:{ProxyListenPort}/api/chat", content);
+            $"http://localhost:{_proxyPort}/api/chat", content);
 
         response.EnsureSuccessStatusCode();
 
@@ -144,7 +203,7 @@ public sealed class E2EProxyIntegrationTests : IDisposable
             JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using HttpResponseMessage response = await client.PostAsync(
-            $"http://localhost:{ProxyListenPort}/api/chat", content);
+            $"http://localhost:{_proxyPort}/api/chat", content);
 
         response.EnsureSuccessStatusCode();
 
@@ -187,7 +246,7 @@ public sealed class E2EProxyIntegrationTests : IDisposable
             JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using HttpResponseMessage response = await client.PostAsync(
-            $"http://localhost:{ProxyListenPort}/v1/chat/completions", content);
+            $"http://localhost:{_proxyPort}/v1/chat/completions", content);
 
         response.EnsureSuccessStatusCode();
 
@@ -222,7 +281,7 @@ public sealed class E2EProxyIntegrationTests : IDisposable
             JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using HttpResponseMessage response = await client.PostAsync(
-            $"http://localhost:{ProxyListenPort}/v1/chat/completions", content);
+            $"http://localhost:{_proxyPort}/v1/chat/completions", content);
 
         response.EnsureSuccessStatusCode();
 

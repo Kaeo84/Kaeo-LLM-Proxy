@@ -72,9 +72,22 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
     /// <summary>Starts the proxy on a free loopback port and points the client at it.</summary>
     private void StartProxy()
     {
-        int port = GetFreePort();
-        _server.Start(port, "localhost", maxConcurrentRequests: 8);
-        _client.BaseAddress = new Uri($"http://localhost:{port}");
+        // The GetFreePort probe is inherently TOCTOU — another process can claim the port between
+        // the probe releasing it and the server re-binding — so a conflict retries on a fresh port
+        // instead of failing the fixture.
+        for (int attempt = 0; ; attempt++)
+        {
+            int port = GetFreePort();
+            try
+            {
+                _server.Start(port, "localhost", maxConcurrentRequests: 8);
+                _client.BaseAddress = new Uri($"http://localhost:{port}");
+                return;
+            }
+            catch (HttpListenerException) when (attempt < 4)
+            {
+            }
+        }
     }
 
     private static int GetFreePort()
@@ -342,8 +355,21 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         // actual concurrency gate would make it timing-dependent.
         using OllamaProxyHandler handler = new(_settings, _statistics, _moduleHost, _mcpServer, _nonProxiedStatistics);
         using HttpListener listener = new();
-        listener.Prefixes.Add($"http://localhost:{GetFreePort()}/");
-        listener.Start();
+        // Same TOCTOU window as StartProxy: retry the bind on a fresh port if another process
+        // claimed the probed one in between.
+        for (int attempt = 0; ; attempt++)
+        {
+            listener.Prefixes.Add($"http://localhost:{GetFreePort()}/");
+            try
+            {
+                listener.Start();
+                break;
+            }
+            catch (HttpListenerException) when (attempt < 4)
+            {
+                listener.Prefixes.Clear();
+            }
+        }
 
         using HttpClient caller = new() { Timeout = TimeSpan.FromSeconds(20) };
         Task<HttpResponseMessage> call = caller.GetAsync(listener.Prefixes.First() + "overloaded");

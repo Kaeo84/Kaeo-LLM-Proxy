@@ -947,20 +947,20 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
-  <span>9 Medium-severity findings</span>
+  <span>9 Medium-severity findings <span class="fixed-badge">✅ ALL FIXED</span></span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#6:</strong> Flaky Task.Delay in CompactionKeepAliveTests — timing-dependent assertions + busy-wait polling</li>
-    <li><strong>#7:</strong> Static HttpClient in LiveModelSmokeTests — socket exhaustion + header leaking between tests</li>
-    <li><strong>#8:</strong> TOCTOU race: GetFreePort() binds port 0, releases, then Server.Start() — AddressInUseException</li>
-    <li><strong>#9:</strong> Hardcoded ports (18190, 18191) in E2EProxyIntegrationTests — conflicts with other processes</li>
-    <li><strong>#10:</strong> <code>.GetAwaiter().GetResult()</code> in Dispose — may deadlock on certain SynchronizationContexts</li>
-    <li><strong>#11:</strong> Windows-only hardcoded path <code>C:\temp\test.db</code> in AppSettingsCloneTests</li>
-    <li><strong>#12:</strong> RealDatabaseVerificationTests silently passes without verifying when env var not set</li>
-    <li><strong>#13:</strong> Repository root walking may fail in CI/docker — throws InvalidOperationException</li>
-    <li><strong>#14:</strong> DateTime.UtcNow dependency in SQL INSERT (low risk, no current timestamp assertions)</li>
+    <li><strong>#6:</strong> Flaky Task.Delay in CompactionKeepAliveTests — timing-dependent assertions + busy-wait polling <span class="fixed-badge">✅ FIXED</span> <em>(DisconnectedClientStream now exposes a FirstWriteAttempted TaskCompletionSource signaled on every write attempt; the 500×10ms polling loop was replaced with an awaited signal + 5s timeout.)</em></li>
+    <li><strong>#7:</strong> Static HttpClient in LiveModelSmokeTests — socket exhaustion + header leaking between tests <span class="fixed-badge">✅ VERIFIED — ALREADY FIXED</span> <em>(One shared static HttpClient is the recommended pattern — no per-test churn, so no socket exhaustion. Auth is applied per-request via ApplyApiKey(request,…) setting HttpRequestMessage.Headers.Authorization; DefaultRequestHeaders is never mutated, so no header leaking. This was remediated during the High-severity smoke-test fix.)</em></li>
+    <li><strong>#8:</strong> TOCTOU race: GetFreePort() binds port 0, releases, then Server.Start() — AddressInUseException <span class="fixed-badge">✅ FIXED</span> <em>(StartProxy and the 503-test HttpListener bind now retry up to 5× with a fresh probed port on HttpListenerException, closing the probe-to-bind race window.)</em></li>
+    <li><strong>#9:</strong> Hardcoded ports (18190, 18191) in E2EProxyIntegrationTests — conflicts with other processes <span class="fixed-badge">✅ FIXED</span> <em>(Constants replaced with OS-probed dynamic ports (_stubPort/_proxyPort, guaranteed distinct); both the stub and proxy binds retry with fresh ports on conflict; all four test URLs use the instance port.)</em></li>
+    <li><strong>#10:</strong> <code>.GetAwaiter().GetResult()</code> in Dispose — may deadlock on certain SynchronizationContexts <span class="fixed-badge">✅ FIXED</span> <em>(Class converted from IDisposable to IAsyncDisposable; DisposeAsync now awaits _mcpServer.DisposeAsync() directly. This also eliminated the pre-existing VSTHRD002 analyzer warning on that line.)</em></li>
+    <li><strong>#11:</strong> Windows-only hardcoded path <code>C:\temp\test.db</code> in AppSettingsCloneTests <span class="fixed-badge">✅ FIXED</span> <em>(Replaced with Path.Combine(Path.GetTempPath(), "test.db") — the value only round-trips through the clone comparison, and the suite is now runner-OS agnostic.)</em></li>
+    <li><strong>#12:</strong> RealDatabaseVerificationTests silently passes without verifying when env var not set <span class="fixed-badge">✅ FIXED</span> <em>(New RequiresRealDatabaseFactAttribute sets FactAttribute.Skip when KAEO_VERIFY_DB is unset, so the run reports a visible Skip instead of a silent pass. A set-but-missing path now fails loudly via Assert.True(File.Exists…). Test run confirms: 589 passed, 1 skipped.)</em></li>
+    <li><strong>#13:</strong> Repository root walking may fail in CI/docker — throws InvalidOperationException <span class="fixed-badge">✅ FIXED</span> <em>(FindRepositoryRoot returns null instead of throwing (and swallows UnauthorizedAccess/IO errors while walking); Root is nullable, LoadIfPresent and HasCohereSpec are null-safe — spec-backed conformance tests now skip gracefully via the existing RequiresOpenAiSpec attributes on machines without a checkout.)</em></li>
+    <li><strong>#14:</strong> DateTime.UtcNow dependency in SQL INSERT (low risk, no current timestamp assertions) <span class="fixed-badge">✅ FIXED</span> <em>(Seed now stamps rows with strictly increasing timestamps from a fixed SeedEpoch (2025-01-01 UTC + i seconds) instead of DateTime.UtcNow, so query ORDER BY never depends on clock resolution or rows landing in the same tick.)</em></li>
   </ul>
 </div>
 </div>

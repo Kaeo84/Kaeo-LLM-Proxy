@@ -60,7 +60,16 @@ public class CompactionKeepAliveTests
     /// </summary>
     private sealed class DisconnectedClientStream : Stream
     {
+        private readonly TaskCompletionSource _firstWrite =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int WriteAttempts { get; private set; }
+
+        /// <summary>
+        /// Completes on the first write attempt so tests can await the pump's first frame instead of
+        /// polling on a delay loop, which made pass/fail timing-dependent.
+        /// </summary>
+        public Task FirstWriteAttempted => _firstWrite.Task;
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -73,8 +82,12 @@ public class CompactionKeepAliveTests
         public override long Seek(long offset, SeekOrigin origin) => 0;
         public override void SetLength(long value) { }
 
-        public override void Write(byte[] buffer, int offset, int count) =>
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            WriteAttempts++;
+            _firstWrite.TrySetResult();
             throw Disconnected();
+        }
 
         // The pump writes a ReadOnlyMemory, which the base class forwards to this overload because the
         // frame bytes are a plain array. That is what makes it throw for the same reason the real
@@ -83,6 +96,7 @@ public class CompactionKeepAliveTests
             byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             WriteAttempts++;
+            _firstWrite.TrySetResult();
             throw Disconnected();
         }
 
@@ -237,8 +251,7 @@ public class CompactionKeepAliveTests
         Task pump = OllamaProxyHandler.PumpPreResponseSseKeepAliveForTest(
             stream, TimeSpan.FromMilliseconds(20), cts.Token);
 
-        for (int i = 0; i < 500 && stream.WriteAttempts == 0; i++)
-            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        await stream.FirstWriteAttempted.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(stream.WriteAttempts > 0, "The pump should have attempted a keep-alive write.");
 

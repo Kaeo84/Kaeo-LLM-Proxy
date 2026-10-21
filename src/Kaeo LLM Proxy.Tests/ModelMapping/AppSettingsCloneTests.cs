@@ -93,7 +93,9 @@ public class AppSettingsCloneTests
             AppLogFileSizeLimitMb = 20,
             AppLogRetainedFileCount = 14,
             RequestLogFileSizeLimitMb = 100,
-            ApplicationDatabasePath = @"C:\temp\test.db",
+            // Not a literal "C:\temp\..." — the value only has to round-trip through the clone, and
+            // a Windows-shaped literal breaks the suite on non-Windows runners.
+            ApplicationDatabasePath = Path.Combine(Path.GetTempPath(), "test.db"),
             LogRetentionHours = 48,
         };
 
