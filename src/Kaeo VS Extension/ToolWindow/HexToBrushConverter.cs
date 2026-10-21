@@ -7,14 +7,16 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
 {
     /// <summary>
     /// Converts a hex color string (#RRGGBB or #AARRGGBB) to a SolidColorBrush.
-    /// Null/empty returns null (transparent). On invalid input returns Transparent.
+    /// Null/empty returns Binding.DoNothing so WPF uses the inherited or default
+    /// value instead of setting the property to null (which renders invisible text
+    /// when used as Foreground). On invalid input also returns Binding.DoNothing.
     /// </summary>
     internal sealed class HexToBrushConverter : IValueConverter
     {
         public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
         {
             if (value is not string hex || string.IsNullOrWhiteSpace(hex))
-                return null;
+                return Binding.DoNothing;
 
             try
             {
@@ -27,7 +29,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
                     // thread culture (e.g. digit grouping or number formats).
                     string digits = s.Substring(1);
                     if (digits.Length != 6 && digits.Length != 8)
-                        return null;
+                            return Binding.DoNothing;
 
                     byte Component(int offset) => byte.Parse(
                         digits.Substring(offset, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
@@ -47,7 +49,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
             }
             catch
             {
-                return null;
+                return Binding.DoNothing;
             }
         }
 

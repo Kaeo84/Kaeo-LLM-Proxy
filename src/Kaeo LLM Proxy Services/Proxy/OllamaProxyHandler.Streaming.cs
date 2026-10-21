@@ -355,7 +355,10 @@ partial class OllamaProxyHandler
             // think blocks are separated per the mapping's ThinkingMode so Ollama clients can
             // render a dedicated thinking section even when the upstream inlines its reasoning.
             string? rawContent = delta?.Content;
-            string? nativeThinking = emitThinking && !string.IsNullOrEmpty(delta?.ReasoningContent)
+            // Use IsNullOrWhiteSpace to reject chunks where the upstream sends
+            // whitespace-only reasoning_content (e.g. bare newlines), which would
+            // otherwise produce blank lines in the client's thinking panel.
+            string? nativeThinking = emitThinking && !string.IsNullOrWhiteSpace(delta?.ReasoningContent)
                 ? delta.ReasoningContent
                 : null;
 

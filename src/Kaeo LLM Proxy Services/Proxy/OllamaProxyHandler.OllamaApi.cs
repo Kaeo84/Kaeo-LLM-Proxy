@@ -685,7 +685,7 @@ partial class OllamaProxyHandler
             string? content = delta?.Content;
             string? nativeThinking = mapping?.ThinkingMode == ThinkingMode.StripFromOutput
                 ? null
-                : delta?.ReasoningContent;
+                : !string.IsNullOrWhiteSpace(delta?.ReasoningContent) ? delta.ReasoningContent : null;
             ThinkingMode thinkingMode = mapping?.ThinkingMode ?? ThinkingMode.LeaveInline;
 
             string? extractedThinking = null;

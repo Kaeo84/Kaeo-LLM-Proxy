@@ -750,6 +750,11 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             ReasoningDelta = delta =>
             {
                 if (ReasoningHidden) return;
+                // Trim leading whitespace when no real reasoning exists yet, and
+                // skip deltas that are entirely whitespace (same pattern as TextDelta).
+                if (streaming.Reasoning.Length == 0)
+                    delta = delta.TrimStart();
+                if (delta.Length == 0) return;
                 streaming.Reasoning += delta;
                 streaming.IsReasoningVisible = true;
             },
