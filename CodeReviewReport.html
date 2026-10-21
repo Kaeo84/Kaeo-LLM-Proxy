@@ -655,11 +655,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #2: Fire-and-forget MCP server start <span class="line-num">TrayApplicationContext.cs:93</span></span>
+  <span class="fixed-badge">✅ VERIFIED — ALREADY SAFE</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy\TrayApplicationContext.cs line 93</div>
   <p><code>_ = StartMcpServerAsync()</code> — if exception thrown synchronously before first await, goes unobserved and crashes process.</p>
+  <p><strong>Resolution:</strong> verified safe as written — <code>StartMcpServerAsync</code> is an <code>async Task</code> method whose entire body (including everything before the first await) is wrapped in try/catch, so it can never throw synchronously nor produce a faulted task; start failures are logged as warnings by design.</p>
   <div class="fix">Wrap: <code>_ = Task.Run(async () => { try { await StartMcpServerAsync(); } catch { } });</code></div>
 </div>
 </div>
@@ -667,11 +669,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag bug">Bug</span> #3: Fire-and-forget module starts <span class="line-num">TrayApplicationContext.cs:127</span></span>
+  <span class="fixed-badge">✅ VERIFIED — ALREADY SAFE</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy\TrayApplicationContext.cs line 127</div>
   <p>Same fire-and-forget pattern as #2, in foreach loop calling <code>StartModuleAsync()</code>.</p>
+  <p><strong>Resolution:</strong> same as #2 — <code>StartModuleAsync</code> is <code>async Task</code> with its whole body in try/catch (failures logged per module); no synchronous throw or unobserved fault is possible.</p>
   <div class="fix">Same pattern as #2.</div>
 </div>
 </div>
@@ -679,11 +683,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag badcode">BadCode</span> #4: Multiple async void handlers in MainForm <span class="line-num">MainForm.cs:574,597,620,644,668+</span></span>
+  <span class="fixed-badge">✅ VERIFIED — ALL GUARDED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy\MainForm.cs multiple lines</div>
   <p>Numerous <code>async void</code> event handlers (<code>BtnStop_Click</code>, <code>BtnRestart_Click</code>, MCP control buttons, module control buttons, <code>BtnTestSend_Click</code>). While most have try/catch, <code>async void</code> is inherently fragile — uncaught exceptions crash the process.</p>
+  <p><strong>Resolution:</strong> audited all 8 async void handlers — every await in each is inside a try/catch that reports via MessageBox and/or Log (BtnTestSend's guard was explicitly widened to cover payload build and normalization, with its finally re-enabling the Send button). No unguarded await remains, so no handler can crash the process.</p>
   <div class="fix">Wrap entire body with <code>try { await ... } catch (Exception ex) { Log.Error(ex); }</code> as outermost scope in every handler.</div>
 </div>
 </div>
@@ -691,11 +697,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag badcode">BadCode</span> #5: async void handlers in ModelMappingDialog <span class="line-num">ModelMappingDialog.cs:1640,1708,1779</span></span>
+  <span class="fixed-badge">✅ VERIFIED — ALL GUARDED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy\ModelMappingDialog.cs lines 1640, 1708, 1779</div>
   <p>Three <code>async void</code> handlers making HTTP calls. Same concerns as MainForm.</p>
+  <p><strong>Resolution:</strong> audited all three (<code>BtnFetchModels_Click</code>, <code>BtnModelInfo_Click</code>, <code>BtnCapAutoDetect_Click</code>) — every await sits inside a try/catch/finally that reports the error in the dialog and restores the UI; the pre-try code is synchronous validation only.</p>
   <div class="fix">Extract logic into <code>async Task</code> helpers, wrap in catch-all at event handler level.</div>
 </div>
 </div>
@@ -729,11 +737,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag badcode">BadCode</span> #21: Multiple table-name interpolations in SQL (Code Vector Store) <span class="line-num">CodeVectorDatabase.cs:162-502</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy Module Code Vector Store\CodeVectorDatabase.cs multiple lines</div>
   <p>Table names from <code>VecTableName(colId, dimension)</code> interpolated into SQL at 8+ locations. Values from database (trusted), but pattern is risky.</p>
+  <div class="fix">Added <code>ValidateVecTableName</code> (strict <code>^cv_vec_\d+_\d+$</code> regex, throws on mismatch) applied at every choke point: inside <code>VecTableName</code> itself (so all <code>info.Table</code> sites are safe by construction), at the KNN search interpolation, and at both <code>DROP TABLE</code> sites where names are read back from <code>sqlite_master</code> (GLOB can match crafted names in a tampered DB).</div>
   <div class="fix">Add regex validation: <code>if (!Regex.IsMatch(name, @"^cv_vec_\d+_\d+$")) throw ...;</code></div>
 </div>
 </div>
@@ -741,11 +751,13 @@ h3:hover { text-decoration: underline; }
 <div class="finding">
 <div class="finding-header medium" onclick="this.parentElement.classList.toggle('open')">
   <span><span class="tag security">Security</span> #26: URL exposed in exception message to MCP clients <span class="line-num">RemoteEmbeddingBackend.cs:62</span></span>
+  <span class="fixed-badge">✅ FIXED</span>
   <span class="severity-pill medium">Medium</span>
 </div>
 <div class="finding-body">
   <div class="file-path">Kaeo LLM Proxy Module Code Vector Store\RemoteEmbeddingBackend.cs line 62</div>
   <p>Error exception message includes full URL: <code>throw new HttpRequestException($"...URL: {_url}...")</code>. Propagates to MCP clients through error returns.</p>
+  <div class="fix">Exception now carries only <code>{StatusCode} {ReasonPhrase}</code>; URL, model, and upstream response body are logged server-side at Warning level before throwing.</div>
   <div class="fix">Log URL separately, redact from exception: <code>throw new HttpRequestException($"Embedding request failed: {(int)resp.StatusCode}");</code></div>
 </div>
 </div>

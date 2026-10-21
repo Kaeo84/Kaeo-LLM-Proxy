@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using System.Data.Common;
+using System.Text.RegularExpressions;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Module.CodeVector;
@@ -230,7 +231,7 @@ internal sealed class CodeVectorDatabase : IDisposable
     private IReadOnlyList<SearchResult> NativeSearch(string table, string collectionName, float[] queryEmbedding, int topK, string? pathFilter)
     {
         using var cmd = _connection.CreateCommand();
-        string sql = $"SELECT c.id, c.text, c.start_line, c.end_line, f.path, v.distance FROM {table} v " +
+        string sql = $"SELECT c.id, c.text, c.start_line, c.end_line, f.path, v.distance FROM {ValidateVecTableName(table)} v " +
             "JOIN codevector_chunks c ON c.id = v.rowid " +
             "JOIN codevector_files f ON f.id = c.file_id " +
             "WHERE v.embedding MATCH $q AND k = $k AND f.collection_name = $col";
@@ -483,7 +484,7 @@ internal sealed class CodeVectorDatabase : IDisposable
         while (reader.Read())
         {
             using var drop = _connection.CreateCommand();
-            drop.CommandText = $"DROP TABLE {reader.GetString(0)}";
+            drop.CommandText = $"DROP TABLE {ValidateVecTableName(reader.GetString(0))}";
             drop.ExecuteNonQuery();
         }
     }
@@ -499,12 +500,28 @@ internal sealed class CodeVectorDatabase : IDisposable
         while (reader.Read())
         {
             using var drop = _connection.CreateCommand();
-            drop.CommandText = $"DROP TABLE {reader.GetString(0)}";
+            drop.CommandText = $"DROP TABLE {ValidateVecTableName(reader.GetString(0))}";
             drop.ExecuteNonQuery();
         }
     }
 
-    private static string VecTableName(long colId, int dimension) => $"cv_vec_{colId}_{dimension}";
+    /// <summary>Strict shape of the generated vec0 table names (<see cref="VecTableName"/>).</summary>
+    private static readonly Regex VecTableNamePattern = new(@"^cv_vec_\d+_\d+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// SQL cannot parameterize identifiers, so every vec0 table name is re-validated against the
+    /// strict generated shape before it is interpolated into a statement. Names originate either
+    /// from <see cref="VecTableName"/> (numeric inputs, safe by construction) or are read back
+    /// from <c>sqlite_master</c>; refusing anything else keeps the interpolation sites safe
+    /// against tampered metadata and future callers.
+    /// </summary>
+    private static string ValidateVecTableName(string name) =>
+        VecTableNamePattern.IsMatch(name)
+            ? name
+            : throw new InvalidOperationException(
+                $"Unexpected vector table name '{name}' does not match the cv_vec_<colId>_<dimension> shape.");
+
+    private static string VecTableName(long colId, int dimension) => ValidateVecTableName($"cv_vec_{colId}_{dimension}");
 
     /// <summary>L2-normalizes an embedding so L2 distance becomes monotonic with cosine similarity.</summary>
     private static float[] Normalize(float[] v)

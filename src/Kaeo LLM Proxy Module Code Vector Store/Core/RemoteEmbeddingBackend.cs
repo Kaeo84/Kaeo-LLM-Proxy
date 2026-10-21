@@ -59,7 +59,12 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
         if (!response.IsSuccessStatusCode)
         {
             string errBody = await response.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"Embedding request failed: {(int)response.StatusCode} {response.ReasonPhrase}\nURL: {_url}\nModel: {_model}\nResponse: {errBody}");
+            // The exception message reaches MCP clients through error returns, so the endpoint,
+            // model, and response body stay server-side in the log; clients see the status only.
+            Log.Warning(
+                "Embedding request to {Url} (model {Model}) failed: {StatusCode} {ReasonPhrase} body={Body}",
+                _url, _model, (int)response.StatusCode, response.ReasonPhrase, errBody);
+            throw new HttpRequestException($"Embedding request failed: {(int)response.StatusCode} {response.ReasonPhrase}");
         }
         var responseJson = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(responseJson);
