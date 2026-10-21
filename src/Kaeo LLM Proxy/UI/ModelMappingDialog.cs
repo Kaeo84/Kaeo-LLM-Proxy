@@ -1659,7 +1659,11 @@ internal sealed class ModelMappingDialog : Form
             string? apiKey = ResolveApiKey();
 
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
-            UpstreamModelMetadata.FetchResult result = await UpstreamModelMetadata.FetchModelsAsync(_upstreamUrl, apiKey);
+            UpstreamModelMetadata.FetchResult result = await UpstreamModelMetadata.FetchModelsAsync(
+                _upstreamUrl,
+                apiKey,
+                timeoutSeconds: _settings?.ModelDiscoveryTimeoutSeconds
+                    ?? AppSettings.DefaultModelDiscoveryTimeoutSeconds);
             sw.Stop();
 
             LogFetchModelsRequest(result, sw.Elapsed.TotalMilliseconds);

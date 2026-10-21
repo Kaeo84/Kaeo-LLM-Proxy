@@ -17,10 +17,19 @@ namespace Kaeo.LlmProxy.Infrastructure;
 internal static class UpstreamModelMetadata
 {
     /// <summary>
-    /// Shared client for upstream model discovery. Avoids socket churn when model lists are
-    /// fetched repeatedly; the fixed timeout applies to discovery calls only, not proxied traffic.
+    /// Default per-call timeout for discovery and metadata fetches: interactive callers want a
+    /// dead server to fail fast rather than hang the UI. Callers can override it per call (see
+    /// <see cref="FetchModelsAsync"/>); the shared client itself carries no timeout so slower
+    /// configured values are not silently capped.
     /// </summary>
-    private static readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(10) };
+    public const int DefaultTimeoutSeconds = 10;
+
+    /// <summary>
+    /// Shared client for upstream model discovery. Avoids socket churn when model lists are
+    /// fetched repeatedly; per-call timeouts are enforced via linked CancellationTokenSources
+    /// and apply to discovery calls only, not proxied traffic.
+    /// </summary>
+    private static readonly HttpClient _client = new() { Timeout = Timeout.InfiniteTimeSpan };
 
     /// <summary>Outcome of an upstream <c>/v1/models</c> discovery call, for request logging.</summary>
     internal sealed record FetchResult(
@@ -35,8 +44,18 @@ internal static class UpstreamModelMetadata
     /// the discovery call in the request log.
     /// </summary>
     public static async Task<FetchResult> FetchModelsAsync(
-        string upstreamUrl, string? apiKey = null, CancellationToken cancellationToken = default)
+        string upstreamUrl,
+        string? apiKey = null,
+        int timeoutSeconds = DefaultTimeoutSeconds,
+        CancellationToken cancellationToken = default)
     {
+        // Per-call timeout so slow hosted providers can be given more time via configuration
+        // without extending the bound for every other caller.
+        using CancellationTokenSource timeoutCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(
+            timeoutSeconds > 0 ? timeoutSeconds : DefaultTimeoutSeconds));
+
         try
         {
             Uri requestUri = UpstreamUriHelper.BuildRequestUri(upstreamUrl, "v1/models");
@@ -44,8 +63,8 @@ internal static class UpstreamModelMetadata
             if (!string.IsNullOrWhiteSpace(apiKey))
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 
-            using HttpResponseMessage resp = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            string body = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage resp = await _client.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            string body = await resp.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
 
             if (!resp.IsSuccessStatusCode)
                 return new FetchResult([], (int)resp.StatusCode, body, $"Upstream {(int)resp.StatusCode}: {body}");
@@ -203,6 +222,11 @@ internal static class UpstreamModelMetadata
     private static async Task<(string Body, int StatusCode, bool IsSuccess)> SendAsync(
         Uri uri, string? apiKey, CancellationToken cancellationToken)
     {
+        // The shared client has no timeout, so every metadata call gets the default bound here.
+        using CancellationTokenSource timeoutCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(DefaultTimeoutSeconds));
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -210,8 +234,8 @@ internal static class UpstreamModelMetadata
                 request.Headers.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey.Trim());
 
-            using HttpResponseMessage response = await _client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage response = await _client.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            string body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
             return (body, (int)response.StatusCode, response.IsSuccessStatusCode);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

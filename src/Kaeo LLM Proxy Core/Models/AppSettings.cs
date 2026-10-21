@@ -398,6 +398,12 @@ internal sealed class RuntimeSettings
     public int MaxConcurrentCompactions { get; set; } = 1;
 
     /// <summary>
+    /// Seconds to wait for an upstream model discovery (<c>/v1/models</c>) call before giving up.
+    /// Default: 10.
+    /// </summary>
+    public int ModelDiscoveryTimeoutSeconds { get; set; } = 10;
+
+    /// <summary>
     /// Proxy name of the single global model every Copilot-detected context summarization is routed
     /// to, or null when none is selected. Stored in the application database beside the other
     /// runtime settings because it is a single installation-wide choice.
@@ -1270,6 +1276,24 @@ internal sealed class AppSettings
     public const int DefaultMaxConcurrentCompactions = 1;
 
     /// <summary>
+    /// Seconds to wait for an upstream model discovery (<c>/v1/models</c>) call before giving up.
+    /// Discovery is interactive (Fetch Models in the mapping dialog, capability detection), so the
+    /// default is deliberately short; raise it for slow hosted providers. Persisted with the other
+    /// runtime settings in the application database rather than settings.jsonc.
+    /// </summary>
+    [JsonIgnore]
+    public int ModelDiscoveryTimeoutSeconds { get; set; } = DefaultModelDiscoveryTimeoutSeconds;
+
+    /// <summary>Lower bound accepted for <see cref="ModelDiscoveryTimeoutSeconds"/>.</summary>
+    public const int MinModelDiscoveryTimeoutSeconds = 5;
+
+    /// <summary>Upper bound accepted for <see cref="ModelDiscoveryTimeoutSeconds"/>.</summary>
+    public const int MaxModelDiscoveryTimeoutSeconds = 120;
+
+    /// <summary>Default model discovery timeout in seconds.</summary>
+    public const int DefaultModelDiscoveryTimeoutSeconds = 10;
+
+    /// <summary>
     /// Name of the instruction set that drives every compaction summarization, or null to use the
     /// built-in summarizer prompt. Installation-wide, like the compaction model it accompanies.
     /// </summary>
@@ -1492,6 +1516,8 @@ internal sealed class AppSettings
             CompactionFallbackContextTokens, MinCompactionFallbackContextTokens, MaxCompactionFallbackContextTokens);
         MaxConcurrentCompactions = Math.Clamp(
             MaxConcurrentCompactions, MinMaxConcurrentCompactions, MaxMaxConcurrentCompactions);
+        ModelDiscoveryTimeoutSeconds = Math.Clamp(
+            ModelDiscoveryTimeoutSeconds, MinModelDiscoveryTimeoutSeconds, MaxModelDiscoveryTimeoutSeconds);
         CompactionTargetTokens = Math.Clamp(
             CompactionTargetTokens, MinCompactionTargetTokens, MaxCompactionTargetTokens);
 
@@ -1572,6 +1598,7 @@ internal sealed class AppSettings
             HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
             CompactionFallbackContextTokens = CompactionFallbackContextTokens,
             MaxConcurrentCompactions = MaxConcurrentCompactions,
+            ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
             CompactionInstructionSetName = CompactionInstructionSetName,
             CompactionTargetTokens = CompactionTargetTokens,
             CopilotCompactionModelName = CopilotCompactionModelName,
@@ -1628,6 +1655,7 @@ internal sealed class AppSettings
         HeartbeatIntervalSeconds = HeartbeatIntervalSeconds,
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         MaxConcurrentCompactions = MaxConcurrentCompactions,
+        ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
         CopilotCompactionModelName = CopilotCompactionModelName,
         EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
         CompactionInstructionSetName = CompactionInstructionSetName,
@@ -1656,6 +1684,7 @@ internal sealed class AppSettings
         HeartbeatIntervalSeconds = runtimeSettings.HeartbeatIntervalSeconds;
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         MaxConcurrentCompactions = runtimeSettings.MaxConcurrentCompactions;
+        ModelDiscoveryTimeoutSeconds = runtimeSettings.ModelDiscoveryTimeoutSeconds;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
         CompactionInstructionSetName = runtimeSettings.CompactionInstructionSetName;

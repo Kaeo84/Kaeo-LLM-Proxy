@@ -21,6 +21,10 @@ internal sealed class ModuleHost
     private readonly LateBoundActivityLog _activityLog = new();
     private readonly List<LoadedModule> _loadedModules = [];
 
+    // Guards every access to _loadedModules: enable/disable actions can fire from the tray menu
+    // while the modules tab or an MCP session enumerates the list on another thread.
+    private readonly object _modulesLock = new();
+
     public ModuleHost(AppDatabase database, AppSettings settings)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -36,8 +40,20 @@ internal sealed class ModuleHost
     /// </summary>
     public void BindActivityLog(IMcpActivityLog target) => _activityLog.SetTarget(target);
 
-    /// <summary>Modules currently loaded and initialized.</summary>
-    public IReadOnlyList<LoadedModule> LoadedModules => _loadedModules;
+    /// <summary>
+    /// Snapshot of the modules currently loaded and initialized. Returns a copy so callers can
+    /// enumerate safely while another thread enables, disables, or removes modules.
+    /// </summary>
+    public IReadOnlyList<LoadedModule> LoadedModules
+    {
+        get
+        {
+            lock (_modulesLock)
+            {
+                return _loadedModules.ToArray();
+            }
+        }
+    }
 
     /// <summary>Raised after modules are loaded, imported, removed, enabled, or disabled.</summary>
     public event EventHandler? ModulesChanged;
@@ -57,7 +73,15 @@ internal sealed class ModuleHost
 
         List<object> targets = [];
 
-        foreach (LoadedModule loaded in _loadedModules)
+        // Snapshot before enumerating: module code may call back into the host (or another thread
+        // may enable/disable modules) while targets are being created.
+        LoadedModule[] snapshot;
+        lock (_modulesLock)
+        {
+            snapshot = _loadedModules.ToArray();
+        }
+
+        foreach (LoadedModule loaded in snapshot)
         {
             if (loaded.Module is not IMcpToolModule toolModule)
                 continue;
@@ -89,7 +113,11 @@ internal sealed class ModuleHost
             try
             {
                 LoadedModule loaded = LoadModule(entry);
-                _loadedModules.Add(loaded);
+                lock (_modulesLock)
+                {
+                    _loadedModules.Add(loaded);
+                }
+
                 TryUpdateEntry(entry);
                 Log.Information(
                     "Loaded module {Name} {Version} from {Path}",
@@ -168,7 +196,10 @@ internal sealed class ModuleHost
             }
 
             _database.InsertModuleRegistry(entry);
-            _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
+            lock (_modulesLock)
+            {
+                _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
+            }
 
             Log.Information("Imported module {Name} {Version} from {Path}", module.Name, module.Version, fullPath);
             ModulesChanged?.Invoke(this, EventArgs.Empty);
@@ -203,15 +234,29 @@ internal sealed class ModuleHost
 
         if (enabled)
         {
-            if (!_loadedModules.Any(m => m.Entry.Id == entry.Id))
+            bool alreadyLoaded;
+            lock (_modulesLock)
+            {
+                alreadyLoaded = _loadedModules.Any(m => m.Entry.Id == entry.Id);
+            }
+
+            if (!alreadyLoaded)
             {
                 LoadedModule loaded = LoadModule(entry);
-                _loadedModules.Add(loaded);
+                lock (_modulesLock)
+                {
+                    _loadedModules.Add(loaded);
+                }
             }
         }
         else
         {
-            LoadedModule? loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+            LoadedModule? loaded;
+            lock (_modulesLock)
+            {
+                loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+            }
+
             if (loaded is not null)
                 await UnloadAsync(loaded).ConfigureAwait(false);
         }
@@ -225,7 +270,12 @@ internal sealed class ModuleHost
     {
         ArgumentNullException.ThrowIfNull(entry);
 
-        LoadedModule? loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+        LoadedModule? loaded;
+        lock (_modulesLock)
+        {
+            loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+        }
+
         if (loaded is not null)
             await UnloadAsync(loaded).ConfigureAwait(false);
 
@@ -237,7 +287,14 @@ internal sealed class ModuleHost
     /// <summary>Stops all runnable modules (used during application shutdown).</summary>
     public async Task StopAllAsync()
     {
-        foreach (LoadedModule loaded in _loadedModules)
+        // Snapshot first: StopAsync runs module code that may re-enter the host.
+        LoadedModule[] snapshot;
+        lock (_modulesLock)
+        {
+            snapshot = _loadedModules.ToArray();
+        }
+
+        foreach (LoadedModule loaded in snapshot)
         {
             if (loaded.Module is not IRunnableModule { IsRunning: true } runnable)
                 continue;
@@ -312,7 +369,11 @@ internal sealed class ModuleHost
             Log.Warning(ex, "Error stopping module {Name} during unload", loaded.Entry.Name);
         }
 
-        _loadedModules.Remove(loaded);
+        lock (_modulesLock)
+        {
+            _loadedModules.Remove(loaded);
+        }
+
         loaded.LoadContext.Unload();
     }
 

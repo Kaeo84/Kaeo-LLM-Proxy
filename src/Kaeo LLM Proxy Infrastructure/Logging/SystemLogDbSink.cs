@@ -25,7 +25,16 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
     // Fallback file state
     private StreamWriter? _fallbackWriter;
+    private long _fallbackBytesWritten;
     private bool _dbHealthy = true;
+
+    /// <summary>
+    /// Soft cap on the fallback log file. The file holds rendered log events in plaintext —
+    /// potentially including sensitive payload text — and would otherwise grow unbounded while the
+    /// database is down. At most one rolled generation (.old) is kept, capping plaintext exposure
+    /// at roughly twice this size.
+    /// </summary>
+    private const long MaxFallbackFileBytes = 5 * 1024 * 1024;
     private bool _tableEnsured;
     private bool _disposed;
 
@@ -190,6 +199,12 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
             OpenFallbackWriter();
             _fallbackWriter?.WriteLine(line);
             _fallbackWriter?.Flush();
+
+            // Approximate byte count (char count is close enough for a soft cap); when the file
+            // reaches the cap, close it so the next event reopens and rolls it over.
+            _fallbackBytesWritten += line.Length + Environment.NewLine.Length;
+            if (_fallbackBytesWritten >= MaxFallbackFileBytes)
+                CloseFallbackWriter();
         }
         catch
         {
@@ -212,8 +227,35 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
+        RollOverFallbackFileIfOversized();
+
         _fallbackWriter = new StreamWriter(
             File.Open(_fallbackFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+        _fallbackBytesWritten = new FileInfo(_fallbackFilePath).Length;
+    }
+
+    /// <summary>
+    /// Moves an oversized fallback file to <c>.old</c>, replacing any previous generation. A file
+    /// that is locked or otherwise undeletable is simply kept — the sink must never throw from a
+    /// logging path, and bounded growth matters more than a hard guarantee.
+    /// </summary>
+    private void RollOverFallbackFileIfOversized()
+    {
+        try
+        {
+            FileInfo info = new(_fallbackFilePath);
+            if (!info.Exists || info.Length < MaxFallbackFileBytes)
+                return;
+
+            string rolledPath = _fallbackFilePath + ".old";
+            File.Delete(rolledPath);
+            File.Move(_fallbackFilePath, rolledPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Another instance may hold the file open (AllowMultipleInstances) or the disk may
+            // refuse the rename; keep appending to the existing file rather than failing the sink.
+        }
     }
 
     private void CloseFallbackWriter()
