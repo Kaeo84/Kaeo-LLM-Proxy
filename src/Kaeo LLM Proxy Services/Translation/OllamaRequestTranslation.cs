@@ -26,7 +26,10 @@ internal static class OllamaRequestTranslation
         foreach (OllamaMessage m in source)
         {
             List<AIContent> contents = [];
-            string role = m.Role ?? string.Empty;
+            // A blank role would build ChatRole("") and round-trip to llama.cpp as an empty
+            // role string it cannot route; default an omitted role to "user", the only
+            // sensible reading of unattributed chat content.
+            string role = string.IsNullOrWhiteSpace(m.Role) ? ChatRole.User.Value : m.Role;
 
             if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
             {

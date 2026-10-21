@@ -608,25 +608,25 @@ h3:hover { text-decoration: underline; }
 
 <div class="finding">
 <div class="finding-header low" onclick="this.parentElement.classList.toggle('open')">
-  <span>15 Low-severity findings — formatting, cosmetic, minor edge cases</span>
+  <span>15 Low-severity findings — formatting, cosmetic, minor edge cases <span class="fixed-badge">✅ ALL RESOLVED</span></span>
   <span class="severity-pill low">Low</span>
 </div>
 <div class="finding-body">
   <ul>
-    <li><strong>#20:</strong> Redundant null check in Discovery.cs</li>
-    <li><strong>#23:</strong> Duplicate using declarations across all partial OllamaProxyHandler files</li>
-    <li><strong>#24:</strong> Misaligned indentation in OpenAiSseFrameTranslation.cs</li>
-    <li><strong>#25:</strong> Duplicate XML doc comments in Helpers.cs</li>
-    <li><strong>#26:</strong> Redacted API key text visible in OpenAPI spec</li>
-    <li><strong>#27:</strong> Nullable parameter resolved to non-null — confusing</li>
-    <li><strong>#29:</strong> PerformanceService timer callback race with disposal (safe in practice)</li>
-    <li><strong>#30:</strong> Empty chat role fallback may produce invalid ChatRole</li>
-    <li><strong>#31:</strong> CallId fallback uses tool-call index only — not unique across choices</li>
-    <li><strong>#33:</strong> Fire-and-forget Task.Run for 503 rejection</li>
-    <li><strong>#34:</strong> Static HttpClient without PooledConnectionLifetime</li>
-    <li><strong>#35:</strong> Switch expression with .Contains patterns — intentional but surprising</li>
-    <li><strong>#36:</strong> OpenAiStreamTerminator fast-path check on "usage" string literal</li>
-    <li><strong>#37:</strong> Extra blank line between usings</li>
+    <li><strong>#20:</strong> Redundant null check in Discovery.cs <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(the IsNullOrWhiteSpace(ProxyName) fallbacks mirror the Where filter above them, but keep CreateOllamaModelEntry and the /v1/models projection self-contained — each stays correct without relying on a caller-side pre-filter)</em></li>
+    <li><strong>#23:</strong> Duplicate using declarations across all partial OllamaProxyHandler files <span class="fixed-badge">✅ VERIFIED — BY DESIGN</span> <em>(C# using directives are per-file: each partial needs its own set, and keeping the blocks identical lets members move freely between partials without chasing imports)</em></li>
+    <li><strong>#24:</strong> Misaligned indentation in OpenAiSseFrameTranslation.cs <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(full-file scans found zero lines with non-4-multiple indentation — normalized during the earlier fix batches)</em></li>
+    <li><strong>#25:</strong> Duplicate XML doc comments in Helpers.cs <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(scanned Helpers.cs and every Services file for duplicated or back-to-back &lt;summary&gt; blocks — none exist; the only true duplicate is the deliberate per-endpoint Hidden-flag comment in Discovery.cs)</em></li>
+    <li><strong>#26:</strong> Redacted API key text visible in OpenAPI spec <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(both served spec templates audited: the proxy OpenApiSpec carries no auth text at all, and the MCP explorer template only documents a 401 response — no key material or redaction markers in either)</em></li>
+    <li><strong>#27:</strong> Nullable parameter resolved to non-null — confusing <span class="fixed-badge">✅ VERIFIED — NOT REPRODUCIBLE</span> <em>(the null-forgiving request-URL dereference that fit this pattern was fixed in the Critical round; all remaining nullable parameters in Services are genuinely optional inputs — a dead one on ChoiceState's constructor was removed while fixing this batch)</em></li>
+    <li><strong>#29:</strong> PerformanceService timer callback race with disposal (safe in practice) <span class="fixed-badge">✅ FIXED</span> <em>(Dispose now drains any in-flight timer callback via a bounded 2 s wait before disposing the Process it samples; Sample's try/catch remains as second line of defense)</em></li>
+    <li><strong>#30:</strong> Empty chat role fallback may produce invalid ChatRole <span class="fixed-badge">✅ FIXED</span> <em>(a missing or blank role now defaults to ChatRole.User before mapping, so an empty role string can never reach llama.cpp)</em></li>
+    <li><strong>#31:</strong> CallId fallback uses tool-call index only — not unique across choices <span class="fixed-badge">✅ FIXED</span> <em>(the synthesized fallback id is now "choice-call", unique across multi-choice responses instead of colliding on "0")</em></li>
+    <li><strong>#33:</strong> Fire-and-forget Task.Run for 503 rejection <span class="fixed-badge">✅ FIXED</span> <em>(RecordRejectedRequest is now wrapped in its own try/catch with a Warning log inside RejectOverloadedAsync — nothing can escape the fire-and-forget task as an unobserved fault)</em></li>
+    <li><strong>#34:</strong> Static HttpClient without PooledConnectionLifetime <span class="fixed-badge">✅ FIXED</span> <em>(McpApiExplorer._specClient now uses a SocketsHttpHandler with a 5-minute PooledConnectionLifetime and MaxConnectionsPerServer = 2, matching the proxy's other shared clients)</em></li>
+    <li><strong>#35:</strong> Switch expression with .Contains patterns — intentional but surprising <span class="fixed-badge">✅ VERIFIED — INTENTIONAL</span> <em>(GetModelFamily is a heuristic that classifies free-form model ids into Ollama family fields; first-match-wins substring guards with the raw id as fallback are the design)</em></li>
+    <li><strong>#36:</strong> OpenAiStreamTerminator fast-path check on "usage" string literal <span class="fixed-badge">✅ VERIFIED — INTENTIONAL</span> <em>(a usage object cannot appear in a frame that lacks the literal "usage" key, so the substring guard is a sound necessary-condition filter that keeps per-token JSON parsing off the hot path — already commented in code)</em></li>
+    <li><strong>#37:</strong> Extra blank line between usings <span class="fixed-badge">✅ FIXED</span> <em>(stray blank line between the Serilog and Translation usings removed in OllamaProxyHandler.cs)</em></li>
   </ul>
 </div>
 </div>

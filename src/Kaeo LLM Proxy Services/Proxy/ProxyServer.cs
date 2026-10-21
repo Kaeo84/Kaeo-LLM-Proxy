@@ -231,10 +231,18 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         // was still answered on this port and shedding it is exactly the kind of event that needs
         // to be visible. This runs before HandleAsync, so there is no RequestLog and no logging
         // finally to fall back on.
-        _handler.RecordRejectedRequest(
-            context.Request,
-            503,
-            $"Server at capacity: no concurrency slot became available within {_acquireTimeout.TotalSeconds:0}s.");
+        try
+        {
+            _handler.RecordRejectedRequest(
+                context.Request,
+                503,
+                $"Server at capacity: no concurrency slot became available within {_acquireTimeout.TotalSeconds:0}s.");
+        }
+        catch (Exception ex)
+        {
+            // This method runs fire-and-forget; nothing may escape as an unobserved fault.
+            Log.Warning(ex, "Failed to record a rejected (503) request.");
+        }
 
         try
         {

@@ -110,8 +110,10 @@ internal static class OpenAiInbound
                         if (string.IsNullOrEmpty(name))
                             continue;
 
+                        // The fallback id must include the choice index: call indices restart
+                        // per choice, so Call alone would collide across a multi-choice response.
                         contents.Add(new FunctionCallContent(
-                            string.IsNullOrEmpty(id) ? kv.Key.Call.ToString() : id,
+                            string.IsNullOrEmpty(id) ? $"{kv.Key.Choice}-{kv.Key.Call}" : id,
                             name,
                             ParseArguments(args.ToString())));
                     }

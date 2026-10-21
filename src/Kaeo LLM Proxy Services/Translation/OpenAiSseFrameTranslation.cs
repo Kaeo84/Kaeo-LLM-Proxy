@@ -99,7 +99,7 @@ internal sealed class OpenAiSseFrameTranslation
             int index = choice["index"]?.GetValue<int>() ?? 0;
             if (!_states.TryGetValue(index, out ChoiceState? state))
             {
-                state = new ChoiceState(_declaredToolNames);
+                state = new ChoiceState();
                 _states[index] = state;
             }
 
@@ -409,7 +409,7 @@ internal sealed class OpenAiSseFrameTranslation
     /// Per-choice stream state: the incremental thought extractor, the native-call filter
     /// verdicts, and the buffer for a markup call split across frames.
     /// </summary>
-    private sealed class ChoiceState(IReadOnlySet<string>? declaredToolNames)
+    private sealed class ChoiceState
     {
         private readonly StringBuilder _toolBuffer = new();
         private bool _inToolCall;

@@ -110,7 +110,12 @@ internal sealed class PerformanceService : IDisposable
 
     public void Dispose()
     {
-        _timer.Dispose();
+        // Drain any in-flight timer callback before disposing the Process it samples. The wait
+        // is bounded so a stuck callback cannot hang shutdown; Sample is already try/caught, so
+        // even an extreme race degrades to a Debug log instead of touching a disposed Process.
+        using ManualResetEvent drained = new(false);
+        _timer.Dispose(drained);
+        drained.WaitOne(TimeSpan.FromSeconds(2));
         _process.Dispose();
     }
 }

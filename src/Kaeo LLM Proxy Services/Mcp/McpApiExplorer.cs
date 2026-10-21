@@ -17,7 +17,14 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
     private readonly HostInfo _hostInfo;
 
     // Short-lived client used only to fetch the proxy's OpenAPI document for the dropdown.
-    private static readonly HttpClient _specClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+    // PooledConnectionLifetime keeps the app-lifetime static client picking up DNS changes,
+    // matching the proxy's other shared HttpClient instances.
+    private static readonly HttpClient _specClient = new(new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        MaxConnectionsPerServer = 2,
+    })
+    { Timeout = TimeSpan.FromSeconds(5) };
 
     public McpApiExplorer(McpServerHost host, HostInfo hostInfo)
     {
