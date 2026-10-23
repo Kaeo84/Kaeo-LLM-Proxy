@@ -1327,12 +1327,21 @@ partial class OllamaProxyHandler
 
     private sealed class PeriodicHeartbeatState : IDisposable
     {
+        /// <summary>
+        /// How long <see cref="Dispose"/> waits for an in-flight probe to unwind. The CTS is
+        /// cancelled first, so this only bounds a genuinely hung send — and it has to stay short,
+        /// because disposal happens on the UI thread when the operator saves settings.
+        /// </summary>
+        private static readonly TimeSpan DisposeDrainTimeout = TimeSpan.FromMilliseconds(500);
+
         private readonly Func<ModelMapping, CancellationToken, Task> _sendHeartbeatAsync;
         private readonly Action<ModelMapping, string> _recordFailure;
         private readonly CancellationTokenSource _cts = new();
         private readonly SemaphoreSlim _sendLock = new(1, 1);
         private readonly System.Threading.Timer _timer;
         private ModelMapping _mapping;
+        private Task _sendTask = Task.CompletedTask;
+        private volatile bool _disposed;
 
         public PeriodicHeartbeatState(
             ModelMapping mapping,
@@ -1349,21 +1358,47 @@ partial class OllamaProxyHandler
 
         public void Update(ModelMapping mapping, int intervalSeconds)
         {
+            if (_disposed)
+                return;
+
             _mapping = CloneMapping(mapping);
             TimeSpan interval = GetInterval(intervalSeconds);
-            _timer.Change(TimeSpan.Zero, interval);
+
+            try
+            {
+                _timer.Change(TimeSpan.Zero, interval);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Raced a concurrent Dispose; the monitor is being torn down either way.
+            }
         }
 
         private void OnTimer(object? state)
         {
-            if (_cts.IsCancellationRequested)
+            if (_disposed || _cts.IsCancellationRequested)
                 return;
 
-            _ = SendAsync();
+            // Fire-and-forget, but the task still has to be observed. Timer.Dispose does not join a
+            // callback that is already running, so Dispose can dispose the semaphore and CTS out
+            // from under a send that checks in just after this. An exception escaping it would
+            // otherwise never be observed and resurface from the finalizer thread as a fatal
+            // "Unobserved Task" crash report.
+            Task send = SendAsync();
+            Volatile.Write(ref _sendTask, send);
+
+            _ = send.ContinueWith(
+                static t => { _ = t.Exception; },
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         private async Task SendAsync()
         {
+            if (_disposed)
+                return;
+
             try
             {
                 if (!await _sendLock.WaitAsync(0, _cts.Token).ConfigureAwait(false))
@@ -1373,6 +1408,11 @@ partial class OllamaProxyHandler
             {
                 return;
             }
+            catch (ObjectDisposedException)
+            {
+                // Disposed between the guard above and the wait.
+                return;
+            }
 
             try
             {
@@ -1380,6 +1420,11 @@ partial class OllamaProxyHandler
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
+            }
+            catch (ObjectDisposedException) when (_disposed)
+            {
+                // Dispose won the race with reading _cts.Token. Guarded on _disposed so a genuine
+                // ObjectDisposedException from the upstream is still recorded below.
             }
             catch (Exception ex)
             {
@@ -1401,14 +1446,37 @@ partial class OllamaProxyHandler
             }
             finally
             {
-                _sendLock.Release();
+                // Dispose releases this semaphore without joining a running callback, so a probe
+                // that was in flight when its model's heartbeat was turned off can arrive here
+                // after the lock is gone. That is expected shutdown, not a fault.
+                try
+                {
+                    _sendLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
             }
         }
 
         public void Dispose()
         {
+            _disposed = true;
             _cts.Cancel();
             _timer.Dispose();
+
+            // Timer.Dispose does not join a callback that is already running, so a probe may still
+            // be unwinding. Give it a bounded window to observe the cancellation before releasing
+            // the primitives it is using.
+            try
+            {
+                Volatile.Read(ref _sendTask).Wait(DisposeDrainTimeout);
+            }
+            catch (AggregateException)
+            {
+                // Already recorded and logged by SendAsync; disposal must not rethrow.
+            }
+
             _sendLock.Dispose();
             _cts.Dispose();
         }
