@@ -1487,7 +1487,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             return NonProxiedCategory.LocalStubs;
 
         if (isGet && (path.Equals("/v1/models", StringComparison.OrdinalIgnoreCase)
-                   || path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase)))
+                   || path.StartsWith("/v1/models/", StringComparison.OrdinalIgnoreCase)
+                   || path.Equals("/models", StringComparison.OrdinalIgnoreCase)
+                   || path.Equals("/models/", StringComparison.OrdinalIgnoreCase)
+                   || path.StartsWith("/models/", StringComparison.OrdinalIgnoreCase)))
             return NonProxiedCategory.LocalStubs;
 
         // Routes addressed to a model stay in the Proxy log â€” including when they fail, because the
@@ -1516,8 +1519,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             return true;
 
         // OpenAI-native passthrough, including the compact endpoints. The local /v1/models lookups
-        // were already returned above, so any remaining /v1* path is a model call.
-        return path.StartsWith("/v1", StringComparison.OrdinalIgnoreCase);
+        // were already returned above, so any remaining /v1* path is a model call. The /v1-less
+        // OpenAI paths the router normalises are the same model traffic as their /v1 twins, so they
+        // stay in the Proxy log rather than being filed as rejected requests.
+        return path.StartsWith("/v1", StringComparison.OrdinalIgnoreCase)
+            || TryNormalizeOpenAiPath(path, out _);
     }
 
     private async Task HandleCoreAsync(
@@ -1680,6 +1686,38 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 // OpenAI SDKs) directly to the upstream llama.cpp /v1/* surface unchanged.
                 log.UpstreamPath = path;
                 await PassthroughAsync(req, resp, log, ct);
+            }
+            // OpenAI-compatible paths that omit the /v1 prefix. A client whose configured base URL is
+            // the bare host sends /chat/completions, which used to reach the 404 branch below even
+            // though the identical endpoint is served under /v1/chat/completions. Normalising here
+            // means both base-URL shapes respond, so a client no longer has to be edited to add /v1
+            // just to make the proxy answer.
+            else if (method == "GET" && (path.Equals("/models", StringComparison.OrdinalIgnoreCase)
+                                                  || path.Equals("/models/", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            log.UpstreamPath = "(local mapping, no upstream call)";
+                            await HandleV1ModelsAsync(resp, log, ct);
+                        }
+            else if (method == "GET" && path.StartsWith("/models/", StringComparison.OrdinalIgnoreCase))
+            {
+                log.UpstreamPath = "(local mapping, no upstream call)";
+                await HandleV1ModelAsync("/v1" + path, resp, log, ct);
+            }
+            else if (method == "POST" && path.Equals("/chat/completions/compact", StringComparison.OrdinalIgnoreCase))
+            {
+                log.UpstreamPath = "/v1/chat/completions/compact";
+                await HandleManualCompactAsync(req, resp, log, ct);
+            }
+            else if (method == "POST" && path.Equals("/responses/compact", StringComparison.OrdinalIgnoreCase))
+            {
+                log.UpstreamPath = "/v1/responses/compact";
+                await HandleCompactAsync(req, resp, log, ct);
+            }
+            else if (TryNormalizeOpenAiPath(path, out string normalizedOpenAiPath))
+            {
+                string normalizedPathAndQuery = normalizedOpenAiPath + (req.Url?.Query ?? string.Empty);
+                log.UpstreamPath = normalizedPathAndQuery;
+                await PassthroughAsync(req, resp, log, ct, normalizedPathAndQuery);
             }
             else
             {

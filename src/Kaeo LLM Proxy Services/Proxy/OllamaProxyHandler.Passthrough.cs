@@ -58,13 +58,14 @@ partial class OllamaProxyHandler
     /// which a client awaiting the terminal stream event blocks indefinitely.
     /// </summary>
     private async Task PassthroughAsync(
-        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct,
+        string? pathOverride = null)
     {
         PassthroughResponseState state = new();
 
         try
         {
-            await PassthroughCoreAsync(req, resp, log, state, ct).ConfigureAwait(false);
+            await PassthroughCoreAsync(req, resp, log, state, ct, pathOverride).ConfigureAwait(false);
             return;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -248,9 +249,18 @@ partial class OllamaProxyHandler
         internal static bool IsClientDisconnectForTest(Exception ex) => IsClientDisconnect(ex);
 
     private async Task PassthroughCoreAsync(
-        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, PassthroughResponseState state, CancellationToken ct)
+        HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, PassthroughResponseState state, CancellationToken ct,
+        string? pathOverride = null)
     {
         bool contextCompacted = false;
+
+        // The upstream target path. A client whose base URL omits the OpenAI /v1 prefix (e.g. it
+        // posts to /chat/completions) reaches here with the normalised path supplied by the router,
+        // so the override replaces the raw request URL everywhere the upstream target is derived.
+        string requestPathAndQuery = pathOverride ?? req.Url?.PathAndQuery ?? "/";
+        string requestPath = pathOverride is not null
+            ? pathOverride.Split('?')[0]
+            : req.Url?.AbsolutePath ?? "/";
 
         // HttpListener only puts the response headers on the wire once at least one byte has been
         // written. Setting StatusCode/ContentType alone therefore leaves the client staring at an
@@ -305,9 +315,7 @@ partial class OllamaProxyHandler
         {
             Method = new HttpMethod(req.HttpMethod),
             // RequestUri is set to relative path; SendUpstreamAsync will make it absolute.
-            RequestUri = req.Url is not null
-                ? new Uri(req.Url.PathAndQuery, UriKind.Relative)
-                : new Uri("/", UriKind.Relative),
+            RequestUri = new Uri(requestPathAndQuery, UriKind.Relative),
         };
 
         // Copy request headers, skipping hop-by-hop headers the HttpClient manages itself and
@@ -345,8 +353,8 @@ partial class OllamaProxyHandler
 
         // Track which original model was requested so we can resolve the upstream URL.
         string originalModel = string.Empty;
-        bool isCompletionPath = IsChatCompletionsPath(req.Url?.AbsolutePath)
-            || req.Url?.AbsolutePath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase) == true;
+        bool isCompletionPath = IsChatCompletionsPath(requestPath)
+            || requestPath.Equals("/v1/completions", StringComparison.OrdinalIgnoreCase);
         bool isStreamingRequest = false;
         // Captured upstream-bound JSON body so an overflow rejection can be compacted and retried.
         string? passthroughBody = null;
@@ -607,7 +615,7 @@ partial class OllamaProxyHandler
                 contextCompacted = true;
                 passthroughBody = reactive;
 
-                using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
+                using var retryReq = new HttpRequestMessage(HttpMethod.Post, requestPathAndQuery)
                 {
                     Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
                 };
@@ -680,7 +688,7 @@ partial class OllamaProxyHandler
                         passthroughBody = reactive;
                         upstreamResp.Dispose();
 
-                        using var retryReq = new HttpRequestMessage(HttpMethod.Post, req.Url!.PathAndQuery)
+                        using var retryReq = new HttpRequestMessage(HttpMethod.Post, requestPathAndQuery)
                         {
                             Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
                         };
@@ -786,7 +794,7 @@ partial class OllamaProxyHandler
         bool isServerSentEvents = IsServerSentEventsResponse(upstreamResp);
 
         using CountingStream countingStream = new(resp.OutputStream);
-        bool shouldMirrorReasoningContent = IsChatCompletionsPath(req.Url?.AbsolutePath);
+        bool shouldMirrorReasoningContent = IsChatCompletionsPath(requestPath);
 
         // Per-model thinking extraction (e.g. Qwen Cloud's older inline <think> format) is only
         // meaningful on the OpenAI chat-completions surface where reasoning_content is understood.
@@ -922,6 +930,37 @@ partial class OllamaProxyHandler
 
     private static bool IsChatCompletionsPath(string? path) =>
         path?.Equals("/v1/chat/completions", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>
+    /// Maps an OpenAI-compatible path that omits the <c>/v1</c> prefix onto its canonical
+    /// <c>/v1/...</c> form. Clients differ in whether the base URL they were configured with already
+    /// ends in <c>/v1</c>, so the same client can send either shape; accepting both means a base URL
+    /// no longer has to be edited to add <c>/v1</c> before the proxy responds. Returns false for
+    /// anything that is not a known OpenAI surface, so the caller still answers 404 for it.
+    /// </summary>
+    internal static bool TryNormalizeOpenAiPath(string path, out string normalized)
+    {
+        normalized = path.ToLowerInvariant() switch
+        {
+            "/chat/completions" => "/v1/chat/completions",
+            "/completions" => "/v1/completions",
+            "/embeddings" => "/v1/embeddings",
+            "/responses" => "/v1/responses",
+            _ => string.Empty,
+        };
+
+        if (normalized.Length > 0)
+            return true;
+
+        // Single-resource lookups, e.g. /responses/{id}.
+        if (path.StartsWith("/responses/", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "/v1" + path;
+            return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Copies a non-streaming (complete JSON) chat-completion response, transforming

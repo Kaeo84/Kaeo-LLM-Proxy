@@ -49,6 +49,28 @@ The proxy also exposes an OpenAI-compatible `/v1/` API so clients such as Visual
 | `/v1/completions`        | POST   | Forwards completion requests to the selected upstream llama.cpp server.      |
 | `/v1/embeddings`         | POST   | Forwards embedding requests to the selected upstream llama.cpp server.       |
 
+### The `/v1` prefix is optional
+
+A client whose base URL is the bare proxy host — `http://localhost:11434` rather than
+`http://localhost:11434/v1` — can call the same endpoints without the prefix. The proxy
+normalises the path before forwarding, so either base-URL shape works and a client never has to
+be re-pointed just to add `/v1`.
+
+| Without the prefix               | Normalised to                         |
+|----------------------------------|---------------------------------------|
+| `POST /chat/completions`         | `POST /v1/chat/completions`           |
+| `POST /completions`              | `POST /v1/completions`                |
+| `POST /embeddings`               | `POST /v1/embeddings`                 |
+| `POST /responses`                | `POST /v1/responses`                  |
+| `POST /chat/completions/compact` | `POST /v1/chat/completions/compact`   |
+| `POST /responses/compact`        | `POST /v1/responses/compact`          |
+| `GET  /models`                   | `GET  /v1/models`                     |
+| `GET  /models/{model}`           | `GET  /v1/models/{model}`             |
+| `/responses/{id}`                | `/v1/responses/{id}`                  |
+
+Any other path is still rejected with `404`, so the normalisation cannot silently redirect an
+unrecognised endpoint onto the upstream.
+
 ## Portable Folder Structure
 
 All configuration and data files live in a `Data` folder next to the executable for easy

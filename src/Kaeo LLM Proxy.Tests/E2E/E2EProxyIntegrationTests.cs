@@ -369,6 +369,130 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         Assert.Contains("Test", contentToken);
     }
 
+    // ── /v1-less OpenAI surface ─────────────────────────────────────────
+
+    /// <summary>
+    /// A client configured with the bare proxy host posts to <c>/chat/completions</c>. That path
+    /// used to fall through to the unknown-endpoint branch and answer
+    /// <c>404 {"error":"Unknown endpoint: /chat/completions"}</c>, which forced the client's base
+    /// URL to be edited to add <c>/v1</c> before the proxy would respond at all. The path is now
+    /// normalised, so both base-URL shapes reach the same upstream endpoint.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Chat_WithoutV1Prefix_IsRoutedToV1Upstream(bool stream)
+    {
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+        var payload = new
+        {
+            model = "test-model",
+            messages = new[]
+            {
+                new { role = "user", content = "Test" },
+            },
+            stream,
+        };
+
+        using StringContent content = new(
+            JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/chat/completions", content);
+
+        response.EnsureSuccessStatusCode();
+        await response.Content.ReadAsStringAsync();
+
+        // The normalised path is what proves the request was really forwarded, not answered locally.
+        Assert.Equal("/v1/chat/completions", _upstream.LastPath);
+    }
+
+    [Fact]
+    public async Task Embeddings_WithoutV1Prefix_IsRoutedToV1Upstream()
+    {
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+        var payload = new { model = "test-model", input = "Test" };
+
+        using StringContent content = new(
+            JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/embeddings", content);
+
+        response.EnsureSuccessStatusCode();
+        await response.Content.ReadAsStringAsync();
+
+        Assert.Equal("/v1/embeddings", _upstream.LastPath);
+    }
+
+    /// <summary>
+    /// <c>/models</c> and <c>/models/{id}</c> are answered from the local mapping table exactly as
+    /// their <c>/v1</c> twins are, so a client that omits the prefix still discovers models.
+    /// </summary>
+    [Theory]
+    [InlineData("/models")]
+    [InlineData("/models/test-model")]
+    public async Task Models_WithoutV1Prefix_AnsweredFromLocalMappings(string path)
+    {
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+        using HttpResponseMessage response = await client.GetAsync(
+            $"http://localhost:{_proxyPort}{path}");
+
+        response.EnsureSuccessStatusCode();
+
+        string body = await response.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(body);
+
+        string? id = path == "/models"
+            ? doc.RootElement.GetProperty("data")[0].GetProperty("id").GetString()
+            : doc.RootElement.GetProperty("id").GetString();
+
+        Assert.Equal("test-model", id);
+    }
+
+    [Theory]
+    [InlineData("/chat/completions", "/v1/chat/completions")]
+    [InlineData("/CHAT/COMPLETIONS", "/v1/chat/completions")]
+    [InlineData("/completions", "/v1/completions")]
+    [InlineData("/embeddings", "/v1/embeddings")]
+    [InlineData("/responses", "/v1/responses")]
+    [InlineData("/responses/resp_123", "/v1/responses/resp_123")]
+    public void TryNormalizeOpenAiPath_MapsBareOpenAiPaths(string path, string expected)
+    {
+        Assert.True(OllamaProxyHandler.TryNormalizeOpenAiPath(path, out string normalized));
+        Assert.Equal(expected, normalized);
+    }
+
+    [Theory]
+    [InlineData("/api/chat")]
+    [InlineData("/v1/chat/completions")]
+    [InlineData("/models")]
+    [InlineData("/chat/completions/compact")]
+    [InlineData("/")]
+    public void TryNormalizeOpenAiPath_LeavesEveryOtherPathAlone(string path)
+    {
+        Assert.False(OllamaProxyHandler.TryNormalizeOpenAiPath(path, out string normalized));
+        Assert.Empty(normalized);
+    }
+
+    /// <summary>
+    /// Guards the normalisation against becoming a catch-all: an unrecognised path must still be
+    /// rejected rather than silently rewritten onto the upstream.
+    /// </summary>
+    [Fact]
+    public async Task UnknownEndpoint_StillReturns404()
+    {
+        using HttpClient client = new() { Timeout = TimeSpan.FromSeconds(15) };
+
+        using HttpResponseMessage response = await client.GetAsync(
+            $"http://localhost:{_proxyPort}/definitely-not-an-endpoint");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     // ── Stub upstream server ────────────────────────────────────────────
 
     /// <summary>
@@ -383,6 +507,7 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         private readonly CancellationTokenSource _cts = new();
         private readonly Task _listenTask;
         private volatile string? _lastContentTypeHeader;
+        private volatile string? _lastPath;
 
         /// <summary>
         /// Raw <c>Content-Type</c> header seen on the most recent request, or <see langword="null"/>
@@ -391,6 +516,13 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
         /// strict real-world gateway would reject.
         /// </summary>
         public string? LastContentTypeHeader => _lastContentTypeHeader;
+
+        /// <summary>
+        /// Absolute path of the most recent request the stub received. Exposed so a test can prove
+        /// the proxy rebuilt a client's <c>/v1</c>-less path into the canonical <c>/v1/...</c> form
+        /// before contacting the upstream, rather than merely answering from local state.
+        /// </summary>
+        public string? LastPath => _lastPath;
 
         public StubUpstreamServer(int port)
         {
@@ -419,6 +551,7 @@ public sealed class E2EProxyIntegrationTests : IAsyncDisposable
             try
             {
                 _lastContentTypeHeader = ctx.Request.Headers["Content-Type"];
+                _lastPath = ctx.Request.Url?.AbsolutePath;
 
                 string body;
                 using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
