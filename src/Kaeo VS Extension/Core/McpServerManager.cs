@@ -273,12 +273,35 @@ internal sealed class McpServerManager
         return pulled;
     }
 
-    /// <summary>Saves the settings instance this manager loaded, so cached tools survive a restart.</summary>
+    /// <summary>
+    /// Persists the MCP-owned fields (tool cache, sync time, health) so they survive a restart.
+    /// Merges into the CURRENT on-disk settings under the store's write lock: saving the whole
+    /// snapshot loaded at init would clobber concurrent edits (connections, preferences,
+    /// instructions) made by the settings window or other tools.
+    /// </summary>
     private async Task PersistLoadedAsync()
     {
         if (_loadedSettings is null)
             return;
-        await _settings.SaveAsync(_loadedSettings).ConfigureAwait(false);
+
+        var owned = new Dictionary<string, McpServer>(StringComparer.OrdinalIgnoreCase);
+        foreach (var server in _servers.Values)
+            if (!string.IsNullOrWhiteSpace(server.Name))
+                owned[server.Name!] = server;
+
+        await _settings.UpdateAsync(current =>
+        {
+            foreach (var server in current.McpServers ?? Array.Empty<McpServer>())
+            {
+                if (server.Name is null || !owned.TryGetValue(server.Name, out var live))
+                    continue;
+                server.Tools = live.Tools;
+                server.Stale = live.Stale;
+                server.LastSyncUtc = live.LastSyncUtc;
+                server.LastError = live.LastError;
+            }
+            return Task.CompletedTask;
+        }).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -553,7 +576,7 @@ internal sealed class McpServerManager
         JsonNode? result;
         using (request)
         {
-            var resp = await session.Http.SendAsync(request, ct).ConfigureAwait(false);
+            using var resp = await session.Http.SendAsync(request, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
 
             // Capture session ID from response if present
@@ -621,14 +644,14 @@ internal sealed class McpServerManager
             {
                 // Send initialize request
                 await WriteJsonRpcAsync(process, CreateInitializeRequest(), ct).ConfigureAwait(false);
-                await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+                await ReadJsonRpcAsync(process, expectedId: 0, ct).ConfigureAwait(false);
 
                 // Send initialized notification
                 await WriteJsonRpcAsync(process, CreateInitializedNotification(), ct).ConfigureAwait(false);
 
                 // Send tools/list
                 await WriteJsonRpcAsync(process, CreateToolsListRequest(), ct).ConfigureAwait(false);
-                var toolsResponse = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+                var toolsResponse = await ReadJsonRpcAsync(process, expectedId: 1, ct).ConfigureAwait(false);
 
                 return ParseToolsList(toolsResponse);
             }
@@ -654,14 +677,14 @@ internal sealed class McpServerManager
             {
                 // Send initialize
                 await WriteJsonRpcAsync(process, CreateInitializeRequest(), ct).ConfigureAwait(false);
-                await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+                await ReadJsonRpcAsync(process, expectedId: 0, ct).ConfigureAwait(false);
 
                 // Send initialized notification
                 await WriteJsonRpcAsync(process, CreateInitializedNotification(), ct).ConfigureAwait(false);
 
                 // Send tools/call
                 await WriteJsonRpcAsync(process, CreateToolsCallRequest(toolName, argsJson), ct).ConfigureAwait(false);
-                var response = await ReadJsonRpcAsync(process, ct).ConfigureAwait(false);
+                var response = await ReadJsonRpcAsync(process, expectedId: 2, ct).ConfigureAwait(false);
 
                 return response?["result"]?.ToJsonString() ?? string.Empty;
             }
@@ -688,7 +711,15 @@ internal sealed class McpServerManager
                 info.Arguments = string.Join(" ", args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
 
             var process = new Process { StartInfo = info };
+            // Drain stderr continuously: MCP servers log there, and an unread redirected
+            // stderr pipe fills its buffer and deadlocks the child mid-exchange.
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                    DebugLog.Info($"[mcp:{command}] {e.Data}");
+            };
             process.Start();
+            process.BeginErrorReadLine();
             return process;
         }
 
@@ -700,18 +731,62 @@ internal sealed class McpServerManager
             await process.StandardInput.BaseStream.FlushAsync(ct).ConfigureAwait(false);
         }
 
-        private static async Task<JsonNode?> ReadJsonRpcAsync(Process process, CancellationToken ct)
+        /// <summary>Per-read timeout for stdio JSON-RPC responses.</summary>
+        private static readonly TimeSpan StdioReadTimeout = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// Reads stdout lines until the JSON-RPC response with <paramref name="expectedId"/>
+        /// arrives, skipping notifications, log noise, and responses to other requests. Each
+        /// read is bounded by <see cref="StdioReadTimeout"/>; on expiry the child is killed so
+        /// the blocked reader thread is released and no orphan process survives.
+        /// </summary>
+        private static async Task<JsonNode?> ReadJsonRpcAsync(Process process, int expectedId, CancellationToken ct)
+        {
+            while (true)
             {
-                // net48: ReadLineAsync has no CancellationToken overload. Use a Task.Run with
-                // synchronous ReadLine so the CancellationToken can cancel the wait.
-                var readTask = Task.Run(() => process.StandardOutput.ReadLine(), ct);
-                var completed = await Task.WhenAny(readTask, Task.Delay(Timeout.Infinite, ct)).ConfigureAwait(false);
                 ct.ThrowIfCancellationRequested();
+
+                // net48: ReadLineAsync has no CancellationToken overload. Use Task.Run with
+                // synchronous ReadLine; swallow read faults so killing the process on timeout
+                // cannot surface later as an UnobservedTaskException.
+                var readTask = Task.Run(() =>
+                {
+                    try { return process.StandardOutput.ReadLine(); }
+                    catch (Exception) { return null; }
+                });
+
+                using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var delayTask = Task.Delay(StdioReadTimeout, delayCts.Token);
+                var completed = await Task.WhenAny(readTask, delayTask).ConfigureAwait(false);
+                if (completed != readTask)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    KillProcess(process);
+                    throw new TimeoutException($"MCP stdio server did not respond within {StdioReadTimeout.TotalSeconds:0} seconds.");
+                }
+
+                // Release the pending delay timer promptly instead of letting it linger.
+                delayCts.Cancel();
+
                 var line = await readTask.ConfigureAwait(false);
+                if (line is null)
+                    throw new IOException("MCP stdio server closed its output stream before responding.");
                 if (string.IsNullOrWhiteSpace(line))
-                    return null;
-                return JsonNode.Parse(line);
+                    continue;
+
+                JsonNode? node;
+                try { node = JsonNode.Parse(line); }
+                catch (System.Text.Json.JsonException) { continue; } // non-JSON log noise on stdout
+
+                if (node is JsonObject obj
+                    && obj["id"] is JsonValue idValue
+                    && idValue.TryGetValue<int>(out var id)
+                    && id == expectedId)
+                {
+                    return node;
+                }
             }
+        }
 
         private static void KillProcess(Process process)
         {

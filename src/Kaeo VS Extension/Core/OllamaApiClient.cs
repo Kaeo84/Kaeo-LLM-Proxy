@@ -9,14 +9,43 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 
 internal sealed class OllamaApiClient : IUpstreamClient
 {
+    /// <summary>
+    /// Shared HttpClient cache keyed by base URL. The factory creates a client per refresh,
+    /// so per-instance clients burned an ephemeral socket each time and were never disposed;
+    /// cached clients live for the process lifetime and reuse pooled connections. Auth rides
+    /// on each request (not DefaultRequestHeaders) so two connections to the same host with
+    /// different keys cannot corrupt each other.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, HttpClient> SharedClients =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly HttpClient _http;
     private readonly string _baseUrl;
+    private readonly string? _apiKey;
 
     public OllamaApiClient(string baseUrl, string? apiKey = null, HttpClient? httpClient = null)
     {
         _baseUrl = baseUrl?.TrimEnd('/') ?? throw new ArgumentNullException(nameof(baseUrl));
-        _http = httpClient ?? new HttpClient();
-        HttpHelpers.SetBearerAuth(_http, apiKey);
+        _apiKey = apiKey;
+        if (httpClient is not null)
+        {
+            // Caller-owned client: preserve the historical auth-stamping behavior.
+            _http = httpClient;
+            HttpHelpers.SetBearerAuth(_http, apiKey);
+        }
+        else
+        {
+            _http = SharedClients.GetOrAdd(_baseUrl, _ => new HttpClient());
+        }
+    }
+
+    /// <summary>Builds a GET request carrying the connection's ****** token, if any.</summary>
+    private HttpRequestMessage CreateGetRequest(Uri uri)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
+        return request;
     }
 
     public Task<bool> HealthAsync(CancellationToken ct = default)
@@ -29,7 +58,8 @@ internal sealed class OllamaApiClient : IUpstreamClient
     {
         try
         {
-            var resp = await _http.GetAsync(BuildEndpointUri("/health"), ct).ConfigureAwait(false);
+            using var request = CreateGetRequest(BuildEndpointUri("/health"));
+            using var resp = await _http.SendAsync(request, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
         }
         catch
@@ -49,7 +79,8 @@ internal sealed class OllamaApiClient : IUpstreamClient
     {
         // Ollama-standard GET /api/tags:
         // { "models": [ { "name", "model", "details": { "parameter_size", "context_length", ... }, "capabilities": ["completion","tools","vision"] } ] }
-        var resp = await _http.GetAsync(BuildEndpointUri("/api/tags"), ct).ConfigureAwait(false);
+        using var request = CreateGetRequest(BuildEndpointUri("/api/tags"));
+        using var resp = await _http.SendAsync(request, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         // net48 exposes only the parameterless ReadAsStreamAsync and lacks
         // JsonDocument.ParseAsync (net7+). Read the (small) body to a string and parse

@@ -128,26 +128,51 @@ internal sealed class ChatLine : INotifyPropertyChanged
     /// <summary>Horizontal alignment for this message row ("Left" or "Right").</summary>
     public string HorizontalAlignment { get; set; } = "Left";
 
-    /// <summary>Optional background color hex for this message; null = transparent.</summary>
-    public string? BackgroundHex { get; set; }
+    private string? _backgroundHex;
+    private string? _foregroundHex;
 
-    /// <summary>Optional text color hex for this message; null = theme default.</summary>
-    public string? ForegroundHex { get; set; }
-
-    /// <summary>Computed foreground brush from ForegroundHex; null means "use theme".</summary>
-    public System.Windows.Media.SolidColorBrush? ForegroundBrush
+    /// <summary>
+    /// Background override, theme-validated: preset hexes map to their current-theme variant
+    /// and the result is contrast-checked against the effective text color; null falls back
+    /// to the theme brush. Re-evaluated on theme change via <see cref="RefreshThemeColors"/>.
+    /// </summary>
+    public string? BackgroundHex
     {
-        get
+        get => ThemeColors.ResolveBackground(
+            Settings.ColorOption.MapToCurrentTheme(_backgroundHex, Settings.ColorOption.Presets),
+            Settings.ColorOption.MapToCurrentTheme(_foregroundHex, Settings.ColorOption.TextPresets));
+        set
         {
-            if (string.IsNullOrEmpty(ForegroundHex))
-                return null;
-            try
-            {
-                return new System.Windows.Media.SolidColorBrush(
-                    (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(ForegroundHex!));
-            }
-            catch { return null; }
+            if (_backgroundHex == value) return;
+            _backgroundHex = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BackgroundHex)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ForegroundHex)));
         }
+    }
+
+    /// <summary>
+    /// Text-color override, theme-validated against the effective background; null falls
+    /// back to the theme brush. Re-evaluated on theme change via <see cref="RefreshThemeColors"/>.
+    /// </summary>
+    public string? ForegroundHex
+    {
+        get => ThemeColors.ResolveForeground(
+            Settings.ColorOption.MapToCurrentTheme(_foregroundHex, Settings.ColorOption.TextPresets),
+            Settings.ColorOption.MapToCurrentTheme(_backgroundHex, Settings.ColorOption.Presets));
+        set
+        {
+            if (_foregroundHex == value) return;
+            _foregroundHex = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ForegroundHex)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BackgroundHex)));
+        }
+    }
+
+    /// <summary>Re-raises the color bindings after a VS theme change so overrides repaint or fall back.</summary>
+    public void RefreshThemeColors()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(BackgroundHex)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ForegroundHex)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -224,7 +249,19 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         CurrentAgent = "Agent";
         CurrentMode = "Interactive";
 
+        // Re-evaluate color overrides whenever the VS scheme changes so they repaint (or
+        // fall back to the theme brush) instead of freezing to one scheme.
+        ThemeColors.ThemeChanged += OnVsThemeChanged;
+
         _ = LoadAsync();
+    }
+
+    private void OnVsThemeChanged(object? sender, EventArgs e)
+    {
+        OnPropertyChanged(nameof(ReasoningForegroundHex));
+        OnPropertyChanged(nameof(ReasoningBackgroundHex));
+        foreach (var line in Lines)
+            line.RefreshThemeColors();
     }
 
     /// <summary>
@@ -286,18 +323,32 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// <summary>Compatibility: still exposed for reasoning "Inline" XAML usage (maps to Expanded).</summary>
     public bool ReasoningInline => _reasoningExpanded;
 
-    /// <summary>Optional #RRGGBB override for reasoning text; null falls back to the VS theme.</summary>
+    /// <summary>Theme-validated reasoning text override; null falls back to the VS theme.</summary>
     public string? ReasoningForegroundHex
     {
-        get => _reasoningForegroundHex;
-        private set { _reasoningForegroundHex = value; OnPropertyChanged(); }
+        get => ThemeColors.ResolveForeground(
+            Settings.ColorOption.MapToCurrentTheme(_reasoningForegroundHex, Settings.ColorOption.TextPresets),
+            Settings.ColorOption.MapToCurrentTheme(_reasoningBackgroundHex, Settings.ColorOption.Presets));
+        private set
+        {
+            _reasoningForegroundHex = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ReasoningBackgroundHex));
+        }
     }
 
-    /// <summary>Optional #RRGGBB override for the reasoning background; null stays transparent.</summary>
+    /// <summary>Theme-validated reasoning background override; null stays transparent.</summary>
     public string? ReasoningBackgroundHex
     {
-        get => _reasoningBackgroundHex;
-        private set { _reasoningBackgroundHex = value; OnPropertyChanged(); }
+        get => ThemeColors.ResolveBackground(
+            Settings.ColorOption.MapToCurrentTheme(_reasoningBackgroundHex, Settings.ColorOption.Presets),
+            Settings.ColorOption.MapToCurrentTheme(_reasoningForegroundHex, Settings.ColorOption.TextPresets));
+        private set
+        {
+            _reasoningBackgroundHex = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ReasoningForegroundHex));
+        }
     }
 
     /// <summary>User message alignment: "Left" (default) or "Right".</summary>
@@ -532,30 +583,40 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             CurrentMode = savedDefaultMode!;
 
         // Pull live models from every enabled connection into local lists first, so the
-        // bound collections are only mutated in one synchronous pass at the end.
-        var selections = new List<ModelSelection>();
-        var labels = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var conn in s.Connections ?? Array.Empty<Connection>())
+        // bound collections are only mutated in one synchronous pass at the end. Connections
+        // are fetched in parallel with a per-connection timeout so one dead endpoint cannot
+        // stall the whole load (and the tool window) behind a long network timeout.
+        var connections = (s.Connections ?? Array.Empty<Connection>())
+            .Where(c => c.Enabled && !string.IsNullOrWhiteSpace(c.BaseUrl))
+            .ToList();
+        var fetchResults = await Task.WhenAll(connections.Select(async conn =>
         {
-            if (!conn.Enabled || string.IsNullOrWhiteSpace(conn.BaseUrl)) continue;
-
             var kind = UpstreamKinds.Parse(conn.Upstream);
             // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
             var client = UpstreamClientFactory.Create(kind, conn.BaseUrl!, conn.ApiKey);
-            var pinned = new HashSet<string>(
-                (conn.Models ?? Array.Empty<ModelEntry>()).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
-                StringComparer.Ordinal);
-            IReadOnlyList<ModelInfo> fetched;
             try
             {
-                fetched = await client.GetModelsAsync();
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var models = await client.GetModelsAsync(timeoutCts.Token);
+                return (Conn: conn, Kind: kind, Models: (IReadOnlyList<ModelInfo>?)models);
             }
             catch
             {
                 // Connection unreachable — skip it (status surfaced elsewhere).
-                continue;
+                return (Conn: conn, Kind: kind, Models: (IReadOnlyList<ModelInfo>?)null);
             }
+        }));
+
+        var selections = new List<ModelSelection>();
+        var labels = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (conn, kind, fetched) in fetchResults)
+        {
+            if (fetched is null) continue;
+
+            var pinned = new HashSet<string>(
+                (conn.Models ?? Array.Empty<ModelEntry>()).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
+                StringComparer.Ordinal);
 
             foreach (var m in fetched)
             {
@@ -1044,19 +1105,36 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 new ChatMessage(ChatRole.User, compactionPrompt)
             };
 
+            // Compaction must never execute tools: run a tool-less agent AND deny any
+            // permission request outright. Running the current (possibly tool-enabled)
+            // agent in Interactive mode without a RequestPermission handler would
+            // auto-approve every call — a permission bypass.
+            var compactionAgent = new AgentConfig
+            {
+                Name = "Compaction",
+                DisplayName = "Compaction",
+                Description = "Summarizes the conversation to reduce context usage.",
+                SystemPrompt = "You summarize conversations concisely. You have no tools; respond with the summary text only.",
+                Tools = Array.Empty<string>(),
+                IsBuiltin = true,
+            };
+
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
             var streaming = CreateLine("assistant");
             Lines.Add(streaming);
 
             try
             {
-                var result = await _engine.RunAsync(
-                    client, Agents.FirstOrDefault(a => a.Name == CurrentAgent) ?? Agents[0],
+                await _engine.RunAsync(
+                    client, compactionAgent,
                     modelName, AgentMode.Interactive, compactionHistory,
                     compactionPrompt,
                     new AgentEvents
                     {
                         TextDelta = delta => streaming.Text += delta,
+                        RequestPermission = _ => Task.FromResult(false),
                         TurnComplete = r =>
                         {
                             // Replace history with just the system prompt (from original history)
@@ -1072,7 +1150,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                             streaming.Text = r.FinalText;
                             UpdateContextBar();
                         },
-                    });
+                    },
+                    ct);
 
                 // Show the compacted text folded under a status line
                 Lines.Add(new ChatLine
@@ -1081,6 +1160,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                     Text = $"[context compacted: {ContextTokensUsed:N0} / {ContextTokensMax:N0} tokens ({ContextPercent:F0}%)]"
                 });
             }
+            catch (OperationCanceledException)
+            {
+                streaming.Text = "[compaction cancelled]";
+            }
             catch (Exception ex)
             {
                 streaming.Text = $"[compaction error] {ex.Message}";
@@ -1088,6 +1171,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             finally
             {
                 IsBusy = false;
+                _cts?.Dispose();
+                _cts = null;
             }
         }
 

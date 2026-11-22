@@ -129,7 +129,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 }
 
                 var client = UpstreamClientFactory.Create(UpstreamKinds.Parse(Upstream), Url, string.IsNullOrWhiteSpace(ApiKey) ? null : ApiKey);
-                var fetched = await client.GetModelsAsync();
+                // Bound the pull so an unreachable endpoint cannot hang the refresh (and the
+                // Settings window's save flow) behind the client's full network timeout.
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var fetched = await client.GetModelsAsync(timeoutCts.Token);
 
                 var previous = Models.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
                 Models.Clear();
@@ -146,6 +149,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     {
                         vm.Enabled = old.Enabled;
                         vm.IsPinned = old.IsPinned;
+                        // Preserve user edits a refresh must not wipe: the reasoning-source
+                        // override and any manually set context size (upstream often reports 0).
+                        vm.ReasoningSource = old.ReasoningSource;
+                        if (old.ContextSize > 0)
+                            vm.ContextSize = old.ContextSize;
                     }
                     Models.Add(vm);
                 }

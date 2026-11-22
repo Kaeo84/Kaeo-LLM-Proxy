@@ -602,6 +602,37 @@ internal static class BuiltInVsTools
         }
     }
 
+    /// <summary>
+    /// First file path of a project item, or null. FileNames is 1-based, so a single-file
+    /// item has FileCount == 1 and its path at FileNames[1]; some item kinds throw on
+    /// FileNames access even when they report a file count.
+    /// </summary>
+    private static string? GetItemFilePath(ProjectItem item)
+    {
+        try
+        {
+            return item.FileCount >= 1 ? item.FileNames[1] : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves a tool-supplied path against the solution directory. Relative paths must not
+    /// depend on devenv.exe's working directory (usually the VS install folder, not the repo).
+    /// </summary>
+    private static string ResolveToolPath(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || Path.IsPathRooted(filePath))
+            return filePath;
+        var root = InstructionFileLoader.GetSolutionRootPath();
+        return string.IsNullOrEmpty(root)
+            ? Path.GetFullPath(filePath)
+            : Path.GetFullPath(Path.Combine(root!, filePath));
+    }
+
     private static void SearchProjectItem(ProjectItem item, string query, List<string> results, int maxResults)
     {
         if (results.Count >= maxResults) return;
@@ -609,7 +640,7 @@ internal static class BuiltInVsTools
         var name = item.Name ?? "";
         if (name.Contains(query, StringComparison.OrdinalIgnoreCase))
         {
-            var path = item.FileCount > 1 ? item.FileNames[1] : name;
+            var path = GetItemFilePath(item) ?? name;
             results.Add(path);
         }
 
@@ -627,7 +658,7 @@ internal static class BuiltInVsTools
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
-        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var startLine = args?["startLine"]?.GetValue<int>() ?? throw new ArgumentException("startLine is required");
         var endLine = args?["endLine"]?.GetValue<int>() ?? throw new ArgumentException("endLine is required");
         var includeLineNumbers = args?["includeLineNumbers"]?.GetValue<bool>() ?? false;
@@ -655,6 +686,8 @@ internal static class BuiltInVsTools
         var symbolName = args?["symbolName"]?.GetValue<string>() ?? throw new ArgumentException("symbolName is required");
         var navigationType = args?["navigationType"]?.GetValue<int>() ?? 2; // default: Find All References
         var filePath = args?["filePath"]?.GetValue<string>(); // optional: scope to one file
+        if (!string.IsNullOrEmpty(filePath))
+            filePath = ResolveToolPath(filePath!);
 
         var dte = await GetOpenDteAsync(ct);
         if (dte is null)
@@ -882,7 +915,7 @@ internal static class BuiltInVsTools
 
     private static void CollectItemFiles(ProjectItem item, List<string> files)
     {
-        var fileName = item.FileCount > 1 ? item.FileNames[1] : null;
+        var fileName = GetItemFilePath(item);
         if (fileName != null)
         {
             files.Add(fileName);
@@ -915,33 +948,58 @@ internal static class BuiltInVsTools
         buildPane.Clear();
 
         SolutionBuild solutionBuild = dte.Solution.SolutionBuild;
+        List<(SolutionContext Context, bool ShouldBuild)>? savedContexts = null;
         if (projectName != null)
         {
-            // Build specific project
+            // Build a specific project by toggling ShouldBuild. Snapshot the previous flags
+            // so the user's Configuration Manager choices are restored afterwards.
             foreach (SolutionConfiguration2 config in solutionBuild.SolutionConfigurations)
             {
                 if (config.Name == solutionBuild.ActiveConfiguration?.Name)
                 {
+                    savedContexts = new List<(SolutionContext, bool)>();
                     foreach (SolutionContext context in config.SolutionContexts)
                     {
-                        if (context.ProjectName?.Equals(projectName, StringComparison.OrdinalIgnoreCase) == true)
-                        {
-                            context.ShouldBuild = true;
-                        }
-                        else
-                        {
-                            context.ShouldBuild = false;
-                        }
+                        savedContexts.Add((context, context.ShouldBuild));
+                        context.ShouldBuild = context.ProjectName?.Equals(projectName, StringComparison.OrdinalIgnoreCase) == true;
                     }
                     break;
                 }
             }
         }
 
-        solutionBuild.Build(true);
+        try
+        {
+            // Non-blocking build: Build(true) would block the UI thread until completion.
+            solutionBuild.Build(false);
 
-        var output = buildPane.TextDocument?.CreateEditPoint()?.GetText(buildPane.TextDocument.EndPoint) ?? "";
-        return string.IsNullOrWhiteSpace(output) ? "Build completed." : output;
+            // Poll the build state, waiting off the UI thread and hopping back only to read DTE.
+            var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(10);
+            while (true)
+            {
+                await Task.Delay(250, ct).ConfigureAwait(false);
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+                if (solutionBuild.BuildState != vsBuildState.vsBuildStateInProgress)
+                    break;
+                if (DateTime.UtcNow > deadline)
+                    return "Build timed out after 10 minutes; it may still be running in Visual Studio.";
+            }
+
+            var output = buildPane.TextDocument?.CreateEditPoint()?.GetText(buildPane.TextDocument.EndPoint) ?? "";
+            return string.IsNullOrWhiteSpace(output) ? "Build completed." : output;
+        }
+        finally
+        {
+            if (savedContexts is not null)
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(CancellationToken.None);
+                foreach (var (context, shouldBuild) in savedContexts)
+                {
+                    try { context.ShouldBuild = shouldBuild; }
+                    catch (Exception ex) { DebugLog.Warn($"Could not restore ShouldBuild for {context.ProjectName}: {ex.Message}"); }
+                }
+            }
+        }
     }
 
     private static async Task<string> RunTestsAsync(JsonNode? args, CancellationToken ct)
@@ -1117,7 +1175,7 @@ internal static class BuiltInVsTools
 
     private static Task<string> CreateFileAsync(JsonNode? args, CancellationToken ct)
     {
-        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var content = args?["content"]?.GetValue<string>() ?? throw new ArgumentException("content is required");
 
         var directory = Path.GetDirectoryName(filePath);
@@ -1132,7 +1190,7 @@ internal static class BuiltInVsTools
 
     private static Task<string> CreatePlanFileAsync(JsonNode? args, CancellationToken ct)
     {
-        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var content = args?["content"]?.GetValue<string>() ?? throw new ArgumentException("content is required");
 
         if (!filePath.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
@@ -1177,7 +1235,7 @@ internal static class BuiltInVsTools
 
     private static Task<string> ReplaceInFileAsync(JsonNode? args, CancellationToken ct)
     {
-        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var oldString = args?["oldString"]?.GetValue<string>() ?? throw new ArgumentException("oldString is required");
         var newString = args?["newString"]?.GetValue<string>() ?? throw new ArgumentException("newString is required");
 
@@ -1311,39 +1369,58 @@ internal static class BuiltInVsTools
         return fullText;
     }
 
+    /// <summary>Shared HttpClient for web fetches: one instance avoids socket exhaustion
+    /// from per-call clients. The timeout bounds each fetch even without caller cancellation.</summary>
+    private static readonly System.Net.Http.HttpClient s_webClient = new System.Net.Http.HttpClient
+    {
+        Timeout = TimeSpan.FromSeconds(30),
+    };
+
+    /// <summary>Per-page content cap; large enough for real documentation pages.</summary>
+    private const int WebContentCap = 30_000;
+
     private static async Task<string> GetWebPagesAsync(JsonNode? args, CancellationToken ct)
     {
         var urlsNode = args?["urls"];
         if (urlsNode is not JsonArray urlsArray)
             throw new ArgumentException("urls array is required");
 
-        var results = new List<string>();
-        using var client = new System.Net.Http.HttpClient();
+        var urls = urlsArray
+            .Select(n => n?.GetValue<string>())
+            .Where(u => !string.IsNullOrEmpty(u))
+            .Cast<string>()
+            .ToList();
+        if (urls.Count == 0)
+            return "No URLs provided.";
 
-        foreach (var urlNode in urlsArray)
+        // Fetch in parallel; one failing URL must not sink the others.
+        var tasks = urls.Select(async url =>
         {
-            var url = urlNode?.GetValue<string>();
-            if (string.IsNullOrEmpty(url))
-                continue;
-
             try
             {
-                var response = await client.GetAsync(url, ct);
-                var content = await response.Content.ReadAsStringAsync();
-                results.Add($"[{url}]: {content.Substring(0, Math.Min(500, content.Length))}...");
+                using var response = await s_webClient.GetAsync(url, ct).ConfigureAwait(false);
+                var content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return content.Length > WebContentCap
+                    ? $"[{url}]: {content.Substring(0, WebContentCap)}\n...[truncated at {WebContentCap} characters]"
+                    : $"[{url}]: {content}";
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                results.Add($"[{url}]: Error - {ex.Message}");
+                return $"[{url}]: Error - {ex.Message}";
             }
-        }
+        }).ToArray();
 
-        return results.Count == 0 ? "No URLs provided." : string.Join("\n\n", results);
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        return string.Join("\n\n", results);
     }
 
     private static async Task<string> RemoveFileAsync(JsonNode? args, CancellationToken ct)
     {
-        var filePath = args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required");
+        var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
 
         if (!File.Exists(filePath))
             return $"File not found: {filePath}";
@@ -1390,7 +1467,7 @@ internal static class BuiltInVsTools
 
     private static ProjectItem? FindItemRecursive(ProjectItem item, string filePath)
     {
-        var fileName = item.FileCount > 1 ? item.FileNames[1] : null;
+        var fileName = GetItemFilePath(item);
         if (fileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true)
             return item;
 
@@ -1452,6 +1529,10 @@ internal static class BuiltInVsTools
         {
             var dte = await GetDteAsync(ct);
             filePath = dte?.ActiveDocument?.FullName;
+        }
+        else
+        {
+            filePath = ResolveToolPath(filePath!);
         }
 
         if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
@@ -1612,43 +1693,55 @@ internal static class BuiltInVsTools
         if (content is null)
             return "A 'content' is required.";
 
+        // Coordinated load-modify-save under the store's write lock so a concurrent save
+        // from the settings window or MCP manager is not clobbered by a stale snapshot.
         var store = new ExtensionSettingsStore();
-        var settings = await store.LoadAsync();
-        var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
-            ? InstructionFileLoader.DefaultEntries()
-            : settings.Instructions.ToList();
+        try
+        {
+            await store.UpdateAsync(settings =>
+            {
+                var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
+                    ? InstructionFileLoader.DefaultEntries()
+                    : settings.Instructions.ToList();
 
-        var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (entry is null)
-        {
-            entry = new InstructionEntry
-            {
-                Name = name,
-                Kind = InstructionKind.Text,
-                Content = content,
-                Enabled = true,
-                Order = entries.Count,
-            };
-            entries.Add(entry);
-        }
-        else if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                InstructionFileLoader.WriteFileContent(entry.Path, content);
-            }
-            catch (Exception ex)
-            {
-                return $"Could not write the instruction file: {ex.Message}";
-            }
-        }
-        else
-        {
-            entry.Content = content;
-        }
+                var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (entry is null)
+                {
+                    entry = new InstructionEntry
+                    {
+                        Name = name,
+                        Kind = InstructionKind.Text,
+                        Content = content,
+                        Enabled = true,
+                        Order = entries.Count,
+                    };
+                    entries.Add(entry);
+                }
+                else if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        InstructionFileLoader.WriteFileContent(entry.Path, content);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Abort without saving; surfaced as the tool result below.
+                        throw new IOException($"Could not write the instruction file: {ex.Message}", ex);
+                    }
+                }
+                else
+                {
+                    entry.Content = content;
+                }
 
-        settings.Instructions = entries.ToArray();
-        await store.SaveAsync(settings);
+                settings.Instructions = entries.ToArray();
+                return Task.CompletedTask;
+            });
+        }
+        catch (IOException ex)
+        {
+            return ex.Message;
+        }
         return $"Updated instruction '{name}'.";
     }
 }

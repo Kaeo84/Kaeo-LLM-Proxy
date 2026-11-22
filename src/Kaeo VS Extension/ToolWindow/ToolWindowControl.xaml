@@ -160,10 +160,14 @@
                                 </Expander>
                             </StackPanel>
                         </Expander>
-                        <!-- Message text wrapped in a border so user/agent background colors render. -->
+                        <!-- Message text wrapped in a border so user/agent background colors render.
+                             Foreground binds the theme-validated text override; when it yields
+                             Binding.DoNothing (no override / fails contrast) the themed style
+                             setters and Kind triggers below apply instead. -->
                         <Border Background="{Binding BackgroundHex, Converter={StaticResource HexToBrush}}"
                                 CornerRadius="4" Padding="4,2">
                             <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
+                                       Foreground="{Binding ForegroundHex, Converter={StaticResource HexToBrush}}"
                                        FontFamily="Consolas" FontSize="13">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">

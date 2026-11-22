@@ -1,68 +1,117 @@
+using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
 using System.Windows.Media;
+using Kaeo.LlmProxy.VSExtension.ToolWindow;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings
 {
     /// <summary>
-    /// A color choice in the Preferences color-picker ComboBoxes. Exposes a Name, a Hex code,
-    /// and a SolidColorBrush so the XAML ItemTemplate can render a swatch.
+    /// A color choice in the Preferences color-picker ComboBoxes. Each preset is a
+    /// theme-conditional light/dark pair (project theming rule): <see cref="Hex"/> and
+    /// <see cref="Brush"/> resolve to the variant for the CURRENT VS theme and re-raise
+    /// change notifications when the theme changes, so swatches and persisted values follow
+    /// the scheme. "Default (theme)" (null) is the only unconditionally-safe choice; custom
+    /// hex values are kept as-is and contrast-validated at the consumption site (ThemeColors).
     /// </summary>
-    internal sealed class ColorOption
+    internal sealed class ColorOption : INotifyPropertyChanged
     {
         public string Name { get; init; } = string.Empty;
-        public string? Hex { get; init; }
-        public Brush Brush { get; init; } = Brushes.Transparent;
 
-        /// <summary>Common named colors that are legible across VS light/dark themes.</summary>
+        /// <summary>Hex applied in light themes; null = follow the theme brush.</summary>
+        public string? LightHex { get; init; }
+
+        /// <summary>Hex applied in dark themes; null = follow the theme brush.</summary>
+        public string? DarkHex { get; init; }
+
+        /// <summary>Hex values persisted by older builds that map onto this preset.</summary>
+        private string[] LegacyHexes { get; init; } = Array.Empty<string>();
+
+        /// <summary>The hex for the current VS theme; null = follow the theme brush.</summary>
+        public string? Hex => ThemeColors.IsDarkTheme ? DarkHex : LightHex;
+
+        /// <summary>Frozen swatch brush for the current variant (transparent for the theme default).</summary>
+        public Brush Brush
+        {
+            get
+            {
+                var c = ThemeColors.Parse(Hex);
+                if (c is null)
+                    return Brushes.Transparent;
+                var b = new SolidColorBrush(c.Value);
+                b.Freeze();
+                return b;
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        static ColorOption()
+        {
+            // Repaint swatches (and re-resolve Hex for saves) whenever the VS scheme changes.
+            ThemeColors.ThemeChanged += (_, _) =>
+            {
+                foreach (var p in Presets.Concat(TextPresets))
+                {
+                    p.PropertyChanged?.Invoke(p, new PropertyChangedEventArgs(nameof(Hex)));
+                    p.PropertyChanged?.Invoke(p, new PropertyChangedEventArgs(nameof(Brush)));
+                }
+            };
+        }
+
+        private static ColorOption Pair(string name, string lightHex, string darkHex, params string[] legacyHexes)
+            => new ColorOption { Name = name, LightHex = lightHex, DarkHex = darkHex, LegacyHexes = legacyHexes };
+
+        /// <summary>True when the hex matches either theme variant or a legacy preset value.</summary>
+        public bool Matches(string? hex)
+        {
+            if (string.IsNullOrWhiteSpace(hex))
+                return false;
+            hex = hex!.Trim();
+            return Eq(LightHex, hex) || Eq(DarkHex, hex) || LegacyHexes.Any(l => Eq(l, hex));
+
+            static bool Eq(string? a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Message/reasoning background presets: subtle tints in light themes, deep shades in
+        /// dark themes. Legacy fixed values (including pure White/Black) map onto the nearest
+        /// theme-conditional pair instead of freezing the element to one scheme.
+        /// </summary>
         public static readonly IReadOnlyList<ColorOption> Presets = new[]
         {
-            new ColorOption { Name = "Default (theme)", Hex = null, Brush = Brushes.Transparent },
-            new ColorOption { Name = "White", Hex = "#FFFFFF", Brush = new SolidColorBrush(Colors.White) },
-            new ColorOption { Name = "Light Gray", Hex = "#E0E0E0", Brush = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)) },
-            new ColorOption { Name = "Dark Gray", Hex = "#404040", Brush = new SolidColorBrush(Color.FromRgb(0x40, 0x40, 0x40)) },
-            new ColorOption { Name = "Black", Hex = "#000000", Brush = new SolidColorBrush(Colors.Black) },
-            // Primary-bold
-            new ColorOption { Name = "Blue", Hex = "#2B6CB0", Brush = new SolidColorBrush(Color.FromRgb(0x2B, 0x6C, 0xB0)) },
-            new ColorOption { Name = "Green", Hex = "#2F855A", Brush = new SolidColorBrush(Color.FromRgb(0x2F, 0x85, 0x5A)) },
-            new ColorOption { Name = "Red", Hex = "#C53030", Brush = new SolidColorBrush(Color.FromRgb(0xC5, 0x30, 0x30)) },
-            new ColorOption { Name = "Purple", Hex = "#6B46C1", Brush = new SolidColorBrush(Color.FromRgb(0x6B, 0x46, 0xC1)) },
-            new ColorOption { Name = "Orange", Hex = "#DD6B20", Brush = new SolidColorBrush(Color.FromRgb(0xDD, 0x6B, 0x20)) },
-            new ColorOption { Name = "Teal", Hex = "#2C7A7B", Brush = new SolidColorBrush(Color.FromRgb(0x2C, 0x7A, 0x7B)) },
-            new ColorOption { Name = "Yellow", Hex = "#D69E2E", Brush = new SolidColorBrush(Color.FromRgb(0xD6, 0x9E, 0x2E)) },
-            // Soft
-            new ColorOption { Name = "Soft Blue", Hex = "#D6E8FA", Brush = new SolidColorBrush(Color.FromRgb(0xD6, 0xE8, 0xFA)) },
-            new ColorOption { Name = "Soft Green", Hex = "#D8F0D8", Brush = new SolidColorBrush(Color.FromRgb(0xD8, 0xF0, 0xD8)) },
-            new ColorOption { Name = "Soft Yellow", Hex = "#FFF8D6", Brush = new SolidColorBrush(Color.FromRgb(0xFF, 0xF8, 0xD6)) },
-            new ColorOption { Name = "Soft Red", Hex = "#F8D6D6", Brush = new SolidColorBrush(Color.FromRgb(0xF8, 0xD6, 0xD6)) },
-            new ColorOption { Name = "Soft Purple", Hex = "#E8D6F8", Brush = new SolidColorBrush(Color.FromRgb(0xE8, 0xD6, 0xF8)) },
-            new ColorOption { Name = "Soft Orange", Hex = "#FFE8D0", Brush = new SolidColorBrush(Color.FromRgb(0xFF, 0xE8, 0xD0)) },
-            new ColorOption { Name = "Muted Teal", Hex = "#C8E8E0", Brush = new SolidColorBrush(Color.FromRgb(0xC8, 0xE8, 0xE0)) },
-            new ColorOption { Name = "Muted Rose", Hex = "#F0D8E0", Brush = new SolidColorBrush(Color.FromRgb(0xF0, 0xD8, 0xE0)) },
+            new ColorOption { Name = "Default (theme)" },
+            Pair("Soft Gray", "#E0E0E0", "#3F3F46", "#FFFFFF", "#F0F0F0"),
+            Pair("Strong Gray", "#404040", "#C8C8C8", "#000000"),
+            Pair("Blue", "#D6E8FA", "#1A3A6E", "#2B6CB0"),
+            Pair("Green", "#D8F0D8", "#1E5C1E", "#2F855A"),
+            Pair("Red", "#F8D6D6", "#8E1E1E", "#C53030"),
+            Pair("Purple", "#E8D6F8", "#5C2E8E", "#6B46C1"),
+            Pair("Orange", "#FFE8D0", "#7A4A10", "#DD6B20"),
+            Pair("Teal", "#C8E8E0", "#1E5C5C", "#2C7A7B"),
+            Pair("Yellow", "#FFF8D6", "#6E5A1E", "#D69E2E"),
+            Pair("Rose", "#F0D8E0", "#6E2E4A"),
         };
 
+        /// <summary>
+        /// Text-color presets: dark-enough inks for light themes, light-enough inks for dark
+        /// themes. Pure Black/White are gone; legacy values map onto the Contrast/Gray pairs.
+        /// </summary>
         public static readonly IReadOnlyList<ColorOption> TextPresets = new[]
         {
-            new ColorOption { Name = "Default (theme)", Hex = null, Brush = Brushes.Transparent },
-            new ColorOption { Name = "Black", Hex = "#000000", Brush = new SolidColorBrush(Colors.Black) },
-            new ColorOption { Name = "White", Hex = "#FFFFFF", Brush = new SolidColorBrush(Colors.White) },
-            new ColorOption { Name = "Gray", Hex = "#888888", Brush = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)) },
-            // Primary-bold
-            new ColorOption { Name = "Blue", Hex = "#1A56DB", Brush = new SolidColorBrush(Color.FromRgb(0x1A, 0x56, 0xDB)) },
-            new ColorOption { Name = "Green", Hex = "#057A55", Brush = new SolidColorBrush(Color.FromRgb(0x05, 0x7A, 0x55)) },
-            new ColorOption { Name = "Red", Hex = "#C81E1E", Brush = new SolidColorBrush(Color.FromRgb(0xC8, 0x1E, 0x1E)) },
-            new ColorOption { Name = "Purple", Hex = "#6C2BD9", Brush = new SolidColorBrush(Color.FromRgb(0x6C, 0x2B, 0xD9)) },
-            new ColorOption { Name = "Orange", Hex = "#C27803", Brush = new SolidColorBrush(Color.FromRgb(0xC2, 0x78, 0x03)) },
-            new ColorOption { Name = "Teal", Hex = "#047481", Brush = new SolidColorBrush(Color.FromRgb(0x04, 0x74, 0x81)) },
-            // Dark
-            new ColorOption { Name = "Dark Blue", Hex = "#1A3A6E", Brush = new SolidColorBrush(Color.FromRgb(0x1A, 0x3A, 0x6E)) },
-            new ColorOption { Name = "Dark Green", Hex = "#1E5C1E", Brush = new SolidColorBrush(Color.FromRgb(0x1E, 0x5C, 0x1E)) },
-            new ColorOption { Name = "Dark Red", Hex = "#8E1E1E", Brush = new SolidColorBrush(Color.FromRgb(0x8E, 0x1E, 0x1E)) },
-            new ColorOption { Name = "Dark Purple", Hex = "#5C2E8E", Brush = new SolidColorBrush(Color.FromRgb(0x5C, 0x2E, 0x8E)) },
-            new ColorOption { Name = "Dark Teal", Hex = "#1E5C5C", Brush = new SolidColorBrush(Color.FromRgb(0x1E, 0x5C, 0x5C)) },
-            new ColorOption { Name = "Soft White", Hex = "#F0F0F0", Brush = new SolidColorBrush(Color.FromRgb(0xF0, 0xF0, 0xF0)) },
+            new ColorOption { Name = "Default (theme)" },
+            Pair("Contrast", "#1E1E1E", "#F0F0F0", "#000000", "#FFFFFF"),
+            Pair("Gray", "#6E6E6E", "#A8A8A8", "#888888"),
+            Pair("Blue", "#1A56DB", "#7EB3FF", "#1A3A6E"),
+            Pair("Green", "#057A55", "#57D9A3", "#1E5C1E"),
+            Pair("Red", "#C81E1E", "#FF8A8A", "#8E1E1E"),
+            Pair("Purple", "#6C2BD9", "#C4A5FF", "#5C2E8E"),
+            Pair("Orange", "#C27803", "#FFC24B"),
+            Pair("Teal", "#047481", "#6FE3E1", "#1E5C5C"),
         };
 
-        /// <summary>Finds the preset that matches a hex value, or returns Default.</summary>
+        /// <summary>Finds the preset that matches a hex value (either variant or legacy), or a custom entry.</summary>
         public static ColorOption FromHex(IReadOnlyList<ColorOption> presets, string? hex)
         {
             if (string.IsNullOrWhiteSpace(hex))
@@ -70,19 +119,31 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             hex = hex!.Trim();
             foreach (var p in presets)
             {
-                if (string.Equals(p.Hex, hex, System.StringComparison.OrdinalIgnoreCase))
+                if (p.Matches(hex))
                     return p;
             }
-            // Return a custom entry for unrecognized hex values (e.g. imported settings).
-            try
+            // Custom entry for unrecognized hex values (e.g. imported settings). Kept fixed;
+            // ThemeColors contrast-validates it wherever it is applied.
+            if (ThemeColors.Parse(hex) is not null)
+                return new ColorOption { Name = $"Custom ({hex})", LightHex = hex, DarkHex = hex };
+            return presets[0];
+        }
+
+        /// <summary>
+        /// Maps a persisted hex onto the current-theme variant of its preset within the given
+        /// list (background vs text), so a value saved under one scheme adapts to the other.
+        /// Unrecognized (custom) values pass through unchanged.
+        /// </summary>
+        public static string? MapToCurrentTheme(string? hex, IReadOnlyList<ColorOption> presets)
+        {
+            if (string.IsNullOrWhiteSpace(hex))
+                return null;
+            foreach (var p in presets)
             {
-                var c = (Color)ColorConverter.ConvertFromString(hex);
-                return new ColorOption { Name = $"Custom ({hex})", Hex = hex, Brush = new SolidColorBrush(c) };
+                if (p.Matches(hex))
+                    return p.Hex;
             }
-            catch
-            {
-                return presets[0];
-            }
+            return hex;
         }
     }
 }

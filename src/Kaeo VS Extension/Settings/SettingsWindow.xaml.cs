@@ -685,6 +685,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             _settings.Connections = _connections.Select(MapToConnection).ToArray();
             _settings.McpServers = _mcpServers.Select(MapToMcpServer).ToArray();
             _settings.Instructions = _instructions.Select(MapToInstructionEntry).ToArray();
+            // Keep the always-allowed list in sync on every save path: Remove/Clear only
+            // schedule a debounced save, so without this their changes would never persist.
+            _settings.Defaults ??= new Defaults();
+            _settings.Defaults.AlwaysAllowedTools = AlwaysAllowedList.Items.Cast<string>()
+                .Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
             PersistSave();
         }
 

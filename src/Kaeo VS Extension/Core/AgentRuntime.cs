@@ -140,130 +140,137 @@ internal sealed class AgentRuntime
 
         string? finalText = null;
 
-        for (var iteration = 0; iteration < maxIterations; iteration++)
+        // AutoPilot continuations run as an outer loop rather than recursion so the budget
+        // is tracked across the WHOLE run (recursing re-read the defaults and reset it,
+        // making "not done" loops unbounded). TurnComplete fires exactly once, at the end.
+        while (true)
         {
-            // Reset whitespace tracking at the start of each new model call so
-            // leading blank deltas from the second+ iteration are also stripped.
-            if (iteration > 0)
-                events.IterationStarting?.Invoke();
+            finalText = null;
 
-            // Steering: prompts the user submitted mid-run enter the conversation at a
-            // clean iteration boundary, ahead of building the next request.
-            if (events.DrainRedirects is { } drainRedirects)
+            for (var iteration = 0; iteration < maxIterations; iteration++)
             {
-                foreach (var redirect in drainRedirects())
-                    history.Add(new ChatMessage(ChatRole.User, redirect));
-            }
+                // Reset whitespace tracking at the start of each new model call so
+                // leading blank deltas from the second+ iteration are also stripped.
+                if (iteration > 0)
+                    events.IterationStarting?.Invoke();
 
-            var messages = await BuildRequestMessagesAsync(agent, history);
-
-            var options = new ChatOptions
-            {
-                ModelId = model,
-                Temperature = (float)defaults.DefaultTemperature,
-                Tools = tools.Count > 0 ? tools : null,
-            };
-
-            var textParts = new List<string>();
-            var reasoningParts = new List<string>();
-            var functionCalls = new List<FunctionCallContent>();
-
-            await foreach (var update in client.GetStreamingResponseAsync(messages, options, ct))
-            {
-                foreach (AIContent content in update.Contents)
+                // Steering: prompts the user submitted mid-run enter the conversation at a
+                // clean iteration boundary, ahead of building the next request.
+                if (events.DrainRedirects is { } drainRedirects)
                 {
-                    switch (content)
-                    {
-                        case TextContent text when !string.IsNullOrEmpty(text.Text):
-                            textParts.Add(text.Text);
-                            events.TextDelta?.Invoke(text.Text);
-                            break;
-
-                        case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
-                            reasoningParts.Add(reasoning.Text);
-                            events.ReasoningDelta?.Invoke(reasoning.Text);
-                            break;
-
-                        case FunctionCallContent call:
-                            functionCalls.Add(call);
-                            break;
-                    }
+                    foreach (var redirect in drainRedirects())
+                        history.Add(new ChatMessage(ChatRole.User, redirect));
                 }
-            }
 
-            var fullText = string.Concat(textParts);
-            var fullReasoning = string.Concat(reasoningParts);
+                var messages = await BuildRequestMessagesAsync(agent, history);
 
-            if (functionCalls.Count == 0)
-            {
-                // No tool calls — this is the final answer.
-                finalText = fullText;
-                break;
-            }
-
-            // Record the assistant's tool-call message in history; the adapter regenerates
-            // the Ollama tool_calls array (preserving ids) on the next request.
-            List<AIContent> assistantContents = [];
-            if (fullReasoning.Length > 0)
-                assistantContents.Add(new TextReasoningContent(fullReasoning));
-            if (fullText.Length > 0)
-                assistantContents.Add(new TextContent(fullText));
-            assistantContents.AddRange(functionCalls);
-            history.Add(new ChatMessage(ChatRole.Assistant, assistantContents));
-
-            // Execute each tool call behind the permission gate.
-            foreach (FunctionCallContent call in functionCalls)
-            {
-                var tc = new ToolCallRequest(
-                    string.IsNullOrEmpty(call.CallId) ? Guid.NewGuid().ToString("N") : call.CallId!,
-                    call.Name,
-                    ToArgumentsNode(call.Arguments));
-
-                events.ToolCallStart?.Invoke(tc);
-
-                // Permission gate based on mode.
-                var approved = mode switch
+                var options = new ChatOptions
                 {
-                    AgentMode.Bypass => true,
-                    AgentMode.AutoPilot => true,
-                    AgentMode.Interactive => await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(true)),
-                    _ => true
+                    ModelId = model,
+                    Temperature = (float)defaults.DefaultTemperature,
+                    Tools = tools.Count > 0 ? tools : null,
                 };
 
-                // Stop pressed while a card was open resolves the handshake as denied; unwind
-                // here (before executing) instead of feeding a dead tool result to the model.
-                ct.ThrowIfCancellationRequested();
+                var textParts = new List<string>();
+                var reasoningParts = new List<string>();
+                var functionCalls = new List<FunctionCallContent>();
 
-                string? toolResult;
-                if (!approved)
+                await foreach (var update in client.GetStreamingResponseAsync(messages, options, ct))
                 {
-                    toolResult = "Permission denied by user.";
+                    foreach (AIContent content in update.Contents)
+                    {
+                        switch (content)
+                        {
+                            case TextContent text when !string.IsNullOrEmpty(text.Text):
+                                textParts.Add(text.Text);
+                                events.TextDelta?.Invoke(text.Text);
+                                break;
+
+                            case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                                reasoningParts.Add(reasoning.Text);
+                                events.ReasoningDelta?.Invoke(reasoning.Text);
+                                break;
+
+                            case FunctionCallContent call:
+                                functionCalls.Add(call);
+                                break;
+                        }
+                    }
                 }
-                else
+
+                var fullText = string.Concat(textParts);
+                var fullReasoning = string.Concat(reasoningParts);
+
+                if (functionCalls.Count == 0)
                 {
-                    toolResult = await ExecuteToolAsync(tc, ct);
-                    toolCallsExecuted++;
+                    // No tool calls — this is the final answer.
+                    finalText = fullText;
+                    break;
                 }
 
-                events.ToolCallComplete?.Invoke(tc, approved, toolResult);
+                // Record the assistant's tool-call message in history; the adapter regenerates
+                // the Ollama tool_calls array (preserving ids) on the next request.
+                List<AIContent> assistantContents = [];
+                if (fullReasoning.Length > 0)
+                    assistantContents.Add(new TextReasoningContent(fullReasoning));
+                if (fullText.Length > 0)
+                    assistantContents.Add(new TextContent(fullText));
+                assistantContents.AddRange(functionCalls);
+                history.Add(new ChatMessage(ChatRole.Assistant, assistantContents));
 
-                // Ollama expects tool output as a role:"tool" message correlated by tool_call_id.
-                history.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(tc.Id, toolResult ?? string.Empty)]));
+                // Execute each tool call behind the permission gate.
+                foreach (FunctionCallContent call in functionCalls)
+                {
+                    var tc = new ToolCallRequest(
+                        string.IsNullOrEmpty(call.CallId) ? Guid.NewGuid().ToString("N") : call.CallId!,
+                        call.Name,
+                        ToArgumentsNode(call.Arguments));
+
+                    events.ToolCallStart?.Invoke(tc);
+
+                    // Permission gate based on mode.
+                    var approved = mode switch
+                    {
+                        AgentMode.Bypass => true,
+                        AgentMode.AutoPilot => true,
+                        AgentMode.Interactive => await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(true)),
+                        _ => true
+                    };
+
+                    // Stop pressed while a card was open resolves the handshake as denied; unwind
+                    // here (before executing) instead of feeding a dead tool result to the model.
+                    ct.ThrowIfCancellationRequested();
+
+                    string? toolResult;
+                    if (!approved)
+                    {
+                        toolResult = "Permission denied by user.";
+                    }
+                    else
+                    {
+                        toolResult = await ExecuteToolAsync(tc, ct);
+                        toolCallsExecuted++;
+                    }
+
+                    events.ToolCallComplete?.Invoke(tc, approved, toolResult);
+
+                    // Ollama expects tool output as a role:"tool" message correlated by tool_call_id.
+                    history.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(tc.Id, toolResult ?? string.Empty)]));
+                }
             }
-        }
 
-        // AutoPilot: if the model's final text signals "not done" and we have budget, continue.
-        if (mode == AgentMode.AutoPilot && finalText is not null && LooksIncomplete(finalText) && autopilotBudget > 0)
-        {
-            autopilotBudget--;
-            autoPilotContinued = true;
-            events.AutoPilotContinuing?.Invoke(autopilotBudget);
+            // AutoPilot: if the model's final text signals "not done" and we have budget,
+            // append a continuation prompt and run another pass against the shared budget.
+            if (mode == AgentMode.AutoPilot && finalText is not null && LooksIncomplete(finalText) && autopilotBudget > 0)
+            {
+                autopilotBudget--;
+                autoPilotContinued = true;
+                events.AutoPilotContinuing?.Invoke(autopilotBudget);
+                history.Add(new ChatMessage(ChatRole.User, "Continue. You were not finished. Complete the remaining work."));
+                continue;
+            }
 
-            // Recurse with a continuation prompt.
-            var continuation = await RunTurnAsync(client, agent, model, mode, history,
-                "Continue. You were not finished. Complete the remaining work.", events, ct);
-            return new AgentTurnResult(continuation.FinalText, continuation.Completed,
-                toolCallsExecuted + continuation.ToolCallsExecuted, true);
+            break;
         }
 
         var result = new AgentTurnResult(finalText ?? string.Empty, finalText is not null, toolCallsExecuted, autoPilotContinued);

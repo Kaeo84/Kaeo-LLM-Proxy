@@ -93,39 +93,66 @@ internal sealed class ExtensionSettingsStore
 
     public async Task SaveAsync(ExtensionSettings settings)
     {
-        // Encrypt API keys before serialization. The in-memory copy is temporarily modified,
-        // so we decrypt back after the serialized text is produced so callers still see
-        // plaintext keys.
-        EncryptApiKeys(settings);
-        string text;
-        try
-        {
-            text = JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true });
-        }
-        finally
-        {
-            DecryptApiKeys(settings);
-        }
-
         await _writeLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            // If the last load fell back to defaults, the in-memory object is not a faithful
-            // representation of the on-disk file. Back it up before overwriting so real
-            // settings are recoverable rather than silently wiped.
-            if (_loadFailed && File.Exists(_path))
-            {
-                var backup = $"{_path}.bak-{DateTime.Now:yyyyMMddHHmmss}";
-                try { File.Copy(_path, backup, overwrite: true); }
-                catch (Exception ex) { DebugLog.Warn($"Could not back up settings before save: {ex.Message}"); }
-            }
-
-            await WriteWithRetryAsync(_path, text).ConfigureAwait(false);
+            await SaveCoreAsync(settings).ConfigureAwait(false);
         }
         finally
         {
             _writeLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Coordinated load-modify-save: reloads the current on-disk settings, applies
+    /// <paramref name="mutate"/>, and saves — all under the same write lock as
+    /// <see cref="SaveAsync"/>. Callers that only own a subset of the settings (e.g. MCP
+    /// tool caches or a single instruction entry) use this instead of saving a stale
+    /// snapshot that would clobber concurrent edits made elsewhere.
+    /// </summary>
+    public async Task UpdateAsync(Func<ExtensionSettings, Task> mutate)
+    {
+        if (mutate is null) throw new ArgumentNullException(nameof(mutate));
+
+        await _writeLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var current = await LoadAsync().ConfigureAwait(false);
+            await mutate(current).ConfigureAwait(false);
+            await SaveCoreAsync(current).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Encrypts and writes the settings. Must be called while holding <see cref="_writeLock"/>.
+    /// Encryption and serialization happen on a private deep copy so the caller's live object
+    /// is never mutated (a concurrent save or reader must never observe ciphertext, and a
+    /// failure mid-serialization must never leave encrypted keys in the shared instance).
+    /// </summary>
+    private async Task SaveCoreAsync(ExtensionSettings settings)
+    {
+        // Deep copy via a JSON round-trip: all persisted shapes are plain POCOs (computed
+        // helpers are [JsonIgnore]), so the copy is faithful and shares no references.
+        var copy = JsonSerializer.Deserialize<ExtensionSettings>(JsonSerializer.Serialize(settings))!;
+        EncryptApiKeys(copy);
+        var text = JsonSerializer.Serialize(copy, new JsonSerializerOptions { WriteIndented = true });
+
+        // If the last load fell back to defaults, the in-memory object is not a faithful
+        // representation of the on-disk file. Back it up before overwriting so real
+        // settings are recoverable rather than silently wiped.
+        if (_loadFailed && File.Exists(_path))
+        {
+            var backup = $"{_path}.bak-{DateTime.Now:yyyyMMddHHmmss}";
+            try { File.Copy(_path, backup, overwrite: true); }
+            catch (Exception ex) { DebugLog.Warn($"Could not back up settings before save: {ex.Message}"); }
+        }
+
+        await WriteWithRetryAsync(_path, text).ConfigureAwait(false);
     }
 
     private static string ReadShared(string path)
