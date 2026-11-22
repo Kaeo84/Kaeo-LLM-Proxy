@@ -1148,6 +1148,15 @@ internal sealed class AppSettings
     [JsonIgnore]
     public List<StoredCredential> Credentials { get; set; } = [];
 
+    /// <summary>
+    /// Stable sync root for <see cref="Credentials"/>. The UI thread mutates the list (add/remove)
+    /// while module secret providers snapshot it on MCP worker threads; both sides lock this object
+    /// so a snapshot never observes a torn list. The root is independent of the list instance so it
+    /// remains valid even when the whole list is replaced at startup.
+    /// </summary>
+    [JsonIgnore]
+    public object CredentialsSyncRoot { get; } = new();
+
     /// <summary>Maximum number of log entries to keep in memory. Min: 10, Max: 100000.</summary>
     public int MaxLogEntries { get; set; } = 500;
 
@@ -1732,6 +1741,14 @@ internal sealed class AppSettings
     /// </remarks>
     public AppSettings Clone()
     {
+        // L24: snapshot credentials under the shared sync root so a concurrent UI add/remove cannot
+        // tear the copy.
+        StoredCredential[] credentialSnapshot;
+        lock (CredentialsSyncRoot)
+        {
+            credentialSnapshot = [.. Credentials];
+        }
+
         AppSettings clone = new()
         {
             ListenPort = ListenPort,
@@ -1784,7 +1801,7 @@ internal sealed class AppSettings
                 Instructions = i.Instructions,
                 Description = i.Description,
             })],
-            Credentials = [.. Credentials.Select(c => new StoredCredential
+            Credentials = [.. credentialSnapshot.Select(c => new StoredCredential
             {
                 Name = c.Name,
                 Secret = c.Secret,

@@ -3163,9 +3163,18 @@ internal partial class MainForm : Form
             return;
         }
 
-        _settings.Credentials.Add(newCredential);
+        lock (_settings.CredentialsSyncRoot)
+        {
+            _settings.Credentials.Add(newCredential);
+        }
 
-                if (!TryPersistCredentialChange(newCredential.Name, () => _settings.Credentials.Remove(newCredential), "new"))
+                if (!TryPersistCredentialChange(newCredential.Name, () =>
+                {
+                    lock (_settings.CredentialsSyncRoot)
+                    {
+                        _settings.Credentials.Remove(newCredential);
+                    }
+                }, "new"))
                     return;
 
                 RefreshCredentials();
@@ -3271,15 +3280,22 @@ internal partial class MainForm : Form
                 affected.Add(m);
         }
 
-        int removedIndex = _settings.Credentials.IndexOf(toRemove);
-        _settings.Credentials.Remove(toRemove);
+        int removedIndex;
+        lock (_settings.CredentialsSyncRoot)
+        {
+            removedIndex = _settings.Credentials.IndexOf(toRemove);
+            _settings.Credentials.Remove(toRemove);
+        }
         PropagateCredentialReferenceChange(toRemove.Name, null);
         RefreshCredentials();
 
         // Removal has to be written too, or the credential reappears on the next launch.
         TryPersistCredentialChange(toRemove.Name, () =>
         {
-            _settings.Credentials.Insert(Math.Clamp(removedIndex, 0, _settings.Credentials.Count), toRemove);
+            lock (_settings.CredentialsSyncRoot)
+            {
+                _settings.Credentials.Insert(Math.Clamp(removedIndex, 0, _settings.Credentials.Count), toRemove);
+            }
             foreach (ModelMapping m in affected)
                 m.CredentialName = toRemove.Name;
             RefreshCredentials();

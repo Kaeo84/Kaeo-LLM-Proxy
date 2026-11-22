@@ -430,6 +430,16 @@ internal sealed class ModuleHost
         finally
         {
             gate.Release();
+
+            // L18: drop the per-module gate so removed modules don't accumulate semaphores for
+            // the process lifetime. A later operation on the same id creates a fresh gate. The
+            // semaphore holds no unmanaged handle (AvailableWaitHandle is never touched), so
+            // removing the reference is enough for the GC to reclaim it without risking a
+            // concurrent waiter's ObjectDisposedException.
+            lock (_moduleGatesLock)
+            {
+                _moduleGates.Remove(entry.Id);
+            }
         }
     }
 
@@ -462,8 +472,12 @@ internal sealed class ModuleHost
     /// <summary>Builds the host endpoint snapshot handed to modules during initialization.</summary>
     public HostInfo BuildHostInfo()
     {
-        string host = _settings.ListenAddress.Trim();
-        string displayHost = host.Length == 0 || host is "0.0.0.0" or "+" or "[::]" or "::"
+        // L20: normalize empty/whitespace/null to "localhost" so the HostInfo ctor's
+        // ThrowIfNullOrWhiteSpace never breaks service construction or module loads.
+        string host = (_settings.ListenAddress ?? "localhost").Trim();
+        if (host.Length == 0)
+            host = "localhost";
+        string displayHost = host is "0.0.0.0" or "+" or "[::]" or "::"
             ? "localhost"
             : host;
 
@@ -471,7 +485,7 @@ internal sealed class ModuleHost
             ? $"http://{displayHost}:{_settings.ListenPort}/openapi/v1/openapi.json"
             : null;
 
-        return new HostInfo(_settings.ListenAddress, _settings.ListenPort, _settings.EnableApiExplorer, specUrl);
+        return new HostInfo(host, _settings.ListenPort, _settings.EnableApiExplorer, specUrl);
     }
 
     private async Task<LoadedModule> LoadModuleAsync(ModuleRegistryEntry entry)

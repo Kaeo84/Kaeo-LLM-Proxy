@@ -64,6 +64,7 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
     private readonly string _moduleAssemblyName;
     private readonly object _nativeCacheLock = new();
     private Dictionary<string, string>? _nativeDllCache;
+    private Assembly? _moduleAssembly;
 
     public ModuleAssemblyLoadContext(string moduleAssemblyPath)
         : base(name: Path.GetFileNameWithoutExtension(moduleAssemblyPath), isCollectible: true)
@@ -156,8 +157,16 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
     /// </summary>
     private Assembly? TryLoadEmbeddedDependency(AssemblyName assemblyName)
     {
-        Assembly? moduleAssembly = Assemblies.FirstOrDefault(
-            a => !string.IsNullOrEmpty(a.Location) && string.Equals(a.Location, _moduleAssemblyFullPath, StringComparison.OrdinalIgnoreCase));
+        // L22: resolve the module assembly once instead of enumerating Assemblies on every miss.
+        Assembly? moduleAssembly = _moduleAssembly;
+        if (moduleAssembly is null)
+        {
+            moduleAssembly = Assemblies.FirstOrDefault(
+                a => !string.IsNullOrEmpty(a.Location) && string.Equals(a.Location, _moduleAssemblyFullPath, StringComparison.OrdinalIgnoreCase));
+            if (moduleAssembly is not null)
+                _moduleAssembly = moduleAssembly;
+        }
+
         if (moduleAssembly is null)
             return null;
 
@@ -282,9 +291,10 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
                     assemblyName.Name, loadedVersion, Name, requestedVersion);
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore cache/enumeration failures; fall through to the other resolution steps.
+            // L21: log rather than silently swallow; fall through to the other resolution steps.
+            Log.Debug(ex, "Default-context version unification check failed for {Assembly}", assemblyName.Name);
         }
 
         // 1. If the host's deps.json can resolve this assembly, defer to the default
@@ -305,16 +315,16 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             }
         }
 
-        // 2. Embedded dependencies: small runtime dependencies (< 10 MB) are embedded
-        //    as manifest resources in the module DLL with a 'moduledep/' prefix.
-        if (TryLoadEmbeddedDependency(assemblyName) is { } embedded)
-            return embedded;
-
-        // 3. Module's own directory: direct sibling probe first (for large deps >= 10 MB
-        //    that remain as separate files), then deps.json resolution as a fallback.
+        // 2. Module's own directory: probe a side-by-side file FIRST so an updated sibling DLL
+        //    wins over a stale embedded copy (L22). Large deps (>= 10 MB) remain as separate files.
         string siblingCandidate = Path.Combine(_moduleDirectory, $"{assemblyName.Name}.dll");
         if (File.Exists(siblingCandidate))
             return LoadFromAssemblyPath(siblingCandidate);
+
+        // 3. Embedded dependencies: small runtime dependencies (< 10 MB) embedded as manifest
+        //    resources in the module DLL with a 'moduledep/' prefix.
+        if (TryLoadEmbeddedDependency(assemblyName) is { } embedded)
+            return embedded;
 
         try
         {
@@ -391,7 +401,10 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             try
             {
                 string ridNativeSegment = Path.Combine("runtimes", RuntimeInformation.RuntimeIdentifier, "native") + Path.DirectorySeparatorChar;
-                foreach (string path in Directory.EnumerateFiles(_moduleDirectory, "*.dll", SearchOption.AllDirectories))
+                // L23: skip reparse points so a junction/symlink in the module dir cannot drag a
+                // huge external tree into the scan.
+                EnumerationOptions scanOptions = new() { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
+                foreach (string path in Directory.EnumerateFiles(_moduleDirectory, "*.dll", scanOptions))
                 {
                     string name = Path.GetFileName(path);
                     bool isCurrentRid = path.Contains(ridNativeSegment, StringComparison.OrdinalIgnoreCase);

@@ -22,7 +22,7 @@ internal sealed class McpServerService : IAsyncDisposable
     private readonly McpServerSettingsRepository _repository;
     private readonly ModuleSecretProvider _secrets;
     private readonly McpServerOptionsFactory _optionsFactory;
-    private readonly HostInfo _hostInfo;
+    private readonly ModuleHost _moduleHost;
     private readonly StatisticsService _statistics;
 
     private McpServerHost? _host;
@@ -43,7 +43,7 @@ internal sealed class McpServerService : IAsyncDisposable
         _repository = new McpServerSettingsRepository(database);
         _secrets = new ModuleSecretProvider(settings);
         _optionsFactory = new McpServerOptionsFactory(moduleHost);
-        _hostInfo = moduleHost.BuildHostInfo();
+        _moduleHost = moduleHost;
         _statistics = statistics;
     }
 
@@ -93,9 +93,10 @@ internal sealed class McpServerService : IAsyncDisposable
         }
     }
 
-    private async Task StartCoreAsync(bool forceStart, CancellationToken cancellationToken)
+    private async Task StartCoreAsync(bool forceStart, CancellationToken cancellationToken, McpServerSettings? settings = null)
     {
-        McpServerSettings settings = _repository.LoadServerSettings();
+        // L15: accept an already-loaded snapshot so ApplySettingsAsync does not read the DB twice.
+        settings ??= _repository.LoadServerSettings();
         if (!settings.Enabled && !forceStart)
         {
             RaiseStatus("Disabled");
@@ -110,7 +111,8 @@ internal sealed class McpServerService : IAsyncDisposable
             // Recreate the host so fresh endpoint/auth settings always apply. The explorer is
             // only attached when enabled; the host 404s the spec/scalar paths without it.
             _host = new McpServerHost(settings, _secrets, _optionsFactory.Build, _statistics);
-            _apiExplorer = settings.EnableApiExplorer ? new McpApiExplorer(_host, _hostInfo) : null;
+            // L14: rebuild the host snapshot each start so proxy port/explorer changes are reflected.
+            _apiExplorer = settings.EnableApiExplorer ? new McpApiExplorer(_host, _moduleHost.BuildHostInfo()) : null;
             _host.ApiExplorer = _apiExplorer;
 
             await _host.StartAsync(cancellationToken);
@@ -178,9 +180,10 @@ internal sealed class McpServerService : IAsyncDisposable
         await _lifecycleLock.WaitAsync();
         try
         {
-            if (_repository.LoadServerSettings().Enabled)
+            McpServerSettings settings = _repository.LoadServerSettings();
+            if (settings.Enabled)
             {
-                await StartCoreAsync(forceStart: false, CancellationToken.None);
+                await StartCoreAsync(forceStart: false, CancellationToken.None, settings);
             }
             else if (_host is { IsRunning: true })
             {
@@ -204,16 +207,30 @@ internal sealed class McpServerService : IAsyncDisposable
         {
             if (_host is { IsRunning: true })
                 await _host.StopAsync();
+            _host = null;
+            _apiExplorer = null;
         }
         finally
         {
             _lifecycleLock.Release();
         }
+
+        // L17: the lifecycle lock is terminal here; release its wait handle.
+        _lifecycleLock.Dispose();
     }
 
     private void RaiseStatus(string status)
     {
         _status = status;
-        StatusChanged?.Invoke(this, status);
+        try
+        {
+            StatusChanged?.Invoke(this, status);
+        }
+        catch (Exception ex)
+        {
+            // L16: a throwing subscriber (e.g. UI marshaling) must not masquerade as a start
+            // failure when this is raised inside the lifecycle try-block.
+            Log.Warning(ex, "MCP status subscriber threw while handling status {Status}", status);
+        }
     }
 }

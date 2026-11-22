@@ -90,12 +90,32 @@ internal sealed class McpServerHost : IAsyncDisposable
     private int _inFlightHandlers;
     private TaskCompletionSource _handlersDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    // Token bucket bounding the stale-session recovery path (recreate + synthetic handshake):
-    // without a bound, any client looping on random session ids creates unbounded sessions.
+    // L1: admission gate reserved BEFORE session creation so concurrent POSTs cannot overshoot the
+    // cap (a plain Count check is TOCTOU). One slot is released per disposed session.
+    private readonly SemaphoreSlim _sessionSlots = new(MaxConcurrentSessions, MaxConcurrentSessions);
+
+    // L3: skip re-entrant idle sweeps; a slow sweep (100 sessions x bounded waits) can outlast the
+    // 1-minute timer period and overlap itself.
+    private int _sweepRunning;
+
+    // L10: Host-header validation is enforced only for loopback binds, where DNS rebinding is the
+    // threat. A wildcard/non-loopback bind is intentionally reachable by hostname and relies on
+    // Origin + auth instead.
+    private bool _loopbackBind;
+
+    // L2: per-client token buckets bounding the stale-session recovery path (recreate + synthetic
+    // handshake). Per-client so one looping client cannot drain a shared bucket and block everyone;
+    // refills use the monotonic Environment.TickCount64 so a wall-clock jump cannot stall refills.
     private const long MaxRecoveryTokens = 20;
-    private readonly object _recoveryLock = new();
-    private long _recoveryTokens = MaxRecoveryTokens;
-    private long _recoveryLastRefillTicks = DateTime.UtcNow.Ticks;
+    private const int MaxRecoveryBuckets = 1024;
+    private readonly ConcurrentDictionary<string, RecoveryBucket> _recoveryBuckets = new(StringComparer.Ordinal);
+
+    private sealed class RecoveryBucket
+    {
+        public readonly object Lock = new();
+        public long Tokens = MaxRecoveryTokens;
+        public long LastRefillMs = Environment.TickCount64;
+    }
 
     /// <summary>
     /// Creates a host bound to <paramref name="settings"/>. <paramref name="serverOptionsFactory"/>
@@ -130,7 +150,12 @@ internal sealed class McpServerHost : IAsyncDisposable
         if (IsRunning)
             return Task.CompletedTask;
 
-        string host = _settings.ListenAddress.Trim();
+        // L6: honor the caller's cancellation before doing any bind work.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string host = (_settings.ListenAddress ?? "localhost").Trim();
+        if (host.Length == 0)
+            host = "localhost";
         string listenerHost = host switch
         {
             "" or "*" or "0.0.0.0" or "+" => "+",
@@ -172,6 +197,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             && (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
                 || host is "127.0.0.1" or "::1" or "[::1]"
                 || (IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? bindAddress) && IPAddress.IsLoopback(bindAddress)));
+        _loopbackBind = loopbackBind;
         if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName))
         {
             Log.Warning(
@@ -223,6 +249,7 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         // Drain in-flight request handlers (bounded) before disposing sessions and the CTS they
         // may still reference; a restart while a tool call is streaming is a routine occurrence.
+        bool drainTimedOut = false;
         if (Volatile.Read(ref _inFlightHandlers) > 0)
         {
             try
@@ -231,6 +258,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
             catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
             {
+                drainTimedOut = true;
                 Log.Warning("MCP stop timed out draining {Count} in-flight request handlers", Volatile.Read(ref _inFlightHandlers));
             }
         }
@@ -243,7 +271,11 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (_cts is not null)
             await _cts.CancelAsync();
-        _cts?.Dispose();
+
+        // L7: when the drain timed out, handlers may still reference the CTS; disposing it would
+        // fault them with ObjectDisposedException. Leave it for the GC to reclaim instead.
+        if (!drainTimedOut)
+            _cts?.Dispose();
         _cts = null;
 
         Log.Information("MCP server stopped");
@@ -280,8 +312,11 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
 
             // Each request runs independently; all exceptions are observed inside the handler.
+            // L8: capture the current drain TCS so a straggler from this run signals the TCS it
+            // started under, never a replacement created by a later in-place restart.
+            TaskCompletionSource drained = _handlersDrained;
             Interlocked.Increment(ref _inFlightHandlers);
-            _ = HandleRequestSafeAsync(context, ct);
+            _ = HandleRequestSafeAsync(context, ct, drained);
         }
 
         // If the loop exited while GetContextAsync was still pending (e.g. cancellation won the
@@ -297,7 +332,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
     }
 
-    private async Task HandleRequestSafeAsync(HttpListenerContext context, CancellationToken ct)
+    private async Task HandleRequestSafeAsync(HttpListenerContext context, CancellationToken ct, TaskCompletionSource drained)
     {
         RequestLog log = new()
         {
@@ -355,7 +390,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
 
             if (Interlocked.Decrement(ref _inFlightHandlers) == 0)
-                _handlersDrained.TrySetResult();
+                drained.TrySetResult();
         }
     }
 
@@ -378,6 +413,17 @@ internal sealed class McpServerHost : IAsyncDisposable
             Log.Warning("Rejected MCP request with foreign Origin '{Origin}' from {Remote}", origin, request.RemoteEndPoint);
             response.StatusCode = 403;
             await WriteTextAsync(response, "Forbidden: cross-origin requests are not allowed.", ct);
+            return;
+        }
+
+        // L10: DNS-rebinding guidance also recommends validating Host. Enforced for loopback binds
+        // (the rebinding threat model); a wildcard/non-loopback bind is intentionally reachable by
+        // hostname and relies on Origin + auth, so it is not constrained here.
+        if (_loopbackBind && !IsAllowedLoopbackHost(request))
+        {
+            Log.Warning("Rejected MCP request with non-loopback Host '{Host}' from {Remote}", request.Headers["Host"], request.RemoteEndPoint);
+            response.StatusCode = 403;
+            await WriteTextAsync(response, "Forbidden: invalid Host header.", ct);
             return;
         }
 
@@ -572,21 +618,37 @@ internal sealed class McpServerHost : IAsyncDisposable
                 // replay the lifecycle handshake locally so the request executes anyway; the
                 // returned Mcp-Session-Id header lets the client switch to the new session.
                 // Rate-limited: an unbounded recreate path lets any client mint sessions in a loop.
-                if (!TryAcquireRecoveryToken())
+                string? recoveryClientAddress = GetClientAddress(request.RemoteEndPoint);
+                if (!TryAcquireRecoveryToken(recoveryClientAddress))
                 {
                     response.StatusCode = 404;
                     await WriteTextAsync(response, "Session not found and recovery rate limit reached. Send an initialize request to start a new session.", ct);
                     return;
                 }
 
-                session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
+                session = await TryCreateSessionAsync(recoveryClientAddress);
                 if (session is null)
                 {
                     await WriteSessionUnavailableAsync(response, ct);
                     return;
                 }
                 response.Headers[SessionIdHeader] = session.Id;
-                await ReplayLifecycleHandshakeAsync(session, ct);
+
+                // L9: if the synthetic handshake fails, the freshly created session would otherwise
+                // linger until the idle sweep. Remove it and answer 500 so the client re-initializes.
+                try
+                {
+                    await ReplayLifecycleHandshakeAsync(session, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log.Warning(ex, "MCP session recovery handshake failed for session {SessionId}; removing orphaned session", session.Id);
+                    await RemoveSessionAsync(session.Id);
+                    response.Headers.Remove(SessionIdHeader);
+                    response.StatusCode = 500;
+                    await WriteTextAsync(response, "Session recovery failed. Send an initialize request to start a new session.", ct);
+                    return;
+                }
             }
         }
 
@@ -734,67 +796,82 @@ internal sealed class McpServerHost : IAsyncDisposable
     /// </summary>
     private async Task<McpHttpSession?> TryCreateSessionAsync(string? clientAddress)
     {
-        if (_sessions.Count >= MaxConcurrentSessions)
+        // L1: reserve an admission slot atomically before any creation work. Wait(0) is a
+        // non-blocking try-enter; failure means the cap is genuinely reached right now.
+        if (!_sessionSlots.Wait(0))
         {
             Log.Warning("MCP session limit ({Limit}) reached; rejecting new session from {ClientAddress}",
                 MaxConcurrentSessions, clientAddress ?? "unknown");
             return null;
         }
 
-        CancellationTokenSource? hostCts = _cts;
-        if (hostCts is null)
-            return null;
-
-        string sessionId = GenerateSessionId();
-        CancellationTokenSource lifetimeCts;
+        // The slot is owned by this method until the session is successfully created; afterwards
+        // ownership transfers to the session and DisposeSessionAsync releases it. Any early return
+        // or throw below releases the reservation here.
+        bool slotOwnedHere = true;
         try
         {
-            lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCts.Token);
-        }
-        catch (ObjectDisposedException)
-        {
-            // StopAsync disposed the host CTS between the null check and the link.
-            return null;
-        }
+            CancellationTokenSource? hostCts = _cts;
+            if (hostCts is null)
+                return null;
 
-        McpSessionInfo sessionInfo = new(sessionId, clientAddress);
-        StreamableHttpServerTransport transport = new() { SessionId = sessionId };
-        McpServer server;
-        try
-        {
-            server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
-        }
-        catch
-        {
-            // The options factory runs module code and may throw. Release the transport and the
-            // linked CTS registration so a consistently-failing module cannot leak one of each
-            // per failed POST (unbounded callback growth on the host CTS).
+            string sessionId = GenerateSessionId();
+            CancellationTokenSource lifetimeCts;
             try
             {
-                await transport.DisposeAsync();
+                lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCts.Token);
             }
-            catch (Exception ex)
+            catch (ObjectDisposedException)
             {
-                Log.Debug(ex, "Error disposing transport after MCP session creation failure");
+                // StopAsync disposed the host CTS between the null check and the link.
+                return null;
             }
 
-            lifetimeCts.Dispose();
-            throw;
+            McpSessionInfo sessionInfo = new(sessionId, clientAddress);
+            StreamableHttpServerTransport transport = new() { SessionId = sessionId };
+            McpServer server;
+            try
+            {
+                server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
+            }
+            catch
+            {
+                // The options factory runs module code and may throw. Release the transport and the
+                // linked CTS registration so a consistently-failing module cannot leak one of each
+                // per failed POST (unbounded callback growth on the host CTS).
+                try
+                {
+                    await transport.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Error disposing transport after MCP session creation failure");
+                }
+
+                lifetimeCts.Dispose();
+                throw;
+            }
+
+            McpHttpSession session = new()
+            {
+                Id = sessionId,
+                Transport = transport,
+                Server = server,
+                LifetimeCts = lifetimeCts,
+            };
+
+            session.ServerRunTask = Task.Run(() => RunSessionServerAsync(session));
+            _sessions[sessionId] = session;
+            slotOwnedHere = false; // ownership transfers to the session (released on disposal)
+
+            Log.Debug("MCP session {SessionId} created for client {ClientAddress}", sessionId, clientAddress ?? "unknown");
+            return session;
         }
-
-        McpHttpSession session = new()
+        finally
         {
-            Id = sessionId,
-            Transport = transport,
-            Server = server,
-            LifetimeCts = lifetimeCts,
-        };
-
-        session.ServerRunTask = Task.Run(() => RunSessionServerAsync(session));
-        _sessions[sessionId] = session;
-
-        Log.Debug("MCP session {SessionId} created for client {ClientAddress}", sessionId, clientAddress ?? "unknown");
-        return session;
+            if (slotOwnedHere)
+                _sessionSlots.Release();
+        }
     }
 
     private static async Task WriteSessionUnavailableAsync(HttpListenerResponse response, CancellationToken ct)
@@ -804,26 +881,30 @@ internal sealed class McpServerHost : IAsyncDisposable
     }
 
     /// <summary>
-    /// Token bucket for the stale-session recovery path: refills one token per second up to
-    /// <see cref="MaxRecoveryTokens"/>, so legitimate reconnect bursts pass while a loop on random
-    /// session ids is throttled.
+    /// Per-client token bucket for the stale-session recovery path: refills one token per second up
+    /// to <see cref="MaxRecoveryTokens"/>, so legitimate reconnect bursts pass while a loop on random
+    /// session ids is throttled. L2: keyed by client address so one abusive client cannot drain a
+    /// shared bucket, and timed with the monotonic <see cref="Environment.TickCount64"/>.
     /// </summary>
-    private bool TryAcquireRecoveryToken()
+    private bool TryAcquireRecoveryToken(string? clientAddress)
     {
-        lock (_recoveryLock)
+        string key = clientAddress ?? "unknown";
+        RecoveryBucket bucket = _recoveryBuckets.GetOrAdd(key, static _ => new RecoveryBucket());
+
+        lock (bucket.Lock)
         {
-            long now = DateTime.UtcNow.Ticks;
-            long elapsedTicks = now - _recoveryLastRefillTicks;
-            if (elapsedTicks >= TimeSpan.TicksPerSecond)
+            long now = Environment.TickCount64;
+            long elapsedMs = now - bucket.LastRefillMs;
+            if (elapsedMs >= 1000)
             {
-                _recoveryTokens = Math.Min(MaxRecoveryTokens, _recoveryTokens + elapsedTicks / TimeSpan.TicksPerSecond);
-                _recoveryLastRefillTicks = now;
+                bucket.Tokens = Math.Min(MaxRecoveryTokens, bucket.Tokens + elapsedMs / 1000);
+                bucket.LastRefillMs = now;
             }
 
-            if (_recoveryTokens <= 0)
+            if (bucket.Tokens <= 0)
                 return false;
 
-            _recoveryTokens--;
+            bucket.Tokens--;
             return true;
         }
     }
@@ -908,7 +989,7 @@ internal sealed class McpServerHost : IAsyncDisposable
     /// own finally (must not wait for itself). Idempotent ownership is guaranteed by the
     /// caller's successful TryRemove.
     /// </summary>
-    private static async Task DisposeSessionAsync(McpHttpSession session, bool waitForRunTask)
+    private async Task DisposeSessionAsync(McpHttpSession session, bool waitForRunTask)
     {
         try
         {
@@ -937,23 +1018,67 @@ internal sealed class McpServerHost : IAsyncDisposable
                 Log.Warning(ex, "Error disposing MCP server for session {SessionId}", session.Id);
             }
 
-            session.LifetimeCts.Dispose();
+            // L3: guard the CTS dispose so a throw here cannot escape as an unobserved task
+            // exception from the fire-and-forget idle sweep.
+            try
+            {
+                session.LifetimeCts.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Error disposing lifetime CTS for MCP session {SessionId}", session.Id);
+            }
+
+            // L1: release the admission slot reserved when this session was created. Exactly one
+            // caller wins TryRemove per session, so this runs once per admitted session.
+            _sessionSlots.Release();
         }
     }
 
     private void SweepIdleSessions(object? state)
     {
-        DateTime cutoff = DateTime.UtcNow - IdleSessionTimeout;
+        // L3: skip re-entrant sweeps so a slow sweep cannot overlap itself.
+        if (Interlocked.CompareExchange(ref _sweepRunning, 1, 0) != 0)
+            return;
 
-        foreach (McpHttpSession session in _sessions.Values)
+        try
         {
-            // An open GET SSE stream is liveness even when no POSTs arrive: a quiet-but-connected
-            // client must not be swept out from under its stream.
-            if (session.LastActivityUtc < cutoff && !session.HasOpenGetStream)
+            DateTime cutoff = DateTime.UtcNow - IdleSessionTimeout;
+
+            foreach (McpHttpSession session in _sessions.Values)
             {
-                Log.Information("Closing idle MCP session {SessionId}", session.Id);
-                _ = RemoveSessionAsync(session.Id);
+                // An open GET SSE stream is liveness even when no POSTs arrive: a quiet-but-connected
+                // client must not be swept out from under its stream.
+                if (session.LastActivityUtc < cutoff && !session.HasOpenGetStream)
+                {
+                    Log.Information("Closing idle MCP session {SessionId}", session.Id);
+                    // L3: observe the removal task so a fault is logged rather than unobserved.
+                    _ = RemoveSessionAsync(session.Id).ContinueWith(
+                        static t => Log.Warning(t.Exception, "Error sweeping idle MCP session"),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
             }
+
+            // L2: prune fully-refilled (idle) recovery buckets when the table grows, so a spray of
+            // distinct client addresses cannot grow it without bound.
+            if (_recoveryBuckets.Count > MaxRecoveryBuckets)
+            {
+                foreach (KeyValuePair<string, RecoveryBucket> pair in _recoveryBuckets)
+                {
+                    RecoveryBucket bucket = pair.Value;
+                    lock (bucket.Lock)
+                    {
+                        if (bucket.Tokens >= MaxRecoveryTokens)
+                            _recoveryBuckets.TryRemove(pair.Key, out _);
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _sweepRunning, 0);
         }
     }
 
@@ -981,7 +1106,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         string? expected = _secrets.ResolveSecret(credentialName);
         if (string.IsNullOrWhiteSpace(expected))
         {
-            error = $"The credential '{credentialName}' configured for MCP authentication could not be resolved.";
+            // L5: keep the configured credential name server-side; the caller gets a generic message
+            // so an unauthenticated client cannot enumerate which credential is misconfigured.
+            Log.Warning("MCP authentication credential '{CredentialName}' could not be resolved; rejecting request", credentialName);
+            error = "MCP authentication is misconfigured on the server.";
             return false;
         }
 
@@ -1023,10 +1151,44 @@ internal sealed class McpServerHost : IAsyncDisposable
     }
 
     /// <summary>
+    /// L10: accepts a Host header naming a loopback alias (localhost / 127.0.0.0/8 / ::1). Used only
+    /// for loopback binds to defeat DNS rebinding, where an attacker's domain resolves to loopback
+    /// but the browser still sends the attacker's Host. A missing Host header (HTTP/1.0) is allowed;
+    /// Origin validation remains the primary browser guard.
+    /// </summary>
+    private static bool IsAllowedLoopbackHost(HttpListenerRequest request)
+    {
+        string? authority = request.Headers["Host"];
+        if (string.IsNullOrWhiteSpace(authority))
+            return true;
+
+        string hostPart;
+        if (authority.StartsWith('['))
+        {
+            int close = authority.IndexOf(']');
+            if (close < 0)
+                return false;
+            hostPart = authority[1..close];
+        }
+        else
+        {
+            int colon = authority.LastIndexOf(':');
+            hostPart = colon >= 0 && int.TryParse(authority[(colon + 1)..], out _) ? authority[..colon] : authority;
+        }
+
+        if (string.Equals(hostPart, "localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return IPAddress.TryParse(hostPart, out IPAddress? address) && IPAddress.IsLoopback(address);
+    }
+
+    /// <summary>
     /// Best-effort peek at the JSON-RPC request id before auth rejection so a 401 can be
     /// correlated by the client. Only probes a seekable, length-bounded body and restores the
     /// stream position; the body is fully validated later regardless.
     /// </summary>
+    private const int MaxProbeBytes = 4096; // L4: only peek a small prefix before auth.
+
     private static RequestId TryProbeRequestId(HttpListenerRequest request, CancellationToken ct)
     {
         if (request.HttpMethod != "POST"
@@ -1037,14 +1199,30 @@ internal sealed class McpServerHost : IAsyncDisposable
         long originalPosition = request.InputStream.Position;
         try
         {
-            using JsonDocument probe = JsonDocument.Parse(request.InputStream);
-            if (probe.RootElement.ValueKind == JsonValueKind.Object
-                && probe.RootElement.TryGetProperty("id", out JsonElement idElement))
+            // L4: read at most a 4 KB prefix and scan it with a forward-only reader instead of
+            // parsing the whole (up to 10 MB) body before authorization. isFinalBlock:false lets the
+            // reader stop cleanly at the prefix boundary without throwing on truncated JSON.
+            int probeLength = (int)Math.Min(request.ContentLength64, MaxProbeBytes);
+            byte[] buffer = new byte[probeLength];
+            int read = request.InputStream.Read(buffer, 0, probeLength);
+            if (read <= 0)
+                return default;
+
+            Utf8JsonReader reader = new(buffer.AsSpan(0, read), isFinalBlock: false, state: default);
+            while (reader.Read())
             {
-                if (idElement.ValueKind == JsonValueKind.Number && idElement.TryGetInt64(out long numericId))
-                    return new RequestId(numericId);
-                if (idElement.ValueKind == JsonValueKind.String)
-                    return new RequestId(idElement.GetString() ?? string.Empty);
+                if (reader.CurrentDepth == 1
+                    && reader.TokenType == JsonTokenType.PropertyName
+                    && reader.ValueTextEquals("id"))
+                {
+                    if (!reader.Read())
+                        return default;
+                    if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out long numericId))
+                        return new RequestId(numericId);
+                    if (reader.TokenType == JsonTokenType.String)
+                        return new RequestId(reader.GetString() ?? string.Empty);
+                    return default;
+                }
             }
         }
         catch (Exception ex) when (ex is JsonException or IOException or OperationCanceledException)

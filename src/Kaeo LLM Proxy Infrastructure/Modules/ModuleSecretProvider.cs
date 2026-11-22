@@ -13,24 +13,16 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
     private readonly AppSettings _settings = settings;
 
     /// <summary>
-    /// Snapshot of the credentials list. The host may mutate the live list (settings save)
-    /// while a module reads it; copying first avoids collection-modified races.
+    /// Snapshot of the credentials list. The UI thread mutates the live list (add/remove) while a
+    /// module reads it on an MCP worker thread; both sides lock <see cref="AppSettings.CredentialsSyncRoot"/>
+    /// so the copy never observes a torn list (L24). Null slots are filtered defensively.
     /// </summary>
     private StoredCredential[] SnapshotCredentials()
     {
-        for (int attempt = 0; attempt < 2; attempt++)
+        lock (_settings.CredentialsSyncRoot)
         {
-            try
-            {
-                return _settings.Credentials.ToArray();
-            }
-            catch (ArgumentException)
-            {
-                // List<T>.ToArray can throw if the list is resized mid-copy; retry once.
-            }
+            return [.. _settings.Credentials.Where(credential => credential is not null)];
         }
-
-        return [];
     }
 
     private StoredCredential? FindCredential(string credentialName) =>

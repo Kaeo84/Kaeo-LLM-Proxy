@@ -43,6 +43,12 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                 "explain when and how to call it.",
         };
 
+        // L27: track registered tool names so a cross-module duplicate is reported explicitly
+        // (naming the conflict) rather than silently first-wins via the collection's Add throw.
+        // Descriptors are not cached across sessions: McpServerTool.Create binds the per-session
+        // target instance and the SDK exposes no target-rebinding API.
+        HashSet<string> registeredToolNames = new(StringComparer.Ordinal);
+
         foreach (object target in _moduleHost.GetMcpToolTargets(session))
         {
             MethodInfo[] methods;
@@ -66,13 +72,23 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
             {
                 try
                 {
+                    string toolName = method.GetCustomAttribute<McpServerToolAttribute>()?.Name ?? method.Name;
+                    if (!registeredToolNames.Add(toolName))
+                    {
+                        Log.Warning(
+                            "Duplicate MCP tool name '{Tool}' contributed by {Target}; keeping the first registration and skipping this one. " +
+                            "Rename the tool or disable one of the conflicting modules to resolve the conflict.",
+                            toolName, target.GetType().FullName);
+                        continue;
+                    }
+
                     McpServerPrimitiveCollection<McpServerTool> toolCollection =
                         options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
                     toolCollection.Add(McpServerTool.Create(method, target));
                 }
                 catch (Exception ex)
                 {
-                    // One bad or duplicate tool must not skip the target's remaining tools.
+                    // One bad tool must not skip the target's remaining tools.
                     Log.Warning(ex, "Failed to add MCP tool {Tool} from target {Target}; skipping it.", method.Name, target.GetType().FullName);
                 }
             }

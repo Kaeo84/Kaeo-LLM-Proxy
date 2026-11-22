@@ -52,7 +52,9 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
         (string Key, string Value)[] pairs =
         [
             (ServerEnabledKey, settings.Enabled ? "1" : "0"),
-            (ServerListenAddressKey, settings.ListenAddress),
+            // L25: null/invalid addresses must not hit the NOT NULL constraint as a raw
+            // SqliteException; coalesce and sanitize on save just as the load side does.
+            (ServerListenAddressKey, SanitizeListenAddress(settings.ListenAddress ?? "localhost")),
             (ServerListenPortKey, ClampPort(settings.ListenPort).ToString()),
             (ServerApiExplorerKey, settings.EnableApiExplorer ? "1" : "0"),
             (ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty),

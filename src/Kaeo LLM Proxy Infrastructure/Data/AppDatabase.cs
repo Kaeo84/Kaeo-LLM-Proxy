@@ -1474,6 +1474,28 @@ internal sealed class AppDatabase : IDisposable
             transaction.Commit();
 
                         ReconcileExistingTables(connection);
+                        EnsureModuleIdUniqueIndex(connection);
+                    }
+                }
+
+                /// <summary>
+                /// L19: enforces one registry row per logical module id. A partial unique index keeps
+                /// NULL module_id rows (legacy/unresolved imports) unconstrained. Creation is guarded so a
+                /// pre-existing database that already holds duplicate ids keeps working — the conflict is
+                /// logged and the constraint is simply not applied rather than failing schema init.
+                /// </summary>
+                private static void EnsureModuleIdUniqueIndex(SqliteConnection connection)
+                {
+                    try
+                    {
+                        using SqliteCommand command = connection.CreateCommand();
+                        command.CommandText =
+                            "CREATE UNIQUE INDEX IF NOT EXISTS ux_module_registry_module_id ON module_registry(module_id) WHERE module_id IS NOT NULL;";
+                        command.ExecuteNonQuery();
+                    }
+                    catch (SqliteException ex)
+                    {
+                        Log.Warning(ex, "Could not enforce unique module_id index; existing duplicate module registrations were left intact");
                     }
                 }
 

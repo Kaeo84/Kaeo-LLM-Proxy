@@ -47,20 +47,21 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
         return [new ExplorerDocument("Kaeo LLM Proxy MCP", $"{baseUrl}{McpServerHost.SpecPath}")];
     }
 
-    // Cached per base URL so the template replace does not re-run on every request. Reference
-    // writes are atomic; a benign race just recomputes the same string.
-    private string? _cachedSpecBaseUrl;
-    private string? _cachedSpecJson;
+    // L11: cache the base URL and spec together in one immutable record so a concurrent restart
+    // can never return a spec built for a different base URL (the two-field cache could tear).
+    // The reference swap is atomic; a benign race just recomputes the same value.
+    private sealed record SpecCache(string BaseUrl, string Json);
+    private SpecCache? _specCache;
 
     public string BuildSpecJson()
     {
         string baseUrl = BaseUrl ?? "http://localhost:8388";
-        if (_cachedSpecJson is not null && _cachedSpecBaseUrl == baseUrl)
-            return _cachedSpecJson;
+        SpecCache? cached = _specCache;
+        if (cached is not null && cached.BaseUrl == baseUrl)
+            return cached.Json;
 
         string spec = OpenApiSpecTemplate.Replace("{{SERVER_URL}}", baseUrl);
-        _cachedSpecBaseUrl = baseUrl;
-        _cachedSpecJson = spec;
+        _specCache = new SpecCache(baseUrl, spec);
         return spec;
     }
 
@@ -106,21 +107,46 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
         return ScalarHtmlTemplate.Replace("/*DOCUMENTS*/[]", documentsJson.ToString());
     }
 
+    private const int MaxProxySpecBytes = 2 * 1024 * 1024; // L12: cap the proxy spec read at 2 MB.
+
     private static async Task<string?> TryFetchJsonAsync(string url, CancellationToken cancellationToken)
     {
         try
         {
-            using HttpResponseMessage response = await _specClient.GetAsync(url, cancellationToken);
+            using HttpResponseMessage response = await _specClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
                 return null;
 
-            string content = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (response.Content.Headers.ContentLength > MaxProxySpecBytes)
+                return null;
+
+            // L12: bounded read so a hostile/oversized proxy spec cannot allocate without limit.
+            using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using MemoryStream buffer = new();
+            byte[] chunk = new byte[81920];
+            int read;
+            while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+            {
+                buffer.Write(chunk, 0, read);
+                if (buffer.Length > MaxProxySpecBytes)
+                    return null;
+            }
+
+            if (buffer.Length == 0)
+                return null;
+
+            string content = Encoding.UTF8.GetString(buffer.ToArray());
             if (string.IsNullOrWhiteSpace(content))
                 return null;
 
             // Validate and normalize to compact JSON before embedding into the page.
             using JsonDocument parsed = JsonDocument.Parse(content);
             return parsed.RootElement.GetRawText();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // L12: propagate the caller's cancellation rather than masking it as "unreachable".
+            throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException or JsonException or OperationCanceledException)
         {
@@ -276,7 +302,9 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
             <script>
                 var kaeoDocuments = /*DOCUMENTS*/[];
             </script>
-            <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1"></script>
+            <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.82.1/dist/browser/standalone.min.js"
+                    integrity="sha384-3llXraiLKrfG/eL4517CCzYH4wdaQ+bXhZeTcZKnEyJUu2vwIdsFBOVMa3m5lD4h"
+                    crossorigin="anonymous"></script>
             <script>
                 (function () {
                     var mount = document.getElementById('kaeo-api-reference');
