@@ -90,7 +90,9 @@
                      CanContentScroll="False" disables the default item-based scrolling (which jumps
                      by item height) in favor of smooth pixel scrolling. VirtualizingStackPanel.IsVirtualizing="False"
                      prevents the virtualizing panel from lazily measuring wrapped text, eliminating large scroll
-                     jumps and blank/partial cards during manual scrolling. -->
+                     jumps and blank/partial cards during manual scrolling. Memory stays bounded because the
+                     view model trims the live transcript to its newest lines (older ones are archived as data
+                     and still included in Copy All / Export). -->
                 <ListView x:Name="MessageList" Grid.Row="2" BorderThickness="0"
                           SelectionMode="Extended"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"

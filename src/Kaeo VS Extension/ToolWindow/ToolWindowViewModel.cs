@@ -281,6 +281,53 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public ObservableCollection<string> Modes { get; } = new();
     public ObservableCollection<string> Models { get; } = new();
 
+    // M6: the transcript ListView keeps virtualization off for smooth pixel scrolling, so every
+    // live line holds a realized visual tree. Bound the live view; trimmed lines move to a plain
+    // archive (data only, no visuals) so Copy All / Export still cover the whole conversation.
+    private const int MaxLiveLines = 500;
+    private readonly List<ChatLine> _archivedLines = new();
+    private ChatLine? _trimNotice;
+
+    /// <summary>The whole conversation in order: archived lines followed by the live ones.</summary>
+    public IEnumerable<ChatLine> FullTranscript => _archivedLines.Concat(Lines);
+
+    /// <summary>Removes a line from both the live view and the archive (e.g. the MCP health warning).</summary>
+    public void RemoveLine(ChatLine line)
+    {
+        Lines.Remove(line);
+        _archivedLines.Remove(line);
+    }
+
+    /// <summary>
+    /// Trims the oldest live lines down to <see cref="MaxLiveLines"/>. Called only at turn start
+    /// so index-based insertions during a turn (permission cards above the streaming line) stay
+    /// valid. Unanswered permission cards are never trimmed - their handshake must complete.
+    /// </summary>
+    private void TrimLiveTranscript()
+    {
+        if (Lines.Count <= MaxLiveLines) return;
+
+        var removed = 0;
+        while (Lines.Count > MaxLiveLines)
+        {
+            var line = Lines[0];
+            if (line.Kind == "permission" && !line.IsAnswered) break;
+            Lines.RemoveAt(0);
+            if (!ReferenceEquals(line, _trimNotice))
+                _archivedLines.Add(line);
+            removed++;
+        }
+        if (removed == 0) return;
+
+        _trimNotice ??= new ChatLine
+        {
+            Kind = "status",
+            Text = $"Older messages were trimmed from the live view to bound memory (last {MaxLiveLines} kept). Copy All and Export still include the full transcript."
+        };
+        if (!Lines.Contains(_trimNotice))
+            Lines.Insert(0, _trimNotice);
+    }
+
     private bool _reasoningHidden;
     private bool _reasoningExpanded;
     private string? _reasoningForegroundHex;
@@ -771,6 +818,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// </summary>
     private async Task<bool> RunTurnAsync(string prompt)
     {
+        // M6: bound the realized transcript before this turn adds its lines. Turn start is the
+        // only safe point - trimming mid-turn would shift the permission-card insertion index.
+        TrimLiveTranscript();
+
         if (Models.Count == 0 || CurrentModel == NoModelsPlaceholder)
         {
             Lines.Add(new ChatLine { Kind = "status", Text = "No models available. Add a connection in settings (⚙ → Models)." });

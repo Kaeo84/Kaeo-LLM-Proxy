@@ -147,7 +147,7 @@ public partial class ToolWindowControl : UserControl
                 McpAlertBar.Visibility = Visibility.Collapsed;
                 if (_vm != null && _mcpWarningLine is not null)
                 {
-                    _vm.Lines.Remove(_mcpWarningLine);
+                    _vm.RemoveLine(_mcpWarningLine);
                     _mcpWarningLine = null;
                 }
             }
@@ -303,7 +303,7 @@ public partial class ToolWindowControl : UserControl
     {
         if (_vm is null) return;
 
-        if (!_vm.Lines.Any(TranscriptFormatter.IsConversation))
+        if (!_vm.FullTranscript.Any(TranscriptFormatter.IsConversation))
         {
             await VS.MessageBox.ShowAsync("Export Conversation", "There are no messages to export yet.");
             return;
@@ -329,7 +329,7 @@ public partial class ToolWindowControl : UserControl
 
         try
         {
-            var text = TranscriptFormatter.Format(_vm.Lines, format);
+            var text = TranscriptFormatter.Format(_vm.FullTranscript, format);
             var path = dialog.FileName;
             // UTF-8 without BOM: a BOM trips Markdown renderers and shows up as mojibake in some editors.
             var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -357,7 +357,7 @@ public partial class ToolWindowControl : UserControl
         => CopyToClipboard(TranscriptFormatter.ToClipboardText(MessageList.SelectedItems.Cast<ChatLine>()));
 
     private void CopyAll_Click(object sender, RoutedEventArgs e)
-        => CopyToClipboard(TranscriptFormatter.ToClipboardText(_vm?.Lines ?? Enumerable.Empty<ChatLine>()));
+        => CopyToClipboard(TranscriptFormatter.ToClipboardText(_vm?.FullTranscript ?? Enumerable.Empty<ChatLine>()));
 
     private static void CopyToClipboard(string text)
     {

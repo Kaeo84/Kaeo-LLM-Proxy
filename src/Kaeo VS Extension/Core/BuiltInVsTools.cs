@@ -167,7 +167,7 @@ internal static class BuiltInVsTools
             new()
             {
                 Name = "vs_run_tests",
-                Description = "Run tests matching the specified filter. Returns test results.",
+                Description = "Run tests matching the specified filter. Filters are applied for real via vstest.console (results do not appear in Test Explorer). If filtering is unavailable, the FULL suite runs via Test Explorer and the response says so explicitly.",
                 Schema = new JsonObject
                 {
                     ["type"] = "object",
@@ -1084,6 +1084,23 @@ internal static class BuiltInVsTools
         if (dte is null)
             return "No solution is open.";
 
+        // M11: honor the filter for real via vstest.console when possible. When filtering is
+        // unavailable, fall back to Test Explorer's full-suite run and say so explicitly -
+        // a requested filter is never silently ignored.
+        string? fallbackReason = null;
+        if (!string.IsNullOrWhiteSpace(filterValue))
+        {
+            var filtered = await VsTestConsoleRunner.TryRunAsync(dte, filterType, filterValue, ct);
+            if (filtered.Result is not null)
+                return filtered.Result;
+            fallbackReason = filtered.FallbackReason;
+            // The runner may have finished off the UI thread; DTE access below needs it back.
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        }
+        var scopeNote = string.IsNullOrWhiteSpace(filterValue)
+            ? string.Empty
+            : $" (requested filter: {filterType}={filterValue} was NOT applied - {fallbackReason ?? "unknown reason"}; Test Explorer ran the FULL suite)";
+
         // Snapshot the Test output pane before running so we can detect the tail.
         var outputWindow = dte.ToolWindows.OutputWindow;
         OutputWindowPane? testPane = null;
@@ -1102,7 +1119,7 @@ internal static class BuiltInVsTools
             try
             {
                 dte.ExecuteCommand("TestExplorer.RunAllTests");
-                return "Tests started. Check the Test Explorer window for results.";
+                return "Tests started. Check the Test Explorer window for results." + scopeNote;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -1118,10 +1135,8 @@ internal static class BuiltInVsTools
 
         try
         {
-            // DTE exposes TestExplorer.RunAllTests / RunTestsInContext but no command that applies
-            // an arbitrary filterType/filterValue. Run the suite and surface the requested scope so
-            // the model knows what was asked for; finer filtering needs the Test Explorer
-            // extensibility API or vstest.console (a larger integration).
+            // Filtering was unavailable (see scopeNote) and DTE has no arbitrary-filter command,
+            // so run the full suite and report the substitution explicitly rather than silently.
             dte.ExecuteCommand("TestExplorer.RunAllTests");
 
             // Poll the test pane until a real run-summary appears and the output stabilizes.
@@ -1166,10 +1181,6 @@ internal static class BuiltInVsTools
                 l.Contains("Failed", StringComparison.OrdinalIgnoreCase) ||
                 l.Contains("No tests found", StringComparison.OrdinalIgnoreCase) ||
                 l.Contains("Test execution time", StringComparison.OrdinalIgnoreCase));
-
-            var scopeNote = string.IsNullOrWhiteSpace(filterValue)
-                ? string.Empty
-                : $" (requested filter: {filterType}={filterValue}; DTE ran the full suite)";
 
             // If no summary ever appeared, the run did not finish within the ceiling — label the
             // output as partial rather than claiming completion.
