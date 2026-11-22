@@ -308,6 +308,11 @@ internal static class BuiltInVsTools
                         {
                             ["type"] = "boolean",
                             ["description"] = "Run in background (default: false)"
+                        },
+                        ["timeoutSeconds"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Foreground timeout in seconds before the process is killed (default: 120, range 5-3600)"
                         }
                     },
                     ["required"] = new JsonArray { "command" }
@@ -720,8 +725,17 @@ internal static class BuiltInVsTools
             const int maxResults = 50;
 
             find.Action = vsFindAction.vsFindActionFind;
+            // Find Next wraps around to the first match after the last one, so a solution
+            // with fewer than maxResults unique matches would otherwise loop forever. Stop
+            // when a match repeats, and bound the total iterations as a hard safety net.
+            const int maxIterations = 500;
+            var iterations = 0;
             do
             {
+                ct.ThrowIfCancellationRequested();
+                if (++iterations > maxIterations)
+                    break;
+
                 var activeDoc = dte.ActiveDocument;
                 var sel = activeDoc?.Selection as TextSelection;
                 if (sel is null)
@@ -731,14 +745,14 @@ internal static class BuiltInVsTools
                 var l = sel.ActivePoint.Line;
                 var c = sel.ActivePoint.LineCharOffset;
                 var key = f + "(" + l + ")";
-                if (seen.Add(key))
-                {
-                    // Capture one line of context from the match line
-                    var matchLine = sel.ActivePoint.CreateEditPoint().GetLines(l, l + 1).TrimEnd();
-                    lines.Add($"{f}({l},{c}): {matchLine}");
-                    if (lines.Count >= maxResults)
-                        break;
-                }
+                if (!seen.Add(key))
+                    break; // wrapped around to an already-collected match
+
+                // Capture one line of context from the match line
+                var matchLine = sel.ActivePoint.CreateEditPoint().GetLines(l, l + 1).TrimEnd();
+                lines.Add($"{f}({l},{c}): {matchLine}");
+                if (lines.Count >= maxResults)
+                    break;
             }
             while (find.Execute() == vsFindResult.vsFindResultFound);
 
@@ -1179,37 +1193,65 @@ internal static class BuiltInVsTools
         return Task.FromResult($"Replaced in {filePath}");
     }
 
-    private static Task<string> RunCommandAsync(JsonNode? args, CancellationToken ct)
+    private static async Task<string> RunCommandAsync(JsonNode? args, CancellationToken ct)
     {
         var command = args?["command"]?.GetValue<string>() ?? throw new ArgumentException("command is required");
-        var summary = args?["summary"]?.GetValue<string>();
         var background = args?["background"]?.GetValue<bool>() ?? false;
+        var timeoutSeconds = args?["timeoutSeconds"]?.GetValue<int>() ?? 120;
+        timeoutSeconds = Math.Max(5, Math.Min(3600, timeoutSeconds));
 
-        var process = new System.Diagnostics.Process();
-        process.StartInfo = new System.Diagnostics.ProcessStartInfo
+        var startInfo = new System.Diagnostics.ProcessStartInfo
         {
             FileName = "powershell.exe",
             // Use Base64-encoded command to prevent PowerShell injection through
             // model-generated content containing metacharacters ($, `, ", etc.).
             Arguments = $"-NoProfile -EncodedCommand {Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(command))}",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = !background
+            CreateNoWindow = true,
+            // A background process must not redirect its pipes: nobody reads them, so a
+            // full buffer would block the child forever. Foreground reads both concurrently.
+            RedirectStandardOutput = !background,
+            RedirectStandardError = !background
         };
 
-        process.Start();
-        // net48: Process.StandardOutput has no ReadToEndAsync. ReadToEnd is acceptable here
-        // because the process is short-lived (a single PowerShell command).
-#pragma warning disable VSTHRD103
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-#pragma warning restore VSTHRD103
-        process.WaitForExit();
+        if (background)
+        {
+            using var bgProcess = new System.Diagnostics.Process { StartInfo = startInfo };
+            bgProcess.Start();
+            return $"Command started in background (PID {bgProcess.Id}).";
+        }
 
+        using var process = new System.Diagnostics.Process { StartInfo = startInfo };
+        process.Start();
+
+        // net48 has no ReadToEndAsync; run both reads on the thread pool CONCURRENTLY so a
+        // full stderr buffer cannot deadlock the stdout read (the original sequential
+        // ReadToEnd calls hung whenever the child wrote enough to stderr first).
+        var outputTask = Task.Run(() => process.StandardOutput.ReadToEnd());
+        var errorTask = Task.Run(() => process.StandardError.ReadToEnd());
+        var exitTask = Task.Run(() => process.WaitForExit());
+
+        var finished = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), ct)).ConfigureAwait(false);
+        if (finished != exitTask)
+        {
+            try { if (!process.HasExited) process.Kill(); } catch { /* already exited */ }
+            // Let the pipe reads drain whatever the child produced before it was killed.
+            await Task.WhenAny(Task.WhenAll(outputTask, errorTask), Task.Delay(2000)).ConfigureAwait(false);
+            var partialOutput = outputTask.IsCompleted ? Truncate(await outputTask.ConfigureAwait(false)) : string.Empty;
+            var partialError = errorTask.IsCompleted ? Truncate(await errorTask.ConfigureAwait(false)) : string.Empty;
+            var reason = ct.IsCancellationRequested ? "cancelled" : $"timed out after {timeoutSeconds}s";
+            var partial = string.IsNullOrWhiteSpace(partialError) ? partialOutput : $"{partialOutput}\n[ERROR] {partialError}";
+            return $"Command {reason}." + (string.IsNullOrWhiteSpace(partial) ? string.Empty : $"\nPartial output:\n{partial}");
+        }
+
+        var output = Truncate(await outputTask.ConfigureAwait(false));
+        var error = Truncate(await errorTask.ConfigureAwait(false));
         var result = string.IsNullOrWhiteSpace(error) ? output : $"{output}\n[ERROR] {error}";
-        return Task.FromResult(string.IsNullOrWhiteSpace(result) ? "Command completed." : result);
+        return string.IsNullOrWhiteSpace(result) ? "Command completed." : result;
     }
+
+    private static string Truncate(string value) =>
+        value.Length <= 100_000 ? value : value.Substring(0, 100_000) + "\n…[output truncated]";
 
     private static async Task<string> GetOutputLogsAsync(JsonNode? args, CancellationToken ct)
     {

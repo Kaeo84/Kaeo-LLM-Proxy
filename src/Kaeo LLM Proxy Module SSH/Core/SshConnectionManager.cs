@@ -272,7 +272,7 @@ internal sealed class SshConnectionManager : IDisposable
 
     // ── Internals ───────────────────────────────────────────────────────────
 
-    private static async Task<ManagedConnection> OpenConnectionAsync(
+    private async Task<ManagedConnection> OpenConnectionAsync(
         SshConnectionRequest request, McpSessionInfo? opener, CancellationToken cancellationToken)
     {
         List<AuthenticationMethod> authMethods = BuildAuthenticationMethods(request);
@@ -284,6 +284,13 @@ internal sealed class SshConnectionManager : IDisposable
         };
 
         SshClient client = new(connectionInfo);
+        string hostId = $"{request.Host}:{request.Port}";
+        // Verify the server's host key trust-on-first-use instead of accepting it blindly.
+        client.HostKeyReceived += (_, e) =>
+        {
+            string fingerprint = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(e.HostKey));
+            e.CanTrust = VerifyHostKey(hostId, fingerprint);
+        };
         try
         {
             await client.ConnectAsync(cancellationToken);
@@ -305,6 +312,44 @@ internal sealed class SshConnectionManager : IDisposable
             OpenedByClientAddress = opener?.ClientAddress,
             IdleTimeoutSeconds = request.IdleTimeoutSeconds,
         };
+    }
+
+    /// <summary>
+    /// Trust-on-first-use host-key check. The first key seen for a host:port is stored and
+    /// trusted; a matching key is trusted; a DIFFERENT key is rejected (possible MITM). If the
+    /// fingerprint store cannot be read the connection is rejected (fail closed) rather than
+    /// accepting an unverifiable key.
+    /// </summary>
+    private bool VerifyHostKey(string hostId, string fingerprint)
+    {
+        try
+        {
+            string? stored = _repository.GetHostKeyFingerprint(hostId);
+            if (stored is null)
+            {
+                _repository.SaveHostKeyFingerprint(hostId, fingerprint);
+                Log.Information("SSH host key for {HostId} trusted on first use ({Fingerprint})", hostId, fingerprint);
+                return true;
+            }
+
+            if (string.Equals(stored, fingerprint, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            Log.Warning("SSH host key for {HostId} CHANGED (stored {Stored}, presented {Presented}); rejecting connection (possible MITM).",
+                hostId, stored, fingerprint);
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "host_key_rejected")
+            {
+                Target = hostId,
+                IsError = true,
+                ErrorMessage = "Host key changed since first use; connection rejected.",
+            });
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+        {
+            Log.Warning(ex, "SSH host key store unavailable for {HostId}; rejecting connection (fail closed).", hostId);
+            return false;
+        }
     }
 
     /// <summary>

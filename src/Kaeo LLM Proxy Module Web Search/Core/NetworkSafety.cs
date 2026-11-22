@@ -19,6 +19,14 @@ namespace Kaeo.LlmProxy.Module.WebSearch;
 /// </summary>
 internal static class NetworkSafety
 {
+    /// <summary>
+    /// Mirrors the module's "allow local networks" setting for the shared HttpClient's
+    /// connect-time SSRF check. The service refreshes this from the loaded settings before each
+    /// operation; the connect callback reads it so the IP actually connected to is validated
+    /// (closing the DNS-rebinding window between a pre-flight lookup and the real socket).
+    /// </summary>
+    public static volatile bool AllowLocalNetworks;
+
     public static async Task ValidateAsync(Uri uri, bool allowLocalNetworks, CancellationToken cancellationToken)
     {
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)

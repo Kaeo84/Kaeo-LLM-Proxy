@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Module.CodeVector;
 
@@ -967,8 +968,10 @@ internal sealed class CodeVectorConfigPage : TabPage
          _chkReindex.CheckedChanged += (_, _) => SaveSettings();
      }
 
-     private void SaveSettings()
+     private async void SaveSettings()
      {
+         try
+         {
          bool isOnnx = _backendCombo.SelectedItem?.ToString() == "Onnx";
 
          var settings = _module.Settings;
@@ -1027,15 +1030,24 @@ internal sealed class CodeVectorConfigPage : TabPage
         repo.SaveSetting("vector_database_path", settings.VectorDatabasePath);
 
         if (oldDbPath != settings.VectorDatabasePath)
-            _module.InvalidateVectorDatabase();
+            await _module.InvalidateVectorDatabaseAsync();
 
         if (oldBackendType != settings.BackendType || oldOnnxFolder != settings.OnnxModelFolder)
-            _module.InvalidateEmbeddingBackend();
+            await _module.InvalidateEmbeddingBackendAsync();
 
         if (oldSyncInterval != settings.GitSyncIntervalMinutes)
             _module.InvalidateMirrorManager();
 
         if (oldParallelism != settings.RemoteParallelism)
-            _module.InvalidateEmbeddingBackend();
+            await _module.InvalidateEmbeddingBackendAsync();
+         }
+         catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
+         {
+             Log.Warning(ex, "CodeVector settings save failed (database busy); change not persisted.");
+         }
+         catch (Exception ex)
+         {
+             Log.Warning(ex, "CodeVector settings save failed.");
+         }
     }
 }

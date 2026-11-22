@@ -238,7 +238,10 @@ internal sealed class IndexingEngine
 
         _activity?.Log("file_start", $"{collection}:{path}", $"Chunked into {chunks.Count} pieces, source={source}");
         _db.GetOrCreateCollection(collection, _backend.ModelName, _backend.Dimension);
-        var fileId = _db.UpsertFile(collection, path, hash, source, chunks.Count);
+        // Reserve the file row WITHOUT the new hash. If embedding fails below, the stored
+        // hash stays stale/empty so the next pass re-indexes the file instead of seeing a
+        // matching hash + zero chunks and skipping it forever.
+        var fileId = _db.UpsertFile(collection, path, existingHash ?? string.Empty, source, 0);
         _db.DeleteFileChunks(fileId, collection);
 
         const int batchSize = 16;
@@ -277,8 +280,11 @@ internal sealed class IndexingEngine
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _activity?.Log("error", $"{collection}:{path}", $"Embedding failed: {ex.Message}");
-            return;
+            return; // hash not committed → file is retried on the next pass
         }
+        // Every chunk embedded and inserted successfully: commit the new hash now so an
+        // unchanged file is skipped next time.
+        _db.UpsertFile(collection, path, hash, source, chunks.Count);
         _activity?.Log("file_complete", $"{collection}:{path}", $"Indexed {chunks.Count} chunks");
     }
 

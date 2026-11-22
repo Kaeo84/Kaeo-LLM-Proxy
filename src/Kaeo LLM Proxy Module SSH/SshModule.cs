@@ -151,7 +151,9 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
         under Tools & Limits; changes apply to subsequent tool calls without a restart.
 
         SECURITY NOTES
-        - Remote host keys are accepted as presented; verify you trust the target host.
+        - Remote host keys are verified trust-on-first-use: the first key seen for a host:port
+          is stored, and a later connection presenting a DIFFERENT key is rejected (possible
+          MITM). To re-trust a legitimately rebuilt host, delete its row from mcp_ssh_host_keys.
         - Command output is treated as untrusted data and framed as such for the model.
         - Every open connection records which MCP session and client address opened it; see
           the Open Connections table on this module's settings page.
@@ -184,6 +186,14 @@ CREATE TABLE IF NOT EXISTS mcp_ssh_connections (
 CREATE TABLE IF NOT EXISTS mcp_ssh_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Trust-on-first-use SSH host keys. The first key presented for a host:port is stored;
+-- a subsequent connection presenting a different fingerprint is rejected.
+CREATE TABLE IF NOT EXISTS mcp_ssh_host_keys (
+    host_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    first_seen_utc TEXT NOT NULL
 );
 """;
 

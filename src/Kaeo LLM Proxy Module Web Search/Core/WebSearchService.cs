@@ -47,9 +47,16 @@ internal sealed class WebSearchService
     {
         // Redirects are followed manually in FetchAsync so every hop passes the SSRF guard and
         // domain policy; automatic redirects would let a public URL bounce into private networks.
-        var handler = new HttpClientHandler
+        //
+        // The SSRF check is enforced in ConnectCallback against the IP actually connected to,
+        // and the socket is pinned to that same validated address. A pre-flight DNS lookup alone
+        // is vulnerable to DNS rebinding (public IP at validation time, private IP at connect
+        // time); validating and connecting to the identical address closes that window.
+        var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = false,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            ConnectCallback = ConnectWithSsrfGuardAsync,
         };
 
         HttpClient client = new(handler, disposeHandler: true)
@@ -62,6 +69,51 @@ internal sealed class WebSearchService
         return client;
     }
 
+    private static async ValueTask<Stream> ConnectWithSsrfGuardAsync(
+        SocketsHttpConnectionContext context, CancellationToken cancellationToken)
+    {
+        DnsEndPoint endpoint = context.DnsEndPoint;
+
+        IPAddress[] addresses = IPAddress.TryParse(endpoint.Host, out IPAddress? literal)
+            ? [literal]
+            : await Dns.GetHostAddressesAsync(endpoint.Host, cancellationToken);
+
+        if (!NetworkSafety.AllowLocalNetworks)
+        {
+            foreach (IPAddress address in addresses)
+            {
+                if (NetworkSafety.IsPrivateOrLoopback(address))
+                    throw new InvalidOperationException(
+                        $"Blocked connection to private/loopback address {address} for host '{endpoint.Host}'. " +
+                        "Enable 'Allow local networks' in the Web Search settings to permit it.");
+            }
+        }
+
+        // Connect to the very address that was validated (pinned), trying each until one works.
+        Exception? lastError = null;
+        foreach (IPAddress address in addresses)
+        {
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await socket.ConnectAsync(new IPEndPoint(address, endpoint.Port), cancellationToken);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (OperationCanceledException)
+            {
+                socket.Dispose();
+                throw;
+            }
+            catch (SocketException ex)
+            {
+                socket.Dispose();
+                lastError = ex;
+            }
+        }
+
+        throw new InvalidOperationException($"Could not connect to '{endpoint.Host}:{endpoint.Port}'.", lastError);
+    }
+
     /// <summary>
     /// Runs <paramref name="query"/> against enabled providers in catalog order and returns the
     /// first non-empty result set. Throws <see cref="InvalidOperationException"/> with a summary
@@ -70,6 +122,7 @@ internal sealed class WebSearchService
     public async Task<IReadOnlyList<SearchResult>> SearchAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
         WebSearchSettings settings = _repository.LoadWebSearchSettings();
+        NetworkSafety.AllowLocalNetworks = settings.AllowLocalNetworks;
         int capped = Math.Clamp(Math.Min(maxResults, settings.MaxResults), 1, 20);
 
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -142,6 +195,7 @@ internal sealed class WebSearchService
     public async Task<string> FetchAsync(string url, CancellationToken cancellationToken)
     {
         WebSearchSettings settings = _repository.LoadWebSearchSettings();
+        NetworkSafety.AllowLocalNetworks = settings.AllowLocalNetworks;
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
             throw new InvalidOperationException($"'{url}' is not a valid absolute URL.");

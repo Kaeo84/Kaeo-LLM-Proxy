@@ -49,8 +49,11 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	/// Disposes the cached vector database and dependent engines so the next access
 	/// re-resolves the path from the updated <see cref="Settings.VectorDatabasePath"/>.
 	/// </summary>
-	internal void InvalidateVectorDatabase()
+	internal async Task InvalidateVectorDatabaseAsync()
 	{
+		// Stop the indexing engine BEFORE disposing the database it writes to, so no worker
+		// task is mid-write against a disposed connection (native access-violation risk).
+		await StopEngineAsync("vector database changed").ConfigureAwait(false);
 		lock (_vectorDatabaseLock)
 		{
 			_searchEngine = null;
@@ -64,10 +67,12 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	/// Disposes the cached embedding backend and dependent engines, then recreates the
 	/// backend from the current settings. Call when the backend type or ONNX model folder changes.
 	/// </summary>
-	internal void InvalidateEmbeddingBackend()
+	internal async Task InvalidateEmbeddingBackendAsync()
 	{
+		await StopEngineAsync("embedding backend changed").ConfigureAwait(false);
 		lock (_vectorDatabaseLock)
 		{
+			_mirrorManager?.StopTimer();
 			_mirrorManager = null;
 			_searchEngine = null;
 			_indexingEngine = null;
@@ -213,10 +218,13 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	public Task StartAsync(CancellationToken cancellationToken = default)
 	{
 		_started = true;
-		if (_indexingEngine is not null)
-			_indexingEngine.Start();
-		if (_mirrorManager is not null)
-			_mirrorManager.StartTimer();
+		lock (_vectorDatabaseLock)
+		{
+			if (_indexingEngine is not null)
+				_indexingEngine.Start();
+			if (_mirrorManager is not null)
+				_mirrorManager.StartTimer();
+		}
 		StatusChanged?.Invoke(this, "Running");
 		return Task.CompletedTask;
 	}
@@ -226,9 +234,19 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_started = false;
 		_mirrorManager?.StopTimer();
 		if (_indexingEngine is { IsRunning: true })
-			await _indexingEngine.StopAsync("module stopped");
-		_embeddingBackend?.Dispose();
-		_vectorDb?.Dispose();
+			await _indexingEngine.StopAsync("module stopped").ConfigureAwait(false);
+		// Null the cached fields under the lock so a later StartAsync / Ensure* recreates
+		// fresh instances instead of reusing the disposed backend / database.
+		lock (_vectorDatabaseLock)
+		{
+			_searchEngine = null;
+			_indexingEngine = null;
+			_mirrorManager = null;
+			_embeddingBackend?.Dispose();
+			_embeddingBackend = null;
+			_vectorDb?.Dispose();
+			_vectorDb = null;
+		}
 		StatusChanged?.Invoke(this, "Stopped");
 	}
 

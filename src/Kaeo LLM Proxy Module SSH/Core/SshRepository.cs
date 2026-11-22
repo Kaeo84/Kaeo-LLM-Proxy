@@ -150,6 +150,43 @@ internal sealed class SshRepository(IModuleDatabase database)
             "DELETE FROM mcp_ssh_connections WHERE id = $id;",
             command => AddParameter(command, "$id", id));
 
+    // ── Trust-on-first-use host keys ────────────────────────────────────────
+
+    /// <summary>Returns the stored host-key fingerprint for a host:port, or null if unseen.</summary>
+    public string? GetHostKeyFingerprint(string hostId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+
+        IReadOnlyList<string> matches = _database.Query(
+            "SELECT fingerprint FROM mcp_ssh_host_keys WHERE host_id = $id LIMIT 1;",
+            reader => reader.GetString(0),
+            command => AddParameter(command, "$id", hostId));
+
+        return matches.Count > 0 ? matches[0] : null;
+    }
+
+    /// <summary>
+    /// Records the first host key seen for a host:port. INSERT OR IGNORE ensures an existing
+    /// fingerprint is never silently overwritten — a changed key must be rejected, not replaced.
+    /// </summary>
+    public void SaveHostKeyFingerprint(string hostId, string fingerprint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fingerprint);
+
+        _database.Execute(
+            """
+            INSERT OR IGNORE INTO mcp_ssh_host_keys (host_id, fingerprint, first_seen_utc)
+            VALUES ($id, $fp, $ts);
+            """,
+            command =>
+            {
+                AddParameter(command, "$id", hostId);
+                AddParameter(command, "$fp", fingerprint);
+                AddParameter(command, "$ts", DateTime.UtcNow.ToString("o"));
+            });
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static void ConfigureConnectionParameters(DbCommand command, SshStoredConnection connection)

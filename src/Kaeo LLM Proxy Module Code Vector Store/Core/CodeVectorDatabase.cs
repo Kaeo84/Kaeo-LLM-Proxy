@@ -9,6 +9,7 @@ internal sealed class CodeVectorDatabase : IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly object _lock = new();
+    private bool _disposed;
 
     /// <summary>True when the sqlite-vec native extension loaded successfully. When false,
     /// all vector operations fall back to the brute-force scan.</summary>
@@ -560,5 +561,14 @@ internal sealed class CodeVectorDatabase : IDisposable
     }
     private static void AddParam(DbCommand cmd, string name, object? value) { var p = cmd.CreateParameter(); p.ParameterName = name; p.Value = value ?? DBNull.Value; cmd.Parameters.Add(p); }
 
-    public void Dispose() => _connection.Dispose();
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
+            _connection.Dispose();
+        }
+    }
 }
