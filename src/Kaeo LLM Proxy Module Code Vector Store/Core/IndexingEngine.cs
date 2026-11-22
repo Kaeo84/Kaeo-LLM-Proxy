@@ -20,7 +20,8 @@ internal sealed class IndexingEngine
     private readonly ConcurrentDictionary<(string Collection, string Path), byte> _inFlightIndex = new();
     private Task[]? _workers;
     private SemaphoreSlim? _embedSemaphore;
-    private volatile QueueItemInfo? _currentJob;
+    // L6: one "current job" slot per worker so parallel workers don't overwrite each other.
+    private readonly ConcurrentDictionary<int, QueueItemInfo> _currentJobs = new();
     private volatile string? _stopReason;
 
     public IndexingEngine(CodeVectorDatabase db, IEmbeddingBackend backend, CodeVectorSettings settings, CodeVectorActivityLogger? activity)
@@ -41,7 +42,7 @@ internal sealed class IndexingEngine
     public bool IsRunning => _workers is { Length: > 0 } && _workers.Any(w => !w.IsCompleted);
     public int QueueDepth => _pendingJobs.Count;
     public int ActiveWorkerCount => _workers is null ? 0 : _workers.Count(w => !w.IsCompleted);
-    public QueueItemInfo? CurrentJob => _currentJob;
+    public QueueItemInfo? CurrentJob => _currentJobs.Values.FirstOrDefault();
 
     /// <summary>
     /// Optional callback wired by the module to re-walk a collection's registered mirror(s)
@@ -74,7 +75,10 @@ internal sealed class IndexingEngine
             _embedSemaphore ??= new SemaphoreSlim(parallelism);
             _workers = new Task[parallelism];
             for (int i = 0; i < parallelism; i++)
-                _workers[i] = Task.Run(() => ProcessQueueAsync(_cts.Token));
+            {
+                int workerIndex = i;
+                _workers[i] = Task.Run(() => ProcessQueueAsync(workerIndex, _cts.Token));
+            }
             _stopReason = null;
             _activity?.Log("engine_start", "-", $"Engine started with {parallelism} workers");
             Log.Information("CodeVector indexing engine started ({Parallelism} workers)", parallelism);
@@ -97,6 +101,12 @@ internal sealed class IndexingEngine
         {
             try { await Task.WhenAll(_workers); } catch (OperationCanceledException) { }
             _workers = null;
+        }
+        lock (_lifecycleLock)
+        {
+            // L6: don't leave a cancelled CTS lingering after stop; the next Start gets a fresh one.
+            _cts.Dispose();
+            _cts = new CancellationTokenSource();
         }
         _embedSemaphore?.Dispose();
         _embedSemaphore = null;
@@ -202,22 +212,25 @@ internal sealed class IndexingEngine
         return TryWriteControlJob(new IndexJob { Type = JobType.DeleteFile, Collection = collection, Path = path, Info = info }, info);
     }
 
-    public void EnqueueDeletePath(string collection, string pathPrefix)
+    public bool EnqueueDeletePath(string collection, string pathPrefix)
     {
+        if (!IsRunning) { _activity?.Log("skip", collection, "Engine stopped; delete-path not queued"); return false; }
         var info = new QueueItemInfo("DeletePath", collection, pathPrefix, "-");
-        TryWriteControlJob(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix, Info = info }, info);
+        return TryWriteControlJob(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix, Info = info }, info);
     }
 
-    public void EnqueueDeleteCollection(string collection)
+    public bool EnqueueDeleteCollection(string collection)
     {
+        if (!IsRunning) { _activity?.Log("skip", collection, "Engine stopped; delete-collection not queued"); return false; }
         var info = new QueueItemInfo("DeleteCollection", collection, "(all)", "-");
-        TryWriteControlJob(new IndexJob { Type = JobType.DeleteCollection, Collection = collection, Info = info }, info);
+        return TryWriteControlJob(new IndexJob { Type = JobType.DeleteCollection, Collection = collection, Info = info }, info);
     }
 
-    public void EnqueueReindex(string collection)
+    public bool EnqueueReindex(string collection)
     {
+        if (!IsRunning) { _activity?.Log("skip", collection, "Engine stopped; reindex not queued"); return false; }
         var info = new QueueItemInfo("Reindex", collection, "(all)", "-");
-        TryWriteControlJob(new IndexJob { Type = JobType.Reindex, Collection = collection, Info = info }, info);
+        return TryWriteControlJob(new IndexJob { Type = JobType.Reindex, Collection = collection, Info = info }, info);
     }
 
     /// <summary>Non-blocking write for delete/reindex control jobs; drops with a warning when full.</summary>
@@ -234,13 +247,13 @@ internal sealed class IndexingEngine
         return true;
     }
 
-    private async Task ProcessQueueAsync(CancellationToken ct)
+    private async Task ProcessQueueAsync(int workerIndex, CancellationToken ct)
     {
         try
         {
             await foreach (var job in _queue.Reader.ReadAllAsync(ct))
             {
-                _currentJob = job.Info;
+                if (job.Info is not null) _currentJobs[workerIndex] = job.Info;
                 try
                 {
                     switch (job.Type)
@@ -284,7 +297,7 @@ internal sealed class IndexingEngine
                 {
                     if (job.Info is not null) _pendingJobs.TryRemove(job.Info, out _);
                     if (job.Type == JobType.IndexFile) _inFlightIndex.TryRemove((job.Collection!, job.Path!), out _);
-                    _currentJob = null;
+                    _currentJobs.TryRemove(workerIndex, out _);
                 }
             }
         }
@@ -302,7 +315,7 @@ internal sealed class IndexingEngine
         }
         finally
         {
-            _currentJob = null;
+            _currentJobs.TryRemove(workerIndex, out _);
         }
     }
 

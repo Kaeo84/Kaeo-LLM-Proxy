@@ -288,7 +288,7 @@ internal sealed class GitMirrorManager
                 continue;
             }
             if (string.IsNullOrEmpty(content)) { skipped++; continue; }
-            if (content.Length > _settings.MaxFileSizeKb * 1024) { _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", $"File too large ({content.Length / 1024} KB)"); skipped++; continue; }
+            if (CodeChunker.IsContentTooLarge(content, _settings.MaxFileSizeKb)) { _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", $"File too large ({content.Length / 1024} KB)"); skipped++; continue; }
             // onlyIfChanged skips files whose content hash matches the stored hash, so a
             // sync cycle only queues what actually changed (and nothing at all when the
             // engine is stopped) instead of re-queueing every file each interval.
@@ -397,6 +397,9 @@ internal sealed class GitMirrorManager
         string p = mirror.SourcePath ?? string.Empty;
         return Path.IsPathRooted(p) ? p : Path.Combine(_moduleDataDir, p);
     }
+
+    /// <summary>L10: resolved on-disk clone directory for a git mirror (for optional cleanup after rename/remove).</summary>
+    internal string GetMirrorDirectory(MirrorRegistration mirror) => ResolveMirrorPath(mirror);
 
     private string ResolveMirrorPath(MirrorRegistration mirror)
     {

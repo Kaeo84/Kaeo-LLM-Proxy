@@ -6,7 +6,7 @@ internal sealed class ModelInfoDialog : Form
 {
     public ModelInfoDialog(string modelId, string content)
     {
-        Text = $"Model Info â€” {modelId}";
+        Text = $"Model Info — {modelId}";
         Size = new Size(700, 550);
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(400, 300);

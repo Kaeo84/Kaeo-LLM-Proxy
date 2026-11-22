@@ -20,11 +20,14 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
             ? $"http://{host.DisplayHost}:{host.ListenPort}/v1/embeddings"
             : settings.RemoteUrl.Trim();
 
-        // Users typically enter just the host (e.g. http://192.168.1.1:8081).
-        // Append the embeddings endpoint if the path is not already specified.
-        if (!url.Contains("/v1/", StringComparison.OrdinalIgnoreCase)
+        // Users typically enter just the host (e.g. http://192.168.1.1:8081) or a base URL
+        // ending in /v1. Append the embeddings endpoint without double-appending /v1 (L2).
+        string trimmedUrl = url.TrimEnd('/');
+        if (trimmedUrl.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            url = trimmedUrl + "/embeddings";
+        else if (!url.Contains("/v1/", StringComparison.OrdinalIgnoreCase)
             && !url.EndsWith("/embeddings", StringComparison.OrdinalIgnoreCase))
-            url = url.TrimEnd('/') + "/v1/embeddings";
+            url = trimmedUrl + "/v1/embeddings";
 
         _url = url;
         _model = string.IsNullOrWhiteSpace(settings.RemoteModel) ? "default" : settings.RemoteModel;

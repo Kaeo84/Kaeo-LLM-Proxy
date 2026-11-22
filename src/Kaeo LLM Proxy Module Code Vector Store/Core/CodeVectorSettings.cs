@@ -33,8 +33,8 @@ internal sealed class CodeVectorSettings
 		public int RemoteParallelism { get; set; } = 4;
 
 		/// <summary>
-		/// Root directory where git mirrors are checked out. Defaults to <c>moduleDataDir/mirrors</c>.
-		/// Set to a different path to monitor a specific repository externally or share mirrors across sessions.
+		/// Location of the SQLite vector database file. Defaults to <c>moduleDataDir/codevectordb</c>.
+		/// A relative path is resolved against the module data directory; an absolute path is used as-is.
 		/// </summary>
-		public string VectorDatabasePath { get; set; } = string.Empty;
+	public string VectorDatabasePath { get; set; } = string.Empty;
 }

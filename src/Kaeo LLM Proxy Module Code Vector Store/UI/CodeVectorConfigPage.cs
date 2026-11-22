@@ -64,6 +64,9 @@ internal sealed class CodeVectorConfigPage : TabPage
     private Dictionary<string, string> _lastSavedSettings = new();
     private FlowLayoutPanel _repoButtonPanel = null!;
     private readonly CancellationTokenSource _repoCts = new();
+    private HttpClient? _probeClient;
+    private TimeSpan _probeClientTimeout;
+    private Font? _errorRowFont;
 
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
@@ -84,6 +87,11 @@ internal sealed class CodeVectorConfigPage : TabPage
             _refreshTimer?.Dispose(); _refreshTimer = null;
             _saveDebounceTimer?.Dispose(); _saveDebounceTimer = null;
             _repoCts.Cancel(); _repoCts.Dispose();
+            // L4: ToolTips hold native window handles; the probe client holds sockets.
+            _statusTooltip?.Dispose();
+            _helpTooltip?.Dispose();
+            _probeClient?.Dispose(); _probeClient = null;
+            _errorRowFont?.Dispose(); _errorRowFont = null;
         };
         RefreshStatus();
     }
@@ -241,7 +249,7 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         layout.Controls.Add(new Label { Text = "Model Folder:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
         _onnxBox = new TextBox { Dock = DockStyle.Fill, Text = _module.Settings.OnnxModelFolder, Margin = new Padding(3) };
-        _onnxBrowseButton = new Button { Text = "Browseâ€¦", AutoSize = true, Margin = new Padding(3) };
+        _onnxBrowseButton = new Button { Text = "Browse…", AutoSize = true, Margin = new Padding(3) };
         _onnxBrowseButton.Click += OnnxBrowseButton_Click;
         layout.Controls.Add(_onnxBox, 1, row);
         layout.Controls.Add(_onnxBrowseButton, 2, row++);
@@ -446,7 +454,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        var running = engine?.IsRunning ?? false;
                        var stopReason = _module.EngineStopReason;
                        _engineStatusLabel.Text = running ? "Engine: Running" : (engine is null ? "Engine: Not started" : "Engine: Stopped");
-                       _engineStatusLabel.ForeColor = running ? Color.Green : SystemColors.GrayText;
+                       _engineStatusLabel.ForeColor = running ? SystemColors.Highlight : SystemColors.GrayText;
                        _statusTooltip.SetToolTip(_engineStatusLabel, running ? "Engine is running" : (stopReason is null ? "Engine is stopped" : $"Engine stopped: {stopReason}"));
                        int queueDepth = engine?.QueueDepth ?? 0;
                        _queueStatusLabel.Text = $"Queue: {queueDepth}";
@@ -491,7 +499,13 @@ internal sealed class CodeVectorConfigPage : TabPage
                                lvi.SubItems.Add(entry.Operation);
                                lvi.SubItems.Add(entry.Target);
                                lvi.SubItems.Add(entry.Detail ?? "");
-                               if (entry.Operation == "error") lvi.ForeColor = Color.Red;
+                               if (entry.Operation == "error")
+                               {
+                                   // L3: theme-safe emphasis (bold) instead of a fixed red that
+                                   // can be illegible on dark/high-contrast backgrounds.
+                                   _errorRowFont ??= new Font(_logListView.Font, FontStyle.Bold);
+                                   lvi.Font = _errorRowFont;
+                               }
                                _logListView.Items.Add(lvi);
                            }
                            _logListView.EndUpdate();
@@ -500,7 +514,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    catch (Exception ex)
                    {
                        _engineStatusLabel.Text = $"Status error: {ex.Message}";
-                       _engineStatusLabel.ForeColor = Color.OrangeRed;
+                       _engineStatusLabel.ForeColor = SystemColors.ControlText;
                    }
                }
 
@@ -613,7 +627,10 @@ internal sealed class CodeVectorConfigPage : TabPage
                        // Upsert overwrites a same-name row; only delete the old row on rename, and
                        // only after the new registration succeeded so a failure cannot lose the mirror.
                        if (!string.Equals(m.CollectionName, dlg.CollectionName, StringComparison.Ordinal))
+                       {
                            _module.Repository.DeleteMirror(m.CollectionName);
+                           OfferOrphanCleanup(m);
+                       }
                        if (!IsDisposed) RefreshRepos();
                    }
                    catch (OperationCanceledException) { }
@@ -635,6 +652,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        try
                        {
                            _module.Repository.DeleteMirror(m.CollectionName);
+                           OfferOrphanCleanup(m);
                            RefreshRepos();
                        }
                        catch (Exception ex)
@@ -643,6 +661,33 @@ internal sealed class CodeVectorConfigPage : TabPage
                            Log.Warning(ex, "CodeVector remove mirror failed ({Collection})", m.CollectionName);
                            MessageBox.Show(ex.Message, "Remove Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
                        }
+                   }
+               }
+
+               /// <summary>
+               /// L10: after a rename/remove, offer to delete the orphaned indexed collection and
+               /// (for git mirrors) the on-disk clone so stale data doesn't accumulate invisibly.
+               /// Never touches a local-directory source — that is the user's own data.
+               /// </summary>
+               private void OfferOrphanCleanup(MirrorRegistration mirror)
+               {
+                   try
+                   {
+                       if (MessageBox.Show($"Also delete the indexed collection '{mirror.CollectionName}' (all files, chunks and embeddings)?",
+                               "Delete Indexed Data", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                           _module.VectorDb.DeleteCollection(mirror.CollectionName);
+                       if (!mirror.IsLocalDirectory)
+                       {
+                           string dir = _module.MirrorManager.GetMirrorDirectory(mirror);
+                           if (Directory.Exists(dir)
+                               && MessageBox.Show($"Also delete the mirror clone folder?\n{dir}", "Delete Mirror Folder", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                               Directory.Delete(dir, recursive: true);
+                       }
+                   }
+                   catch (Exception ex) when (ex is IOException or SqliteException or UnauthorizedAccessException)
+                   {
+                       Log.Warning(ex, "CodeVector orphan cleanup failed ({Collection})", mirror.CollectionName);
+                       MessageBox.Show(ex.Message, "Cleanup Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                    }
                }
 
@@ -694,8 +739,9 @@ internal sealed class CodeVectorConfigPage : TabPage
                    sb.AppendLine($"Sync Status: {m.LastSyncStatus ?? "pending"}");
                    if (col is not null) sb.AppendLine($"Indexed: {col.FileCount} files, {col.ChunkCount} chunks");
                    sb.AppendLine();
-                   sb.AppendLine($"Engine: {(_module.Indexer.IsRunning ? "Running" : "Stopped")} | Queue: {_module.Indexer.QueueDepth}");
-                   MessageBox.Show(sb.ToString(), $"Status â€” {m.CollectionName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                   var engine = _module.IndexerOrNull;
+                   sb.AppendLine($"Engine: {(engine?.IsRunning == true ? "Running" : "Stopped")} | Queue: {engine?.QueueDepth ?? 0}");
+                   MessageBox.Show(sb.ToString(), $"Status — {m.CollectionName}", MessageBoxButtons.OK, MessageBoxIcon.Information);
                }
 
                private async void ReindexRepoButton_Click(object? sender, EventArgs e)
@@ -745,23 +791,36 @@ internal sealed class CodeVectorConfigPage : TabPage
         if (string.IsNullOrWhiteSpace(baseUrl))
             baseUrl = $"http://{_module.Host.DisplayHost}:{_module.Host.ListenPort}/v1/embeddings";
 
-        if (baseUrl.EndsWith("/v1/embeddings", StringComparison.OrdinalIgnoreCase))
-            return baseUrl[..^"/v1/embeddings".Length];
+        string trimmed = baseUrl.TrimEnd('/');
+        if (trimmed.EndsWith("/v1/embeddings", StringComparison.OrdinalIgnoreCase))
+            return trimmed[..^"/v1/embeddings".Length];
+        // L2: a base URL already ending in /v1 must not gain a second /v1 segment.
+        if (trimmed.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+            return trimmed[..^"/v1".Length];
 
-        return baseUrl.TrimEnd('/');
+        return trimmed;
     }
 
     private HttpClient CreateAuthedClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds((double)_timeoutBox.Value) };
+        // L4: reuse one client for the rare probe clicks instead of churning sockets per
+        // click. Recreated only when the timeout changes (Timeout is immutable after use).
+        var timeout = TimeSpan.FromSeconds((double)_timeoutBox.Value);
+        if (_probeClient is null || _probeClientTimeout != timeout)
+        {
+            _probeClient?.Dispose();
+            _probeClient = new HttpClient { Timeout = timeout };
+            _probeClientTimeout = timeout;
+        }
+        _probeClient.DefaultRequestHeaders.Authorization = null;
         string credentialName = _credentialCombo.Text.Trim();
         if (!string.IsNullOrWhiteSpace(credentialName))
         {
             string? secret = _module.Secrets.ResolveSecret(credentialName);
             if (!string.IsNullOrWhiteSpace(secret))
-                client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+                _probeClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         }
-        return client;
+        return _probeClient;
     }
 
     private async void FetchModelsButton_Click(object? sender, EventArgs e)
@@ -770,11 +829,11 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         _fetchModelsButton.Enabled = false;
         _fetchStatusLabel.ForeColor = SystemColors.GrayText;
-        _fetchStatusLabel.Text = "Fetching modelsâ€¦";
+        _fetchStatusLabel.Text = "Fetching models…";
 
         try
         {
-            using var client = CreateAuthedClient();
+            var client = CreateAuthedClient();
             using var response = await client.GetAsync(modelsUrl);
             string body = await response.Content.ReadAsStringAsync();
 
@@ -808,24 +867,24 @@ internal sealed class CodeVectorConfigPage : TabPage
                     finally { _suppressAutoSave = false; }
                     ScheduleSave();
 
-                    _fetchStatusLabel.ForeColor = Color.Green;
+                    _fetchStatusLabel.ForeColor = SystemColors.Highlight;
                     _fetchStatusLabel.Text = $"Found {modelIds.Count} model(s)";
                 }
                 else
                 {
-                    _fetchStatusLabel.ForeColor = Color.OrangeRed;
+                    _fetchStatusLabel.ForeColor = SystemColors.ControlText;
                     _fetchStatusLabel.Text = $"OK but unexpected response format";
                 }
             }
             else
             {
-                _fetchStatusLabel.ForeColor = Color.Red;
+                _fetchStatusLabel.ForeColor = SystemColors.ControlText;
                 _fetchStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
             }
         }
         catch (Exception ex)
         {
-            _fetchStatusLabel.ForeColor = Color.Red;
+            _fetchStatusLabel.ForeColor = SystemColors.ControlText;
             _fetchStatusLabel.Text = $"Error: {ex.Message}";
         }
         finally
@@ -849,15 +908,17 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         try
         {
-            using var client = CreateAuthedClient();
+            var client = CreateAuthedClient();
 
             // Try the per-model endpoint first (OpenAI-compatible), fall back to the
             // list endpoint (Ollama and others that don't support GET /v1/models/{id}).
             string modelUrl = baseUrl + "/v1/models/" + Uri.EscapeDataString(modelId);
             using var response = await client.GetAsync(modelUrl);
             string body = await response.Content.ReadAsStringAsync();
+            // L9: track success locally instead of mutating the response's StatusCode.
+            bool ok = response.IsSuccessStatusCode;
 
-            if (!response.IsSuccessStatusCode)
+            if (!ok)
             {
                 using var listResponse = await client.GetAsync(baseUrl + "/v1/models");
                 string listBody = await listResponse.Content.ReadAsStringAsync();
@@ -872,7 +933,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                                 && string.Equals(idProp.GetString(), modelId, StringComparison.OrdinalIgnoreCase))
                             {
                                 body = JsonSerializer.Serialize(item, new JsonSerializerOptions { WriteIndented = true });
-                                response.StatusCode = (System.Net.HttpStatusCode)200;
+                                ok = true;
                                 break;
                             }
                         }
@@ -885,7 +946,7 @@ internal sealed class CodeVectorConfigPage : TabPage
             }
 
             string displayText;
-            if (response.IsSuccessStatusCode)
+            if (ok)
             {
                 try
                 {
@@ -940,39 +1001,39 @@ internal sealed class CodeVectorConfigPage : TabPage
      {
          _testConnectionButton.Enabled = false;
          _fetchStatusLabel.ForeColor = SystemColors.GrayText;
-         _fetchStatusLabel.Text = "Testing connectionâ€¦";
+         _fetchStatusLabel.Text = "Testing connection…";
 
          string baseUrl = DeriveBaseUrl();
          string testUrl = baseUrl + "/v1/models";
 
          try
          {
-             using var client = CreateAuthedClient();
+             var client = CreateAuthedClient();
              using var response = await client.GetAsync(testUrl, System.Threading.CancellationToken.None);
 
              if (response.IsSuccessStatusCode)
              {
                  string body = await response.Content.ReadAsStringAsync();
-                 _fetchStatusLabel.ForeColor = Color.Green;
+                 _fetchStatusLabel.ForeColor = SystemColors.Highlight;
                  try
                  {
                      using var doc = JsonDocument.Parse(body);
-                          _fetchStatusLabel.Text = $"OK â€” {doc.RootElement.GetProperty("description").GetString() ?? body}";
+                          _fetchStatusLabel.Text = $"OK — {doc.RootElement.GetProperty("description").GetString() ?? body}";
                  }
                  catch
                  {
-                     _fetchStatusLabel.Text = $"OK â€” {body.Substring(0, Math.Min(100, body.Length))}";
+                     _fetchStatusLabel.Text = $"OK — {body.Substring(0, Math.Min(100, body.Length))}";
                  }
              }
              else
              {
-                 _fetchStatusLabel.ForeColor = Color.Red;
+                 _fetchStatusLabel.ForeColor = SystemColors.ControlText;
                  _fetchStatusLabel.Text = $"Failed: {(int)response.StatusCode} {response.ReasonPhrase}";
              }
          }
          catch (Exception ex)
          {
-             _fetchStatusLabel.ForeColor = Color.Red;
+             _fetchStatusLabel.ForeColor = SystemColors.ControlText;
              _fetchStatusLabel.Text = $"Error: {ex.Message}";
          }
          finally

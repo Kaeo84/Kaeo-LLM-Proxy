@@ -51,25 +51,25 @@ internal sealed class CodeVectorRepository
             cmd => { AddParam(cmd, "$key", key); AddParam(cmd, "$value", value); });
     }
 
-    public IReadOnlyList<MirrorRegistration> LoadMirrors()
+    private const string MirrorSelectColumns = "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos";
+
+    private static MirrorRegistration ReadMirror(DbDataReader r) => new()
     {
-        return _db.Query(
-            "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos",
-            r => new MirrorRegistration
-            {
-                Id = r.GetInt32(0),
-                CollectionName = r.GetString(1),
-                RemoteUrl = r.GetString(2),
-                Branch = r.GetString(3),
-                CredentialName = r.IsDBNull(4) ? null : r.GetString(4),
-                MirrorPath = r.IsDBNull(5) ? null : r.GetString(5),
-                PathPrefix = r.IsDBNull(6) ? null : r.GetString(6),
-                SourceKind = r.IsDBNull(7) ? MirrorRegistration.SourceKindGit : r.GetString(7),
-                SourcePath = r.IsDBNull(8) ? null : r.GetString(8),
-                LastSyncUtc = r.IsDBNull(9) ? null : r.GetString(9),
-                LastSyncStatus = r.IsDBNull(10) ? null : r.GetString(10),
-            });
-    }
+        Id = r.GetInt32(0),
+        CollectionName = r.GetString(1),
+        RemoteUrl = r.GetString(2),
+        Branch = r.GetString(3),
+        CredentialName = r.IsDBNull(4) ? null : r.GetString(4),
+        MirrorPath = r.IsDBNull(5) ? null : r.GetString(5),
+        PathPrefix = r.IsDBNull(6) ? null : r.GetString(6),
+        SourceKind = r.IsDBNull(7) ? MirrorRegistration.SourceKindGit : r.GetString(7),
+        SourcePath = r.IsDBNull(8) ? null : r.GetString(8),
+        LastSyncUtc = r.IsDBNull(9) ? null : r.GetString(9),
+        LastSyncStatus = r.IsDBNull(10) ? null : r.GetString(10),
+    };
+
+    public IReadOnlyList<MirrorRegistration> LoadMirrors()
+        => _db.Query(MirrorSelectColumns, ReadMirror);
 
     public MirrorRegistration UpsertMirror(string collectionName, string remoteUrl, string branch, string? credentialName, string? mirrorPath = null, string? pathPrefix = null, string sourceKind = MirrorRegistration.SourceKindGit, string? sourcePath = null)
     {
@@ -77,7 +77,12 @@ internal sealed class CodeVectorRepository
             "INSERT INTO mcp_codevector_repos (collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path) VALUES ($col, $url, $branch, $cred, $path, $prefix, $kind, $src) " +
             "ON CONFLICT(collection_name) DO UPDATE SET remote_url = excluded.remote_url, branch = excluded.branch, credential_name = excluded.credential_name, mirror_path = excluded.mirror_path, path_prefix = excluded.path_prefix, source_kind = excluded.source_kind, source_path = excluded.source_path",
             cmd => { AddParam(cmd, "$col", collectionName); AddParam(cmd, "$url", remoteUrl); AddParam(cmd, "$branch", branch); AddParam(cmd, "$cred", (object?)credentialName ?? DBNull.Value); AddParam(cmd, "$path", (object?)mirrorPath ?? DBNull.Value); AddParam(cmd, "$prefix", (object?)pathPrefix ?? DBNull.Value); AddParam(cmd, "$kind", sourceKind); AddParam(cmd, "$src", (object?)sourcePath ?? DBNull.Value); });
-        return LoadMirrors().First(m => m.CollectionName == collectionName);
+        // L11: read back only the upserted row; a concurrent delete gets a clear message
+        // instead of .First()'s generic "sequence contains no elements".
+        var rows = _db.Query(MirrorSelectColumns + " WHERE collection_name = $col", ReadMirror,
+            cmd => AddParam(cmd, "$col", collectionName));
+        return rows.FirstOrDefault()
+            ?? throw new InvalidOperationException($"Mirror '{collectionName}' was removed by another instance during registration.");
     }
 
     public void UpdateMirrorSync(int id, string? lastSyncUtc, string? lastSyncStatus)

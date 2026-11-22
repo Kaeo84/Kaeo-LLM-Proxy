@@ -37,14 +37,15 @@ internal sealed class CodeVectorTools
         try
         {
             if (!_module.Settings.SearchEnabled) return "code_search is disabled in the Code Vector Store settings.";
-            int effectiveTopK = topK is > 0 ? topK.Value : _module.Settings.DefaultTopK;
+            // L12: clamp client-supplied topK so a huge value cannot materialize a massive result set.
+            int effectiveTopK = Math.Clamp(topK is > 0 ? topK.Value : _module.Settings.DefaultTopK, 1, 100);
             var results = await _module.SearchEngine.SearchAsync(query, _module.EmbeddingBackend, collection, effectiveTopK, pathFilter, CancellationToken.None);
             if (results.Count == 0) return "No results found.";
             var sb = new StringBuilder();
             sb.AppendLine($"Found {results.Count} result(s):\n");
             foreach (var result in results)
             {
-                sb.AppendLine($"ðŸ“„ {result.FilePath} (lines {result.StartLine}-{result.EndLine})");
+                sb.AppendLine($"📄 {result.FilePath} (lines {result.StartLine}-{result.EndLine})");
                 sb.AppendLine($"   Similarity: {result.Similarity:P1}");
                 sb.AppendLine($"   {result.Text.Replace("\n", "\n   ")}");
                 sb.AppendLine();
@@ -73,7 +74,7 @@ internal sealed class CodeVectorTools
         try
         {
             if (!_module.Settings.IndexEnabled) return "code_index is disabled in the Code Vector Store settings.";
-            if (content.Length > _module.Settings.MaxFileSizeKb * 1024) return $"File too large (max {_module.Settings.MaxFileSizeKb} KB)";
+            if (CodeChunker.IsContentTooLarge(content, _module.Settings.MaxFileSizeKb)) return $"File too large (max {_module.Settings.MaxFileSizeKb} KB)";
             bool queued = _module.Indexer.EnqueueIndexFile(collection, path, content, "agent");
             return queued
                 ? $"Queued {path} for indexing in collection '{collection}'"
@@ -166,7 +167,7 @@ internal sealed class CodeVectorTools
             if (collections.Count > 0)
             {
                 sb.AppendLine("Collections:");
-                foreach (var col in collections) sb.AppendLine($"  â€¢ {col.Name}: {col.FileCount} files, {col.ChunkCount} chunks");
+                foreach (var col in collections) sb.AppendLine($"  • {col.Name}: {col.FileCount} files, {col.ChunkCount} chunks");
                 sb.AppendLine();
             }
             if (mirrors.Count > 0)

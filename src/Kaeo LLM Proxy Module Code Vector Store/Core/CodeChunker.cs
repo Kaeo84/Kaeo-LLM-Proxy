@@ -17,6 +17,13 @@ internal sealed class CodeChunker
 
     public bool IsTooLarge(string content) => Encoding.UTF8.GetByteCount(content) > _maxFileSizeBytes;
 
+    /// <summary>
+    /// L5: single byte-based size gate shared by the MCP tool, mirror walks, and the chunker,
+    /// so non-ASCII content is judged identically everywhere (chars ≠ bytes).
+    /// </summary>
+    public static bool IsContentTooLarge(string content, int maxFileSizeKb) =>
+        Encoding.UTF8.GetByteCount(content) > Math.Max(1024, maxFileSizeKb * 1024);
+
     public List<CodeChunk> Chunk(string content)
     {
         var lines = content.Split('\n');
