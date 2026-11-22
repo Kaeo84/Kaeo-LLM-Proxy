@@ -194,9 +194,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         _idleSweepTimer?.Dispose();
         _idleSweepTimer = null;
 
-        if (_cts is not null)
-            await _cts.CancelAsync();
-
+        // Stop the listener first so no new sessions arrive and the accept loop unblocks.
+        // The host CTS is cancelled only AFTER sessions are drained below: cancelling it
+        // first would trip each session's linked LifetimeCts, making the run task self-remove
+        // and race the orderly teardown (leaving transports/servers undisposed).
         try
         {
             _listener?.Stop();
@@ -234,9 +235,14 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
         }
 
+        // Orderly per-session teardown (transport → run loop → server → CTS) while the host
+        // CTS is still alive, so each session's linked token is cancelled by RemoveSessionAsync
+        // rather than by the host cancellation racing it.
         foreach (string sessionId in _sessions.Keys.ToArray())
             await RemoveSessionAsync(sessionId);
 
+        if (_cts is not null)
+            await _cts.CancelAsync();
         _cts?.Dispose();
         _cts = null;
 
@@ -489,7 +495,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
 
         if (_settings.CollectRequestDetails && bodyBytes.Length > 0)
-            log.RequestBody = Encoding.UTF8.GetString(bodyBytes);
+            log.RequestBody = SecretRedactor.Redact(Encoding.UTF8.GetString(bodyBytes));
 
         JsonRpcMessage? message;
         try
@@ -529,7 +535,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         McpHttpSession? session;
         if (message is JsonRpcRequest { Method: RequestMethods.Initialize } && string.IsNullOrEmpty(sessionIdHeader))
         {
-            session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+            session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
             if (session is null)
             {
                 await WriteSessionUnavailableAsync(response, ct);
@@ -551,7 +557,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             // initialize instead of failing the reconnect with 404.
             if (message is JsonRpcRequest { Method: RequestMethods.Initialize })
             {
-                session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+                session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
                 if (session is null)
                 {
                     await WriteSessionUnavailableAsync(response, ct);
@@ -573,7 +579,7 @@ internal sealed class McpServerHost : IAsyncDisposable
                     return;
                 }
 
-                session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+                session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
                 if (session is null)
                 {
                     await WriteSessionUnavailableAsync(response, ct);
@@ -613,7 +619,7 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (responseCapture is not null && tee is not null && responseCapture.Length > 0)
         {
-            log.ResponseBody = Encoding.UTF8.GetString(responseCapture.ToArray());
+            log.ResponseBody = SecretRedactor.Redact(Encoding.UTF8.GetString(responseCapture.ToArray()));
             log.ResponseBytes = tee.TotalBytesWritten;
             if (tee.TotalBytesWritten > responseCapture.Length)
                 log.ResponseBody += "\n... [response capture truncated at 64 KB]";
@@ -726,7 +732,7 @@ internal sealed class McpServerHost : IAsyncDisposable
     /// Creates a session unless the concurrent-session cap is reached or the host is stopping,
     /// in which case null is returned and the caller answers 503.
     /// </summary>
-    private McpHttpSession? TryCreateSession(string? clientAddress)
+    private async Task<McpHttpSession?> TryCreateSessionAsync(string? clientAddress)
     {
         if (_sessions.Count >= MaxConcurrentSessions)
         {
@@ -753,7 +759,28 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         McpSessionInfo sessionInfo = new(sessionId, clientAddress);
         StreamableHttpServerTransport transport = new() { SessionId = sessionId };
-        McpServer server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
+        McpServer server;
+        try
+        {
+            server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
+        }
+        catch
+        {
+            // The options factory runs module code and may throw. Release the transport and the
+            // linked CTS registration so a consistently-failing module cannot leak one of each
+            // per failed POST (unbounded callback growth on the host CTS).
+            try
+            {
+                await transport.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Error disposing transport after MCP session creation failure");
+            }
+
+            lifetimeCts.Dispose();
+            throw;
+        }
 
         McpHttpSession session = new()
         {
@@ -858,7 +885,11 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
         finally
         {
-            _sessions.TryRemove(session.Id, out _);
+            // A self-terminating session (fault / transport completion) must still be fully
+            // disposed, not just removed. Whoever wins TryRemove owns disposal; do NOT await
+            // ServerRunTask here — this finally runs inside that very task.
+            if (_sessions.TryRemove(session.Id, out _))
+                await DisposeSessionAsync(session, waitForRunTask: false);
         }
     }
 
@@ -867,13 +898,26 @@ internal sealed class McpServerHost : IAsyncDisposable
         if (!_sessions.TryRemove(sessionId, out McpHttpSession? session))
             return;
 
+        await DisposeSessionAsync(session, waitForRunTask: true);
+        Log.Debug("MCP session {SessionId} closed", sessionId);
+    }
+
+    /// <summary>
+    /// Disposes a session's transport, server, and lifetime CTS in the SDK's teardown order.
+    /// Shared by <see cref="RemoveSessionAsync"/> (waits for the run loop) and the run task's
+    /// own finally (must not wait for itself). Idempotent ownership is guaranteed by the
+    /// caller's successful TryRemove.
+    /// </summary>
+    private static async Task DisposeSessionAsync(McpHttpSession session, bool waitForRunTask)
+    {
         try
         {
             // Disposal order matches the SDK's session teardown: complete the transport's
             // message reader, cancel the run loop, then dispose the server.
             await session.Transport.DisposeAsync();
             await session.LifetimeCts.CancelAsync();
-            await session.ServerRunTask.WaitAsync(TimeSpan.FromSeconds(10));
+            if (waitForRunTask)
+                await session.ServerRunTask.WaitAsync(TimeSpan.FromSeconds(10));
         }
         catch (Exception ex) when (ex is OperationCanceledException or TimeoutException)
         {
@@ -895,8 +939,6 @@ internal sealed class McpServerHost : IAsyncDisposable
 
             session.LifetimeCts.Dispose();
         }
-
-        Log.Debug("MCP session {SessionId} closed", sessionId);
     }
 
     private void SweepIdleSessions(object? state)

@@ -3463,7 +3463,7 @@ internal partial class MainForm : Form
         UpdateModuleButtons();
     }
 
-    private void BtnImportModule_Click(object? sender, EventArgs e)
+    private async void BtnImportModule_Click(object? sender, EventArgs e)
     {
         // Open in the app's own Modules/ subdirectory — where the build copies the freshly
         // built module DLLs — so the user sees the current modules first instead of whatever
@@ -3482,7 +3482,7 @@ internal partial class MainForm : Form
 
         try
         {
-            _moduleHost.Import(dialog.FileName);
+            await _moduleHost.ImportAsync(dialog.FileName);
             RefreshModules();
         }
         catch (Exception ex)

@@ -1,6 +1,8 @@
 using System.Data.Common;
 using System.Net;
 using Kaeo.LlmProxy.Core.Models;
+using Microsoft.Data.Sqlite;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Infrastructure.Mcp;
 
@@ -60,22 +62,31 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
 
         // One connection + one transaction for all keys so a concurrent reader never sees a
         // half-saved settings set.
-        _database.ExecuteModuleTransaction((connection, transaction) =>
+        try
         {
-            foreach ((string key, string value) in pairs)
+            _database.ExecuteModuleTransaction((connection, transaction) =>
             {
-                using DbCommand command = connection.CreateCommand();
-                command.Transaction = transaction;
-                command.CommandText =
-                    """
-                    INSERT INTO mcp_server_settings (key, value) VALUES ($key, $value)
-                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                    """;
-                AddParameter(command, "$key", key);
-                AddParameter(command, "$value", value);
-                command.ExecuteNonQuery();
-            }
-        });
+                foreach ((string key, string value) in pairs)
+                {
+                    using DbCommand command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText =
+                        """
+                        INSERT INTO mcp_server_settings (key, value) VALUES ($key, $value)
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                        """;
+                    AddParameter(command, "$key", key);
+                    AddParameter(command, "$value", value);
+                    command.ExecuteNonQuery();
+                }
+            });
+        }
+        catch (Exception ex) when (ex is IOException or SqliteException)
+        {
+            // A sharing violation from a concurrent instance must not crash a settings apply;
+            // the change persists on the next successful write.
+            Log.Warning(ex, "Could not persist MCP server settings");
+        }
     }
 
     private static int ClampPort(int port) => Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort);
@@ -110,12 +121,22 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
 
     private Dictionary<string, string> LoadKeyValueTable()
     {
-        IReadOnlyList<KeyValuePair<string, string>> rows = _database.ExecuteModuleQuery(
-            "SELECT key, value FROM mcp_server_settings;",
-            reader => new KeyValuePair<string, string>(reader.GetString(0), reader.GetString(1)),
-            null);
+        try
+        {
+            IReadOnlyList<KeyValuePair<string, string>> rows = _database.ExecuteModuleQuery(
+                "SELECT key, value FROM mcp_server_settings;",
+                reader => new KeyValuePair<string, string>(reader.GetString(0), reader.GetString(1)),
+                null);
 
-        return new Dictionary<string, string>(rows, StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, string>(rows, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or SqliteException)
+        {
+            // A sharing violation from a concurrent instance must not crash settings reads;
+            // fall back to defaults so the server stays startable with sane values.
+            Log.Warning(ex, "Could not read MCP server settings; using defaults");
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>Creates and adds a parameter in a provider-agnostic way.</summary>

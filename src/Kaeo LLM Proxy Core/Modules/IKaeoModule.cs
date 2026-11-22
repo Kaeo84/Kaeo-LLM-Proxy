@@ -7,6 +7,13 @@ namespace Kaeo.LlmProxy.Core.Modules;
 /// Modules must reference only this contracts assembly, never the host application, so new
 /// modules can be added without any host code changes.
 /// </summary>
+/// <remarks>
+/// A module that owns disposable resources (HttpClients, timers, cancellation token sources,
+/// file handles, background loops) should also implement <see cref="IDisposable"/> or
+/// <see cref="IAsyncDisposable"/>. The host disposes the module instance opportunistically when
+/// it is disabled or removed, before unloading its assembly; releasing resources there is what
+/// allows the collectible load context to actually be reclaimed.
+/// </remarks>
 public interface IKaeoModule
 {
     /// <summary>Stable unique identifier for this module, e.g. <c>kaeo.mcp</c>.</summary>

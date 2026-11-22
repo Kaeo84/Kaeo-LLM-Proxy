@@ -6,6 +6,7 @@ using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Core.Modules;
+using Microsoft.Data.Sqlite;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Services.Mcp;
@@ -119,7 +120,7 @@ internal sealed class McpServerService : IAsyncDisposable
             ListenPort = settings.ListenPort;
             RaiseStatus($"Running at {_host.EndpointUrl}");
         }
-        catch (Exception ex) when (ex is IOException or SocketException or HttpListenerException or ArgumentException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or SocketException or HttpListenerException or ArgumentException or InvalidOperationException or SqliteException)
         {
             // Do not leave the previous run's endpoint on display next to a failure status.
             ListenAddress = string.Empty;

@@ -174,11 +174,18 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
 
     /// <summary>
     /// Fallback handler for the default load context. When the host's deps.json and base
-    /// directory probing both fail, resolve the request into the OWNING module's collectible
-    /// context — never into Default, which is non-collectible and would pin the assembly for
-    /// the process lifetime. A module's own assembly is never served here at all; only its
-    /// dependencies. If no module owns the assembly, returning null leaves Default probing
-    /// the host directory, i.e. only host-approved shared dependencies load there.
+    /// directory probing both fail, satisfy the request by loading a SEPARATE copy into the
+    /// default context from a module that ships the dependency.
+    /// <para>
+    /// It is critical that this handler never returns an assembly belonging to a collectible
+    /// module context: the runtime caches the result of <c>Default.Resolving</c> in Default's
+    /// bind cache, so handing back a collectible instance (or loading into the owning module
+    /// context) roots that context for the process lifetime and silently defeats module
+    /// unload. A default-context copy is non-collectible and lives as long as the host needs
+    /// it; the module keeps its own collectible copy with its own type identity.
+    /// </para>
+    /// A module's own assembly is never served here at all; only its dependencies. If no
+    /// module ships the assembly, returning null leaves Default probing the host directory.
     /// </summary>
     private static Assembly? OnDefaultContextResolving(AssemblyLoadContext context, AssemblyName assemblyName)
     {
@@ -198,20 +205,56 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
                 return null;
         }
 
+        // Gather every module that ships this dependency. Serving the first owner blindly would
+        // let two modules shipping different versions contaminate each other's bind; pick
+        // deterministically by highest version and log the ambiguity.
+        List<string> candidates = [];
         foreach (ModuleAssemblyLoadContext owner in owners)
         {
-            // Prefer an instance the owner already loaded (keeps type identity within the module).
-            Assembly? alreadyLoaded = owner.Assemblies.FirstOrDefault(
-                a => string.Equals(a.GetName().Name, assemblyName.Name, StringComparison.OrdinalIgnoreCase));
-            if (alreadyLoaded is not null)
-                return alreadyLoaded;
-
             string candidate = Path.Combine(owner._moduleDirectory, $"{assemblyName.Name}.dll");
             if (File.Exists(candidate))
-                return owner.LoadFromAssemblyPath(candidate);
+                candidates.Add(candidate);
         }
 
-        return null;
+        if (candidates.Count == 0)
+            return null;
+
+        string chosen = candidates[0];
+        if (candidates.Count > 1)
+        {
+            Version? best = null;
+            foreach (string candidate in candidates)
+            {
+                try
+                {
+                    Version? version = AssemblyName.GetAssemblyName(candidate).Version;
+                    if (version is not null && (best is null || version > best))
+                    {
+                        best = version;
+                        chosen = candidate;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(ex, "Could not read assembly version for {Path}", candidate);
+                }
+            }
+
+            Log.Warning("Multiple modules ship {Assembly}; serving the highest-version copy to the default context from {Path}",
+                assemblyName.Name, chosen);
+        }
+
+        try
+        {
+            // Load into Default (the requesting context), NOT a module owner. This avoids
+            // pinning a collectible module context via Default's bind cache.
+            return context.LoadFromAssemblyPath(chosen);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Default-context fallback load failed for {Assembly} from {Path}", assemblyName.Name, chosen);
+            return null;
+        }
     }
 
     protected override Assembly? Load(AssemblyName assemblyName)

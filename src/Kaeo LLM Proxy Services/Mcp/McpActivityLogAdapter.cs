@@ -30,8 +30,8 @@ internal sealed class McpActivityLogAdapter(StatisticsService statistics) : IMcp
                 StatusCode = entry.StatusCode,
                 DurationMs = entry.DurationMs,
                 ErrorMessage = entry.ErrorMessage,
-                RequestBody = entry.RequestDetail,
-                ResponseBody = entry.ResponseDetail,
+                RequestBody = SecretRedactor.Redact(entry.RequestDetail),
+                ResponseBody = SecretRedactor.Redact(entry.ResponseDetail),
                 RequestBytes = entry.RequestDetail is null ? 0 : Encoding.UTF8.GetByteCount(entry.RequestDetail),
                 ResponseBytes = entry.ResponseDetail is null ? 0 : Encoding.UTF8.GetByteCount(entry.ResponseDetail),
             };

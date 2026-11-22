@@ -68,6 +68,20 @@ internal sealed class ModuleHost
         }
     }
 
+    /// <summary>
+    /// Constructs the module instance inside the same 30s bound as other lifecycle calls so a
+    /// hanging parameterless constructor (or static initializer) cannot block import/startup
+    /// indefinitely. On timeout the call is abandoned and a TimeoutException propagates.
+    /// </summary>
+    private static async Task<IKaeoModule> CreateModuleBoundedAsync(string name, Assembly assembly)
+    {
+        IKaeoModule? created = null;
+        bool completed = await TryRunLifecycleAsync(name, "construction", () => { created = CreateModuleInstance(assembly); return Task.CompletedTask; }).ConfigureAwait(false);
+        if (!completed)
+            throw new TimeoutException($"Module '{name}' construction did not complete within 30s.");
+        return created!;
+    }
+
     public ModuleHost(AppDatabase database, AppSettings settings)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -131,7 +145,29 @@ internal sealed class ModuleHost
 
             try
             {
-                targets.AddRange(toolModule.CreateMcpToolTargets(session));
+                // Bound each module's target creation: a hanging module (deadlock / blocking I/O)
+                // must not wedge the initialize POST indefinitely. Run off the request thread and
+                // skip the module if it exceeds the per-session budget. The factory contract is
+                // synchronous (McpServer.Create), so the wait is necessarily blocking here, but it
+                // runs on a thread-pool thread and is now time-bounded rather than unbounded.
+                Task<IReadOnlyList<object>> task = Task.Run(() => toolModule.CreateMcpToolTargets(session));
+                IReadOnlyList<object> produced;
+                try
+                {
+                    produced = task.WaitAsync(TimeSpan.FromSeconds(10)).GetAwaiter().GetResult();
+                }
+                catch (TimeoutException)
+                {
+                    Log.Warning("Module {Name} did not create MCP tool targets within 10s; skipping it for this session.", loaded.Entry.Name);
+                    _ = task.ContinueWith(
+                        t => Log.Warning(t.Exception, "Abandoned module {Name} tool-target creation later faulted", loaded.Entry.Name),
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted,
+                        TaskScheduler.Default);
+                    continue;
+                }
+
+                targets.AddRange(produced);
             }
             catch (Exception ex)
             {
@@ -148,14 +184,30 @@ internal sealed class ModuleHost
     /// </summary>
     public void LoadRegisteredModules()
     {
-        foreach (ModuleRegistryEntry entry in _database.LoadModuleRegistry())
+        IReadOnlyList<ModuleRegistryEntry> entries;
+        try
+        {
+            entries = _database.LoadModuleRegistry();
+        }
+        catch (Exception ex) when (ex is IOException or SqliteException)
+        {
+            // A sharing violation from a concurrent instance must not crash host startup;
+            // modules simply load on the next start once the database is readable.
+            Log.Warning(ex, "Could not read the module registry; no modules loaded this start");
+            return;
+        }
+
+        foreach (ModuleRegistryEntry entry in entries)
         {
             if (!entry.IsEnabled)
                 continue;
 
             try
             {
-                LoadedModule loaded = LoadModule(entry);
+                // Startup is a genuinely synchronous caller: modules must be loaded before the
+                // WinForms message loop starts on the STA thread, so blocking here is intentional
+                // and STA-safe (making Main async would move Application.Run off the STA thread).
+                LoadedModule loaded = LoadModuleAsync(entry).GetAwaiter().GetResult();
                 lock (_modulesLock)
                 {
                     _loadedModules.Add(loaded);
@@ -183,7 +235,7 @@ internal sealed class ModuleHost
     /// id. On success the module is initialized (schema applied + settings loaded), registered
     /// in the database, and kept loaded. Throws with a user-presentable message on failure.
     /// </summary>
-    public ModuleRegistryEntry Import(string assemblyPath)
+    public async Task<ModuleRegistryEntry> ImportAsync(string assemblyPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(assemblyPath);
         string fullPath = Path.GetFullPath(assemblyPath);
@@ -201,7 +253,7 @@ internal sealed class ModuleHost
             try
             {
                 Assembly assembly = loadContext.LoadFromAssemblyPath(fullPath);
-                module = CreateModuleInstance(assembly);
+                module = await CreateModuleBoundedAsync(fullPath, assembly).ConfigureAwait(false);
             }
             catch
             {
@@ -231,8 +283,7 @@ internal sealed class ModuleHost
             {
                 string importDataDirectory = Path.GetDirectoryName(_database.DatabasePath) ?? AppContext.BaseDirectory;
                 ModuleContext context = new(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, importDataDirectory);
-                bool initialized = TryRunLifecycleAsync(module.Name, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; })
-                    .GetAwaiter().GetResult();
+                bool initialized = await TryRunLifecycleAsync(module.Name, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; }).ConfigureAwait(false);
                 if (!initialized)
                     throw new TimeoutException($"Module '{module.Name}' Initialize did not complete within 30s.");
             }
@@ -258,7 +309,7 @@ internal sealed class ModuleHost
                 {
                     try
                     {
-                        TryRunLifecycleAsync(module.Name, "StopAsync", runnable.StopAsync).GetAwaiter().GetResult();
+                        await TryRunLifecycleAsync(module.Name, "StopAsync", runnable.StopAsync).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
@@ -313,7 +364,7 @@ internal sealed class ModuleHost
 
                 if (!alreadyLoaded)
                 {
-                    LoadedModule loaded = LoadModule(entry);
+                    LoadedModule loaded = await LoadModuleAsync(entry).ConfigureAwait(false);
                     lock (_modulesLock)
                     {
                         _loadedModules.Add(loaded);
@@ -362,8 +413,18 @@ internal sealed class ModuleHost
             if (loaded is not null)
                 await UnloadAsync(loaded).ConfigureAwait(false);
 
-            _database.DeleteModuleRegistry(entry.Id);
-            Log.Information("Removed module {Name} ({Path}) from the registry", entry.Name, entry.AssemblyPath);
+            try
+            {
+                _database.DeleteModuleRegistry(entry.Id);
+                Log.Information("Removed module {Name} ({Path}) from the registry", entry.Name, entry.AssemblyPath);
+            }
+            catch (Exception ex) when (ex is IOException or SqliteException)
+            {
+                // The module is already unloaded; a sharing violation only delays the registry
+                // row's removal until the next successful write rather than crashing management.
+                Log.Warning(ex, "Could not delete module {Name} from the registry; it was unloaded and the row persists until the next successful write", entry.Name);
+            }
+
             ModulesChanged?.Invoke(this, EventArgs.Empty);
         }
         finally
@@ -413,7 +474,7 @@ internal sealed class ModuleHost
         return new HostInfo(_settings.ListenAddress, _settings.ListenPort, _settings.EnableApiExplorer, specUrl);
     }
 
-    private LoadedModule LoadModule(ModuleRegistryEntry entry)
+    private async Task<LoadedModule> LoadModuleAsync(ModuleRegistryEntry entry)
     {
         if (!File.Exists(entry.AssemblyPath))
             throw new FileNotFoundException(
@@ -424,14 +485,13 @@ internal sealed class ModuleHost
         try
         {
             Assembly assembly = loadContext.LoadFromAssemblyPath(entry.AssemblyPath);
-            module = CreateModuleInstance(assembly);
+            module = await CreateModuleBoundedAsync(entry.Name ?? entry.AssemblyPath, assembly).ConfigureAwait(false);
             // Derive the application's data directory from the configured DB path and pass it
             // to the module so it stores its files beside the host database.
             string? appDbPath = _database.DatabasePath;
             string dataDirectory = Path.GetDirectoryName(appDbPath) ?? AppContext.BaseDirectory;
             ModuleContext context = new(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, dataDirectory);
-            bool initialized = TryRunLifecycleAsync(entry.Name ?? entry.AssemblyPath, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; })
-                .GetAwaiter().GetResult();
+            bool initialized = await TryRunLifecycleAsync(entry.Name ?? entry.AssemblyPath, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; }).ConfigureAwait(false);
             if (!initialized)
                 throw new TimeoutException($"Module '{entry.Name ?? entry.AssemblyPath}' Initialize did not complete within 30s.");
         }
@@ -460,6 +520,22 @@ internal sealed class ModuleHost
         catch (Exception ex)
         {
             Log.Warning(ex, "Error stopping module {Name} during unload", loaded.Entry.Name);
+        }
+
+        // Give the module a chance to release resources (HttpClients, timers, CTSs, file handles,
+        // background loops) before its assembly is unloaded. IKaeoModule does not require disposal,
+        // so honor it opportunistically when the module implements it; a lingering handler or
+        // undisposed resource is the most common cause of a module surviving unload.
+        try
+        {
+            if (loaded.Module is IAsyncDisposable asyncDisposable)
+                await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+            else if (loaded.Module is IDisposable disposable)
+                disposable.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Error disposing module {Name} during unload", loaded.Entry.Name);
         }
 
         lock (_modulesLock)
