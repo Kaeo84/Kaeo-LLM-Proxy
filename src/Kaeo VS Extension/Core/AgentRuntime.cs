@@ -180,27 +180,39 @@ internal sealed class AgentRuntime
                 var reasoningParts = new List<string>();
                 var functionCalls = new List<FunctionCallContent>();
 
-                await foreach (var update in client.GetStreamingResponseAsync(messages, options, ct))
+                try
                 {
-                    foreach (AIContent content in update.Contents)
+                    await foreach (var update in client.GetStreamingResponseAsync(messages, options, ct))
                     {
-                        switch (content)
+                        foreach (AIContent content in update.Contents)
                         {
-                            case TextContent text when !string.IsNullOrEmpty(text.Text):
-                                textParts.Add(text.Text);
-                                events.TextDelta?.Invoke(text.Text);
-                                break;
+                            switch (content)
+                            {
+                                case TextContent text when !string.IsNullOrEmpty(text.Text):
+                                    textParts.Add(text.Text);
+                                    events.TextDelta?.Invoke(text.Text);
+                                    break;
 
-                            case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
-                                reasoningParts.Add(reasoning.Text);
-                                events.ReasoningDelta?.Invoke(reasoning.Text);
-                                break;
+                                case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                                    reasoningParts.Add(reasoning.Text);
+                                    events.ReasoningDelta?.Invoke(reasoning.Text);
+                                    break;
 
-                            case FunctionCallContent call:
-                                functionCalls.Add(call);
-                                break;
+                                case FunctionCallContent call:
+                                    functionCalls.Add(call);
+                                    break;
+                            }
                         }
                     }
+                }
+                catch (Exception)
+                {
+                    // L8: keep whatever assistant text streamed before the failure so the history
+                    // reflects the partial turn instead of silently dropping it, then rethrow.
+                    var partialText = string.Concat(textParts);
+                    if (partialText.Length > 0)
+                        history.Add(new ChatMessage(ChatRole.Assistant, partialText + "\n\n[response truncated: stream failed]"));
+                    throw;
                 }
 
                 var fullText = string.Concat(textParts);

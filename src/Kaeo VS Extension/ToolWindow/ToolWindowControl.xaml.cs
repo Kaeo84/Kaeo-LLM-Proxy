@@ -16,6 +16,11 @@ public partial class ToolWindowControl : UserControl
 {
     private readonly ExtensionSettingsStore _settings = new();
     private ToolWindowViewModel? _vm;
+    // L4: keep the manager and the package-disposal registration so they can be released on Unloaded.
+    private readonly McpServerManager _mcp;
+    private System.Threading.CancellationTokenRegistration _disposalRegistration;
+    // L5: the single MCP health warning line, updated/removed as health changes (no text-match dedup).
+    private ChatLine? _mcpWarningLine;
     // One reusable handler so a ChatLine removed from the transcript can be unsubscribed;
     // per-line lambdas could never be detached and would pin the control for the line's lifetime.
     private readonly System.ComponentModel.PropertyChangedEventHandler _lineChangedHandler;
@@ -26,9 +31,9 @@ public partial class ToolWindowControl : UserControl
 
         // No hardcoded proxy URL: connections come from settings, and models are pulled
         // live from each connection's Ollama /api/tags endpoint (see ToolWindowViewModel).
-        var mcp = new McpServerManager(_settings);
-        var engine = new ChatEngine(new AgentRuntime(mcp, _settings));
-        _vm = new ToolWindowViewModel(engine, _settings, mcp);
+        _mcp = new McpServerManager(_settings);
+        var engine = new ChatEngine(new AgentRuntime(_mcp, _settings));
+        _vm = new ToolWindowViewModel(engine, _settings, _mcp);
         // The transcript DataTemplate binds {Binding DataContext.Reasoning*} via RelativeSource,
         // and the Send/Stop trigger binds IsBusy - both need the view model as the visual root's
         // DataContext. Item templates still get ChatLine as their own DataContext.
@@ -80,8 +85,24 @@ public partial class ToolWindowControl : UserControl
 
         GearButton.Click += GearButton_Click;
 
-        // Wire up MCP server health monitoring
-        mcp.ServerHealthChanged += OnMcpServerHealthChanged; if (VsPackage.Instance is { } pkg) pkg.DisposalToken.Register(mcp.StopHeartbeat);
+        // L4: wire MCP health monitoring on Loaded and release it on Unloaded so a hidden/closed
+        // tool window does not keep the manager (and this control) alive via the event subscription.
+        Loaded += (_, _) =>
+        {
+            _mcp.ServerHealthChanged -= OnMcpServerHealthChanged;
+            _mcp.ServerHealthChanged += OnMcpServerHealthChanged;
+            if (VsPackage.Instance is { } pkg)
+            {
+                _disposalRegistration.Dispose();
+                _disposalRegistration = pkg.DisposalToken.Register(_mcp.StopHeartbeat);
+            }
+        };
+        Unloaded += (_, _) =>
+        {
+            _mcp.ServerHealthChanged -= OnMcpServerHealthChanged;
+            _disposalRegistration.Dispose();
+            _disposalRegistration = default;
+        };
     }
 
     // The health event arrives on a background thread (the manager uses ConfigureAwait(false));
@@ -104,20 +125,31 @@ public partial class ToolWindowControl : UserControl
                 var details = string.Join("\n", unhealthy.Select(s => $"• {s.Name}: {s.LastError ?? "Unknown error"}"));
                 McpAlertDetails.Text = details;
 
-                // Add warning to chat if not already present
-                if (_vm != null && !_vm.Lines.Any(l => l.Kind == "warning" && l.Text.Contains("MCP server")))
+                // L5: track one warning line by reference and update it in place instead of
+                // deduping on its text (which never refreshed the count/names and never removed it).
+                if (_vm != null)
                 {
-                    _vm.Lines.Add(new ChatLine
+                    var text = $" {unhealthy.Count} MCP server(s) unavailable: {string.Join(", ", unhealthy.Select(s => s.Name))}";
+                    if (_mcpWarningLine is null)
                     {
-                        Kind = "warning",
-                        Text = $" {unhealthy.Count} MCP server(s) unavailable: {string.Join(", ", unhealthy.Select(s => s.Name))}"
-                    });
+                        _mcpWarningLine = new ChatLine { Kind = "warning", Text = text };
+                        _vm.Lines.Add(_mcpWarningLine);
+                    }
+                    else
+                    {
+                        _mcpWarningLine.Text = text;
+                    }
                 }
             }
             else
             {
-                // Hide alert bar
+                // Hide alert bar and drop the stale warning line once everything is healthy again.
                 McpAlertBar.Visibility = Visibility.Collapsed;
+                if (_vm != null && _mcpWarningLine is not null)
+                {
+                    _vm.Lines.Remove(_mcpWarningLine);
+                    _mcpWarningLine = null;
+                }
             }
         });
     }
@@ -195,9 +227,12 @@ public partial class ToolWindowControl : UserControl
         var debounceCts = new CancellationTokenSource();
         Action? onModelsChanged = () =>
         {
-            debounceCts.Cancel();
-            var cts = debounceCts = new CancellationTokenSource();
-            _ = DebouncedReloadAsync(cts.Token);
+            // L6: dispose the superseded CTS instead of leaking one per ModelsChanged event.
+            var previous = debounceCts;
+            debounceCts = new CancellationTokenSource();
+            previous.Cancel();
+            previous.Dispose();
+            _ = DebouncedReloadAsync(debounceCts.Token);
         };
         wnd.ModelsChanged += onModelsChanged;
         try
@@ -208,6 +243,7 @@ public partial class ToolWindowControl : UserControl
         {
             wnd.ModelsChanged -= onModelsChanged;
             debounceCts.Cancel();
+            debounceCts.Dispose();
         }
     }
 
@@ -223,6 +259,10 @@ public partial class ToolWindowControl : UserControl
         catch (OperationCanceledException)
         {
             // Superseded by a more recent change.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The CTS was disposed right after cancellation (L6); treat as superseded.
         }
     }
 
@@ -252,20 +292,20 @@ public partial class ToolWindowControl : UserControl
         ExportButton.ContextMenu.IsOpen = true;
     }
 
-    private void ExportMarkdown_Click(object sender, RoutedEventArgs e) => ExportConversation(TranscriptFormat.Markdown);
+    private async void ExportMarkdown_Click(object sender, RoutedEventArgs e) => await ExportConversationAsync(TranscriptFormat.Markdown);
 
-    private void ExportPlainText_Click(object sender, RoutedEventArgs e) => ExportConversation(TranscriptFormat.PlainText);
+    private async void ExportPlainText_Click(object sender, RoutedEventArgs e) => await ExportConversationAsync(TranscriptFormat.PlainText);
 
-    private void ExportHtml_Click(object sender, RoutedEventArgs e) => ExportConversation(TranscriptFormat.Html);
+    private async void ExportHtml_Click(object sender, RoutedEventArgs e) => await ExportConversationAsync(TranscriptFormat.Html);
 
     /// <summary>Writes the conversation transcript to a user-chosen file in the requested format.</summary>
-    private void ExportConversation(TranscriptFormat format)
+    private async System.Threading.Tasks.Task ExportConversationAsync(TranscriptFormat format)
     {
         if (_vm is null) return;
 
         if (!_vm.Lines.Any(TranscriptFormatter.IsConversation))
         {
-            VS.MessageBox.Show("Export Conversation", "There are no messages to export yet.");
+            await VS.MessageBox.ShowAsync("Export Conversation", "There are no messages to export yet.");
             return;
         }
 
@@ -290,12 +330,22 @@ public partial class ToolWindowControl : UserControl
         try
         {
             var text = TranscriptFormatter.Format(_vm.Lines, format);
+            var path = dialog.FileName;
             // UTF-8 without BOM: a BOM trips Markdown renderers and shows up as mojibake in some editors.
-            File.WriteAllText(dialog.FileName, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+            // L11: write off the UI thread (net48 has no File.WriteAllTextAsync).
+            await System.Threading.Tasks.Task.Run(() => File.WriteAllText(path, text, encoding));
+        }
+        catch (IOException ex)
+        {
+            // L11 / AllowMultipleInstances: a sharing violation must degrade gracefully, not crash.
+            DebugLog.Warn($"Export conversation could not write '{dialog.FileName}': {ex.Message}");
+            await VS.MessageBox.ShowWarningAsync("Export Conversation", $"Could not write the file.\n\n{ex.Message}");
         }
         catch (Exception ex)
         {
-            VS.MessageBox.ShowError("Export Conversation", $"Could not write the file.\n\n{ex.Message}");
+            DebugLog.Error("Export conversation failed.", ex);
+            await VS.MessageBox.ShowErrorAsync("Export Conversation", $"Could not write the file.\n\n{ex.Message}");
         }
     }
 
@@ -355,7 +405,10 @@ public partial class ToolWindowControl : UserControl
             Dispatcher.BeginInvoke(new System.Action(() =>
             {
                 _scrollPending = false;
-                _scrollViewer ??= FindVisualChild<ScrollViewer>(MessageList);
+                // L12: a cached ScrollViewer goes stale when the ListBox template is reapplied;
+                // re-resolve whenever the cached one is no longer in MessageList's visual tree.
+                if (_scrollViewer is null || !IsDescendant(MessageList, _scrollViewer))
+                    _scrollViewer = FindVisualChild<ScrollViewer>(MessageList);
                 if (_scrollViewer is null) return;
 
                 // If the user is within 50 px of the bottom, they're "pinned" — auto-scroll.
@@ -364,6 +417,15 @@ public partial class ToolWindowControl : UserControl
                 if (offsetFromBottom <= 50.0)
                     _scrollViewer.ScrollToBottom();
             }), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        /// <summary>L12: true when <paramref name="node"/> is currently a visual descendant of <paramref name="ancestor"/>.</summary>
+        private static bool IsDescendant(DependencyObject ancestor, DependencyObject node)
+        {
+            for (var p = node; p is not null; p = System.Windows.Media.VisualTreeHelper.GetParent(p))
+                if (ReferenceEquals(p, ancestor))
+                    return true;
+            return false;
         }
 
         private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject

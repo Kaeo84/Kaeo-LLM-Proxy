@@ -105,7 +105,9 @@ internal sealed class OpenAiUpstreamClient : IUpstreamClient
         _ = apiKey;
     }
 
-    public Task<bool> HealthAsync(CancellationToken ct = default) => Task.FromResult(false);
+    // L3: signal "unsupported" consistently with GetModelsAsync rather than "unhealthy".
+    public Task<bool> HealthAsync(CancellationToken ct = default)
+        => throw new NotSupportedException("The OpenAI upstream is stubbed but not implemented yet.");
 
     public Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
         => throw new NotSupportedException("The OpenAI upstream is stubbed but not implemented yet.");
@@ -124,7 +126,9 @@ internal sealed class AnthropicUpstreamClient : IUpstreamClient
         _ = apiKey;
     }
 
-    public Task<bool> HealthAsync(CancellationToken ct = default) => Task.FromResult(false);
+    // L3: signal "unsupported" consistently with GetModelsAsync rather than "unhealthy".
+    public Task<bool> HealthAsync(CancellationToken ct = default)
+        => throw new NotSupportedException("The Anthropic upstream is stubbed but not implemented yet.");
 
     public Task<IReadOnlyList<ModelInfo>> GetModelsAsync(CancellationToken ct = default)
         => throw new NotSupportedException("The Anthropic upstream is stubbed but not implemented yet.");

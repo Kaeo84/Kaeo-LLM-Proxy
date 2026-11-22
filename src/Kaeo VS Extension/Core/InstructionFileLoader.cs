@@ -54,7 +54,7 @@ internal static class InstructionFileLoader
                         // guard above does not narrow `path`; assert non-null here.
                         Path = path!,
                         Content = File.ReadAllText(path!),
-                        Scope = InstructionScope.Solution,
+                        Scope = MapScope(entry.Scope),
                         Name = Display(entry),
                     });
                 }
@@ -71,7 +71,7 @@ internal static class InstructionFileLoader
                 {
                     Path = "(inline)",
                     Content = entry.Content!,
-                    Scope = InstructionScope.Solution,
+                    Scope = MapScope(entry.Scope),
                     Name = Display(entry),
                 });
             }
@@ -196,6 +196,12 @@ internal static class InstructionFileLoader
         => !string.IsNullOrWhiteSpace(e.Name) ? e.Name!
          : !string.IsNullOrWhiteSpace(e.Path) ? Path.GetFileName(e.Path!)
          : "Instruction";
+
+    /// <summary>L4: maps the persisted scope string to the prompt-header enum (default Solution).</summary>
+    private static InstructionScope MapScope(string? scope)
+        => string.Equals(scope, InstructionScopeKind.Global, StringComparison.OrdinalIgnoreCase) ? InstructionScope.Global
+         : string.Equals(scope, InstructionScopeKind.Project, StringComparison.OrdinalIgnoreCase) ? InstructionScope.Project
+         : InstructionScope.Solution;
 
     /// <summary>
     /// Combines all instruction content into a single string for model context.
@@ -357,5 +363,8 @@ internal enum InstructionScope
     Solution,
 
     /// <summary>Applies only to a specific project.</summary>
-    Project
+    Project,
+
+    /// <summary>Applies globally across solutions (user-wide preferences).</summary>
+    Global
 }

@@ -112,7 +112,7 @@ internal sealed class OllamaApiClient : IUpstreamClient
                     // details.context_length
                     long contextLength = 0;
                     if (m.TryGetProperty("details", out var d) && d.ValueKind == JsonValueKind.Object && d.TryGetProperty("context_length", out var cl))
-                        contextLength = cl.GetInt64();
+                        contextLength = ParseContextLength(cl);
 
                     // capabilities: Ollama-native tokens. Tool-calling is signalled by "tools".
                     var capabilities = new List<string>();
@@ -131,6 +131,25 @@ internal sealed class OllamaApiClient : IUpstreamClient
             }
             return list;
         }
+    }
+
+    /// <summary>L2: tolerate context_length sent as an integer, float, or string; default 0 so one
+    /// malformed model entry cannot abort the whole model list.</summary>
+    private static long ParseContextLength(JsonElement cl)
+    {
+        if (cl.ValueKind == JsonValueKind.Number)
+        {
+            if (cl.TryGetInt64(out var l)) return l;
+            if (cl.TryGetDouble(out var dbl)) return (long)dbl;
+            return 0;
+        }
+        if (cl.ValueKind == JsonValueKind.String)
+        {
+            var s = cl.GetString();
+            if (long.TryParse(s, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var l)) return l;
+            if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dbl)) return (long)dbl;
+        }
+        return 0;
     }
 
     }

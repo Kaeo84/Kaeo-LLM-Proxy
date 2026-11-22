@@ -134,7 +134,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
                 var fetched = await client.GetModelsAsync(timeoutCts.Token);
 
-                var previous = Models.ToDictionary(m => m.Name, StringComparer.OrdinalIgnoreCase);
+                // L1: build last-wins so duplicate model names cannot throw (ToDictionary would).
+                var previous = new Dictionary<string, ModelViewModel>(StringComparer.OrdinalIgnoreCase);
+                foreach (var m in Models)
+                    if (!string.IsNullOrWhiteSpace(m.Name))
+                        previous[m.Name] = m;
                 Models.Clear();
                 foreach (var m in fetched)
                 {

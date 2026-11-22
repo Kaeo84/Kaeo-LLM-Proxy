@@ -39,6 +39,27 @@ public sealed class VsPackage : AsyncPackage
     /// <summary>Extension install folder resolved once at package init so the resolve handler doesn't touch DTE.</summary>
     private static string? _extensionFolder;
 
+    /// <summary>L3: guards against double-hooking the process-wide exception handlers.</summary>
+    private static bool _globalHandlersHooked;
+
+    /// <summary>L3: release process-wide hooks and the static instance when the package is disposed.</summary>
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (ReferenceEquals(Instance, this))
+                Instance = null;
+            AppDomain.CurrentDomain.AssemblyResolve -= OnAssemblyResolve;
+            if (_globalHandlersHooked)
+            {
+                _globalHandlersHooked = false;
+                AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+                System.Threading.Tasks.TaskScheduler.UnobservedTaskException -= OnUnobservedTaskException;
+            }
+        }
+        base.Dispose(disposing);
+    }
+
     protected override async Task InitializeAsync(System.Threading.CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
         // Safety net for the Core adapter assembly: the pkgdef codeBase entry normally
@@ -113,11 +134,15 @@ public sealed class VsPackage : AsyncPackage
     /// </summary>
     private static void HookGlobalExceptionLogging()
     {
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            DebugLog.Error("Unhandled exception", e.ExceptionObject as Exception);
-
+        if (_globalHandlersHooked)
+            return;
+        _globalHandlersHooked = true;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
         System.Threading.Tasks.TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
     }
+
+    private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        => DebugLog.Error("Unhandled exception", e.ExceptionObject as Exception);
 
     /// <summary>
     /// Logs unobserved task exceptions, but filters out known-benign infrastructure faults that
@@ -155,8 +180,9 @@ public sealed class VsPackage : AsyncPackage
     {
         // VS ServiceBroker/ServiceHub named-pipe teardown (Nerdbank.Streams UsePipeWriter).
         System.IO.IOException io when io.Message.Contains("Pipe is broken") => true,
-        // net48 StreamReader race on dispose-mid-read.
-        NullReferenceException nre when nre.StackTrace?.Contains("System.IO.StreamReader") == true => true,
+        // net48 StreamReader race on dispose-mid-read (the specific ReadBufferAsync frame).
+        NullReferenceException nre when nre.StackTrace?.Contains("System.IO.StreamReader") == true
+            && nre.StackTrace?.Contains("ReadBufferAsync") == true => true,
         _ => false,
     };
 
@@ -167,7 +193,10 @@ public sealed class VsPackage : AsyncPackage
         ToolWindowPane? window = FindToolWindow(typeof(ToolWindowPaneImpl), 0, true);
         if (window?.Frame is IVsWindowFrame frame)
         {
-            ErrorHandler.ThrowOnFailure(frame.Show());
+            // L3: a failed Show must not throw out of a menu command handler; log and degrade.
+            var hr = frame.Show();
+            if (hr != VSConstants.S_OK)
+                DebugLog.Warn($"Failed to show the Kaeo Assistant tool window (hr=0x{hr:X8}).");
         }
     }
 }

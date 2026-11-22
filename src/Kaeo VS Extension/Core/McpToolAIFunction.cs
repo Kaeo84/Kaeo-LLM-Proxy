@@ -32,9 +32,10 @@ internal sealed class McpToolAIFunction : AIFunction
         Description = TryGetString(fn, "description") ?? string.Empty;
 
         JsonNode? parameters = fn["parameters"];
-        _schema = parameters is not null
-            ? JsonDocument.Parse(parameters.ToJsonString()).RootElement.Clone()
-            : JsonDocument.Parse("{}").RootElement.Clone();
+        // L1: dispose the parsed document so its pooled buffer is returned; Clone() produces a
+        // JsonElement that owns its memory and remains valid after the document is disposed.
+        using var doc = JsonDocument.Parse(parameters is not null ? parameters.ToJsonString() : "{}");
+        _schema = doc.RootElement.Clone();
     }
 
     /// <inheritdoc />

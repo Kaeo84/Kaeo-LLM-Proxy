@@ -91,8 +91,15 @@ internal sealed class ExtensionSettingsStore
     private static void Migrate(ExtensionSettings settings)
     {
         settings.Defaults ??= new Defaults();
-        if (settings.Defaults.MaxToolIterations == 10)
-            settings.Defaults.MaxToolIterations = 50;
+        // L9: gate the upgrade on the persisted schema version so it runs once. Without this,
+        // a user who deliberately sets MaxToolIterations back to 10 would be bumped to 50 on
+        // every load. Version 1 = the 10 -> 50 default raise.
+        if (settings.SchemaVersion < 1)
+        {
+            if (settings.Defaults.MaxToolIterations == 10)
+                settings.Defaults.MaxToolIterations = 50;
+            settings.SchemaVersion = 1;
+        }
     }
 
     public async Task SaveAsync(ExtensionSettings settings)
@@ -333,6 +340,8 @@ internal sealed class ExtensionSettingsStore
 
 internal sealed class ExtensionSettings
 {
+    /// <summary>L9: persisted schema version so one-time migrations run only once.</summary>
+    public int SchemaVersion { get; set; }
     public Defaults? Defaults { get; set; } = new Defaults();
     public Connection[]? Connections { get; set; } = Array.Empty<Connection>();
     public Agent[]? Agents { get; set; } = Array.Empty<Agent>();

@@ -71,6 +71,13 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             }
 
             DataContext = this;
+            // L2: stop the debounce timer and flush any pending edit when the window closes, so
+            // closing within the 500 ms debounce window does not silently lose the last change.
+            Closed += (_, _) =>
+            {
+                _saveTimer?.Stop();
+                SaveNow();
+            };
             _ = LoadAsync();
         }
 
@@ -943,32 +950,6 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             RaiseModelsChanged();
         }
 
-        /// <summary>
-        /// Trims a color input to "#RRGGBB" or "#AARRGGBB"; anything else (including empty)
-        /// normalizes to null so the VS theme applies.
-        /// </summary>
-        private static string? NormalizeHexColor(string? text)
-        {
-            text = text?.Trim();
-            if (text is null || text.Length == 0)
-                return null;
-            if ((text.Length == 7 || text.Length == 9) && text[0] == '#' && IsHexDigits(text, 1, text.Length - 1))
-                return text;
-            return null;
-        }
-
-        private static bool IsHexDigits(string s, int start, int count)
-        {
-            for (int i = start; i < start + count; i++)
-            {
-                char c = s[i];
-                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
-                    return false;
-            }
-
-            return true;
-        }
-
         /// <summary>Removes the selected tool from the always-allowed list and persists.</summary>
         private void RemoveAlwaysAllowed_Click(object sender, RoutedEventArgs e)
         {
@@ -1157,10 +1138,23 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// <summary>Creates a new empty agent and selects it for editing.</summary>
         private void NewAgent_Click(object sender, RoutedEventArgs e)
         {
-            var agent = new AgentViewModel { Name = $"Agent {_agents.Count + 1}" };
+            var agent = new AgentViewModel { Name = UniqueAgentName($"Agent {_agents.Count + 1}") };
             _agents.Add(agent);
             AgentsList.SelectedItem = agent;
             SaveAgentsNow();
+        }
+
+        /// <summary>L10: returns a name not already used by another agent (case-insensitive).</summary>
+        private string UniqueAgentName(string baseName, AgentViewModel? exclude = null)
+        {
+            var name = baseName;
+            var n = 2;
+            while (_agents.Any(a => !ReferenceEquals(a, exclude)
+                && string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                name = $"{baseName} ({n++})";
+            }
+            return name;
         }
 
         /// <summary>Copies the selected agent, including its prompt, under a new name.</summary>
@@ -1170,7 +1164,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
             var copy = new AgentViewModel
             {
-                Name = $"{source.Name} (copy)",
+                Name = UniqueAgentName($"{source.Name} (copy)"),
                 Description = source.Description,
                 SystemPrompt = source.SystemPrompt,
                 Tools = source.Tools,
@@ -1194,6 +1188,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             _agents.Remove(agent);
             if (ReferenceEquals(_editingAgent, agent))
                 LoadAgentEditor(null);
+            // L10: if the default agent was deleted, repoint Defaults.Agent at a remaining agent.
+            if (_settings.Defaults is not null
+                && string.Equals(_settings.Defaults.Agent, agent.Name, StringComparison.OrdinalIgnoreCase))
+                _settings.Defaults.Agent = _agents.FirstOrDefault()?.Name ?? string.Empty;
             SaveAgentsNow();
         }
 
@@ -1203,7 +1201,15 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (_editingAgent is null) return;
 
             if (!_editingAgent.IsBuiltin && !string.IsNullOrWhiteSpace(AgentNameBox.Text))
-                _editingAgent.Name = AgentNameBox.Text.Trim();
+            {
+                // L10: keep names unique and let the default-agent pointer follow a rename.
+                var oldName = _editingAgent.Name;
+                var newName = UniqueAgentName(AgentNameBox.Text.Trim(), _editingAgent);
+                _editingAgent.Name = newName;
+                if (_settings.Defaults is not null
+                    && string.Equals(_settings.Defaults.Agent, oldName, StringComparison.OrdinalIgnoreCase))
+                    _settings.Defaults.Agent = newName;
+            }
             _editingAgent.Description = string.IsNullOrWhiteSpace(AgentDescriptionBox.Text) ? null : AgentDescriptionBox.Text;
             _editingAgent.SystemPrompt = AgentPromptBox.Text;
             SaveAgentsNow();

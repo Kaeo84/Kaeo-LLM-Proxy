@@ -139,7 +139,10 @@ internal sealed class McpServerManager
             return;
         try
         {
-            foreach (var server in ServersSnapshot.Values.Where(s => s.Enabled))
+            // L10: only HTTP servers can be connectivity-probed. stdio has no test and builtin is
+            // always available; probing them would throw and mark them permanently stale.
+            foreach (var server in ServersSnapshot.Values.Where(s => s.Enabled
+                && string.Equals(s.Transport, "http", StringComparison.OrdinalIgnoreCase)))
             {
                 try
                 {
@@ -287,10 +290,10 @@ internal sealed class McpServerManager
         IReadOnlyList<McpTool> pulled;
 
         // HTTP Streamable transport: POST /mcp with JSON-RPC tools/list.
-        if (server.Transport == "http" && !string.IsNullOrWhiteSpace(server.Url))
+        if (string.Equals(server.Transport, "http", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(server.Url))
             pulled = await PullToolsHttpAsync(server.Url!, server.ApiKey, ct).ConfigureAwait(false);
         // stdio transport: spawn process and send JSON-RPC over stdin/stdout.
-        else if (server.Transport == "stdio" && !string.IsNullOrWhiteSpace(server.Command))
+        else if (string.Equals(server.Transport, "stdio", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(server.Command))
             pulled = await PullToolsStdioAsync(server, ct).ConfigureAwait(false);
         else
             return server.Tools ?? Array.Empty<McpTool>();
@@ -460,11 +463,11 @@ internal sealed class McpServerManager
     {
         try
         {
-            if (server.Transport == "http" && !string.IsNullOrWhiteSpace(server.Url))
+            if (string.Equals(server.Transport, "http", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(server.Url))
             {
                 return await ExecuteToolHttpAsync(server.Url!, server.ApiKey, toolName, argsJson, ct).ConfigureAwait(false);
             }
-            if (server.Transport == "stdio" && !string.IsNullOrWhiteSpace(server.Command))
+            if (string.Equals(server.Transport, "stdio", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(server.Command))
             {
                 return await ExecuteToolStdioAsync(server, toolName, argsJson, ct).ConfigureAwait(false);
             }
@@ -1017,7 +1020,25 @@ internal sealed class McpServerManager
             {
                 if (!process.HasExited)
                 {
-                    process.Kill();
+                    // L6: net48 Process.Kill() terminates only the direct child; a `cmd /c npx ...`
+                    // launcher leaves node grandchildren running. Kill the whole tree via taskkill /T,
+                    // falling back to the direct child if taskkill is unavailable.
+                    try
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "taskkill",
+                            Arguments = $"/PID {process.Id} /T /F",
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                        };
+                        using var killer = Process.Start(psi);
+                        killer?.WaitForExit(5000);
+                    }
+                    catch
+                    {
+                        process.Kill();
+                    }
                     process.WaitForExit(5000);
                 }
             }

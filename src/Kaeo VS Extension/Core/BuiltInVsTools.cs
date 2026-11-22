@@ -874,20 +874,47 @@ internal static class BuiltInVsTools
 
         if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
         {
-            dte.ItemOperations.OpenFile(filePath);
+            // L7: save/restore the shared Find state (mirrors FindSymbolReferencesAsync) so a
+            // definition lookup does not leave the user's Find dialog mutated. The caret is left
+            // on the definition — that is the point of go-to-definition.
             var find = dte.Find;
-            find.Target = vsFindTarget.vsFindTargetCurrentDocument;
-            find.FindWhat = symbolName;
-            find.MatchCase = true;
-            find.MatchWholeWord = true;
-            find.Action = vsFindAction.vsFindActionFind;
-            if (find.Execute() == vsFindResult.vsFindResultFound)
+            var savedFindWhat = find.FindWhat;
+            var savedAction = find.Action;
+            var savedTarget = find.Target;
+            var savedMatchCase = find.MatchCase;
+            var savedMatchWholeWord = find.MatchWholeWord;
+            var savedPatternSyntax = find.PatternSyntax;
+
+            try
             {
-                var sel = dte.ActiveDocument?.Selection as TextSelection;
-                if (sel is not null)
-                    return $"Definition: {filePath}, Line {sel.ActivePoint.Line}, Column {sel.ActivePoint.LineCharOffset}";
+                dte.ItemOperations.OpenFile(filePath);
+                find.Target = vsFindTarget.vsFindTargetCurrentDocument;
+                find.FindWhat = symbolName;
+                find.MatchCase = true;
+                find.MatchWholeWord = true;
+                find.PatternSyntax = vsFindPatternSyntax.vsFindPatternSyntaxLiteral;
+                find.Action = vsFindAction.vsFindActionFind;
+                if (find.Execute() == vsFindResult.vsFindResultFound)
+                {
+                    var sel = dte.ActiveDocument?.Selection as TextSelection;
+                    if (sel is not null)
+                        return $"Definition: {filePath}, Line {sel.ActivePoint.Line}, Column {sel.ActivePoint.LineCharOffset}";
+                }
+                return $"Symbol '{symbolName}' not found in {filePath}.";
             }
-            return $"Symbol '{symbolName}' not found in {filePath}.";
+            finally
+            {
+                try
+                {
+                    find.FindWhat = savedFindWhat;
+                    find.Action = savedAction;
+                    find.Target = savedTarget;
+                    find.MatchCase = savedMatchCase;
+                    find.MatchWholeWord = savedMatchWholeWord;
+                    find.PatternSyntax = savedPatternSyntax;
+                }
+                catch { /* best-effort restore */ }
+            }
         }
 
         // Without a specific file, search for the symbol using Find All and show the first hits.
@@ -1703,8 +1730,8 @@ internal static class BuiltInVsTools
         if (content.Contains("System.Text.Json.Nodes"))
             memories.Add("Use System.Text.Json.Nodes for JSON manipulation");
 
-        // Detect async patterns
-        if (content.Contains("async Task<") || content.Contains("async void"))
+        // Detect async patterns. L5: 'async void' is an anti-pattern, not evidence of async style.
+        if (content.Contains("async Task"))
         {
             if (content.Contains("ConfigureAwait(false)"))
                 memories.Add("Use ConfigureAwait(false) in library code");
@@ -1718,8 +1745,8 @@ internal static class BuiltInVsTools
         if (Regex.IsMatch(content, @"^namespace\s+\S+;\s*$", RegexOptions.Multiline))
             memories.Add("Use file-scoped namespaces");
 
-        // Detect record types
-        if (content.Contains("record ") || content.Contains("record class"))
+        // Detect record types. L5: match a record declaration, not the word in comments/strings.
+        if (Regex.IsMatch(content, @"\brecord\s+(?:class\s+|struct\s+)?[A-Za-z_]\w*"))
             memories.Add("Prefer records for immutable data");
 
         // Detect pattern matching
@@ -1746,8 +1773,9 @@ internal static class BuiltInVsTools
         if (content.Contains("global using "))
             memories.Add("Use global using directives");
 
-        // Detect primary constructors
-        if (Regex.IsMatch(content, @"public\s+\w+\s*\([^)]*\)\s*:"))
+        // Detect primary constructors. L5: a parameter list on the type declaration itself, not a
+        // conventional constructor with a ': base(...)' / ': this(...)' initializer.
+        if (Regex.IsMatch(content, @"\b(?:class|record|struct)\s+[A-Za-z_]\w*\s*\([^)]*\)"))
             memories.Add("Use primary constructors");
 
         // Detect collection expressions

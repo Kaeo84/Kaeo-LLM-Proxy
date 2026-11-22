@@ -43,6 +43,10 @@ internal sealed class ChatLine : INotifyPropertyChanged
     /// </summary>
     public TaskCompletionSource<bool>? Approval { get; set; }
 
+    /// <summary>L8: the actual tool name a permission card gates, stored structurally rather than
+    /// re-parsed from the display text (which the answer suffix mutates).</summary>
+    public string? ToolName { get; set; }
+
     /// <summary>Raises change notifications so streamed deltas and the final text re-render in place.</summary>
     public string Text
     {
@@ -652,6 +656,19 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
         _modelSelections.Clear();
         _modelSelections.AddRange(selections);
+
+        // L7: evict (and dispose) cached chat clients whose connection/model/key/reasoning source
+        // no longer exists, so changed or removed connections do not pin stale clients forever.
+        // Disposal is safe mid-turn: shared-HttpClient clients do not own the underlying HttpClient.
+        var validKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var sel in selections)
+            validKeys.Add($"{sel.BaseUrl}|{sel.Name}|{sel.ApiKey}|{sel.ReasoningSource}");
+        foreach (var key in _clients.Keys.Where(k => !validKeys.Contains(k)).ToArray())
+        {
+            _clients[key].Dispose();
+            _clients.Remove(key);
+        }
+
         Models.Clear();
         foreach (var label in labels) Models.Add(label);
 
@@ -856,6 +873,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                     Kind = "permission",
                     Text = $"Allow the model to run \"{tc.Name}\"? {TruncateArgs(tc.Arguments)}",
                     Approval = tcs,
+                    ToolName = tc.Name,
                 };
                 Lines.Insert(permissionInsertAt, card);
                 permissionInsertAt++;
@@ -969,8 +987,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
             if (allow && always)
             {
-                // Extract tool name from the permission card text: "Allow the model to run \"toolName\"? ..."
-                var toolName = ExtractToolName(line.Text);
+                // L8: prefer the structural tool name; fall back to parsing only for legacy cards.
+                var toolName = line.ToolName ?? ExtractToolName(line.Text);
                 if (!string.IsNullOrEmpty(toolName) && _alwaysAllowed.Add(toolName!))
                 {
                     await PersistAlwaysAllowedAsync();

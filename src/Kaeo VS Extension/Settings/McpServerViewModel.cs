@@ -232,7 +232,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// </summary>
         internal void ReplaceTools(IEnumerable<McpTool> tools)
         {
-            var previous = Tools.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
+            // L1: build last-wins so duplicate tool names cannot throw (ToDictionary would).
+            var previous = new Dictionary<string, McpToolViewModel>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in Tools)
+                if (!string.IsNullOrWhiteSpace(t.Name))
+                    previous[t.Name!] = t;
 
             Tools.Clear();
             foreach (var tool in tools ?? Enumerable.Empty<McpTool>())
