@@ -1,5 +1,7 @@
 using Kaeo.LlmProxy.Core.Modules;
+using System.Data.Common;
 using ModelContextProtocol.Server;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Module.Ssh;
 
@@ -45,11 +47,24 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
         ArgumentNullException.ThrowIfNull(context);
         _context = context;
 
-        ApplySchema(context.Database);
+        // H3: a busy/locked shared database (another instance) must not fail initialization
+        // hard. The schema is idempotent; log and continue so the module loads with defaults
+        // and retries on use.
+        try
+        {
+            ApplySchema(context.Database);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            Log.Warning(ex, "SSH schema apply hit a busy database; continuing with existing schema");
+        }
 
-        _repository = new SshRepository(context.Database);
-        _activity = new SshActivityLogger(context.ActivityLog, () => _repository.LoadSettings().McpLogLevel);
-        _manager = new SshConnectionManager(_repository, _activity);
+        SshRepository repository = new(context.Database);
+        _repository = repository;
+        _activity = new SshActivityLogger(context.ActivityLog, () => repository.LoadLogLevel());
+        // L1: refresh the cached log level immediately when settings are saved on this instance.
+        repository.SettingsChanged += (_, _) => _activity?.InvalidateLevelCache();
+        _manager = new SshConnectionManager(repository, _activity);
     }
 
     public System.Windows.Forms.TabPage CreateConfigPage() => new SshConfigPage(this);

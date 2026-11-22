@@ -25,8 +25,12 @@ internal sealed class SshConnectionManager : IDisposable
     private readonly SshRepository _repository;
     private readonly SshActivityLogger _activity;
     private readonly ConcurrentDictionary<string, ManagedConnection> _connections = new(StringComparer.OrdinalIgnoreCase);
-    private readonly SemaphoreSlim _connectLock = new(1, 1);
+    // M9: one lock per connection key so a slow/unreachable host cannot block connects to others.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _connectLocks = new(StringComparer.OrdinalIgnoreCase);
     private System.Threading.Timer? _idleSweepTimer;
+    // M12: lifecycle gates checked under the per-key lock so stop/dispose cannot race a connect.
+    private volatile bool _stopped;
+    private volatile bool _disposed;
 
     public SshConnectionManager(SshRepository repository, SshActivityLogger activity)
     {
@@ -49,23 +53,25 @@ internal sealed class SshConnectionManager : IDisposable
     /// <summary>Starts the idle sweep. Safe to call when already running.</summary>
     public void Start()
     {
-        if (_idleSweepTimer is not null)
+        if (_disposed || _idleSweepTimer is not null)
             return;
 
+        _stopped = false;
         _idleSweepTimer = new System.Threading.Timer(SweepIdleConnections, null, SweepInterval, SweepInterval);
         Log.Information("SSH connection manager started (idle sweep every {Seconds}s)", SweepInterval.TotalSeconds);
     }
 
     /// <summary>Stops the idle sweep and closes every open connection. Safe when not running.</summary>
-    public Task StopAsync()
+    public async Task StopAsync()
     {
+        _stopped = true;
         System.Threading.Timer? timer = Interlocked.Exchange(ref _idleSweepTimer, null);
-        timer?.Dispose();
+        if (timer is not null)
+            await timer.DisposeAsync();
 
-        DisconnectAll();
+        // L13: offload blocking client teardown so the host's stop path is not held up.
+        await Task.Run(() => DisconnectAll(force: true));
         Log.Information("SSH connection manager stopped");
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -77,24 +83,37 @@ internal sealed class SshConnectionManager : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // M12: refuse new work once the module is stopped/disposed so tool traffic cannot
+        // resurrect the sweep or orphan a connection after teardown.
+        if (_stopped || _disposed)
+            throw new InvalidOperationException("The SSH module is stopped; connections cannot be opened.");
+
         // Self-start the sweep so connections always idle out even when the host never called
         // StartAsync (e.g. the module was enabled after startup).
         Start();
 
-        // Fast path: an open connection for this key is reused as-is.
+        string? openerSessionId = opener?.SessionId;
+
+        // Fast path: an open connection for this key is reused as-is (same session only, H5).
         if (_connections.TryGetValue(request.Key, out ManagedConnection? existing) && existing.Client.IsConnected)
         {
+            EnsureSessionOwns(existing, openerSessionId);
             existing.Touch();
             LogConnectReused(request.Key);
             return request.Key;
         }
 
-        await _connectLock.WaitAsync(cancellationToken);
+        SemaphoreSlim connectLock = GetConnectLock(request.Key);
+        await connectLock.WaitAsync(cancellationToken);
         try
         {
+            if (_stopped || _disposed)
+                throw new InvalidOperationException("The SSH module is stopped; connections cannot be opened.");
+
             // Re-check under the lock: a concurrent caller may have connected meanwhile.
             if (_connections.TryGetValue(request.Key, out existing) && existing.Client.IsConnected)
             {
+                EnsureSessionOwns(existing, openerSessionId);
                 existing.Touch();
                 LogConnectReused(request.Key);
                 return request.Key;
@@ -110,7 +129,7 @@ internal sealed class SshConnectionManager : IDisposable
             {
                 connection = await OpenConnectionAsync(request, opener, cancellationToken);
             }
-            catch (Exception ex) when (ex is SshException or IOException or SocketException or OperationCanceledException or InvalidOperationException)
+            catch (Exception ex) when (ex is SshException or IOException or SocketException or OperationCanceledException or InvalidOperationException or ArgumentException or ObjectDisposedException)
             {
                 _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "connect")
                 {
@@ -125,6 +144,14 @@ internal sealed class SshConnectionManager : IDisposable
                 throw;
             }
             stopwatch.Stop();
+
+            // M12: a stop/dispose may have landed while the handshake was in flight; do not
+            // insert a live client after teardown (it would never be idled out).
+            if (_stopped || _disposed)
+            {
+                connection.Dispose();
+                throw new InvalidOperationException("The SSH module was stopped while connecting; the connection was closed.");
+            }
 
             _connections[request.Key] = connection;
 
@@ -142,7 +169,25 @@ internal sealed class SshConnectionManager : IDisposable
         }
         finally
         {
-            _connectLock.Release();
+            connectLock.Release();
+        }
+    }
+
+    /// <summary>Per-key connect lock (M9); created atomically and never disposed while in use.</summary>
+    private SemaphoreSlim GetConnectLock(string key) =>
+        _connectLocks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+
+    /// <summary>
+    /// H5: a connection may only be used by the MCP session that opened it. A null on either
+    /// side (e.g. UI-driven calls without a session) is treated as unrestricted for compatibility.
+    /// </summary>
+    private static void EnsureSessionOwns(ManagedConnection connection, string? requestingSessionId)
+    {
+        if (connection.McpSessionId is not null && requestingSessionId is not null &&
+            !string.Equals(connection.McpSessionId, requestingSessionId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"SSH connection '{connection.Key}' belongs to a different MCP session and cannot be used from this one.");
         }
     }
 
@@ -161,13 +206,17 @@ internal sealed class SshConnectionManager : IDisposable
     /// <paramref name="connectionKey"/>. Returns null when no such connection is open.
     /// </summary>
     public async Task<SshCommandResult?> ExecuteAsync(
-        string connectionKey, string commandText, int commandTimeoutSeconds, CancellationToken cancellationToken)
+        string connectionKey, string commandText, int commandTimeoutSeconds, CancellationToken cancellationToken,
+        string? requestingSessionId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(commandText);
 
         if (!_connections.TryGetValue(connectionKey, out ManagedConnection? connection))
             return null;
+
+        // H5: reject execution on a connection opened by another MCP session.
+        EnsureSessionOwns(connection, requestingSessionId);
 
         if (!connection.Client.IsConnected)
         {
@@ -187,19 +236,30 @@ internal sealed class SshConnectionManager : IDisposable
             return null;
         }
 
-        using SshCommand command = connection.Client.CreateCommand(commandText);
-        command.CommandTimeout = TimeSpan.FromSeconds(Math.Max(commandTimeoutSeconds, 1));
-
-        await command.ExecuteAsync(cancellationToken);
-
-        connection.Touch();
-
-        return new SshCommandResult
+        // H1: mark the connection busy and touch it BEFORE executing so the idle sweep cannot
+        // dispose the transport underneath a long-running command; clear busy in finally.
+        connection.EnterBusy();
+        try
         {
-            ExitCode = command.ExitStatus ?? -1,
-            Output = command.Result ?? string.Empty,
-            Error = command.Error ?? string.Empty,
-        };
+            connection.Touch();
+            using SshCommand command = connection.Client.CreateCommand(commandText);
+            command.CommandTimeout = TimeSpan.FromSeconds(Math.Max(commandTimeoutSeconds, 1));
+
+            await command.ExecuteAsync(cancellationToken);
+
+            connection.Touch();
+
+            return new SshCommandResult
+            {
+                ExitCode = command.ExitStatus ?? -1,
+                Output = command.Result ?? string.Empty,
+                Error = command.Error ?? string.Empty,
+            };
+        }
+        finally
+        {
+            connection.ExitBusy();
+        }
     }
 
     /// <summary>
@@ -207,11 +267,22 @@ internal sealed class SshConnectionManager : IDisposable
     /// connection name or an ad-hoc <c>user@host:port</c> key). Returns false when no such
     /// connection was tracked.
     /// </summary>
-    public bool Disconnect(string connectionKey)
+    public bool Disconnect(string connectionKey, string? requestingSessionId = null, bool force = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionKey);
 
-        if (!_connections.TryRemove(connectionKey, out ManagedConnection? connection))
+        if (!_connections.TryGetValue(connectionKey, out ManagedConnection? connection))
+            return false;
+
+        // H5: only the opening session may close a connection (force bypasses for teardown).
+        if (!force)
+            EnsureSessionOwns(connection, requestingSessionId);
+
+        // H1: defer closing a connection that is running a command; the sweep closes it once idle.
+        if (!force && connection.IsBusy)
+            return false;
+
+        if (!_connections.TryRemove(connectionKey, out connection))
             return false;
 
         connection.Dispose();
@@ -220,11 +291,27 @@ internal sealed class SshConnectionManager : IDisposable
         return true;
     }
 
-    /// <summary>Closes every open connection.</summary>
-    public void DisconnectAll()
+    /// <summary>
+    /// Closes every open connection this session owns (or all when <paramref name="force"/>).
+    /// Returns the number actually closed; busy connections are deferred unless forced.
+    /// </summary>
+    public int DisconnectAll(string? requestingSessionId = null, bool force = false)
     {
+        int closed = 0;
         foreach (string key in _connections.Keys.ToList())
-            Disconnect(key);
+        {
+            try
+            {
+                if (Disconnect(key, requestingSessionId, force))
+                    closed++;
+            }
+            catch (InvalidOperationException)
+            {
+                // Owned by another session; leave it alone.
+            }
+        }
+
+        return closed;
     }
 
     /// <summary>Whether a connection with <paramref name="connectionKey"/> is currently open.</summary>
@@ -260,14 +347,22 @@ internal sealed class SshConnectionManager : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _stopped = true;
         System.Threading.Timer? timer = Interlocked.Exchange(ref _idleSweepTimer, null);
         timer?.Dispose();
 
-        foreach (ManagedConnection connection in _connections.Values)
-            connection.Dispose();
-
+        DisconnectAll(force: true);
         _connections.Clear();
-        _connectLock.Dispose();
+        // M12: do not dispose the per-key semaphores here — an in-flight connect may still hold
+        // one between WaitAsync and Release. They carry no unmanaged handle; GC reclaims them.
+        _connectLocks.Clear();
+
+        // L13: notify subscribers so the UI clears stale rows after module removal.
+        ConnectionsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────
@@ -275,7 +370,8 @@ internal sealed class SshConnectionManager : IDisposable
     private async Task<ManagedConnection> OpenConnectionAsync(
         SshConnectionRequest request, McpSessionInfo? opener, CancellationToken cancellationToken)
     {
-        List<AuthenticationMethod> authMethods = BuildAuthenticationMethods(request);
+        List<PrivateKeyFile> keyFiles = [];
+        List<AuthenticationMethod> authMethods = BuildAuthenticationMethods(request, keyFiles);
 
         ConnectionInfo connectionInfo = new(request.Host, request.Port, request.Username, [.. authMethods])
         {
@@ -297,9 +393,17 @@ internal sealed class SshConnectionManager : IDisposable
         }
         catch
         {
+            // M8: release decrypted key material and auth-method handles on a failed handshake.
+            DisposeAll(keyFiles);
+            DisposeAll(authMethods);
             client.Dispose();
             throw;
         }
+
+        // M8: the decrypted private-key bytes are not needed after authentication; dispose them
+        // promptly to limit memory/pagefile exposure. Auth methods are tracked on the connection
+        // and disposed when it closes (PrivateKeyAuthenticationMethod.Dispose does not free keys).
+        DisposeAll(keyFiles);
 
         return new ManagedConnection
         {
@@ -311,7 +415,24 @@ internal sealed class SshConnectionManager : IDisposable
             McpSessionId = opener?.SessionId,
             OpenedByClientAddress = opener?.ClientAddress,
             IdleTimeoutSeconds = request.IdleTimeoutSeconds,
+            AuthMethods = authMethods,
         };
+    }
+
+    /// <summary>Disposes authentication material, swallowing and logging individual failures.</summary>
+    private static void DisposeAll(IEnumerable<IDisposable> items)
+    {
+        foreach (IDisposable item in items)
+        {
+            try
+            {
+                item.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Error disposing SSH authentication material");
+            }
+        }
     }
 
     /// <summary>
@@ -359,7 +480,7 @@ internal sealed class SshConnectionManager : IDisposable
     /// method is offered so the handshake is still attempted and the server's real response
     /// surfaces (SSH.NET also probes "none" authentication on its own).
     /// </summary>
-    private static List<AuthenticationMethod> BuildAuthenticationMethods(SshConnectionRequest request)
+    private static List<AuthenticationMethod> BuildAuthenticationMethods(SshConnectionRequest request, List<PrivateKeyFile> keyFiles)
     {
         List<AuthenticationMethod> methods = [];
 
@@ -382,6 +503,7 @@ internal sealed class SshConnectionManager : IDisposable
                 keyFile = new PrivateKeyFile(keyStream);
             }
 
+            keyFiles.Add(keyFile);
             methods.Add(new PrivateKeyAuthenticationMethod(request.Username, keyFile));
         }
 
@@ -406,6 +528,10 @@ internal sealed class SshConnectionManager : IDisposable
             foreach (KeyValuePair<string, ManagedConnection> entry in _connections)
             {
                 ManagedConnection connection = entry.Value;
+
+                // H1: never dispose a connection that is running a command; re-check next sweep.
+                if (connection.IsBusy)
+                    continue;
 
                 if (!connection.Client.IsConnected)
                 {
@@ -462,6 +588,7 @@ internal sealed class SshConnectionManager : IDisposable
     {
         private readonly object _activityLock = new();
         private DateTime _lastActivityUtc = DateTime.UtcNow;
+        private int _busyCount;
 
         public required string Key { get; init; }
 
@@ -487,6 +614,16 @@ internal sealed class SshConnectionManager : IDisposable
         /// <summary>Idle timeout override in seconds; 0 uses the module-wide default.</summary>
         public int IdleTimeoutSeconds { get; init; }
 
+        /// <summary>Authentication methods whose handles are released when the connection closes (M8).</summary>
+        public IReadOnlyList<AuthenticationMethod> AuthMethods { get; init; } = [];
+
+        /// <summary>True while at least one command is executing on this connection (H1).</summary>
+        public bool IsBusy => Volatile.Read(ref _busyCount) > 0;
+
+        public void EnterBusy() => Interlocked.Increment(ref _busyCount);
+
+        public void ExitBusy() => Interlocked.Decrement(ref _busyCount);
+
         public void Touch()
         {
             lock (_activityLock)
@@ -503,6 +640,8 @@ internal sealed class SshConnectionManager : IDisposable
             {
                 Log.Warning(ex, "Error disposing SSH connection {Key}", Key);
             }
+
+            DisposeAll(AuthMethods);
         }
     }
 }

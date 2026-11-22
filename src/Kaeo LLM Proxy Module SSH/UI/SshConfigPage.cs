@@ -248,6 +248,12 @@ internal sealed class SshConfigPage : TabPage
             _nudMaxOutput.Value = settings.MaxOutputChars;
             _cmbLogLevel.SelectedIndex = settings.McpLogLevel == SshMcpLogLevel.Full ? 1 : 0;
         }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            // H3: the shared database may be locked by another instance; leave controls at their
+            // current values rather than throwing on the UI thread.
+            Log.Warning(ex, "SSH settings could not be loaded (database busy)");
+        }
         finally
         {
             _loading = false;
@@ -259,17 +265,26 @@ internal sealed class SshConfigPage : TabPage
         if (_loading)
             return;
 
-        _module.Repository.SaveSettings(new SshSettings
+        try
         {
-            ConnectToolEnabled = _chkConnectTool.Checked,
-            ExecToolEnabled = _chkExecTool.Checked,
-            DisconnectToolEnabled = _chkDisconnectTool.Checked,
-            ListToolEnabled = _chkListTool.Checked,
-            DefaultIdleTimeoutSeconds = (int)_nudIdleTimeout.Value,
-            CommandTimeoutSeconds = (int)_nudCommandTimeout.Value,
-            MaxOutputChars = (int)_nudMaxOutput.Value,
-            McpLogLevel = _cmbLogLevel.SelectedIndex == 1 ? SshMcpLogLevel.Full : SshMcpLogLevel.Connectivity,
-        });
+            _module.Repository.SaveSettings(new SshSettings
+            {
+                ConnectToolEnabled = _chkConnectTool.Checked,
+                ExecToolEnabled = _chkExecTool.Checked,
+                DisconnectToolEnabled = _chkDisconnectTool.Checked,
+                ListToolEnabled = _chkListTool.Checked,
+                DefaultIdleTimeoutSeconds = (int)_nudIdleTimeout.Value,
+                CommandTimeoutSeconds = (int)_nudCommandTimeout.Value,
+                MaxOutputChars = (int)_nudMaxOutput.Value,
+                McpLogLevel = _cmbLogLevel.SelectedIndex == 1 ? SshMcpLogLevel.Full : SshMcpLogLevel.Connectivity,
+            });
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            // H3: degrade gracefully and revert the optimistic edit to the stored state.
+            ShowDbError("save SSH settings", ex);
+            LoadSettingsToUi();
+        }
     }
 
     private void RefreshStoredConnections()
@@ -335,7 +350,18 @@ internal sealed class SshConfigPage : TabPage
         if (IsDisposed || !IsHandleCreated)
             return;
 
-        BeginInvoke(RefreshOpenConnections);
+        // H2: the handle can be destroyed between the check and the marshal (page closing while
+        // a connection idles out). An unhandled exception here would be fatal on a background
+        // thread, so swallow the race-induced InvalidOperationException/ObjectDisposedException.
+        try
+        {
+            BeginInvoke(RefreshOpenConnections);
+        }
+        catch (InvalidOperationException)
+        {
+            // Also covers ObjectDisposedException (a subclass): the handle was destroyed
+            // between the check and the marshal. Nothing to refresh; the page is going away.
+        }
     }
 
     private void SshSetting_Changed(object? sender, EventArgs e) => SaveSettings();
@@ -367,7 +393,16 @@ internal sealed class SshConfigPage : TabPage
             return;
         }
 
-        _module.Repository.InsertConnection(connection);
+        try
+        {
+            _module.Repository.InsertConnection(connection);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("add the stored connection", ex);
+            return;
+        }
+
         RefreshStoredConnections();
     }
 
@@ -390,7 +425,16 @@ internal sealed class SshConfigPage : TabPage
             return;
         }
 
-        _module.Repository.UpdateConnection(edited);
+        try
+        {
+            _module.Repository.UpdateConnection(edited);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("update the stored connection", ex);
+            return;
+        }
+
         RefreshStoredConnections();
     }
 
@@ -406,7 +450,16 @@ internal sealed class SshConfigPage : TabPage
             return;
         }
 
-        _module.Repository.DeleteConnection(connection.Id);
+        try
+        {
+            _module.Repository.DeleteConnection(connection.Id);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("remove the stored connection", ex);
+            return;
+        }
+
         RefreshStoredConnections();
     }
 
@@ -415,7 +468,8 @@ internal sealed class SshConfigPage : TabPage
         if (_lstOpen.SelectedItems.Count == 0 || _lstOpen.SelectedItems[0].Tag is not OpenSshConnectionInfo info)
             return;
 
-        _module.Manager.Disconnect(info.Key);
+        // The settings page is an admin surface: force-close even a busy connection.
+        _module.Manager.Disconnect(info.Key, force: true);
         RefreshOpenConnections();
     }
 
@@ -431,8 +485,21 @@ internal sealed class SshConfigPage : TabPage
             return;
         }
 
-        _module.Manager.DisconnectAll();
+        // Admin surface: close every connection regardless of owning session or busy state.
+        _module.Manager.DisconnectAll(force: true);
         RefreshOpenConnections();
+    }
+
+    /// <summary>
+    /// H3: reports a database sharing/busy failure without crashing the UI thread. Logs a
+    /// warning and shows a friendly, non-fatal message so the user can retry shortly.
+    /// </summary>
+    private void ShowDbError(string operation, Exception ex)
+    {
+        Log.Warning(ex, "SSH UI could not {Operation} (database busy)", operation);
+        MessageBox.Show(this,
+            $"Could not {operation}: the database is temporarily busy (another instance may be using it). Try again shortly.",
+            "Database Busy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     // ── Control factories ───────────────────────────────────────────────────

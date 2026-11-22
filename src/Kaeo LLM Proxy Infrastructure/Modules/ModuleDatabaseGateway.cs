@@ -51,8 +51,8 @@ internal sealed class ModuleDatabaseGateway(AppDatabase database) : IModuleDatab
 
     /// <summary>
     /// Runs <paramref name="work"/> inside a single transaction on a dedicated connection,
-    /// committing on return and rolling back if it throws. Not yet part of the Core
-    /// <see cref="IModuleDatabase"/> contract; host-side callers use the concrete gateway.
+    /// committing on return and rolling back if it throws. Part of the Core
+    /// <see cref="IModuleDatabase"/> contract so modules can apply related writes atomically.
     /// </summary>
     public void ExecuteInTransaction(Action<DbConnection, DbTransaction> work)
     {

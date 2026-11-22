@@ -42,7 +42,7 @@ internal sealed class OpenSshConnectionInfo
     /// <summary>When the connection was last used (UTC).</summary>
     public required DateTime LastActivityUtc { get; init; }
 
-    /// <summary>Effective idle timeout in seconds; 0 means the connection never idles out.</summary>
+    /// <summary>Per-connection idle timeout override in seconds; 0 selects the module-wide default.</summary>
     public required int IdleTimeoutSeconds { get; init; }
 
     /// <summary>Whether the underlying transport is still connected.</summary>

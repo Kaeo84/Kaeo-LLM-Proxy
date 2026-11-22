@@ -25,22 +25,47 @@ internal sealed class SshActivityLogger(IMcpActivityLog sink, Func<SshMcpLogLeve
 
     private readonly IMcpActivityLog _sink = sink ?? throw new ArgumentNullException(nameof(sink));
     private readonly Func<SshMcpLogLevel> _levelProvider = levelProvider ?? throw new ArgumentNullException(nameof(levelProvider));
+    private readonly object _levelLock = new();
+    private SshMcpLogLevel _cachedLevel = SshMcpLogLevel.Connectivity;
+    private long _cachedAtTick;
+    private const long LevelCacheTtlMs = 5_000;
 
     /// <summary>True when full details (tool arguments and results) should be recorded.</summary>
     public bool FullEnabled
     {
         get
         {
-            try
+            // L1: cache the level so each activity write does not reload the whole settings
+            // table. Refreshed on save (InvalidateLevelCache) and at least every few seconds so
+            // changes made by another instance are still picked up.
+            lock (_levelLock)
             {
-                return _levelProvider() == SshMcpLogLevel.Full;
-            }
-            catch
-            {
-                // The level lookup reads the module database; on any trouble fall back quietly.
-                return false;
+                long now = Environment.TickCount64;
+                if (_cachedAtTick == 0 || now - _cachedAtTick > LevelCacheTtlMs)
+                {
+                    try
+                    {
+                        _cachedLevel = _levelProvider();
+                    }
+                    catch (Exception ex)
+                    {
+                        // Keep the previous level on a transient database failure; log at Debug.
+                        Log.Debug(ex, "SSH log-level lookup failed; keeping the cached level");
+                    }
+
+                    _cachedAtTick = now;
+                }
+
+                return _cachedLevel == SshMcpLogLevel.Full;
             }
         }
+    }
+
+    /// <summary>Forces the next <see cref="FullEnabled"/> read to re-query the level (after a save).</summary>
+    public void InvalidateLevelCache()
+    {
+        lock (_levelLock)
+            _cachedAtTick = 0;
     }
 
     /// <summary>Always records the entry (connection lifecycle events, errors, cancellations).</summary>

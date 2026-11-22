@@ -23,7 +23,4 @@ internal sealed class SshCommandResult
 
     /// <summary>Captured standard error.</summary>
     public string Error { get; init; } = string.Empty;
-
-    /// <summary>Whether the output had to be truncated to the configured limit.</summary>
-    public bool Truncated { get; init; }
 }

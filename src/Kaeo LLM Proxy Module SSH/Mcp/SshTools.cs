@@ -52,7 +52,8 @@ internal sealed class SshTools(
         [Description("Idle timeout override in seconds before the connection closes automatically. Optional; 0 or omitted uses the module default.")] int? idleTimeoutSeconds = null,
         CancellationToken cancellationToken = default)
     {
-        SshSettings settings = _repository.LoadSettings();
+        if (!TryLoadSettings(out SshSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.ConnectToolEnabled)
             return "The ssh_connect tool is disabled in the SSH module settings.";
 
@@ -79,6 +80,20 @@ internal sealed class SshTools(
         {
             Log.Warning(ex, "ssh_connect to {Host}:{Port} failed", request!.Host, request.Port);
             return $"SSH connection failed: {ex.Message}";
+        }
+        catch (Exception ex) when (ex is IOException or SocketException)
+        {
+            Log.Warning(ex, "ssh_connect to {Host}:{Port} failed (network)", request!.Host, request.Port);
+            return $"SSH connection failed (network error): {ex.Message}";
+        }
+        catch (Exception ex) when (ex is ArgumentException or FormatException or NotSupportedException)
+        {
+            Log.Warning(ex, "ssh_connect to {Host}:{Port} rejected (invalid key or parameters)", request!.Host, request.Port);
+            return $"SSH connection failed: invalid private key or parameters ({ex.Message}).";
+        }
+        catch (ObjectDisposedException)
+        {
+            return "The SSH connection was closed before it could be established.";
         }
         catch (InvalidOperationException ex)
         {
@@ -108,7 +123,8 @@ internal sealed class SshTools(
         [Description("Idle timeout override in seconds for a newly opened connection. Optional.")] int? idleTimeoutSeconds = null,
         CancellationToken cancellationToken = default)
     {
-        SshSettings settings = _repository.LoadSettings();
+        if (!TryLoadSettings(out SshSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.ExecToolEnabled)
             return "The ssh_exec tool is disabled in the SSH module settings.";
 
@@ -118,7 +134,12 @@ internal sealed class SshTools(
         // Resolve which connection to run on: explicit key, stored name, or ad-hoc target.
         string? key = null;
 
-        if (!string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(host))
+        // L13: a stored-name connection that is already open needs no credential resolution.
+        if (!string.IsNullOrWhiteSpace(name) && _manager.IsOpen(name.Trim()))
+        {
+            key = name.Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(host))
         {
             if (!TryBuildRequest(name, host, port, username, credentialName, password, privateKey,
                     certificate, idleTimeoutSeconds, out SshConnectionRequest? request, out string? error))
@@ -143,6 +164,20 @@ internal sealed class SshTools(
                     Log.Warning(ex, "ssh_exec auto-connect to {Host}:{Port} failed", request.Host, request.Port);
                     return $"SSH connection failed: {ex.Message}";
                 }
+                catch (Exception ex) when (ex is IOException or SocketException)
+                {
+                    Log.Warning(ex, "ssh_exec auto-connect to {Host}:{Port} failed (network)", request.Host, request.Port);
+                    return $"SSH connection failed (network error): {ex.Message}";
+                }
+                catch (Exception ex) when (ex is ArgumentException or FormatException or NotSupportedException)
+                {
+                    Log.Warning(ex, "ssh_exec auto-connect to {Host}:{Port} rejected (invalid key or parameters)", request.Host, request.Port);
+                    return $"SSH connection failed: invalid private key or parameters ({ex.Message}).";
+                }
+                catch (ObjectDisposedException)
+                {
+                    return "The SSH connection was closed before it could be established.";
+                }
                 catch (InvalidOperationException ex)
                 {
                     return $"SSH connection failed: {ex.Message}";
@@ -165,7 +200,7 @@ internal sealed class SshTools(
         try
         {
             SshCommandResult? result = await _manager.ExecuteAsync(
-                key, trimmedCommand, settings.CommandTimeoutSeconds, cancellationToken);
+                key, trimmedCommand, settings.CommandTimeoutSeconds, cancellationToken, _session.SessionId);
             stopwatch.Stop();
 
             if (result is null)
@@ -181,14 +216,18 @@ internal sealed class SshTools(
                 return $"The SSH connection '{key}' dropped. Reconnect with ssh_connect and try again.";
             }
 
-            _activity.WriteAtFull(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            // L2: only build the (potentially large) detail string when full logging is on.
+            if (_activity.FullEnabled)
             {
-                Target = key,
-                StatusCode = result.ExitCode,
-                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
-                RequestDetail = trimmedCommand,
-                ResponseDetail = FormatExecDetail(result, settings.MaxOutputChars),
-            });
+                _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+                {
+                    Target = key,
+                    StatusCode = result.ExitCode,
+                    DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                    RequestDetail = trimmedCommand,
+                    ResponseDetail = FormatExecDetail(result, settings.MaxOutputChars),
+                });
+            }
 
             return FormatResult(key, result, settings.MaxOutputChars);
         }
@@ -200,7 +239,21 @@ internal sealed class SshTools(
                 DurationMs = stopwatch.Elapsed.TotalMilliseconds,
                 IsCancelled = true,
                 ErrorMessage = $"The command timed out after {settings.CommandTimeoutSeconds} seconds.",
-                RequestDetail = _activity.FullEnabled ? trimmedCommand : null,
+                RequestDetail = _activity.FullEnabled ? SummarizeCommand(trimmedCommand) : null,
+            });
+            return $"The command timed out after {settings.CommandTimeoutSeconds} seconds.";
+        }
+        catch (SshOperationTimeoutException)
+        {
+            // M1: SSH.NET surfaces CommandTimeout expiry as SshOperationTimeoutException (an
+            // SshException subclass), not OperationCanceledException. Record it as a timeout.
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                IsCancelled = true,
+                ErrorMessage = $"The command timed out after {settings.CommandTimeoutSeconds} seconds.",
+                RequestDetail = _activity.FullEnabled ? SummarizeCommand(trimmedCommand) : null,
             });
             return $"The command timed out after {settings.CommandTimeoutSeconds} seconds.";
         }
@@ -213,8 +266,36 @@ internal sealed class SshTools(
                 DurationMs = stopwatch.Elapsed.TotalMilliseconds,
                 IsError = true,
                 ErrorMessage = $"Command execution failed: {ex.Message}",
-                RequestDetail = _activity.FullEnabled ? trimmedCommand : null,
+                RequestDetail = _activity.FullEnabled ? SummarizeCommand(trimmedCommand) : null,
             });
+            return $"Command execution failed: {ex.Message}";
+        }
+        catch (Exception ex) when (ex is IOException or SocketException)
+        {
+            Log.Warning(ex, "ssh_exec on {Key} failed (network)", key);
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                IsError = true,
+                ErrorMessage = $"Command execution failed (network error): {ex.Message}",
+                RequestDetail = _activity.FullEnabled ? SummarizeCommand(trimmedCommand) : null,
+            });
+            return $"Command execution failed (network error): {ex.Message}";
+        }
+        catch (ObjectDisposedException)
+        {
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                DurationMs = stopwatch.Elapsed.TotalMilliseconds,
+                IsError = true,
+                ErrorMessage = "The connection was closed while the command was running.",
+            });
+            return $"The SSH connection '{key}' was closed while the command was running. Reconnect with ssh_connect and try again.";
+        }
+        catch (InvalidOperationException ex)
+        {
             return $"Command execution failed: {ex.Message}";
         }
     }
@@ -227,18 +308,19 @@ internal sealed class SshTools(
         [Description("Key of the connection to close. Ignored when all is true.")] string? connection = null,
         [Description("When true, closes every open SSH connection.")] bool all = false)
     {
-        SshSettings settings = _repository.LoadSettings();
+        if (!TryLoadSettings(out SshSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.DisconnectToolEnabled)
             return "The ssh_disconnect tool is disabled in the SSH module settings.";
 
         if (all)
         {
-            IReadOnlyList<OpenSshConnectionInfo> open = _manager.GetSnapshot();
-            _manager.DisconnectAll();
+            // H5: only close connections this session opened; busy ones are deferred.
+            int closed = _manager.DisconnectAll(_session.SessionId);
 
-            string result = open.Count == 0
-                ? "No SSH connections were open."
-                : $"Closed {open.Count} SSH connection(s).";
+            string result = closed == 0
+                ? "No SSH connections were closed (none are open for this session, or they are busy running commands)."
+                : $"Closed {closed} SSH connection(s).";
 
             _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
             {
@@ -253,23 +335,36 @@ internal sealed class SshTools(
             return "Provide the connection key to close, or set all to true. Use ssh_list to see open connections.";
 
         string key = connection.Trim();
-        if (_manager.Disconnect(key))
+        try
+        {
+            if (_manager.Disconnect(key, _session.SessionId))
+            {
+                _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
+                {
+                    Target = key,
+                    ResponseDetail = _activity.FullEnabled ? $"SSH connection '{key}' closed." : null,
+                });
+                return $"SSH connection '{key}' closed.";
+            }
+        }
+        catch (InvalidOperationException ex)
         {
             _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
             {
                 Target = key,
-                ResponseDetail = _activity.FullEnabled ? $"SSH connection '{key}' closed." : null,
+                IsError = true,
+                ErrorMessage = ex.Message,
             });
-            return $"SSH connection '{key}' closed.";
+            return ex.Message;
         }
 
         _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "disconnect")
         {
             Target = key,
             IsError = true,
-            ErrorMessage = $"No open SSH connection named '{key}' was found.",
+            ErrorMessage = $"SSH connection '{key}' was not closed (not open, or busy running a command).",
         });
-        return $"No open SSH connection named '{key}' was found.";
+        return $"SSH connection '{key}' was not closed. It may be busy running a command (it closes automatically when idle) or no longer open.";
     }
 
     [McpServerTool(Name = "ssh_list"), Description(
@@ -278,7 +373,8 @@ internal sealed class SshTools(
         "idle, and the address of the client that opened them.")]
     public string List()
     {
-        SshSettings settings = _repository.LoadSettings();
+        if (!TryLoadSettings(out SshSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.ListToolEnabled)
             return "The ssh_list tool is disabled in the SSH module settings.";
 
@@ -318,6 +414,39 @@ internal sealed class SshTools(
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// H3: loads settings, degrading gracefully when the shared database is locked by another
+    /// app instance (IOException) or busy/locked (SqliteException). Returns a friendly error
+    /// string instead of letting the raw exception escape to the MCP layer.
+    /// </summary>
+    private bool TryLoadSettings(out SshSettings settings, out string? error)
+    {
+        try
+        {
+            settings = _repository.LoadSettings();
+            error = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            Log.Warning(ex, "SSH settings store temporarily unavailable");
+            settings = null!;
+            error = "The SSH settings store is temporarily unavailable (the database may be locked by another instance). Try again shortly.";
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// M1: a short, non-sensitive command summary for error/timeout log entries so long commands
+    /// (which may carry secrets as arguments) are not duplicated verbatim into the activity log.
+    /// </summary>
+    private static string SummarizeCommand(string command)
+    {
+        const int max = 120;
+        string firstLine = command.Split('\n', 2)[0].Trim();
+        return firstLine.Length <= max ? firstLine : firstLine[..max] + "…";
+    }
 
     /// <summary>
     /// Resolves the tool parameters (stored name or ad-hoc details, credential material) into

@@ -30,7 +30,23 @@ internal sealed class SshRepository(IModuleDatabase database)
 
     private readonly IModuleDatabase _database = database;
 
+    /// <summary>Raised after settings are saved so caches (e.g. the activity log level) refresh.</summary>
+    public event EventHandler? SettingsChanged;
+
     // ── Settings ────────────────────────────────────────────────────────────
+
+    /// <summary>Reads just the MCP log level key (L1: avoids loading the whole settings table).</summary>
+    public SshMcpLogLevel LoadLogLevel()
+    {
+        IReadOnlyList<string> rows = _database.Query(
+            "SELECT value FROM mcp_ssh_settings WHERE key = $key LIMIT 1;",
+            reader => reader.GetString(0),
+            command => AddParameter(command, "$key", McpLogLevelKey));
+
+        return rows.Count > 0 && Enum.TryParse(rows[0], ignoreCase: true, out SshMcpLogLevel level)
+            ? level
+            : SshMcpLogLevel.Connectivity;
+    }
 
     public SshSettings LoadSettings()
     {
@@ -53,14 +69,38 @@ internal sealed class SshRepository(IModuleDatabase database)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        UpsertKeyValue("mcp_ssh_settings", ConnectEnabledKey, settings.ConnectToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_ssh_settings", ExecEnabledKey, settings.ExecToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_ssh_settings", DisconnectEnabledKey, settings.DisconnectToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_ssh_settings", ListEnabledKey, settings.ListToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_ssh_settings", DefaultIdleTimeoutKey, settings.DefaultIdleTimeoutSeconds.ToString());
-        UpsertKeyValue("mcp_ssh_settings", CommandTimeoutKey, settings.CommandTimeoutSeconds.ToString());
-        UpsertKeyValue("mcp_ssh_settings", MaxOutputCharsKey, settings.MaxOutputChars.ToString());
-        UpsertKeyValue("mcp_ssh_settings", McpLogLevelKey, settings.McpLogLevel.ToString());
+        (string Key, string Value)[] values =
+        [
+            (ConnectEnabledKey, settings.ConnectToolEnabled ? "1" : "0"),
+            (ExecEnabledKey, settings.ExecToolEnabled ? "1" : "0"),
+            (DisconnectEnabledKey, settings.DisconnectToolEnabled ? "1" : "0"),
+            (ListEnabledKey, settings.ListToolEnabled ? "1" : "0"),
+            (DefaultIdleTimeoutKey, settings.DefaultIdleTimeoutSeconds.ToString()),
+            (CommandTimeoutKey, settings.CommandTimeoutSeconds.ToString()),
+            (MaxOutputCharsKey, settings.MaxOutputChars.ToString()),
+            (McpLogLevelKey, settings.McpLogLevel.ToString()),
+        ];
+
+        // M11: apply every key in one transaction so a failure or a concurrent writer cannot
+        // leave a partially updated configuration (e.g. a new timeout with an old size cap).
+        _database.ExecuteInTransaction((connection, transaction) =>
+        {
+            foreach ((string key, string value) in values)
+            {
+                using DbCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT INTO mcp_ssh_settings (key, value) VALUES ($key, $value)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """;
+                AddParameter(command, "$key", key);
+                AddParameter(command, "$value", value);
+                command.ExecuteNonQuery();
+            }
+        });
+
+        SettingsChanged?.Invoke(this, EventArgs.Empty);
     }
 
     // ── Stored connections ──────────────────────────────────────────────────
@@ -212,18 +252,6 @@ internal sealed class SshRepository(IModuleDatabase database)
 
         return new Dictionary<string, string>(rows, StringComparer.OrdinalIgnoreCase);
     }
-
-    private void UpsertKeyValue(string table, string key, string value) =>
-        _database.Execute(
-            $"""
-             INSERT INTO {table} (key, value) VALUES ($key, $value)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-             """,
-            command =>
-            {
-                AddParameter(command, "$key", key);
-                AddParameter(command, "$value", value);
-            });
 
     /// <summary>Creates and adds a parameter in a provider-agnostic way.</summary>
     private static void AddParameter(DbCommand command, string name, object? value)

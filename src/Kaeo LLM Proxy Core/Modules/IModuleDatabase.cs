@@ -28,4 +28,13 @@ public interface IModuleDatabase
         string commandText,
         Func<DbDataReader, T> map,
         Action<DbCommand>? configureCommand = null);
+
+    /// <summary>
+    /// Runs <paramref name="work"/> inside a single transaction on a dedicated connection,
+    /// committing on return and rolling back if it throws. Use this to apply several related
+    /// writes atomically (e.g. saving a settings group) so a failure or a concurrent writer
+    /// cannot leave a partially updated configuration. Commands created inside the callback
+    /// must be assigned the supplied <paramref name="work"/>'s transaction.
+    /// </summary>
+    void ExecuteInTransaction(Action<DbConnection, DbTransaction> work);
 }
