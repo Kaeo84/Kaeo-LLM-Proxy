@@ -12,10 +12,18 @@ namespace Kaeo.LlmProxy.Core.Models;
 internal enum UpstreamType
 {
     /// <summary>Legacy persisted value. Treat as OpenAI-compatible.</summary>
-    LlamaCpp,
+    LlamaCpp = 0,
 
     /// <summary>OpenAI-compatible /v1 API, including llama.cpp server and hosted OpenAI-style services.</summary>
-    OpenAI,
+    OpenAI = 1,
+
+    /// <summary>Ollama-native API (/api/chat, /api/generate). The proxy translates OpenAI and
+    /// Anthropic client requests into Ollama's wire format and translates the replies back.</summary>
+    Ollama = 2,
+
+    /// <summary>Anthropic Messages API (/v1/messages). The proxy translates OpenAI client requests
+    /// into Anthropic's wire format and translates the replies back.</summary>
+    Anthropic = 3,
 }
 
 /// <summary>
@@ -142,6 +150,8 @@ internal static class UpstreamTypeExtensions
     public static string ToDisplayName(this UpstreamType upstreamType) => upstreamType switch
     {
         UpstreamType.LlamaCpp or UpstreamType.OpenAI => "OpenAI Compatible",
+        UpstreamType.Ollama => "Ollama",
+        UpstreamType.Anthropic => "Anthropic",
         _ => upstreamType.ToString(),
     };
 
@@ -153,6 +163,12 @@ internal static class UpstreamTypeExtensions
         {
             return UpstreamType.OpenAI;
         }
+
+        if (string.Equals(displayName, "Ollama", StringComparison.OrdinalIgnoreCase))
+            return UpstreamType.Ollama;
+
+        if (string.Equals(displayName, "Anthropic", StringComparison.OrdinalIgnoreCase))
+            return UpstreamType.Anthropic;
 
         return Enum.TryParse(displayName, out UpstreamType parsed)
             ? parsed
@@ -595,6 +611,30 @@ internal sealed class ModelMapping
     public UpstreamType UpstreamType { get; set; } = UpstreamType.OpenAI;
 
     /// <summary>
+    /// When true (default), the proxy translates between the client's wire format and this
+    /// mapping's <see cref="UpstreamType"/> when they differ: an OpenAI client request reaching an
+    /// Ollama or Anthropic upstream is converted to that upstream's format and the reply converted
+    /// back, and an Anthropic client request (/v1/messages) reaching an OpenAI upstream is likewise
+    /// translated. When false, requests are forwarded to the upstream unchanged (raw passthrough),
+    /// so the client must already speak the upstream's format. Turning this off never affects a
+    /// mapping whose client and upstream formats already match.
+    /// </summary>
+    public bool EnableApiTranslation { get; set; } = true;
+
+    /// <summary>
+    /// Default <c>max_tokens</c> sent to an Anthropic upstream when the client request omits it.
+    /// Anthropic requires <c>max_tokens</c> on every Messages request, so the proxy supplies this
+    /// value when none is present. Only consulted for <see cref="UpstreamType.Anthropic"/> mappings.
+    /// </summary>
+    public int AnthropicMaxTokens { get; set; } = 4096;
+
+    /// <summary>
+    /// The <c>anthropic-version</c> header value sent to an Anthropic upstream. Defaults to the
+    /// stable Messages API version. Only consulted for <see cref="UpstreamType.Anthropic"/> mappings.
+    /// </summary>
+    public string AnthropicApiVersion { get; set; } = "2023-06-01";
+
+    /// <summary>
     /// Controls how upstream "thinking"/reasoning text is surfaced to clients. Some providers
     /// (e.g. Qwen Cloud's older response format) embed reasoning inside the normal <c>content</c>
     /// field wrapped in <c>&lt;think&gt;...&lt;/think&gt;</c> tags, which modern clients such as
@@ -920,6 +960,9 @@ internal sealed class ModelMapping
             EnableHeartbeats = EnableHeartbeats,
             CredentialName = CredentialName,
             UpstreamType = UpstreamType,
+            EnableApiTranslation = EnableApiTranslation,
+            AnthropicMaxTokens = AnthropicMaxTokens,
+            AnthropicApiVersion = AnthropicApiVersion,
             ThinkingMode = ThinkingMode,
             UpstreamUrl = UpstreamUrl,
             UpstreamTimeoutSeconds = UpstreamTimeoutSeconds,

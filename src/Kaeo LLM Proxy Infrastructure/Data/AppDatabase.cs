@@ -328,7 +328,10 @@ internal sealed class AppDatabase : IDisposable
                     redirect_manual_compaction,
                     enable_heartbeats,
                     enable_copilot_compatibility,
-                    forward_client_authorization
+                    forward_client_authorization,
+                    enable_api_translation,
+                    anthropic_max_tokens,
+                    anthropic_api_version
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -408,7 +411,10 @@ internal sealed class AppDatabase : IDisposable
                         redirect_manual_compaction,
                         enable_heartbeats,
                         enable_copilot_compatibility,
-                        forward_client_authorization
+                        forward_client_authorization,
+                        enable_api_translation,
+                        anthropic_max_tokens,
+                        anthropic_api_version
                     )
                     VALUES (
                         $id,
@@ -445,7 +451,10 @@ internal sealed class AppDatabase : IDisposable
                         $redirectManualCompaction,
                         $enableHeartbeats,
                         $enableCopilotCompatibility,
-                        $forwardClientAuthorization
+                        $forwardClientAuthorization,
+                        $enableApiTranslation,
+                        $anthropicMaxTokens,
+                        $anthropicApiVersion
                     );
                     """;
 
@@ -1389,7 +1398,10 @@ internal sealed class AppDatabase : IDisposable
                     redirect_manual_compaction INTEGER NOT NULL DEFAULT 0,
                     enable_heartbeats INTEGER NOT NULL DEFAULT 1,
                     enable_copilot_compatibility INTEGER NOT NULL DEFAULT 1,
-                    forward_client_authorization INTEGER NOT NULL DEFAULT 0
+                    forward_client_authorization INTEGER NOT NULL DEFAULT 0,
+                    enable_api_translation INTEGER NOT NULL DEFAULT 1,
+                    anthropic_max_tokens INTEGER NOT NULL DEFAULT 4096,
+                    anthropic_api_version TEXT NOT NULL DEFAULT '2023-06-01'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1634,6 +1646,9 @@ internal sealed class AppDatabase : IDisposable
                                 ("model_mappings", "enable_heartbeats", "INTEGER NOT NULL DEFAULT 1"),
                                 ("model_mappings", "enable_copilot_compatibility", "INTEGER NOT NULL DEFAULT 1"),
                                 ("model_mappings", "forward_client_authorization", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "enable_api_translation", "INTEGER NOT NULL DEFAULT 1"),
+                                ("model_mappings", "anthropic_max_tokens", "INTEGER NOT NULL DEFAULT 4096"),
+                                ("model_mappings", "anthropic_api_version", "TEXT NOT NULL DEFAULT '2023-06-01'"),
 
                                 // ── runtime_settings ──────────────────────────────────────────
                                 ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
@@ -2001,6 +2016,9 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$enableHeartbeats", ToSqliteBoolean(mapping.EnableHeartbeats));
         command.Parameters.AddWithValue("$enableCopilotCompatibility", ToSqliteBoolean(mapping.EnableCopilotCompatibility));
         command.Parameters.AddWithValue("$forwardClientAuthorization", ToSqliteBoolean(mapping.ForwardClientAuthorization));
+        command.Parameters.AddWithValue("$enableApiTranslation", ToSqliteBoolean(mapping.EnableApiTranslation));
+        command.Parameters.AddWithValue("$anthropicMaxTokens", mapping.AnthropicMaxTokens);
+        command.Parameters.AddWithValue("$anthropicApiVersion", DbValue(mapping.AnthropicApiVersion));
     }
 
     /// <summary>
@@ -2085,6 +2103,9 @@ internal sealed class AppDatabase : IDisposable
         mapping.EnableHeartbeats = ReadBoolean(reader, 32);
         mapping.EnableCopilotCompatibility = ReadBoolean(reader, 33);
         mapping.ForwardClientAuthorization = ReadBoolean(reader, 34);
+        mapping.EnableApiTranslation = ReadBoolean(reader, 35);
+        mapping.AnthropicMaxTokens = reader.GetInt32(36);
+        mapping.AnthropicApiVersion = reader.IsDBNull(37) ? "2023-06-01" : reader.GetString(37);
         return mapping;
     }
 

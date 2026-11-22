@@ -103,6 +103,13 @@ internal sealed class ModelMappingDialog : Form
     private readonly TableLayoutPanel _tlpCopilotCompat = new();
     private readonly CheckBox _chkEnableCopilotCompatibility = new();
     private readonly CheckBox _chkForwardClientAuthorization = new();
+    private readonly CheckBox _chkEnableApiTranslation = new();
+    private readonly GroupBox _grpApiTranslation = new();
+    private readonly TableLayoutPanel _tlpApiTranslation = new();
+    private readonly Label _lblAnthropicMaxTokens = new();
+    private readonly NumericUpDown _numAnthropicMaxTokens = new();
+    private readonly Label _lblAnthropicApiVersion = new();
+    private readonly TextBox _txtAnthropicApiVersion = new();
     // The status text explains in prose what Copilot compatibility does, so the label needs to wrap
     // inside the dialog rather than grow sideways: AutoSize combined with a MaximumSize width is the
     // WinForms pattern for a wrapping, self-sizing label (same as _lblCompactionStatus).
@@ -452,6 +459,27 @@ internal sealed class ModelMappingDialog : Form
     {
         get => _chkForwardClientAuthorization.Checked;
         set => _chkForwardClientAuthorization.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private bool EnableApiTranslation
+    {
+        get => _chkEnableApiTranslation.Checked;
+        set => _chkEnableApiTranslation.Checked = value;
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private int AnthropicMaxTokens
+    {
+        get => (int)_numAnthropicMaxTokens.Value;
+        set => _numAnthropicMaxTokens.Value = Math.Clamp(value, (int)_numAnthropicMaxTokens.Minimum, (int)_numAnthropicMaxTokens.Maximum);
+    }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    private string AnthropicApiVersion
+    {
+        get => _txtAnthropicApiVersion.Text.Trim();
+        set => _txtAnthropicApiVersion.Text = value;
     }
 
     /// <summary>
@@ -810,7 +838,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 24;
+        _tlpMain.RowCount = 25;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -916,6 +944,9 @@ internal sealed class ModelMappingDialog : Form
         // "what leaves this process" options.
         _tlpMain.SetColumnSpan(_chkForwardClientAuthorization, 3);
         _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 23);
+
+        _tlpMain.SetColumnSpan(_grpApiTranslation, 3);
+        _tlpMain.Controls.Add(_grpApiTranslation, 0, 24);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1188,6 +1219,70 @@ internal sealed class ModelMappingDialog : Form
             + "key (e.g. a client-supplied subscription credential).\n\n"
             + "A mapping with its own configured credential is unaffected either way: its key always\n"
             + "wins, so a correctly configured upstream is never shadowed by a client token.");
+
+        // API Translation group: toggles cross-format conversion and carries the Anthropic-specific
+        // settings that only apply when the upstream speaks the Anthropic Messages API.
+        _grpApiTranslation.AutoSize = true;
+        _grpApiTranslation.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpApiTranslation.Dock = DockStyle.Fill;
+        _grpApiTranslation.Margin = new Padding(0, 6, 0, 6);
+        _grpApiTranslation.Padding = new Padding(8);
+        _grpApiTranslation.Text = "API Translation";
+
+        _tlpApiTranslation.AutoSize = true;
+        _tlpApiTranslation.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpApiTranslation.Dock = DockStyle.Fill;
+        _tlpApiTranslation.ColumnCount = 2;
+        _tlpApiTranslation.RowCount = 3;
+        _tlpApiTranslation.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpApiTranslation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _chkEnableApiTranslation.AutoSize = true;
+        _chkEnableApiTranslation.Checked = true;
+        _chkEnableApiTranslation.Margin = new Padding(0, 2, 0, 2);
+        _chkEnableApiTranslation.Text = "Translate between API formats (OpenAI / Ollama / Anthropic)";
+        _toolTip.SetToolTip(
+            _chkEnableApiTranslation,
+            "Checked (default) - when the client's API format differs from this upstream's type,\n"
+            + "the proxy converts the request and response between OpenAI, Ollama and Anthropic shapes.\n"
+            + "Unchecked - the request body is forwarded verbatim (raw passthrough), so only matching\n"
+            + "formats work. Per-model sampling, instructions and compaction still apply.");
+
+        _lblAnthropicMaxTokens.AutoSize = true;
+        _lblAnthropicMaxTokens.Anchor = AnchorStyles.Left;
+        _lblAnthropicMaxTokens.Margin = new Padding(0, 4, 8, 4);
+        _lblAnthropicMaxTokens.Text = "Anthropic max_tokens:";
+
+        _numAnthropicMaxTokens.Minimum = 1;
+        _numAnthropicMaxTokens.Maximum = 1000000;
+        _numAnthropicMaxTokens.Value = 4096;
+        _numAnthropicMaxTokens.Dock = DockStyle.Fill;
+        _numAnthropicMaxTokens.Margin = new Padding(0, 4, 0, 4);
+        _toolTip.SetToolTip(_numAnthropicMaxTokens,
+            "Anthropic requires max_tokens on every request. Used when the client did not supply one.");
+
+        _lblAnthropicApiVersion.AutoSize = true;
+        _lblAnthropicApiVersion.Anchor = AnchorStyles.Left;
+        _lblAnthropicApiVersion.Margin = new Padding(0, 4, 8, 4);
+        _lblAnthropicApiVersion.Text = "Anthropic API version:";
+
+        _txtAnthropicApiVersion.Dock = DockStyle.Fill;
+        _txtAnthropicApiVersion.Margin = new Padding(0, 4, 0, 4);
+        _txtAnthropicApiVersion.Text = "2023-06-01";
+        _toolTip.SetToolTip(_txtAnthropicApiVersion,
+            "Sent as the anthropic-version header on Anthropic upstream requests.");
+
+        _tlpApiTranslation.Controls.Add(_chkEnableApiTranslation, 0, 0);
+        _tlpApiTranslation.SetColumnSpan(_chkEnableApiTranslation, 2);
+        _tlpApiTranslation.Controls.Add(_lblAnthropicMaxTokens, 0, 1);
+        _tlpApiTranslation.Controls.Add(_numAnthropicMaxTokens, 1, 1);
+        _tlpApiTranslation.Controls.Add(_lblAnthropicApiVersion, 0, 2);
+        _tlpApiTranslation.Controls.Add(_txtAnthropicApiVersion, 1, 2);
+
+        _grpApiTranslation.Controls.Add(_tlpApiTranslation);
 
         // Copilot Compatibility group: a single toggle plus a wrapping status label that explains
         // what it does, mirroring the Compaction group's structure and theming.
@@ -2108,6 +2203,9 @@ internal sealed class ModelMappingDialog : Form
         dlg.RedactResponseBodies = mapping.RedactResponseBodies;
         dlg.RedactSensitiveJsonFields = mapping.RedactSensitiveJsonFields;
         dlg.ForwardClientAuthorization = mapping.ForwardClientAuthorization;
+        dlg.EnableApiTranslation = mapping.EnableApiTranslation;
+        dlg.AnthropicMaxTokens = mapping.AnthropicMaxTokens;
+        dlg.AnthropicApiVersion = mapping.AnthropicApiVersion;
         dlg.UpdateCompactionStatus();
 
         DialogResult result = dlg.ShowDialog(owner);
@@ -2151,6 +2249,9 @@ internal sealed class ModelMappingDialog : Form
         mapping.RedactResponseBodies = dlg.RedactResponseBodies;
         mapping.RedactSensitiveJsonFields = dlg.RedactSensitiveJsonFields;
         mapping.ForwardClientAuthorization = dlg.ForwardClientAuthorization;
+        mapping.EnableApiTranslation = dlg.EnableApiTranslation;
+        mapping.AnthropicMaxTokens = dlg.AnthropicMaxTokens;
+        mapping.AnthropicApiVersion = string.IsNullOrWhiteSpace(dlg.AnthropicApiVersion) ? "2023-06-01" : dlg.AnthropicApiVersion;
         return true;
     }
 
@@ -2172,6 +2273,8 @@ internal sealed class ModelMappingDialog : Form
     {
         _cmbUpstreamType.Items.Clear();
         _cmbUpstreamType.Items.Add(UpstreamType.OpenAI.ToDisplayName());
+        _cmbUpstreamType.Items.Add(UpstreamType.Ollama.ToDisplayName());
+        _cmbUpstreamType.Items.Add(UpstreamType.Anthropic.ToDisplayName());
         // LlamaCpp is a legacy persisted value treated as OpenAI-compatible; normalize it so old
         // mappings don't show a blank combo (and save back as OpenAI).
         UpstreamType normalized = selected == UpstreamType.LlamaCpp ? UpstreamType.OpenAI : selected;

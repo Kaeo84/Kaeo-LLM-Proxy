@@ -1694,6 +1694,10 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             || path.Equals("/api/tags", StringComparison.OrdinalIgnoreCase))
             return true;
 
+        // Anthropic Messages inbound, including the /v1-less alias the router also accepts.
+        if (path.Equals("/messages", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         // OpenAI-native passthrough, including the compact endpoints. The local /v1/models lookups
         // were already returned above, so any remaining /v1* path is a model call. The /v1-less
         // OpenAI paths the router normalises are the same model traffic as their /v1 twins, so they
@@ -1854,6 +1858,14 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 // decide whether the request is redirected or goes to the client's own model.
                 log.UpstreamPath = "/v1/chat/completions/compact";
                 await HandleManualCompactAsync(req, resp, log, ct);
+            }
+            else if (method == "POST" && (path.Equals("/v1/messages", StringComparison.OrdinalIgnoreCase)
+                                       || path.Equals("/messages", StringComparison.OrdinalIgnoreCase)))
+            {
+                // Anthropic Messages API inbound. Translated to the resolved upstream's format
+                // (OpenAI / Ollama) or forwarded verbatim to an Anthropic upstream.
+                log.UpstreamPath = "/v1/messages";
+                await HandleAnthropicMessagesAsync(req, resp, log, ct);
             }
             else if (path.StartsWith("/v1/", StringComparison.OrdinalIgnoreCase)
                   || path.Equals("/v1", StringComparison.OrdinalIgnoreCase))

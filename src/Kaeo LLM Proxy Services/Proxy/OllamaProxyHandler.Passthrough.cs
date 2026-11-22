@@ -546,6 +546,22 @@ partial class OllamaProxyHandler
         ApplyApiKey(upstreamReq, apiKey);
         StripUnoptedClientAuthorization(upstreamReq, upstreamMapping, apiKey);
 
+        // Cross-format translation: when the resolved upstream speaks Ollama or Anthropic and this
+        // is a chat-completions request, convert the already settings-rewritten OpenAI body to the
+        // upstream's wire format and translate the reply back to OpenAI for the client. The body has
+        // passed through model resolution, sampling, instruction injection and compaction above, so
+        // every per-model setting still applies; only the wire format changes from here.
+        if (IsChatCompletionsPath(requestPath)
+            && passthroughBody is not null
+            && upstreamMapping.EnableApiTranslation
+            && upstreamMapping.UpstreamType is UpstreamType.Ollama or UpstreamType.Anthropic)
+        {
+            await HandleOpenAiChatTranslatedAsync(
+                resp, log, passthroughBody, upstreamMapping, baseUrl, timeout, apiKey,
+                originalModel, isStreamingRequest, ct);
+            return;
+        }
+
         // Append upstream routing info to the debug summary so it's visible which server
         // the request is actually being sent to, including after compact redirects.
         if (_settings.DebugMode && log.DebugSummary is not null)
