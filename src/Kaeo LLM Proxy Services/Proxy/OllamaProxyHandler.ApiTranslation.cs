@@ -784,6 +784,378 @@ partial class OllamaProxyHandler
         ["error"] = new JsonObject { ["type"] = type, ["message"] = message },
     };
 
+    /// <summary>
+    /// Ollama-inbound <c>/api/chat</c> request whose resolved upstream speaks Ollama or Anthropic.
+    /// The OpenAI hub body (already carrying sampling, instructions and compaction) is converted to
+    /// the target format; the reply is converted back to the Ollama JSON/NDJSON shape the client
+    /// expects. An Ollama upstream is a verbatim relay; an Anthropic upstream composes through the
+    /// OpenAI hub on the response side.
+    /// </summary>
+    private async Task HandleOllamaChatTranslatedAsync(
+        HttpListenerResponse resp,
+        RequestLog log,
+        string openAiBody,
+        ModelMapping mapping,
+        string baseUrl,
+        int timeout,
+        string? apiKey,
+        string clientModel,
+        bool isStreaming,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
+        string upstreamModel = string.IsNullOrWhiteSpace(mapping.ModelName) ? clientModel : mapping.ModelName;
+        bool toOllama = mapping.UpstreamType == UpstreamType.Ollama;
+        string targetPath = toOllama ? "/api/chat" : "/v1/messages";
+        string targetBody = toOllama
+            ? OllamaFormatTranslator.OpenAiRequestToOllama(openAiBody, upstreamModel, isStreaming)
+            : AnthropicFormatTranslator.OpenAiRequestToAnthropic(openAiBody, upstreamModel, isStreaming, mapping.AnthropicMaxTokens);
+
+        log.Streaming = isStreaming;
+        if (_settings.CollectRequestDetails || _settings.DebugMode)
+            log.UpstreamRequestBody = RedactRequestBodyForLog(_settings, targetBody, clientModel);
+
+        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, new Uri(targetPath, UriKind.Relative))
+        {
+            Content = new StringContent(targetBody, Encoding.UTF8, "application/json"),
+        };
+        ApplyTranslatedUpstreamAuth(upstreamReq, mapping, apiKey);
+
+        using HttpResponseMessage upstreamResp = await SendUpstreamAsync(
+            upstreamReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
+        log.StatusCode = (int)upstreamResp.StatusCode;
+
+        if (!upstreamResp.IsSuccessStatusCode)
+        {
+            string errorBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = errorBody;
+            await WriteOllamaUpstreamErrorAsync(resp, (int)upstreamResp.StatusCode, errorBody, ct);
+            return;
+        }
+
+        if (toOllama)
+        {
+            // Client and upstream both speak Ollama: relay the reply verbatim.
+            if (!isStreaming)
+            {
+                string body = await upstreamResp.Content.ReadAsStringAsync(ct);
+                CaptureTranslatedResponse(log, body);
+                FillOllamaUsage(log, body);
+                resp.StatusCode = 200;
+                await WriteJsonRawAsync(resp, body, ct);
+                log.Status = RequestStatus.Success;
+                return;
+            }
+
+            CommitOllamaNdjsonHeaders(resp);
+            await PumpRawNdjsonAsync(upstreamResp, resp, log, ct);
+            return;
+        }
+
+        // Anthropic upstream: convert the reply back to Ollama via the OpenAI hub.
+        if (!isStreaming)
+        {
+            string body = await upstreamResp.Content.ReadAsStringAsync(ct);
+            string openAiResponse = AnthropicFormatTranslator.AnthropicResponseToOpenAi(body, clientModel, NewCompletionId());
+            string ollamaResponse = BuildOllamaFromOpenAiResponse(openAiResponse, clientModel, sw);
+            CaptureTranslatedResponse(log, ollamaResponse);
+            FillOllamaUsage(log, ollamaResponse);
+            resp.StatusCode = 200;
+            await WriteJsonRawAsync(resp, ollamaResponse, ct);
+            log.Status = RequestStatus.Success;
+            return;
+        }
+
+        CommitOllamaNdjsonHeaders(resp);
+        await PumpAnthropicSseToOllamaNdjsonAsync(upstreamResp, resp, log, clientModel, sw, ct);
+    }
+
+    private static void CommitOllamaNdjsonHeaders(HttpListenerResponse resp)
+    {
+        resp.StatusCode = 200;
+        resp.ContentType = "application/x-ndjson";
+        resp.SendChunked = true;
+        resp.KeepAlive = true;
+    }
+
+    /// <summary>Relays an Ollama NDJSON upstream stream to an Ollama client verbatim, line by line.</summary>
+    private async Task PumpRawNdjsonAsync(
+        HttpResponseMessage upstreamResp,
+        HttpListenerResponse resp,
+        RequestLog log,
+        CancellationToken ct)
+    {
+        await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
+        using StreamReader reader = new(stream, Encoding.UTF8);
+        await using StreamWriter writer = new(resp.OutputStream, new UTF8Encoding(false), leaveOpen: true);
+        using PooledCharBuffer? accumulator = (_settings.CollectResponseDetails || _settings.DebugMode) ? new PooledCharBuffer() : null;
+        long responseBytes = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                log.ErrorMessage = DescribeUpstreamStreamError(ex);
+                log.StopReason = "error";
+                Log.Warning(ex, "Ollama upstream stream failed mid-response for model {Model}", log.Model);
+                await TryWriteOllamaErrorChunkAsync(writer, log.Model, DescribeUpstreamStreamError(ex));
+                break;
+            }
+            if (line is null) break;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            string frame = line + "\n";
+            responseBytes += Encoding.UTF8.GetByteCount(frame);
+            accumulator?.Append(frame);
+            await writer.WriteAsync(frame);
+            await writer.FlushAsync(CancellationToken.None);
+        }
+
+        FinishStreamLog(log, accumulator, responseBytes);
+        resp.Close();
+    }
+
+    /// <summary>Anthropic SSE upstream -> Ollama NDJSON client, composed through OpenAI chunks.</summary>
+    private async Task PumpAnthropicSseToOllamaNdjsonAsync(
+        HttpResponseMessage upstreamResp,
+        HttpListenerResponse resp,
+        RequestLog log,
+        string clientModel,
+        Stopwatch sw,
+        CancellationToken ct)
+    {
+        await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
+        using StreamReader reader = new(stream, Encoding.UTF8);
+        await using StreamWriter writer = new(resp.OutputStream, new UTF8Encoding(false), leaveOpen: true);
+        using PooledCharBuffer? accumulator = (_settings.CollectResponseDetails || _settings.DebugMode) ? new PooledCharBuffer() : null;
+
+        var anthropicState = AnthropicFormatTranslator.CreateAnthropicToOpenAiState(clientModel, NewCompletionId());
+        var ollamaState = OllamaFormatTranslator.CreateOpenAiToOllamaState(clientModel);
+        long responseBytes = 0;
+        bool doneSent = false;
+        string? eventType = null;
+        var dataBuilder = new StringBuilder();
+
+        while (!ct.IsCancellationRequested)
+        {
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                log.ErrorMessage = DescribeUpstreamStreamError(ex);
+                log.StopReason = "error";
+                Log.Warning(ex, "Anthropic upstream stream failed mid-response for model {Model}", clientModel);
+                await TryWriteOllamaErrorChunkAsync(writer, clientModel, DescribeUpstreamStreamError(ex));
+                break;
+            }
+            if (line is null) break;
+
+            if (line.Length == 0)
+            {
+                if (dataBuilder.Length > 0)
+                {
+                    string dataJson = dataBuilder.ToString();
+                    dataBuilder.Clear();
+                    string type = eventType ?? string.Empty;
+                    eventType = null;
+
+                    IReadOnlyList<string> openAiChunks;
+                    try
+                    {
+                        openAiChunks = AnthropicFormatTranslator.AnthropicEventToOpenAiChunks(anthropicState, type, dataJson);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Failed to translate Anthropic event {Event} for model {Model}", type, clientModel);
+                        continue;
+                    }
+
+                    foreach (string openAiChunk in openAiChunks)
+                    {
+                        IReadOnlyList<string> ollamaLines;
+                        try
+                        {
+                            ollamaLines = OllamaFormatTranslator.OpenAiChunkToOllamaChunks(ollamaState, openAiChunk);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning(ex, "Failed to translate OpenAI chunk to Ollama for model {Model}", clientModel);
+                            continue;
+                        }
+
+                        foreach (string ollamaLine in ollamaLines)
+                        {
+                            string frame = ollamaLine + "\n";
+                            responseBytes += Encoding.UTF8.GetByteCount(frame);
+                            accumulator?.Append(frame);
+                            await writer.WriteAsync(frame);
+                        }
+                        if (ollamaLines.Count > 0)
+                            await writer.FlushAsync(CancellationToken.None);
+                    }
+
+                    if (anthropicState.Finished || ollamaState.Finished)
+                    {
+                        doneSent = true;
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            if (line.StartsWith("event:", StringComparison.Ordinal))
+                eventType = line[6..].Trim();
+            else if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                string data = line[5..];
+                if (data.StartsWith(' ')) data = data[1..];
+                if (dataBuilder.Length > 0) dataBuilder.Append('\n');
+                dataBuilder.Append(data);
+            }
+        }
+
+        // Guarantee a terminal done:true chunk if the upstream closed without a finish event.
+        if (!doneSent && !ollamaState.Finished && !ct.IsCancellationRequested)
+            await TryWriteOllamaDoneChunkAsync(writer, clientModel, sw);
+
+        FinishStreamLog(log, accumulator, responseBytes);
+        resp.Close();
+    }
+
+    /// <summary>Builds an Ollama <c>/api/chat</c> response from an OpenAI chat.completion JSON body.</summary>
+    private string BuildOllamaFromOpenAiResponse(string openAiJson, string clientModel, Stopwatch sw)
+    {
+        long ns = ElapsedNanos(sw);
+        var response = new OllamaChatResponse
+        {
+            Model = clientModel,
+            Done = true,
+            DoneReason = "stop",
+            TotalDuration = ns,
+            LoadDuration = 0L,
+            EvalDuration = ns,
+            Message = new OllamaMessage("assistant", string.Empty),
+        };
+
+        try
+        {
+            JsonNode? root = JsonNode.Parse(openAiJson);
+            JsonNode? choice = root?["choices"]?[0];
+            JsonNode? msg = choice?["message"];
+            string content = msg?["content"]?.GetValue<string>() ?? string.Empty;
+            string? thinking = msg?["reasoning_content"]?.GetValue<string>();
+            string finish = choice?["finish_reason"]?.GetValue<string>() ?? "stop";
+
+            List<OllamaToolCall>? toolCalls = null;
+            if (msg?["tool_calls"] is JsonArray arr && arr.Count > 0)
+            {
+                toolCalls = [];
+                foreach (JsonNode? tc in arr)
+                {
+                    string? name = tc?["function"]?["name"]?.GetValue<string>();
+                    string? argsStr = tc?["function"]?["arguments"]?.GetValue<string>();
+                    JsonNode? argsNode = null;
+                    if (!string.IsNullOrWhiteSpace(argsStr))
+                    {
+                        try { argsNode = JsonNode.Parse(argsStr); }
+                        catch { argsNode = new JsonObject(); }
+                    }
+                    toolCalls.Add(new OllamaToolCall
+                    {
+                        Id = tc?["id"]?.GetValue<string>(),
+                        Function = new OllamaToolCallFunction
+                        {
+                            Name = name ?? string.Empty,
+                            Arguments = argsNode ?? new JsonObject(),
+                        },
+                    });
+                }
+            }
+
+            response.Message = new OllamaMessage("assistant", content) { Thinking = thinking, ToolCalls = toolCalls };
+            response.DoneReason = toolCalls is not null ? "tool_calls" : finish;
+            int prompt = root?["usage"]?["prompt_tokens"]?.GetValue<int>() ?? 0;
+            int completion = root?["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0;
+            response.PromptEvalCount = prompt > 0 ? prompt : null;
+            response.EvalCount = completion > 0 ? completion : null;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Failed to convert OpenAI response to Ollama for model {Model}", clientModel);
+        }
+
+        return JsonSerializer.Serialize(response, _jsonOptions);
+    }
+
+    private static void FillOllamaUsage(RequestLog log, string ollamaJson)
+    {
+        try
+        {
+            JsonNode? root = JsonNode.Parse(ollamaJson);
+            int prompt = root?["prompt_eval_count"]?.GetValue<int>() ?? 0;
+            int completion = root?["eval_count"]?.GetValue<int>() ?? 0;
+            if (prompt > 0) log.PromptTokens = prompt;
+            if (completion > 0) log.CompletionTokens = completion;
+        }
+        catch
+        {
+            // Token counts are best-effort; a malformed body must not fail the response.
+        }
+    }
+
+    private static async Task TryWriteOllamaErrorChunkAsync(StreamWriter writer, string clientModel, string message)
+    {
+        try
+        {
+            var chunk = new OllamaChatResponse
+            {
+                Model = clientModel,
+                Message = new OllamaMessage("assistant", string.Empty),
+                Done = true,
+                DoneReason = "error",
+                Error = message,
+            };
+            await writer.WriteLineAsync(JsonSerializer.Serialize(chunk, _jsonOptions));
+            await writer.FlushAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Client already disconnected; the error chunk could not be delivered.
+        }
+    }
+
+    private static async Task TryWriteOllamaDoneChunkAsync(StreamWriter writer, string clientModel, Stopwatch sw)
+    {
+        try
+        {
+            long ns = ElapsedNanos(sw);
+            var chunk = new OllamaChatResponse
+            {
+                Model = clientModel,
+                Message = new OllamaMessage("assistant", string.Empty),
+                Done = true,
+                DoneReason = "stop",
+                TotalDuration = ns,
+                EvalDuration = ns,
+            };
+            await writer.WriteLineAsync(JsonSerializer.Serialize(chunk, _jsonOptions));
+            await writer.FlushAsync(CancellationToken.None);
+        }
+        catch
+        {
+            // Client already disconnected; the terminal chunk could not be delivered.
+        }
+    }
+
     private static string? TryExtractErrorMessage(string body)
     {
         try

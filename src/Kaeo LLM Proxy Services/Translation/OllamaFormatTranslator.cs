@@ -223,6 +223,91 @@ internal static class OllamaFormatTranslator
         return chunks;
     }
 
+    public static OpenAiToOllamaStreamState CreateOpenAiToOllamaState(string clientModel)
+        => new(clientModel);
+
+    public static IReadOnlyList<string> OpenAiChunkToOllamaChunks(OpenAiToOllamaStreamState state, string openAiChunkJson)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (string.IsNullOrWhiteSpace(openAiChunkJson))
+        {
+            return [];
+        }
+
+        JsonObject? root = TryParseObject(openAiChunkJson);
+        if (root is null)
+        {
+            return [];
+        }
+
+        if (root["usage"] is JsonObject usage)
+        {
+            if (GetInt(usage["prompt_tokens"]) is int promptTokens)
+            {
+                state.PromptTokens = promptTokens;
+            }
+            if (GetInt(usage["completion_tokens"]) is int completionTokens)
+            {
+                state.CompletionTokens = completionTokens;
+            }
+        }
+
+        List<string> chunks = [];
+        string? finishReason = null;
+
+        if (root["choices"] is JsonArray choices)
+        {
+            foreach (JsonNode? node in choices)
+            {
+                if (node is not JsonObject choice)
+                {
+                    continue;
+                }
+
+                JsonObject? delta = choice["delta"] as JsonObject;
+
+                string? content = GetString(delta?["content"]);
+                if (!string.IsNullOrEmpty(content))
+                {
+                    chunks.Add(BuildOllamaChunk(state, new JsonObject { ["role"] = "assistant", ["content"] = content }, done: false, doneReason: null));
+                }
+
+                string? thinking = GetString(delta?["reasoning_content"]);
+                if (!string.IsNullOrEmpty(thinking))
+                {
+                    chunks.Add(BuildOllamaChunk(state, new JsonObject { ["role"] = "assistant", ["thinking"] = thinking }, done: false, doneReason: null));
+                }
+
+                if (delta?["tool_calls"] is JsonArray toolCallDeltas)
+                {
+                    AccumulateToolCallDeltas(state, toolCallDeltas);
+                }
+
+                if (GetString(choice["finish_reason"]) is string reason)
+                {
+                    finishReason = reason;
+                }
+            }
+        }
+
+        if (finishReason is not null && !state.Finished)
+        {
+            state.Finished = true;
+            JsonObject message = new() { ["role"] = "assistant", ["content"] = string.Empty };
+            JsonArray? toolCalls = BuildAccumulatedToolCalls(state);
+            if (toolCalls is { Count: > 0 })
+            {
+                message["tool_calls"] = toolCalls;
+            }
+
+            string doneReason = MapFinishReason(finishReason, toolCalls is { Count: > 0 });
+            chunks.Add(BuildOllamaChunk(state, message, done: true, doneReason));
+        }
+
+        return chunks;
+    }
+
     private static JsonObject TranslateRequestMessage(JsonObject openAiMessage)
     {
         string role = GetString(openAiMessage["role"]) ?? "user";
@@ -409,6 +494,100 @@ internal static class OllamaFormatTranslator
         ["total_tokens"] = promptTokens + completionTokens,
     };
 
+    private static void AccumulateToolCallDeltas(OpenAiToOllamaStreamState state, JsonArray toolCallDeltas)
+    {
+        foreach (JsonNode? node in toolCallDeltas)
+        {
+            if (node is not JsonObject toolCall)
+            {
+                continue;
+            }
+
+            int index = GetInt(toolCall["index"]) ?? 0;
+            if (!state.ToolCallBuilders.TryGetValue(index, out OpenAiToOllamaStreamState.ToolCallBuilder? builder))
+            {
+                builder = new OpenAiToOllamaStreamState.ToolCallBuilder();
+                state.ToolCallBuilders[index] = builder;
+            }
+
+            if (GetString(toolCall["id"]) is string id)
+            {
+                builder.Id = id;
+            }
+
+            JsonObject? function = toolCall["function"] as JsonObject;
+            if (GetString(function?["name"]) is string name)
+            {
+                builder.Name.Append(name);
+            }
+            if (GetString(function?["arguments"]) is string arguments)
+            {
+                builder.Arguments.Append(arguments);
+            }
+        }
+    }
+
+    private static JsonArray? BuildAccumulatedToolCalls(OpenAiToOllamaStreamState state)
+    {
+        if (state.ToolCallBuilders.Count == 0)
+        {
+            return null;
+        }
+
+        JsonArray toolCalls = [];
+        foreach (int index in state.ToolCallBuilders.Keys.Order())
+        {
+            OpenAiToOllamaStreamState.ToolCallBuilder builder = state.ToolCallBuilders[index];
+            JsonObject toolCall = new()
+            {
+                ["function"] = new JsonObject
+                {
+                    ["name"] = builder.Name.ToString(),
+                    ["arguments"] = TryParseObject(builder.Arguments.ToString()) ?? [],
+                },
+            };
+
+            if (builder.Id is string id)
+            {
+                toolCall["id"] = id;
+            }
+
+            toolCalls.Add(toolCall);
+        }
+
+        return toolCalls;
+    }
+
+    private static string BuildOllamaChunk(OpenAiToOllamaStreamState state, JsonObject message, bool done, string? doneReason)
+    {
+        JsonObject chunk = new()
+        {
+            ["model"] = state.ClientModel,
+            ["created_at"] = state.CreatedAt,
+            ["message"] = message,
+            ["done"] = done,
+        };
+
+        if (doneReason is not null)
+        {
+            chunk["done_reason"] = doneReason;
+        }
+
+        if (done)
+        {
+            if (state.PromptTokens is int promptTokens)
+            {
+                chunk["prompt_eval_count"] = promptTokens;
+            }
+            if (state.CompletionTokens is int completionTokens)
+            {
+                chunk["eval_count"] = completionTokens;
+            }
+        }
+
+        return chunk.ToJsonString(SerializerOptions);
+    }
+
     private static string MapFinishReason(string? doneReason, bool toolCallsEmitted)
     {
         if (toolCallsEmitted || doneReason == "tool_calls")
@@ -502,4 +681,39 @@ public sealed class OllamaToOpenAiStreamState
     public int NextToolCallIndex { get; set; }
 
     public bool Finished { get; set; }
+}
+
+/// <summary>
+/// Per-stream state for translating OpenAI chat.completion.chunk payloads into Ollama
+/// NDJSON chunks. Create one instance per upstream stream via
+/// <see cref="OllamaFormatTranslator.CreateOpenAiToOllamaState"/>.
+/// </summary>
+public sealed class OpenAiToOllamaStreamState
+{
+    public OpenAiToOllamaStreamState(string clientModel)
+    {
+        ClientModel = clientModel;
+        CreatedAt = DateTime.UtcNow.ToString("o");
+    }
+
+    public string ClientModel { get; }
+
+    public string CreatedAt { get; }
+
+    public bool Finished { get; set; }
+
+    public int? PromptTokens { get; set; }
+
+    public int? CompletionTokens { get; set; }
+
+    internal Dictionary<int, ToolCallBuilder> ToolCallBuilders { get; } = [];
+
+    internal sealed class ToolCallBuilder
+    {
+        public string? Id { get; set; }
+
+        public StringBuilder Name { get; } = new();
+
+        public StringBuilder Arguments { get; } = new();
+    }
 }

@@ -164,6 +164,33 @@ public sealed class ApiTranslationE2ETests : IAsyncDisposable
         stream,
     };
 
+    private static object OllamaBody(string model, bool stream) => new
+    {
+        model,
+        messages = new[] { new { role = "user", content = "Test" } },
+        stream,
+    };
+
+    private static string OllamaContent(string body)
+    {
+        using JsonDocument doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("message").GetProperty("content").GetString() ?? "";
+    }
+
+    private static string ConcatOllamaNdjsonContent(string body)
+    {
+        StringBuilder sb = new();
+        foreach (string line in body.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            using JsonDocument doc = JsonDocument.Parse(line);
+            if (doc.RootElement.TryGetProperty("message", out JsonElement msg)
+                && msg.TryGetProperty("content", out JsonElement c))
+                sb.Append(c.GetString());
+        }
+        return sb.ToString();
+    }
+
     private static string OpenAiContent(string body)
     {
         using JsonDocument doc = JsonDocument.Parse(body);
@@ -306,6 +333,32 @@ public sealed class ApiTranslationE2ETests : IAsyncDisposable
         Assert.EndsWith("/v1/messages", _upstream.LastPath);
     }
 
+    // ── Anthropic inbound → Ollama upstream ────────────────────────────────
+
+    [Fact]
+    public async Task AnthropicInbound_OllamaUpstream_NonStream_TranslatesReply()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/v1/messages", Json(AnthropicBody("ollama-target", false)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", AnthropicContent(body));
+        Assert.EndsWith("/api/chat", _upstream.LastPath);
+    }
+
+    [Fact]
+    public async Task AnthropicInbound_OllamaUpstream_Stream_TranslatesToAnthropicSse()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/v1/messages", Json(AnthropicBody("ollama-target", true)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", ConcatAnthropicSseText(body));
+        Assert.Contains("event: message_stop", body);
+    }
+
     // ── Translation toggle ────────────────────────────────────────────────
 
     [Fact]
@@ -322,6 +375,59 @@ public sealed class ApiTranslationE2ETests : IAsyncDisposable
         // stub answers in OpenAI format and the client receives an OpenAI reply unchanged.
         Assert.Contains("Test", OpenAiContent(body));
         Assert.EndsWith("/v1/chat/completions", _upstream.LastPath);
+    }
+
+    // ── Ollama inbound → Ollama upstream (passthrough) ───────────────────
+
+    [Fact]
+    public async Task OllamaInbound_OllamaUpstream_NonStream_Passthrough()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/api/chat", Json(OllamaBody("ollama-target", false)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", OllamaContent(body));
+        Assert.EndsWith("/api/chat", _upstream.LastPath);
+    }
+
+    [Fact]
+    public async Task OllamaInbound_OllamaUpstream_Stream_Passthrough()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/api/chat", Json(OllamaBody("ollama-target", true)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", ConcatOllamaNdjsonContent(body));
+        Assert.Contains("\"done\":true", body);
+    }
+
+    // ── Ollama inbound → Anthropic upstream ──────────────────────────────
+
+    [Fact]
+    public async Task OllamaInbound_AnthropicUpstream_NonStream_TranslatesReply()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/api/chat", Json(OllamaBody("anthropic-target", false)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", OllamaContent(body));
+        Assert.EndsWith("/v1/messages", _upstream.LastPath);
+        Assert.Equal("2023-06-01", _upstream.LastAnthropicVersion);
+    }
+
+    [Fact]
+    public async Task OllamaInbound_AnthropicUpstream_Stream_TranslatesToNdjson()
+    {
+        using HttpClient client = NewClient();
+        using HttpResponseMessage response = await client.PostAsync(
+            $"http://localhost:{_proxyPort}/api/chat", Json(OllamaBody("anthropic-target", true)));
+        response.EnsureSuccessStatusCode();
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Test", ConcatOllamaNdjsonContent(body));
+        Assert.Contains("\"done\":true", body);
     }
 
     // ── Path-aware stub upstream ──────────────────────────────────────────

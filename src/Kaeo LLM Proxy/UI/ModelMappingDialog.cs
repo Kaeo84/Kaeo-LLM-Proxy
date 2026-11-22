@@ -110,6 +110,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly NumericUpDown _numAnthropicMaxTokens = new();
     private readonly Label _lblAnthropicApiVersion = new();
     private readonly TextBox _txtAnthropicApiVersion = new();
+    private readonly Label _lblApiTranslationInfo = new();
     // The status text explains in prose what Copilot compatibility does, so the label needs to wrap
     // inside the dialog rather than grow sideways: AutoSize combined with a MaximumSize width is the
     // WinForms pattern for a wrapping, self-sizing label (same as _lblCompactionStatus).
@@ -968,11 +969,21 @@ internal sealed class ModelMappingDialog : Form
         _lblUpstreamType.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblUpstreamType.AutoSize = true;
         _lblUpstreamType.Margin = new Padding(0, 4, 8, 4);
-        _lblUpstreamType.Text = "Upstream Type:";
+        _lblUpstreamType.Text = "Target API (upstream):";
 
         _cmbUpstreamType.Dock = DockStyle.Fill;
         _cmbUpstreamType.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbUpstreamType.Margin = new Padding(0, 4, 0, 4);
+        _toolTip.SetToolTip(
+            _cmbUpstreamType,
+            "The API format spoken by the TARGET (upstream) model server this mapping forwards to.\n"
+            + "This is the DESTINATION, not the client: the proxy accepts OpenAI, Ollama and Anthropic\n"
+            + "client requests on the same port and translates them into the format selected here.\n\n"
+            + "OpenAI - OpenAI-compatible servers (llama.cpp, vLLM, OpenAI, Azure, etc.).\n"
+            + "Ollama - an Ollama server (/api/chat).\n"
+            + "Anthropic - the Anthropic Messages API (/v1/messages).\n\n"
+            + "With 'Translate between API formats' enabled below, any client format is converted to\n"
+            + "this target; with it disabled the request is forwarded verbatim (formats must match).");
 
         _lblCredential.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblCredential.AutoSize = true;
@@ -1233,9 +1244,10 @@ internal sealed class ModelMappingDialog : Form
         _tlpApiTranslation.AutoSizeMode = AutoSizeMode.GrowOnly;
         _tlpApiTranslation.Dock = DockStyle.Fill;
         _tlpApiTranslation.ColumnCount = 2;
-        _tlpApiTranslation.RowCount = 3;
+        _tlpApiTranslation.RowCount = 4;
         _tlpApiTranslation.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _tlpApiTranslation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpApiTranslation.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -1275,12 +1287,22 @@ internal sealed class ModelMappingDialog : Form
         _toolTip.SetToolTip(_txtAnthropicApiVersion,
             "Sent as the anthropic-version header on Anthropic upstream requests.");
 
+        _lblApiTranslationInfo.AutoSize = true;
+        _lblApiTranslationInfo.MaximumSize = new Size(560, 0);
+        _lblApiTranslationInfo.Margin = new Padding(0, 6, 0, 2);
+        _lblApiTranslationInfo.Text =
+            "The proxy accepts OpenAI (/v1/chat/completions), Ollama (/api/chat) and Anthropic "
+            + "(/v1/messages) clients on the same port. Each request is translated into the Target "
+            + "API selected above for the resolved model.";
+
         _tlpApiTranslation.Controls.Add(_chkEnableApiTranslation, 0, 0);
         _tlpApiTranslation.SetColumnSpan(_chkEnableApiTranslation, 2);
         _tlpApiTranslation.Controls.Add(_lblAnthropicMaxTokens, 0, 1);
         _tlpApiTranslation.Controls.Add(_numAnthropicMaxTokens, 1, 1);
         _tlpApiTranslation.Controls.Add(_lblAnthropicApiVersion, 0, 2);
         _tlpApiTranslation.Controls.Add(_txtAnthropicApiVersion, 1, 2);
+        _tlpApiTranslation.Controls.Add(_lblApiTranslationInfo, 0, 3);
+        _tlpApiTranslation.SetColumnSpan(_lblApiTranslationInfo, 2);
 
         _grpApiTranslation.Controls.Add(_tlpApiTranslation);
 

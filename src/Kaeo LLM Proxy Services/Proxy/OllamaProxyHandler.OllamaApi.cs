@@ -613,6 +613,19 @@ partial class OllamaProxyHandler
             }
         }
 
+        // Cross-format dispatch: the client spoke Ollama, but the resolved upstream may speak a
+        // different API. The OpenAI body built above already carries every per-model setting
+        // (sampling, instructions, compaction), so it is the hub we convert from. OpenAI upstreams
+        // keep the legacy /v1/chat/completions path below unchanged.
+        if (mapping is not null && mapping.EnableApiTranslation
+            && mapping.UpstreamType is UpstreamType.Ollama or UpstreamType.Anthropic)
+        {
+            await HandleOllamaChatTranslatedAsync(
+                resp, log, upstreamBody, mapping, chatBase, chatTimeout, chatApiKey,
+                ollamaReq.Model, ollamaReq.Stream, sw, ct);
+            return;
+        }
+
         using StringContent chatContent = new(upstreamBody, Encoding.UTF8, "application/json");
         using var chatReqMsg = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = chatContent };
         ApplyApiKey(chatReqMsg, chatApiKey);
