@@ -4,6 +4,10 @@ partial class MainForm
 {
     private System.ComponentModel.IContainer components = null;
 
+    // Shared for the process lifetime; per-instance Font objects were never disposed
+    // (Control.Dispose does not dispose its Font). Monospace textboxes reuse _detailsFont.
+    private static readonly Font BoldValueFont = new(SystemFonts.DefaultFont, FontStyle.Bold);
+
     protected override void Dispose(bool disposing)
     {
         if (disposing && (components != null))
@@ -366,6 +370,9 @@ partial class MainForm
         _tabDashboard.SuspendLayout();
         _tabLogs.SuspendLayout();
         _logSubTabs.SuspendLayout();
+        _logStreamsPage.SuspendLayout();
+        _tlpStreams.SuspendLayout();
+        _splitStreams.SuspendLayout();
         _logProxyPage.SuspendLayout();
         _tlpProxyLogs.SuspendLayout();
         _flpProxyLogTop.SuspendLayout();
@@ -514,7 +521,7 @@ partial class MainForm
         _lblStatus.Text = "Status:";
 
         _lblStatusValue.AutoSize = true;
-        _lblStatusValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblStatusValue.Font = BoldValueFont;
         _lblStatusValue.Margin = new Padding(4, 6, 4, 4);
         _lblStatusValue.Name = "_lblStatusValue";
         _lblStatusValue.Text = "Stopped";
@@ -606,7 +613,7 @@ partial class MainForm
         _lblDashMcpStatusCaption.Text = "Status:";
 
         _lblDashMcpStatusValue.AutoSize = true;
-        _lblDashMcpStatusValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblDashMcpStatusValue.Font = BoldValueFont;
         _lblDashMcpStatusValue.Margin = new Padding(4, 6, 4, 4);
         _lblDashMcpStatusValue.Name = "_lblDashMcpStatusValue";
         _lblDashMcpStatusValue.Text = "Stopped";
@@ -682,7 +689,7 @@ partial class MainForm
         _lblTotalRequestsCaption.Text = "Total Requests:";
 
         _lblTotalRequestsValue.AutoSize = true;
-        _lblTotalRequestsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblTotalRequestsValue.Font = BoldValueFont;
         _lblTotalRequestsValue.Margin = new Padding(4, 6, 4, 4);
         _lblTotalRequestsValue.Name = "_lblTotalRequestsValue";
         _lblTotalRequestsValue.Text = "0";
@@ -694,7 +701,7 @@ partial class MainForm
         _lblTotalErrorsCaption.Text = "Errors:";
 
         _lblTotalErrorsValue.AutoSize = true;
-        _lblTotalErrorsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblTotalErrorsValue.Font = BoldValueFont;
         _lblTotalErrorsValue.Margin = new Padding(4, 6, 4, 4);
         _lblTotalErrorsValue.Name = "_lblTotalErrorsValue";
         _lblTotalErrorsValue.Text = "0";
@@ -706,7 +713,7 @@ partial class MainForm
         _lblPromptTokensCaption.Text = "Prompt Tokens:";
 
         _lblPromptTokensValue.AutoSize = true;
-        _lblPromptTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblPromptTokensValue.Font = BoldValueFont;
         _lblPromptTokensValue.Margin = new Padding(4, 6, 4, 4);
         _lblPromptTokensValue.Name = "_lblPromptTokensValue";
         _lblPromptTokensValue.Text = "0";
@@ -718,7 +725,7 @@ partial class MainForm
         _lblCompletionTokensCaption.Text = "Completion Tokens:";
 
         _lblCompletionTokensValue.AutoSize = true;
-        _lblCompletionTokensValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblCompletionTokensValue.Font = BoldValueFont;
         _lblCompletionTokensValue.Margin = new Padding(4, 6, 4, 4);
         _lblCompletionTokensValue.Name = "_lblCompletionTokensValue";
         _lblCompletionTokensValue.Text = "0";
@@ -738,7 +745,7 @@ partial class MainForm
 
         _lblRpsValue.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblRpsValue.AutoSize = true;
-        _lblRpsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblRpsValue.Font = BoldValueFont;
         _lblRpsValue.Margin = new Padding(4, 6, 4, 4);
         _lblRpsValue.Name = "_lblRpsValue";
         _lblRpsValue.Text = "0.00";
@@ -770,7 +777,7 @@ partial class MainForm
         _lblMcpTotalRequestsCaption.Text = "Total Requests:";
 
         _lblMcpTotalRequestsValue.AutoSize = true;
-        _lblMcpTotalRequestsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpTotalRequestsValue.Font = BoldValueFont;
         _lblMcpTotalRequestsValue.Margin = new Padding(4, 6, 4, 4);
         _lblMcpTotalRequestsValue.Name = "_lblMcpTotalRequestsValue";
         _lblMcpTotalRequestsValue.Text = "0";
@@ -782,7 +789,7 @@ partial class MainForm
         _lblMcpTotalErrorsCaption.Text = "Errors:";
 
         _lblMcpTotalErrorsValue.AutoSize = true;
-        _lblMcpTotalErrorsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpTotalErrorsValue.Font = BoldValueFont;
         _lblMcpTotalErrorsValue.Margin = new Padding(4, 6, 4, 4);
         _lblMcpTotalErrorsValue.Name = "_lblMcpTotalErrorsValue";
         _lblMcpTotalErrorsValue.Text = "0";
@@ -802,7 +809,7 @@ partial class MainForm
 
         _lblMcpRpsValue.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpRpsValue.AutoSize = true;
-        _lblMcpRpsValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblMcpRpsValue.Font = BoldValueFont;
         _lblMcpRpsValue.Margin = new Padding(4, 6, 4, 4);
         _lblMcpRpsValue.Name = "_lblMcpRpsValue";
         _lblMcpRpsValue.Text = "0.00";
@@ -839,7 +846,7 @@ partial class MainForm
         _lblCpuCaption.Text = "CPU:";
 
         _lblCpuValue.AutoSize = true;
-        _lblCpuValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblCpuValue.Font = BoldValueFont;
         _lblCpuValue.Margin = new Padding(4, 8, 4, 8);
         _lblCpuValue.Name = "_lblCpuValue";
         _lblCpuValue.Text = "0.0%";
@@ -851,7 +858,7 @@ partial class MainForm
         _lblRamCaption.Text = "RAM:";
 
         _lblRamValue.AutoSize = true;
-        _lblRamValue.Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold);
+        _lblRamValue.Font = BoldValueFont;
         _lblRamValue.Margin = new Padding(4, 8, 4, 8);
         _lblRamValue.Name = "_lblRamValue";
         _lblRamValue.Text = "0 MB";
@@ -1097,7 +1104,8 @@ partial class MainForm
         _splitStreams.Dock = DockStyle.Fill;
         _splitStreams.Name = "_splitStreams";
         _splitStreams.Orientation = Orientation.Vertical;
-        _splitStreams.SplitterDistance = 400;
+        // SplitterDistance is set in OnShown, once the control has its real width; setting it
+        // here (before docking/sizing) silently clamps against the default 150px size.
 
         // Panel1: Raw upstream
         _lblStreamRaw.AutoSize = true;
@@ -1107,7 +1115,7 @@ partial class MainForm
         _txtStreamRaw.ReadOnly = true;
         _txtStreamRaw.WordWrap = false;
         _txtStreamRaw.BackColor = SystemColors.Window;
-        _txtStreamRaw.Font = new Font("Consolas", 9F);
+        _txtStreamRaw.Font = _detailsFont;
         _splitStreams.Panel1.Controls.Add(_lblStreamRaw);
         _splitStreams.Panel1.Controls.Add(_txtStreamRaw);
 
@@ -1119,7 +1127,7 @@ partial class MainForm
         _txtStreamForwarded.ReadOnly = true;
         _txtStreamForwarded.WordWrap = false;
         _txtStreamForwarded.BackColor = SystemColors.Window;
-        _txtStreamForwarded.Font = new Font("Consolas", 9F);
+        _txtStreamForwarded.Font = _detailsFont;
         _splitStreams.Panel2.Controls.Add(_lblStreamForwarded);
         _splitStreams.Panel2.Controls.Add(_txtStreamForwarded);
 
@@ -2306,7 +2314,7 @@ partial class MainForm
 
         _txtTestResponse.BackColor = SystemColors.Window;
         _txtTestResponse.Dock = DockStyle.Fill;
-        _txtTestResponse.Font = new Font("Consolas", 9F);
+        _txtTestResponse.Font = _detailsFont;
         _txtTestResponse.Margin = new Padding(0, 0, 0, 4);
         _txtTestResponse.Multiline = true;
         _txtTestResponse.Name = "_txtTestResponse";
@@ -2629,6 +2637,9 @@ partial class MainForm
         _tabDashboard.ResumeLayout(false);
         _logProxyPage.ResumeLayout(false);
         _logMcpPage.ResumeLayout(false);
+        _splitStreams.ResumeLayout(false);
+        _tlpStreams.ResumeLayout(false);
+        _logStreamsPage.ResumeLayout(false);
         _logSubTabs.ResumeLayout(false);
         _tabLogs.ResumeLayout(false);
         _tlpLogs.ResumeLayout(false);

@@ -53,6 +53,12 @@ internal partial class MainForm : Form
     private IReadOnlyList<RequestLog> _logCache = [];
     private IReadOnlyList<RequestLog> _mcpLogCache = [];
     private IReadOnlyList<RequestLog> _nonProxiedLogCache = [];
+    private IReadOnlyList<SystemLogEntry> _sysLogCache = [];
+    private bool _sysLogRefreshInFlight;
+
+    // Shared so repeated log-detail windows do not leak a GDI font handle per textbox
+    // (TextBox.Dispose does not dispose its Font).
+    private static readonly Font _detailsFont = new("Consolas", 9F);
 
         /// <summary>
         /// Debounces the System Logs free-text filter so a database query is not issued per keystroke.
@@ -84,6 +90,10 @@ internal partial class MainForm : Form
     // Shared client for the test console. Creating a new HttpClient per test send causes socket
     // churn; per-request timeouts are enforced with a linked CancellationTokenSource instead.
     private static readonly HttpClient _testConsoleClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    // Shows a per-field error glyph instead of silently discarding a settings save when one
+    // numeric textbox is invalid.
+    private readonly ErrorProvider _inputErrors = new();
 
     public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
     {
@@ -120,6 +130,14 @@ internal partial class MainForm : Form
         _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
         _lstNonProxiedLogs.VirtualMode = true;
         _lstNonProxiedLogs.RetrieveVirtualItem += LstNonProxiedLogs_RetrieveVirtualItem;
+        _lstSysLogs.VirtualMode = true;
+        _lstSysLogs.RetrieveVirtualItem += LstSysLogs_RetrieveVirtualItem;
+
+        // Capture the selected entry's identity at selection time so a timer refresh that shifts
+        // rows between selection and details lookup cannot show the wrong entry.
+        _lstLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
+        _lstMcpLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
+        _lstNonProxiedLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
 
         _stats.StatsChanged += OnStatsChanged;
         _mcpStats.StatsChanged += OnMcpStatsChanged;
@@ -240,6 +258,9 @@ internal partial class MainForm : Form
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
         _mcpServer.StatusChanged -= OnMcpStatusChanged;
+        if (_streamMonitor is not null)
+            _streamMonitor.StreamsChanged -= OnStreamsChanged;
+        _inputErrors.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -268,6 +289,10 @@ internal partial class MainForm : Form
 
     private void SaveMcpSettingsFromForm()
     {
+        // The MCP tab has no auth UI; carry the persisted credential name through so saving
+        // any other MCP option never silently disables bearer authentication.
+        string? authCredentialName = _mcpServer.LoadSettings().AuthCredentialName;
+
         McpServerSettings settings = new()
         {
             Enabled = _chkMcpEnabled.Checked,
@@ -276,7 +301,7 @@ internal partial class MainForm : Form
             EnableApiExplorer = _chkMcpApiExplorer.Checked,
             CollectRequestDetails = _chkMcpCollectRequest.Checked,
             CollectResponseDetails = _chkMcpCollectResponse.Checked,
-            AuthCredentialName = null,
+            AuthCredentialName = authCredentialName,
         };
 
         _mcpServer.SaveSettings(settings);
@@ -288,7 +313,8 @@ internal partial class MainForm : Form
             return;
 
         UpdateMcpApiExplorerUrlLabel();
-        SaveMcpSettingsFromForm();
+        if (!TryPersist("MCP settings", () => { SaveMcpSettingsFromForm(); return true; }))
+            return;
         _ = ApplyMcpServerSettingsAsync();
     }
 
@@ -329,10 +355,21 @@ internal partial class MainForm : Form
 
     private void OnMcpStatusChanged(object? sender, string status)
     {
-        if (IsHandleCreated)
+        // Never run the fallback on the raiser's thread: if the handle is not created yet the
+        // status is read by OnLoad anyway. The catch covers the dispose race between the check
+        // and BeginInvoke during shutdown.
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
             BeginInvoke(UpdateMcpStatusDisplays);
-        else
-            UpdateMcpStatusDisplays();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private void UpdateMcpStatusLabel() => _lblMcpStatus.Text = _mcpServer.Status;
@@ -522,10 +559,28 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshStatus);
+            SafeBeginInvoke(RefreshStatus);
             return;
         }
         RefreshStatus();
+    }
+
+    /// <summary>
+    /// Posts to the UI thread, tolerating the dispose race between the IsDisposed/IsHandleCreated
+    /// check and BeginInvoke while the form is closing on the UI thread.
+    /// </summary>
+    private void SafeBeginInvoke(Action action)
+    {
+        try
+        {
+            BeginInvoke(action);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     /// <summary>
@@ -705,7 +760,7 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshStats);
+            SafeBeginInvoke(RefreshStats);
             return;
         }
         RefreshStats();
@@ -723,7 +778,7 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshMcpStats);
+            SafeBeginInvoke(RefreshMcpStats);
             return;
         }
         RefreshMcpStats();
@@ -734,7 +789,7 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(UpdatePerfLabels);
+            SafeBeginInvoke(UpdatePerfLabels);
             return;
         }
         UpdatePerfLabels();
@@ -952,32 +1007,43 @@ internal partial class MainForm : Form
     private void BtnClearLogs_Click(object? sender, EventArgs e) =>
         RunOnceWhileDisabled(_btnClearLogs, () =>
         {
-            if (_logSubTabs.SelectedTab == _logMcpPage)
+            try
             {
-                _mcpStats.ClearLogs();
-                _mcpLogCache = [];
-                _lstMcpLogs.VirtualListSize = 0;
-                _lstMcpLogs.Invalidate();
+                if (_logSubTabs.SelectedTab == _logMcpPage)
+                {
+                    _mcpStats.ClearLogs();
+                    _mcpLogCache = [];
+                    _lstMcpLogs.VirtualListSize = 0;
+                    _lstMcpLogs.Invalidate();
+                }
+                else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
+                {
+                    _nonProxiedStats.ClearLogs();
+                    _nonProxiedLogCache = [];
+                    _lstNonProxiedLogs.VirtualListSize = 0;
+                    _lstNonProxiedLogs.Invalidate();
+                }
+                else if (_logSubTabs.SelectedTab == _tabSysLogs)
+                {
+                    _database.ClearSystemLogs();
+                    AppLogger.SysLog.Clear();
+                    RefreshSystemLogs();
+                }
+                else
+                {
+                    _stats.ClearLogs();
+                    _logCache = [];
+                    _lstLogs.VirtualListSize = 0;
+                    _lstLogs.Invalidate();
+                }
             }
-            else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
+            catch (IOException ex)
             {
-                _nonProxiedStats.ClearLogs();
-                _nonProxiedLogCache = [];
-                _lstNonProxiedLogs.VirtualListSize = 0;
-                _lstNonProxiedLogs.Invalidate();
-            }
-            else if (_logSubTabs.SelectedTab == _tabSysLogs)
-            {
-                _database.ClearSystemLogs();
-                AppLogger.SysLog.Clear();
-                RefreshSystemLogs();
-            }
-            else
-            {
-                _stats.ClearLogs();
-                _logCache = [];
-                _lstLogs.VirtualListSize = 0;
-                _lstLogs.Invalidate();
+                // Another instance may hold the database file; degrade instead of crashing.
+                Log.Warning(ex, "Could not clear logs");
+                MessageBox.Show(
+                    $"The logs could not be cleared.\n\n{ex.Message}\n\nAnother instance may be holding the database file.",
+                    "Clear Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         });
 
@@ -998,15 +1064,18 @@ internal partial class MainForm : Form
 
     private void ShowSelectedSysLogDetails()
     {
-        if (_lstSysLogs.SelectedItems.Count == 0)
+        if (_lstSysLogs.SelectedIndices.Count == 0)
         {
             MessageBox.Show("Select a log entry first.", "No selection",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (_lstSysLogs.SelectedItems[0].Tag is not SystemLogEntry entry)
+        int index = _lstSysLogs.SelectedIndices[0];
+        if (index < 0 || index >= _sysLogCache.Count)
             return;
+
+        SystemLogEntry entry = _sysLogCache[index];
 
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Timestamp : {entry.Timestamp:yyyy-MM-dd HH:mm:ss.fff}");
@@ -1039,6 +1108,20 @@ internal partial class MainForm : Form
     private void LstSysLogs_DoubleClick(object? sender, EventArgs e) =>
         ShowSelectedSysLogDetails();
 
+    private void LogList_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (sender is not ListView list || list.SelectedIndices.Count == 0)
+            return;
+
+        IReadOnlyList<RequestLog> cache =
+            list == _lstMcpLogs ? _mcpLogCache :
+            list == _lstNonProxiedLogs ? _nonProxiedLogCache : _logCache;
+
+        int index = list.SelectedIndices[0];
+        if (index >= 0 && index < cache.Count)
+            list.Tag = cache[index].RequestId;
+    }
+
     private void ShowSelectedLogDetails(ListView list, IReadOnlyList<RequestLog> cache, LogSource source)
     {
         if (list.SelectedIndices.Count == 0)
@@ -1046,6 +1129,19 @@ internal partial class MainForm : Form
             MessageBox.Show("Select a log entry first.", "No selection",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
+        }
+
+        // Prefer the identity captured at selection time: a refresh may have shifted rows since.
+        if (list.Tag is string requestId && !string.IsNullOrEmpty(requestId))
+        {
+            foreach (RequestLog entry in cache)
+            {
+                if (entry.RequestId == requestId)
+                {
+                    ShowLogDetails(entry, source);
+                    return;
+                }
+            }
         }
 
         int index = list.SelectedIndices[0];
@@ -1124,7 +1220,15 @@ internal partial class MainForm : Form
 
         if (log.ExceptionId.HasValue)
         {
-            ExceptionDetail? ex = _stats.GetException(log.ExceptionId.Value);
+            // Each source's exceptions live in its own statistics instance; querying the proxy
+            // instance for an MCP/non-proxied entry would never find them.
+            StatisticsService statsForSource = source switch
+            {
+                LogSource.Mcp => _mcpStats,
+                LogSource.NonProxied => _nonProxiedStats,
+                _ => _stats,
+            };
+            ExceptionDetail? ex = statsForSource.GetException(log.ExceptionId.Value);
             if (ex is not null)
             {
                 sb.AppendLine();
@@ -1268,7 +1372,7 @@ internal partial class MainForm : Form
             ReadOnly = true,
             ScrollBars = ScrollBars.Both,
             WordWrap = false,
-            Font = new Font("Consolas", 9F),
+            Font = _detailsFont,
             Text = text,
         };
     }
@@ -1356,8 +1460,20 @@ internal partial class MainForm : Form
 
     private void RefreshSystemLogs()
     {
-        if (IsDisposed || !IsHandleCreated) return;
+        // Skip when a query is already running; the next timer tick picks up any newer filter.
+        if (IsDisposed || !IsHandleCreated || _sysLogRefreshInFlight)
+            return;
 
+        _sysLogRefreshInFlight = true;
+        _ = RefreshSystemLogsCoreAsync();
+    }
+
+    /// <summary>
+    /// Runs the SQLite query off the UI thread and materializes only the visible rows through
+    /// virtual mode, so a large system_logs table cannot stall the window every refresh tick.
+    /// </summary>
+    private async Task RefreshSystemLogsCoreAsync()
+    {
         try
         {
             // Only send levels the user actually checked; with every level checked (the initial
@@ -1366,48 +1482,65 @@ internal partial class MainForm : Form
             List<string>? levelFilters =
                 levels.Count > 0 && levels.Count < SystemLogLevels.Length ? levels : null;
             string? searchText = string.IsNullOrWhiteSpace(_txtSysLogFilter.Text) ? null : _txtSysLogFilter.Text.Trim();
+            bool hideHeartbeats = _chkSysLogHideHeartbeats.Checked;
 
-            IReadOnlyList<SystemLogEntry> entries = _database.GetSystemLogs(
+            IReadOnlyList<SystemLogEntry> entries = await Task.Run(() => _database.GetSystemLogs(
                 levelFilter: null, limit: 500, levelFilters: levelFilters, searchText: searchText,
-                excludeHeartbeats: _chkSysLogHideHeartbeats.Checked);
+                excludeHeartbeats: hideHeartbeats));
+
+            if (IsDisposed)
+                return;
+
+            _sysLogCache = entries;
 
             bool dbHealthy = AppLogger.DbSink?.IsUsingDatabase ?? true;
             string scope = levelFilters is null ? "all levels" : $"{levelFilters.Count} level(s)";
-            if (_chkSysLogHideHeartbeats.Checked)
+            if (hideHeartbeats)
                 scope += ", heartbeats hidden";
             _lblSysLogStatus.Text = dbHealthy
                 ? $"Database ({entries.Count} entries, {scope})"
                 : "Fallback file active (DB unavailable)";
             _lblSysLogStatus.ForeColor = dbHealthy ? SystemColors.ControlText : Color.OrangeRed;
 
-            _lstSysLogs.BeginUpdate();
-            _lstSysLogs.Items.Clear();
-
-            foreach (SystemLogEntry entry in entries)
-            {
-                var item = new ListViewItem(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
-                item.SubItems.Add(entry.Level);
-                item.SubItems.Add(entry.Message);
-                item.SubItems.Add(entry.SourceContext ?? "");
-
-                item.ForeColor = entry.Level switch
-                {
-                    "Error" or "Fatal" => Color.OrangeRed,
-                    "Warning" => Color.DarkOrange,
-                    _ => SystemColors.ControlText,
-                };
-                item.Tag = entry;
-
-                _lstSysLogs.Items.Add(item);
-            }
-
-            _lstSysLogs.EndUpdate();
+            _lstSysLogs.VirtualListSize = entries.Count;
+            _lstSysLogs.Invalidate();
         }
         catch (Exception ex)
         {
-            _lblSysLogStatus.Text = $"Error: {ex.Message}";
-            _lblSysLogStatus.ForeColor = Color.OrangeRed;
+            Log.Warning(ex, "Could not refresh system logs");
+            if (!IsDisposed)
+            {
+                _lblSysLogStatus.Text = $"Error: {ex.Message}";
+                _lblSysLogStatus.ForeColor = Color.OrangeRed;
+            }
         }
+        finally
+        {
+            _sysLogRefreshInFlight = false;
+        }
+    }
+
+    private void LstSysLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _sysLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        SystemLogEntry entry = _sysLogCache[e.ItemIndex];
+        var item = new ListViewItem(entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"));
+        item.SubItems.Add(entry.Level);
+        item.SubItems.Add(entry.Message);
+        item.SubItems.Add(entry.SourceContext ?? "");
+        item.ForeColor = entry.Level switch
+        {
+            "Error" or "Fatal" => Color.OrangeRed,
+            "Warning" => Color.DarkOrange,
+            _ => SystemColors.ControlText,
+        };
+        item.Tag = entry;
+        e.Item = item;
     }
 
     private void RefreshTimer_Tick(object? sender, EventArgs e)
@@ -1440,7 +1573,7 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshHeartbeats);
+            SafeBeginInvoke(RefreshHeartbeats);
             return;
         }
         RefreshHeartbeats();
@@ -1453,7 +1586,7 @@ internal partial class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         if (InvokeRequired)
         {
-            BeginInvoke(RefreshStreams);
+            SafeBeginInvoke(RefreshStreams);
             return;
         }
         RefreshStreams();
@@ -1605,8 +1738,14 @@ internal partial class MainForm : Form
             if (string.IsNullOrWhiteSpace(modelName))
                 continue;
 
-            snapshots.TryGetValue(mapping.ProxyName, out ConnectionHealthSnapshot? proxySnapshot);
-            snapshots.TryGetValue(mapping.ModelName, out ConnectionHealthSnapshot? modelSnapshot);
+            // ProxyName/ModelName can be null on a deserialized mapping; TryGetValue throws on a
+            // null key, which would surface inside a timer/health callback.
+            ConnectionHealthSnapshot? proxySnapshot = null;
+            ConnectionHealthSnapshot? modelSnapshot = null;
+            if (!string.IsNullOrWhiteSpace(mapping.ProxyName))
+                snapshots.TryGetValue(mapping.ProxyName, out proxySnapshot);
+            if (!string.IsNullOrWhiteSpace(mapping.ModelName))
+                snapshots.TryGetValue(mapping.ModelName, out modelSnapshot);
             ConnectionHealthSnapshot? snapshot = PickSnapshot(proxySnapshot, modelSnapshot);
 
             if (!string.IsNullOrWhiteSpace(mapping.ProxyName))
@@ -1780,10 +1919,17 @@ internal partial class MainForm : Form
         if (!int.TryParse(_txtKeepAliveInterval.Text, out int keepAliveIntervalSeconds)
             || keepAliveIntervalSeconds < AppSettings.MinSseKeepAliveIntervalSeconds
             || keepAliveIntervalSeconds > AppSettings.MaxSseKeepAliveIntervalSeconds)
+        {
+            _inputErrors.SetError(_txtKeepAliveInterval,
+                $"Enter a whole number between {AppSettings.MinSseKeepAliveIntervalSeconds} and {AppSettings.MaxSseKeepAliveIntervalSeconds}.");
             return;
+        }
+        _inputErrors.SetError(_txtKeepAliveInterval, string.Empty);
 
+        int previous = _settings.SseKeepAliveIntervalSeconds;
         _settings.SseKeepAliveIntervalSeconds = keepAliveIntervalSeconds;
-        PersistSettingsCore();
+        TryPersist("Keep-alive settings", PersistSettingsCore,
+            () => _settings.SseKeepAliveIntervalSeconds = previous);
         RefreshHeartbeats();
     }
 
@@ -2075,10 +2221,17 @@ internal partial class MainForm : Form
                 return;
             }
 
+            int previousPort = _settings.ListenPort;
+            string previousAddress = _settings.ListenAddress;
             _settings.ListenPort = port;
             _settings.ListenAddress = string.IsNullOrWhiteSpace(_cmbListenAddress.Text) ? "localhost" : _cmbListenAddress.Text.Trim();
 
-            PersistSettingsCore();
+            if (!TryPersist("Listener settings", PersistSettingsCore, () =>
+            {
+                _settings.ListenPort = previousPort;
+                _settings.ListenAddress = previousAddress;
+            }))
+                return;
 
             MessageBox.Show("Listener settings saved. Restart the proxy for the changes to take effect.",
                 "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -2097,10 +2250,18 @@ internal partial class MainForm : Form
             return;
 
         if (!int.TryParse(_txtMaxLogs.Text, out int maxLogs) || maxLogs < 1)
+        {
+            _inputErrors.SetError(_txtMaxLogs, "Enter a whole number of at least 1.");
             return;
+        }
+        _inputErrors.SetError(_txtMaxLogs, string.Empty);
 
         if (!int.TryParse(_txtCompactionFallback.Text, out int compactionFallback) || compactionFallback < 1)
+        {
+            _inputErrors.SetError(_txtCompactionFallback, "Enter a whole number of at least 1.");
             return;
+        }
+        _inputErrors.SetError(_txtCompactionFallback, string.Empty);
 
         // 0 is meaningful here (no ceiling), so only a value outside the accepted range is rejected.
         // An empty or non-numeric box means "leave it alone", not "zero it out".
@@ -2111,9 +2272,12 @@ internal partial class MainForm : Form
                 || compactionTargetTokens < AppSettings.MinCompactionTargetTokens
                 || compactionTargetTokens > AppSettings.MaxCompactionTargetTokens)
             {
+                _inputErrors.SetError(_txtCompactionTarget,
+                    $"Enter a whole number between {AppSettings.MinCompactionTargetTokens} and {AppSettings.MaxCompactionTargetTokens}.");
                 return;
             }
         }
+        _inputErrors.SetError(_txtCompactionTarget, string.Empty);
 
         // Same convention: an empty box leaves the current value alone rather than forcing a default.
         int maxConcurrentCompactions = _settings.MaxConcurrentCompactions;
@@ -2123,9 +2287,12 @@ internal partial class MainForm : Form
                 || maxConcurrentCompactions < AppSettings.MinMaxConcurrentCompactions
                 || maxConcurrentCompactions > AppSettings.MaxMaxConcurrentCompactions)
             {
+                _inputErrors.SetError(_txtMaxConcurrentCompactions,
+                    $"Enter a whole number between {AppSettings.MinMaxConcurrentCompactions} and {AppSettings.MaxMaxConcurrentCompactions}.");
                 return;
             }
         }
+        _inputErrors.SetError(_txtMaxConcurrentCompactions, string.Empty);
 
         _settings.MaxLogEntries = maxLogs;
         _settings.CompactionFallbackContextTokens = compactionFallback;
@@ -2157,9 +2324,14 @@ internal partial class MainForm : Form
 
         _stats.UpdateMaxEntries(maxLogs);
         _mcpStats.UpdateMaxEntries(maxLogs);
+        _nonProxiedStats.UpdateMaxEntries(maxLogs);
+        // Re-clamp the body-retention window against the new maximum for every log source.
+        _stats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
+        _mcpStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
+        _nonProxiedStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
-        PersistSettingsCore();
+        TryPersist("Settings", PersistSettingsCore);
     }
 
     /// <summary>
@@ -2173,24 +2345,48 @@ internal partial class MainForm : Form
             return;
 
         if (string.IsNullOrWhiteSpace(_txtLogDir.Text))
+        {
+            _inputErrors.SetError(_txtLogDir, "A log directory is required.");
             return;
+        }
+        _inputErrors.SetError(_txtLogDir, string.Empty);
 
         string requestDbPath = _txtRequestDbPath.Text.Trim();
         if (string.IsNullOrWhiteSpace(requestDbPath)
             || string.IsNullOrWhiteSpace(Path.GetDirectoryName(requestDbPath)))
+        {
+            _inputErrors.SetError(_txtRequestDbPath, "Enter a full database file path including a directory.");
             return;
+        }
+        _inputErrors.SetError(_txtRequestDbPath, string.Empty);
 
         if (!int.TryParse(_txtAppLogSize.Text, out int appLogSize) || appLogSize < 1)
+        {
+            _inputErrors.SetError(_txtAppLogSize, "Enter a whole number of at least 1.");
             return;
+        }
+        _inputErrors.SetError(_txtAppLogSize, string.Empty);
 
         if (!int.TryParse(_txtAppLogRetain.Text, out int appLogRetain) || appLogRetain < 1)
+        {
+            _inputErrors.SetError(_txtAppLogRetain, "Enter a whole number of at least 1.");
             return;
+        }
+        _inputErrors.SetError(_txtAppLogRetain, string.Empty);
 
         if (!int.TryParse(_txtReqLogSize.Text, out int reqLogSize) || reqLogSize < 1)
+        {
+            _inputErrors.SetError(_txtReqLogSize, "Enter a whole number of at least 1.");
             return;
+        }
+        _inputErrors.SetError(_txtReqLogSize, string.Empty);
 
         if (!int.TryParse(_txtLogRetention.Text, out int logRetentionHours) || logRetentionHours < 0)
+        {
+            _inputErrors.SetError(_txtLogRetention, "Enter a whole number of 0 or more.");
             return;
+        }
+        _inputErrors.SetError(_txtLogRetention, string.Empty);
 
         _settings.Logging.LogDirectory = _txtLogDir.Text.Trim();
         _settings.Logging.MinimumLevel = _cmbMinLevel.SelectedItem?.ToString() ?? "Information";
@@ -2203,11 +2399,41 @@ internal partial class MainForm : Form
 
         _stats.UpdateRetentionHours(logRetentionHours);
         _mcpStats.UpdateRetentionHours(logRetentionHours);
+        _nonProxiedStats.UpdateRetentionHours(logRetentionHours);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);
 
-        PersistSettingsCore();
+        TryPersist("Logging settings", PersistSettingsCore);
+    }
+
+    /// <summary>
+    /// Runs a persistence action with the multi-instance failure policy: catch I/O failures
+    /// (another instance may hold the database or settings file), log a warning, inform the user
+    /// non-fatally, and run <paramref name="revert"/> so in-memory state matches what is on disk.
+    /// Returns true when the save completed.
+    /// </summary>
+    private bool TryPersist(string what, Func<bool> persist, Action? revert = null)
+    {
+        bool saved;
+        try
+        {
+            saved = persist();
+        }
+        catch (Exception ex)
+        {
+            saved = false;
+            Log.Warning(ex, "Could not persist {What}; another instance may hold the file", what);
+            MessageBox.Show(
+                $"{what} could not be saved.\n\n{ex.Message}\n\n" +
+                "Another instance may be holding the file. The change was not applied to disk.",
+                "Save Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        if (!saved)
+            revert?.Invoke();
+
+        return saved;
     }
 
     /// <summary>
@@ -2270,13 +2496,22 @@ internal partial class MainForm : Form
         if (_loadingSettings)
             return;
 
+        List<ModelMapping> previous = _settings.ModelMappings;
+
         if (!TryCommitMappings(out string? error))
         {
             MessageBox.Show(error, "Model Mappings", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
-        PersistSettingsCore();
+        // On a failed save, restore the previous mappings so memory and disk do not diverge
+        // (the grid keeps the user's edits, but the warning makes clear they were not applied).
+        TryPersist("Model mappings", PersistSettingsCore, () =>
+        {
+            _settings.ModelMappings = previous;
+            _settings.RefreshCompactionTargetNames();
+            PopulateCopilotCompactionModels();
+        });
     }
 
     /// <summary>
@@ -2361,10 +2596,14 @@ internal partial class MainForm : Form
             return false;
         }
 
-        _settings.RuntimePassphrase = passphrase;
+        // Mirror Program.ResolvePassphrase exactly: the encryption key is the SHA-256 hash of
+        // the raw passphrase, and only the hashed form is ever persisted. Storing the raw
+        // passphrase here would mix encryption keys across sessions and lose stored secrets.
+        string hashed = SecretProtector.HashPassphrase(passphrase);
+        _settings.RuntimePassphrase = SecretProtector.StripHashPrefix(hashed);
 
         // Persist the passphrase only when the user opted in; otherwise clear any stored value.
-        _settings.SecurityPassphrase = remember ? passphrase : null;
+        _settings.SecurityPassphrase = remember ? hashed : null;
         return true;
     }
 
@@ -2390,6 +2629,30 @@ internal partial class MainForm : Form
 
                 persistedCredentials = [];
                 return false;
+            }
+        }
+
+        // Any already-encrypted material must be decryptable with the current session key.
+        // Passing foreign-key ciphertext through would persist a store encrypted under two
+        // different keys, which the all-or-nothing startup decryption can never unlock.
+        if (!string.IsNullOrEmpty(_settings.RuntimePassphrase))
+        {
+            foreach (StoredCredential credential in _settings.Credentials)
+            {
+                foreach (string? value in SecretProtector.EnumerateSecretMaterial(credential))
+                {
+                    if (value is not null && SecretProtector.IsEncrypted(value)
+                        && !SecretProtector.TryDecrypt(value, _settings.RuntimePassphrase, out _))
+                    {
+                        MessageBox.Show(
+                            $"Credential '{credential.Name}' contains a secret encrypted with a different passphrase.\n\n" +
+                            "Restart the app and enter the original passphrase so the secret can be decrypted " +
+                            "before saving with a new one. Settings were not saved.",
+                            "Passphrase Mismatch", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        persistedCredentials = [];
+                        return false;
+                    }
+                }
             }
         }
 
@@ -2700,7 +2963,8 @@ internal partial class MainForm : Form
 
     private void BtnAddInstruction_Click(object? sender, EventArgs e)
     {
-        InstructionSet? newSet = InstructionSetDialog.ShowAddEditDialog(this);
+        InstructionSet? newSet = InstructionSetDialog.ShowAddEditDialog(this,
+            existingNames: [.. _settings.InstructionSets.Select(i => i.Name)]);
         if (newSet is null)
             return;
 
@@ -2713,8 +2977,12 @@ internal partial class MainForm : Form
         }
 
         _settings.InstructionSets.Add(newSet);
-        _database.SaveInstructionSets(_settings.InstructionSets);
-        _settings.Save();
+        TryPersist("Instruction sets", () =>
+        {
+            _database.SaveInstructionSets(_settings.InstructionSets);
+            _settings.Save();
+            return true;
+        }, () => _settings.InstructionSets.Remove(newSet));
         RefreshInstructionsList();
         RefreshInstructionDropdowns();
     }
@@ -2727,7 +2995,8 @@ internal partial class MainForm : Form
         if (_lstInstructions.SelectedItems[0].Tag is not InstructionSet existing)
             return;
 
-        InstructionSet? edited = InstructionSetDialog.ShowAddEditDialog(this, existing);
+        InstructionSet? edited = InstructionSetDialog.ShowAddEditDialog(this, existing,
+            [.. _settings.InstructionSets.Select(i => i.Name)]);
         if (edited is null)
             return;
 
@@ -2742,12 +3011,15 @@ internal partial class MainForm : Form
             return;
         }
 
-        // Update in place
+        // Update in place, keeping the old values so a failed save can be reverted.
+        string? oldDescription = existing.Description;
+        string oldInstructions = existing.Instructions;
         existing.Name = edited.Name;
         existing.Description = edited.Description;
         existing.Instructions = edited.Instructions;
 
-        if (!string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase))
+        bool renamed = !string.Equals(oldName, edited.Name, StringComparison.OrdinalIgnoreCase);
+        if (renamed)
         {
             foreach (ModelMapping mapping in _settings.ModelMappings)
             {
@@ -2756,12 +3028,53 @@ internal partial class MainForm : Form
             }
         }
 
-        _settings.Save();
-        _database.SaveInstructionSets(_settings.InstructionSets);
-        _database.SaveModelMappings(_settings.ModelMappings);
-        LoadSettingsToForm();
+        TryPersist("Instruction sets", () =>
+        {
+            _settings.Save();
+            _database.SaveInstructionSets(_settings.InstructionSets);
+            _database.SaveModelMappings(_settings.ModelMappings);
+            return true;
+        }, () =>
+        {
+            existing.Name = oldName;
+            existing.Description = oldDescription;
+            existing.Instructions = oldInstructions;
+            if (renamed)
+            {
+                foreach (ModelMapping mapping in _settings.ModelMappings)
+                {
+                    if (string.Equals(mapping.InstructionSetName, edited.Name, StringComparison.OrdinalIgnoreCase))
+                        mapping.InstructionSetName = oldName;
+                }
+            }
+        });
+
+        // Refresh only what changed; a full LoadSettingsToForm would reset unsaved listener edits.
         RefreshInstructionsList();
         RefreshInstructionDropdowns();
+        RefreshMappingInstructionCells();
+        PopulateCompactionInstructionSets();
+    }
+
+    /// <summary>
+    /// Syncs each mapping row's instruction set from the live settings (row Tags are clones) and
+    /// re-reads the display cell, so renames and removals show up — and survive the next grid
+    /// commit — without rebuilding the whole form.
+    /// </summary>
+    private void RefreshMappingInstructionCells()
+    {
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            if (row.Tag is not ModelMapping mapping)
+                continue;
+
+            ModelMapping? live = _settings.ModelMappings.FirstOrDefault(m =>
+                string.Equals(m.ProxyName, mapping.ProxyName, StringComparison.OrdinalIgnoreCase));
+            if (live is not null)
+                mapping.InstructionSetName = live.InstructionSetName;
+
+            row.Cells[3].Value = mapping.InstructionSetName ?? string.Empty;
+        }
     }
 
     private void BtnRemoveInstruction_Click(object? sender, EventArgs e)
@@ -2779,27 +3092,40 @@ internal partial class MainForm : Form
         if (result != DialogResult.Yes)
             return;
 
-        int clearedMappings = 0;
+        List<ModelMapping> cleared = [];
         foreach (ModelMapping mapping in _settings.ModelMappings)
         {
             if (string.Equals(mapping.InstructionSetName, toRemove.Name, StringComparison.OrdinalIgnoreCase))
             {
                 mapping.InstructionSetName = null;
-                clearedMappings++;
+                cleared.Add(mapping);
             }
         }
 
+        int removedIndex = _settings.InstructionSets.IndexOf(toRemove);
         _settings.InstructionSets.Remove(toRemove);
-        _database.SaveInstructionSets(_settings.InstructionSets);
-        _database.SaveModelMappings(_settings.ModelMappings);
-        _settings.Save();
-        LoadSettingsToForm();
+        bool saved = TryPersist("Instruction sets", () =>
+        {
+            _database.SaveInstructionSets(_settings.InstructionSets);
+            _database.SaveModelMappings(_settings.ModelMappings);
+            _settings.Save();
+            return true;
+        }, () =>
+        {
+            _settings.InstructionSets.Insert(Math.Clamp(removedIndex, 0, _settings.InstructionSets.Count), toRemove);
+            foreach (ModelMapping mapping in cleared)
+                mapping.InstructionSetName = toRemove.Name;
+        });
+
+        // Refresh only what changed; a full LoadSettingsToForm would reset unsaved listener edits.
         RefreshInstructionsList();
         RefreshInstructionDropdowns();
+        RefreshMappingInstructionCells();
+        PopulateCompactionInstructionSets();
 
-        if (clearedMappings > 0)
+        if (saved && cleared.Count > 0)
         {
-            MessageBox.Show($"Removed instruction set and cleared it from {clearedMappings} model mapping(s).",
+            MessageBox.Show($"Removed instruction set and cleared it from {cleared.Count} model mapping(s).",
                 "Instruction Set Removed", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
@@ -2825,7 +3151,8 @@ internal partial class MainForm : Form
 
     private void BtnAddCredential_Click(object? sender, EventArgs e)
     {
-        StoredCredential? newCredential = CredentialDialog.ShowAddEditDialog(this);
+        StoredCredential? newCredential = CredentialDialog.ShowAddEditDialog(this,
+            existingNames: [.. _settings.Credentials.Select(c => c.Name)]);
         if (newCredential is null)
             return;
 
@@ -2856,7 +3183,8 @@ internal partial class MainForm : Form
         if (_lstCredentials.SelectedItems[0].Tag is not StoredCredential existing)
             return;
 
-        StoredCredential? edited = CredentialDialog.ShowAddEditDialog(this, existing);
+        StoredCredential? edited = CredentialDialog.ShowAddEditDialog(this, existing,
+            [.. _settings.Credentials.Select(c => c.Name)]);
         if (edited is null)
             return;
 
@@ -2929,12 +3257,33 @@ internal partial class MainForm : Form
         if (result != DialogResult.Yes)
             return;
 
+        // Capture every referencing mapping (grid tags and live settings are distinct instances)
+        // so a failed save can restore the exact references that were cleared.
+        List<ModelMapping> affected = [];
+        foreach (DataGridViewRow row in _dgvMappings.Rows)
+        {
+            if (row.Tag is ModelMapping m && string.Equals(m.CredentialName, toRemove.Name, StringComparison.OrdinalIgnoreCase))
+                affected.Add(m);
+        }
+        foreach (ModelMapping m in _settings.ModelMappings)
+        {
+            if (string.Equals(m.CredentialName, toRemove.Name, StringComparison.OrdinalIgnoreCase))
+                affected.Add(m);
+        }
+
+        int removedIndex = _settings.Credentials.IndexOf(toRemove);
         _settings.Credentials.Remove(toRemove);
         PropagateCredentialReferenceChange(toRemove.Name, null);
         RefreshCredentials();
 
         // Removal has to be written too, or the credential reappears on the next launch.
-        PersistSettingsCore();
+        TryPersistCredentialChange(toRemove.Name, () =>
+        {
+            _settings.Credentials.Insert(Math.Clamp(removedIndex, 0, _settings.Credentials.Count), toRemove);
+            foreach (ModelMapping m in affected)
+                m.CredentialName = toRemove.Name;
+            RefreshCredentials();
+        }, "removed");
     }
 
     private void LstCredentials_DoubleClick(object? sender, EventArgs e)
@@ -2974,8 +3323,16 @@ internal partial class MainForm : Form
     /// </summary>
     private void OnModulesChanged(object? sender, EventArgs e)
     {
-        if (IsDisposed)
+        if (IsDisposed || !IsHandleCreated)
             return;
+
+        // ModuleHost raises ModulesChanged after ConfigureAwait(false) continuations, i.e. on a
+        // threadpool thread; the tab/list mutations below must run on the UI thread.
+        if (InvokeRequired)
+        {
+            SafeBeginInvoke(() => OnModulesChanged(sender, e));
+            return;
+        }
 
         RefreshModules();
         AddModuleTabs();
@@ -3278,20 +3635,27 @@ internal partial class MainForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        _ = LoadTestModelsAsync();
+
+        // Now that the split container has its real width, give the raw-upstream pane a sensible
+        // starting width without violating the panel minimums on small windows.
+        int maxDistance = _splitStreams.Width - _splitStreams.Panel2MinSize - _splitStreams.SplitterWidth;
+        if (maxDistance > _splitStreams.Panel1MinSize)
+            _splitStreams.SplitterDistance = Math.Clamp(400, _splitStreams.Panel1MinSize, maxDistance);
+
+        LoadTestModels();
     }
 
     private void TabControl_SelectedIndexChanged(object? sender, EventArgs e)
     {
         if (_tabControl.SelectedTab == _tabTest)
-            _ = LoadTestModelsAsync();
+            LoadTestModels();
     }
 
     /// <summary>Populates the test console model combo from configured proxy mappings.</summary>
     private readonly Dictionary<string, ModelMapping> _testProxyNameToMapping = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _testSendCts;
 
-    private async Task LoadTestModelsAsync()
+    private void LoadTestModels()
     {
         _lblTestStatus.Text = "Loading models…";
 
@@ -3326,9 +3690,7 @@ internal partial class MainForm : Form
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[LoadTestModels] {ex}");
-            if (System.Diagnostics.Debugger.IsAttached)
-                System.Diagnostics.Debugger.Break();
+            Log.Warning(ex, "Test console model load failed");
             _lblTestStatus.Text = $"Model load failed: {ex.GetType().Name}: {ex.Message}";
         }
     }
@@ -3519,7 +3881,10 @@ internal partial class MainForm : Form
             if (log.DurationMs > 0)
                 log.TokensPerSecond = tokenCount / (log.DurationMs / 1000.0);
 
-            _stats.AddLog(log, capturedException);
+            // AddLog is thread-safe and may hit SQLite; keep the UI thread free of disk I/O.
+            RequestLog logToStore = log;
+            Exception? exceptionToStore = capturedException;
+            _ = Task.Run(() => _stats.AddLog(logToStore, exceptionToStore));
 
             _btnTestSend.Enabled = true;
             _btnTestCancel.Enabled = false;
@@ -3756,7 +4121,12 @@ internal partial class MainForm : Form
                         delay = untilKeepAlive < delay ? untilKeepAlive : delay;
                     }
 
-                    Task completed = await Task.WhenAny(readTask, Task.Delay(delay, requestCts.Token));
+                    // Cancel the delay timer as soon as the read wins; otherwise every keep-alive
+                    // tick leaves a live timer rooted until the request ends.
+                    using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(requestCts.Token);
+                    Task delayTask = Task.Delay(delay, delayCts.Token);
+                    Task completed = await Task.WhenAny(readTask, delayTask);
+                    await delayCts.CancelAsync();
                     if (completed == readTask)
                         break;
 
@@ -4018,25 +4388,10 @@ internal partial class MainForm : Form
         private string? _lastData;
         private string? _firstParseFailure;
         private string? _firstIgnoredChunk;
-        private string? _firstThinkingToken;
-        private StringBuilder? _rawData;
 
         public int DataLineCount { get; private set; }
         public bool SawDone { get; private set; }
         public bool HasDiagnostics => DataLineCount > 0 || _firstParseFailure is not null || _firstIgnoredChunk is not null;
-
-        /// <summary>True once at least one raw upstream data line has been captured.</summary>
-        public bool HasRawResponse => _rawData is not null;
-
-        /// <summary>The first thinking-classified content, used to detect a model-emitted "[Thinking]" prefix.</summary>
-        public string? FirstThinkingToken => _firstThinkingToken;
-
-        /// <summary>
-        /// The raw upstream JSON (each SSE data line as sent by the provider, newline-joined) for
-        /// the request log's Response Body, kept unaltered so it matches what the model actually
-        /// replied with.
-        /// </summary>
-        public string? RawResponse => _rawData?.ToString();
 
         /// <summary>True once a usage block was observed in the stream (token counts are valid).</summary>
         public bool HasUsage { get; private set; }
@@ -4050,25 +4405,6 @@ internal partial class MainForm : Form
             DataLineCount++;
             _firstData ??= TrimSample(data);
             _lastData = TrimSample(data);
-        }
-
-        /// <summary>
-        /// Records a raw upstream JSON payload (a single SSE data line for streams, or the whole
-        /// non-streaming body) so the request log can store the unaltered upstream response.
-        /// </summary>
-        public void RecordRawData(string data)
-        {
-            if (_rawData is null)
-                _rawData = new StringBuilder();
-            else if (_rawData.Length > 0)
-                _rawData.Append('\n');
-            _rawData.Append(data);
-        }
-
-        /// <summary>Remembers the first thinking-classified token for prefix detection.</summary>
-        public void RecordFirstThinkingToken(string? token)
-        {
-            _firstThinkingToken ??= token;
         }
 
         /// <summary>

@@ -15,6 +15,11 @@ internal sealed class InstructionSetDialog : Form
     private readonly Button _btnOk = new();
     private readonly Button _btnCancel = new();
 
+    // Names that already exist (excluding the set being edited), supplied by the caller so
+    // duplicates are rejected inside the dialog instead of after it closes.
+    private IReadOnlyCollection<string> _existingNames = [];
+    private string? _originalName;
+
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string InstructionName
     {
@@ -108,6 +113,7 @@ internal sealed class InstructionSetDialog : Form
         _btnOk.Margin = new Padding(0, 0, 0, 0);
         _btnOk.MinimumSize = new Size(80, 28);
         _btnOk.Text = "OK";
+        _btnOk.Click += BtnOk_Click;
 
         // _btnCancel
         _btnCancel.AutoSize = true;
@@ -133,9 +139,42 @@ internal sealed class InstructionSetDialog : Form
         ResumeLayout(false);
     }
 
-    public static InstructionSet? ShowAddEditDialog(IWin32Window owner, InstructionSet? existingSet = null)
+    /// <summary>
+    /// Validates before the dialog closes so the user can fix the input instead of losing it.
+    /// Setting DialogResult back to None keeps the modal open after the button's own OK result.
+    /// </summary>
+    private void BtnOk_Click(object? sender, EventArgs e)
+    {
+        string name = InstructionName;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show(this, "Name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        if (!string.Equals(name, _originalName, StringComparison.OrdinalIgnoreCase)
+            && _existingNames.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, $"An instruction set named '{name}' already exists.", "Duplicate Name",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(Instructions))
+        {
+            MessageBox.Show(this, "Instructions text is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+        }
+    }
+
+    public static InstructionSet? ShowAddEditDialog(
+        IWin32Window owner, InstructionSet? existingSet = null, IReadOnlyCollection<string>? existingNames = null)
     {
         using InstructionSetDialog dlg = new();
+        dlg._existingNames = existingNames ?? [];
+        dlg._originalName = existingSet?.Name;
 
         if (existingSet is not null)
         {
@@ -152,25 +191,11 @@ internal sealed class InstructionSetDialog : Form
         if (dlg.ShowDialog(owner) != DialogResult.OK)
             return null;
 
-        string name = dlg.InstructionName;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            MessageBox.Show(owner, "Name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
-
-        string instructions = dlg.Instructions;
-        if (string.IsNullOrWhiteSpace(instructions))
-        {
-            MessageBox.Show(owner, "Instructions text is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
-
         return new InstructionSet
         {
-            Name = name,
+            Name = dlg.InstructionName,
             Description = string.IsNullOrWhiteSpace(dlg.Description) ? null : dlg.Description,
-            Instructions = instructions
+            Instructions = dlg.Instructions
         };
     }
 }

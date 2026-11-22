@@ -29,6 +29,14 @@ internal sealed class CredentialDialog : Form
     private readonly Button _btnOk = new();
     private readonly Button _btnCancel = new();
 
+    // Shared for the process lifetime; per-dialog Font instances were never disposed.
+    private static readonly Font MonospaceFont = new(FontFamily.GenericMonospace, SystemFonts.DefaultFont.Size);
+
+    // Names that already exist (excluding the credential being edited), supplied by the caller
+    // so duplicates are rejected inside the dialog instead of after it closes.
+    private IReadOnlyCollection<string> _existingNames = [];
+    private string? _originalName;
+
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string CredentialName
     {
@@ -46,21 +54,23 @@ internal sealed class CredentialDialog : Form
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string Secret
     {
-        get => _txtSecret.Text.Trim();
+        // Secret material is returned verbatim: trimming can corrupt passwords or keys with
+        // meaningful leading/trailing whitespace.
+        get => _txtSecret.Text;
         set => _txtSecret.Text = value;
     }
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string PrivateKey
     {
-        get => _txtPrivateKey.Text.Trim();
+        get => _txtPrivateKey.Text;
         set => _txtPrivateKey.Text = value;
     }
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public string Certificate
     {
-        get => _txtCertificate.Text.Trim();
+        get => _txtCertificate.Text;
         set => _txtCertificate.Text = value;
     }
 
@@ -155,7 +165,7 @@ internal sealed class CredentialDialog : Form
         // _txtPrivateKey
         _txtPrivateKey.AcceptsReturn = true;
         _txtPrivateKey.Dock = DockStyle.Fill;
-        _txtPrivateKey.Font = new Font(FontFamily.GenericMonospace, _txtPrivateKey.Font.Size);
+        _txtPrivateKey.Font = MonospaceFont;
         _txtPrivateKey.Height = 72;
         _txtPrivateKey.Margin = new Padding(0, 4, 0, 4);
         _txtPrivateKey.Multiline = true;
@@ -179,7 +189,7 @@ internal sealed class CredentialDialog : Form
         // _txtCertificate
         _txtCertificate.AcceptsReturn = true;
         _txtCertificate.Dock = DockStyle.Fill;
-        _txtCertificate.Font = new Font(FontFamily.GenericMonospace, _txtCertificate.Font.Size);
+        _txtCertificate.Font = MonospaceFont;
         _txtCertificate.Height = 72;
         _txtCertificate.Margin = new Padding(0, 4, 0, 4);
         _txtCertificate.Multiline = true;
@@ -217,6 +227,7 @@ internal sealed class CredentialDialog : Form
         _btnOk.DialogResult = DialogResult.OK;
         _btnOk.MinimumSize = new Size(80, 28);
         _btnOk.Text = "OK";
+        _btnOk.Click += BtnOk_Click;
 
         // _btnCancel
         _btnCancel.AutoSize = true;
@@ -267,7 +278,7 @@ internal sealed class CredentialDialog : Form
 
         try
         {
-            target.Text = File.ReadAllText(dialog.FileName).Trim();
+            target.Text = File.ReadAllText(dialog.FileName);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -277,13 +288,58 @@ internal sealed class CredentialDialog : Form
     }
 
     /// <summary>
-    /// Shows the modal add/edit dialog. When <paramref name="existing"/> is supplied its values
-    /// seed the fields. Returns the edited credential on OK, or null when cancelled or validation
-    /// fails. Renaming (and propagation of the rename) is handled by the caller.
+    /// Validates before the dialog closes so the user can fix the input instead of losing it.
+    /// Setting DialogResult back to None keeps the modal open after the button's own OK result.
     /// </summary>
-    public static StoredCredential? ShowAddEditDialog(IWin32Window owner, StoredCredential? existing = null)
+    private void BtnOk_Click(object? sender, EventArgs e)
+    {
+        string name = CredentialName;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show(this, "Name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        if (!string.Equals(name, _originalName, StringComparison.OrdinalIgnoreCase)
+            && _existingNames.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show(this, $"A credential named '{name}' already exists.", "Duplicate Name",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_txtSecret.Text) && string.IsNullOrWhiteSpace(_txtPrivateKey.Text))
+        {
+            MessageBox.Show(this,
+                "At least one of Secret (API key / password) or Private key is required.",
+                "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_txtCertificate.Text) && string.IsNullOrWhiteSpace(_txtPrivateKey.Text))
+        {
+            MessageBox.Show(this,
+                "A certificate requires a private key to authenticate with.",
+                "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+        }
+    }
+
+    /// <summary>
+    /// Shows the modal add/edit dialog. When <paramref name="existing"/> is supplied its values
+    /// seed the fields. <paramref name="existingNames"/> lets the dialog reject duplicate names
+    /// before closing. Returns the edited credential on OK, or null when cancelled. Renaming
+    /// (and propagation of the rename) is handled by the caller.
+    /// </summary>
+    public static StoredCredential? ShowAddEditDialog(
+        IWin32Window owner, StoredCredential? existing = null, IReadOnlyCollection<string>? existingNames = null)
     {
         using CredentialDialog dlg = new();
+        dlg._existingNames = existingNames ?? [];
+        dlg._originalName = existing?.Name;
 
         if (existing is not null)
         {
@@ -303,37 +359,13 @@ internal sealed class CredentialDialog : Form
         if (dlg.ShowDialog(owner) != DialogResult.OK)
             return null;
 
-        string name = dlg.CredentialName;
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            MessageBox.Show(owner, "Name is required.", "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
-
-        string secret = dlg.Secret;
         string privateKey = dlg.PrivateKey;
-        if (string.IsNullOrWhiteSpace(secret) && string.IsNullOrWhiteSpace(privateKey))
-        {
-            MessageBox.Show(owner,
-                "At least one of Secret (API key / password) or Private key is required.",
-                "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
-
         string certificate = dlg.Certificate;
-        if (!string.IsNullOrWhiteSpace(certificate) && string.IsNullOrWhiteSpace(privateKey))
-        {
-            MessageBox.Show(owner,
-                "A certificate requires a private key to authenticate with.",
-                "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return null;
-        }
-
         return new StoredCredential
         {
-            Name = name,
+            Name = dlg.CredentialName,
             Username = string.IsNullOrWhiteSpace(dlg.Username) ? null : dlg.Username,
-            Secret = secret,
+            Secret = dlg.Secret,
             PrivateKey = string.IsNullOrWhiteSpace(privateKey) ? null : privateKey,
             Certificate = string.IsNullOrWhiteSpace(certificate) ? null : certificate,
             Description = string.IsNullOrWhiteSpace(dlg.Description) ? null : dlg.Description,

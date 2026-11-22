@@ -21,6 +21,7 @@ internal static class Program
     /// keeping it rooted here ensures the single-instance lock is held for the full process lifetime.
     /// </summary>
     private static Mutex? _singleInstanceMutex;
+    private static Icon? _applicationIcon;
 
     [STAThread]
     static void Main()
@@ -30,7 +31,9 @@ internal static class Program
 
         // Seed a crash-only logger before anything else can fail. Serilog is not configured until
         // TrayApplicationContext runs, so an exception in startup would otherwise have no sink at all.
-        InitializeCrashLogger();
+        // The bootstrap settings read for the log directory are reused as the real settings so
+        // AppSettings.Load only runs once.
+        AppSettings settings = InitializeCrashLogger() ?? AppSettings.Load();
 
         // Surface ALL unhandled exceptions instead of silently swallowing them.
         //
@@ -41,22 +44,20 @@ internal static class Program
         // breaks first when attached, which preserves the old debugging behavior, so there is nothing
         // lost by handling them here too.
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (_, e) => ReportUnhandledException("UI thread", e.Exception);
+        Application.ThreadException += (_, e) => ReportUnhandledException("UI thread", e.Exception, fatal: false);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            ReportUnhandledException("AppDomain", e.ExceptionObject as Exception);
+            ReportUnhandledException("AppDomain", e.ExceptionObject as Exception, fatal: true);
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
-            ReportUnhandledException("Unobserved Task", e.Exception);
+            ReportUnhandledException("Unobserved Task", e.Exception, fatal: false);
             e.SetObserved();
         };
 
-        AppSettings settings = AppSettings.Load();
-
-        // Program owns the single shared AppDatabase for the whole process. It is passed into
-        // TrayApplicationContext rather than created there so a second connection to the same
-        // file can never exist.
-        using AppDatabase database = new(settings.Logging);
-        settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
+        // Acquire the single-instance lock before touching the database or prompting for
+        // elevation, so a second instance never opens the DB file and never shows a UAC prompt
+        // only to be told the app is already running.
+        if (!settings.AllowMultipleInstances && !TryAcquireSingleInstanceMutex())
+            return;
 
         // Binding the proxy to anything other than "localhost" (e.g. 0.0.0.0 / a specific NIC IP)
         // requires the process to be elevated, because http.sys only grants non-elevated processes
@@ -64,8 +65,16 @@ internal static class Program
         // setting, re-launch ourselves elevated via a UAC prompt; if the prompt is declined we
         // simply continue non-elevated (localhost still works). This runs in debug builds too so
         // the option works when testing 0.0.0.0 from another machine during development.
-        if (settings.RunAsAdministrator && !IsRunningAsAdministrator() && TryRelaunchElevated())
-            return;
+        if (settings.RunAsAdministrator && !IsRunningAsAdministrator())
+        {
+            // Release the lock so the elevated child can acquire it; re-acquire if the user
+            // declines the UAC prompt and this instance keeps running.
+            ReleaseSingleInstanceMutex();
+            if (TryRelaunchElevated())
+                return;
+            if (!settings.AllowMultipleInstances && !TryAcquireSingleInstanceMutex())
+                return;
+        }
 
 #if DEBUG
         // Debug builds that stay non-elevated cannot bind to a non-loopback address (http.sys
@@ -77,22 +86,11 @@ internal static class Program
             settings.ListenAddress = "localhost";
 #endif
 
-        if (!settings.AllowMultipleInstances)
-        {
-            _singleInstanceMutex = new(initiallyOwned: true, MutexName, out bool createdNew);
-
-            if (!createdNew)
-            {
-                MessageBox.Show(
-                    "Kaeo LLM Proxy is already running.\n\n" +
-                    "Only one instance is allowed at a time. Check the system tray for the existing instance.\n\n" +
-                    "To run multiple instances simultaneously, set \"AllowMultipleInstances\": true in settings.jsonc.",
-                    "Already Running",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-                return;
-            }
-        }
+        // Program owns the single shared AppDatabase for the whole process. It is passed into
+        // TrayApplicationContext rather than created there so a second connection to the same
+        // file can never exist.
+        using AppDatabase database = new(settings.Logging);
+        settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
 
         // Load mappings and credentials early so we can resolve the passphrase and decrypt
         // their secrets before the TrayApplicationContext starts the proxy.
@@ -106,6 +104,44 @@ internal static class Program
         moduleHost.LoadRegisteredModules();
 
         Application.Run(new TrayApplicationContext(settings, database, moduleHost));
+
+        _applicationIcon?.Dispose();
+        _applicationIcon = null;
+    }
+
+    /// <summary>
+    /// Acquires the single-instance mutex. Returns false (after informing the user) when another
+    /// instance already holds it.
+    /// </summary>
+    private static bool TryAcquireSingleInstanceMutex()
+    {
+        _singleInstanceMutex = new Mutex(initiallyOwned: true, MutexName, out bool createdNew);
+        if (createdNew)
+            return true;
+
+        ReleaseSingleInstanceMutex();
+        MessageBox.Show(
+            "Kaeo LLM Proxy is already running.\n\n" +
+            "Only one instance is allowed at a time. Check the system tray for the existing instance.\n\n" +
+            "To run multiple instances simultaneously, set \"AllowMultipleInstances\": true in settings.jsonc.",
+            "Already Running",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+        return false;
+    }
+
+    private static void ReleaseSingleInstanceMutex()
+    {
+        try
+        {
+            _singleInstanceMutex?.ReleaseMutex();
+        }
+        catch (ApplicationException)
+        {
+            // Not owned (acquisition failed); nothing to release.
+        }
+        _singleInstanceMutex?.Dispose();
+        _singleInstanceMutex = null;
     }
 
     /// <summary>
@@ -279,17 +315,26 @@ internal static class Program
         return true;
     }
 
+    /// <summary>
+    /// Returns a single shared application icon. Callers must NOT dispose it; it is owned by
+    /// Program and disposed once after Application.Run returns.
+    /// </summary>
     internal static Icon GetApplicationIcon()
     {
+        if (_applicationIcon is not null)
+            return _applicationIcon;
+
         if (!File.Exists(_appIconPath))
             return SystemIcons.Application;
 
         try
         {
-            return new Icon(_appIconPath);
+            _applicationIcon = new Icon(_appIconPath);
+            return _applicationIcon;
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Warning(ex, "Could not load application icon from {Path}", _appIconPath);
             return SystemIcons.Application;
         }
     }
@@ -304,7 +349,7 @@ internal static class Program
     /// outcome available. Nothing here is allowed to throw: a handler that throws while handling a
     /// crash turns a diagnosable failure into a silent one.
     /// </remarks>
-    private static void ReportUnhandledException(string source, Exception? ex)
+    private static void ReportUnhandledException(string source, Exception? ex, bool fatal)
     {
         if (ex is null)
             return;
@@ -318,8 +363,18 @@ internal static class Program
 
         try
         {
-            Log.Fatal(ex, "Unhandled exception ({Source})", source);
-            Log.CloseAndFlush();
+            // Only tear the pipeline down on truly fatal paths. ThreadException and unobserved
+            // task exceptions leave the process running; closing the logger there would silently
+            // drop every subsequent log write for the rest of the session.
+            if (fatal)
+            {
+                Log.Fatal(ex, "Unhandled exception ({Source})", source);
+                Log.CloseAndFlush();
+            }
+            else
+            {
+                Log.Error(ex, "Unhandled exception ({Source})", source);
+            }
         }
         catch
         {
@@ -332,7 +387,7 @@ internal static class Program
         {
             MessageBox.Show(
                 $"An unhandled exception occurred ({source}):\n\n{ex.GetType().FullName}: {ex.Message}\n\n" +
-                $"A report was written to:\n{CrashLogPath}\n\nex.StackTrace:\n{ex.StackTrace}",
+                $"A report was written to:\n{CrashLogPath}\n\nStack trace:\n{ex.StackTrace}",
                 "Unhandled Exception",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -356,12 +411,14 @@ internal static class Program
     /// <remarks>
     /// Reads the log directory from settings when it can, falling back to the application directory.
     /// Any failure is ignored: this is a best-effort safety net and must never prevent startup.
+    /// Returns the bootstrap settings when they loaded successfully so Main can reuse them.
     /// </remarks>
-    private static void InitializeCrashLogger()
+    private static AppSettings? InitializeCrashLogger()
     {
+        AppSettings? bootstrap = null;
         try
         {
-            AppSettings bootstrap = AppSettings.Load();
+            bootstrap = AppSettings.Load();
             if (!string.IsNullOrWhiteSpace(bootstrap.Logging.LogDirectory))
                 _crashLogDirectory = bootstrap.Logging.LogDirectory;
         }
@@ -386,6 +443,8 @@ internal static class Program
         {
             // No logger; ReportUnhandledException still writes the report file directly.
         }
+
+        return bootstrap;
     }
 
     /// <summary>

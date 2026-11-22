@@ -32,7 +32,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly Button _btnFetchModels = new();
     private readonly Button _btnModelInfo = new();
     private readonly FlowLayoutPanel _flpModelButtons = new();
-    private readonly Label _lblModelInfoStatus = new() { AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
+    private readonly Label _lblModelInfoStatus = new() { AutoSize = true, MaximumSize = new Size(460, 0), ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 2) };
     private readonly Label _lblInstructionSet = new();
     private readonly ComboBox _cmbInstructionSet = new();
     private readonly Label _lblContextSummarizeModel = new();
@@ -121,6 +121,10 @@ internal sealed class ModelMappingDialog : Form
     // Registered on the UI thread while the dialog is open so mouse-wheel notches scroll the
     // content panel instead of changing a focused ComboBox/NumericUpDown value.
     private WheelScrollFilter? _wheelFilter;
+
+    // Cancelled when the dialog closes so in-flight fetch/detect calls stop and their
+    // continuations never touch disposed controls.
+    private readonly CancellationTokenSource _dialogCts = new();
 
     private string _upstreamUrl = string.Empty;
     private AppSettings? _settings;
@@ -234,6 +238,9 @@ internal sealed class ModelMappingDialog : Form
             Application.RemoveMessageFilter(_wheelFilter);
             _wheelFilter = null;
         }
+        _dialogCts.Cancel();
+        _dialogCts.Dispose();
+        _toolTip.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -484,6 +491,7 @@ internal sealed class ModelMappingDialog : Form
                 row.Cells[0].Value = token;
                 row.Cells[1].Value = true;
             }
+            PruneUnusedCustomCapabilityItems();
         }
     }
 
@@ -802,7 +810,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 23;
+        _tlpMain.RowCount = 24;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -831,80 +839,83 @@ internal sealed class ModelMappingDialog : Form
         _flpModelButtons.Controls.Add(_btnFetchModels);
         _flpModelButtons.Controls.Add(_btnModelInfo);
         _tlpMain.Controls.Add(_flpModelButtons, 2, 4);
-        _tlpMain.Controls.Add(_lblModelInfoStatus, 2, 5);
-        _tlpMain.SetColumnSpan(_lblModelInfoStatus, 3);
 
         _tlpMain.Controls.Add(_lblInstructionSet, 0, 5);
         _tlpMain.SetColumnSpan(_cmbInstructionSet, 2);
         _tlpMain.Controls.Add(_cmbInstructionSet, 1, 5);
 
-        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 6);
-        _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
-        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 6);
+        // The model-info status gets its own full-width row; sharing row 5 with the instruction
+        // combo made the two controls overlap whenever the status text was non-empty.
+        _tlpMain.SetColumnSpan(_lblModelInfoStatus, 3);
+        _tlpMain.Controls.Add(_lblModelInfoStatus, 0, 6);
 
-        _tlpMain.Controls.Add(_lblContextWindow, 0, 7);
+        _tlpMain.Controls.Add(_lblUpstreamTimeout, 0, 7);
+        _tlpMain.SetColumnSpan(_txtUpstreamTimeout, 2);
+        _tlpMain.Controls.Add(_txtUpstreamTimeout, 1, 7);
+
+        _tlpMain.Controls.Add(_lblContextWindow, 0, 8);
         _tlpMain.SetColumnSpan(_txtContextWindow, 2);
-        _tlpMain.Controls.Add(_txtContextWindow, 1, 7);
+        _tlpMain.Controls.Add(_txtContextWindow, 1, 8);
 
         // Group the compaction / context-threshold controls together inside a GroupBox
         _tlpMain.SetColumnSpan(_grpCompaction, 3);
-        _tlpMain.Controls.Add(_grpCompaction, 0, 8);
+        _tlpMain.Controls.Add(_grpCompaction, 0, 9);
 
-        _tlpMain.Controls.Add(_lblTempPriority, 0, 9);
+        _tlpMain.Controls.Add(_lblTempPriority, 0, 10);
         _tlpMain.SetColumnSpan(_cmbTempPriority, 2);
-        _tlpMain.Controls.Add(_cmbTempPriority, 1, 9);
+        _tlpMain.Controls.Add(_cmbTempPriority, 1, 10);
 
-        _tlpMain.Controls.Add(_lblTemperature, 0, 10);
+        _tlpMain.Controls.Add(_lblTemperature, 0, 11);
         _tlpMain.SetColumnSpan(_nudTemperature, 2);
-        _tlpMain.Controls.Add(_nudTemperature, 1, 10);
+        _tlpMain.Controls.Add(_nudTemperature, 1, 11);
 
-        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 11);
+        _tlpMain.Controls.Add(_lblRepeatPenaltyPriority, 0, 12);
         _tlpMain.SetColumnSpan(_cmbRepeatPenaltyPriority, 2);
-        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 11);
+        _tlpMain.Controls.Add(_cmbRepeatPenaltyPriority, 1, 12);
 
-        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 12);
+        _tlpMain.Controls.Add(_lblRepeatPenalty, 0, 13);
         _tlpMain.SetColumnSpan(_nudRepeatPenalty, 2);
-        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 12);
+        _tlpMain.Controls.Add(_nudRepeatPenalty, 1, 13);
         _tlpMain.SetColumnSpan(_chkIsEnabled, 3);
-        _tlpMain.Controls.Add(_chkIsEnabled, 0, 13);
+        _tlpMain.Controls.Add(_chkIsEnabled, 0, 14);
 
         // Hidden sits directly under the Enabled checkbox: controls whether this mapping is
         // omitted from the discovery list endpoints (/v1/models, /api/tags) while remaining
         // fully usable for routing, heartbeats, keep-alive, and as a compaction target.
         _tlpMain.SetColumnSpan(_chkHidden, 3);
-        _tlpMain.Controls.Add(_chkHidden, 0, 14);
+        _tlpMain.Controls.Add(_chkHidden, 0, 15);
 
         // Move the per-model SSE keep-alive option up near the top (right after hidden)
         _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
-        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 15);
+        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 16);
 
         // Copilot Compatibility sits directly under the SSE keep-alive option: both govern how the
         // proxy behaves toward a streaming client. The group box holds the toggle plus a wrapping
         // status label, mirroring the Compaction group's layout.
         _tlpMain.SetColumnSpan(_grpCopilotCompat, 3);
-        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 16);
+        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 17);
 
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 17);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 18);
 
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 18);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 19);
 
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 19);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 20);
 
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 20);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 21);
 
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
-        _tlpMain.Controls.Add(_grpRedaction, 0, 21);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 22);
 
         // Forwarding the client's own bearer token is a security decision rather than a
         // compatibility one, so it sits below the redaction group with the other
         // "what leaves this process" options.
         _tlpMain.SetColumnSpan(_chkForwardClientAuthorization, 3);
-        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 22);
+        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 23);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1663,8 +1674,12 @@ internal sealed class ModelMappingDialog : Form
                 _upstreamUrl,
                 apiKey,
                 timeoutSeconds: _settings?.ModelDiscoveryTimeoutSeconds
-                    ?? AppSettings.DefaultModelDiscoveryTimeoutSeconds);
+                    ?? AppSettings.DefaultModelDiscoveryTimeoutSeconds,
+                cancellationToken: _dialogCts.Token);
             sw.Stop();
+
+            if (IsDisposed)
+                return;
 
             LogFetchModelsRequest(result, sw.Elapsed.TotalMilliseconds);
 
@@ -1696,16 +1711,24 @@ internal sealed class ModelMappingDialog : Form
                 _txtContextWindow.Text = listContextWindow.Value.ToString();
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Dialog closed while fetching; nothing left to update.
+        }
         catch (Exception ex)
         {
-            MessageBox.Show(this,
-                $"Failed to fetch models from '{_upstreamUrl}': {ex.Message}",
-                "Fetch Models", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!IsDisposed)
+                MessageBox.Show(this,
+                    $"Failed to fetch models from '{_upstreamUrl}': {ex.Message}",
+                    "Fetch Models", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
-            _btnFetchModels.Enabled = true;
-            _btnFetchModels.Text = originalText;
+            if (!IsDisposed)
+            {
+                _btnFetchModels.Enabled = true;
+                _btnFetchModels.Text = originalText;
+            }
         }
     }
 
@@ -1734,49 +1757,60 @@ internal sealed class ModelMappingDialog : Form
         {
             string? apiKey = ResolveApiKey();
 
-                        UpstreamModelMetadata.ModelJsonResult fetched =
-                            await UpstreamModelMetadata.FetchModelJsonAsync(_upstreamUrl, modelId, apiKey);
-                        string body = fetched.Body;
-                        int statusCode = fetched.StatusCode;
+            UpstreamModelMetadata.ModelJsonResult fetched =
+                await UpstreamModelMetadata.FetchModelJsonAsync(_upstreamUrl, modelId, apiKey, _dialogCts.Token);
 
-                        // Pretty-print for display.
-                        string displayText;
-                        try
-                        {
-                            using var doc = JsonDocument.Parse(body);
-                            displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
-                        }
-                        catch
-                        {
-                            displayText = body;
-                        }
+            if (IsDisposed)
+                return;
 
-                        bool success = statusCode is >= 200 and < 300;
-                        _lblModelInfoStatus.ForeColor = SystemColors.GrayText;
-                        _lblModelInfoStatus.Text = success ? "Model info loaded." : $"HTTP {statusCode}";
+            string body = fetched.Body;
+            int statusCode = fetched.StatusCode;
 
-            // Attempt to auto-fill context window from the response.
-            if (UpstreamModelMetadata.TryExtractContextWindow(body, out int? contextWindow))
+            // Pretty-print for display.
+            string displayText;
+            try
             {
-                if (contextWindow is > 0)
-                {
-                    _txtContextWindow.Text = contextWindow.Value.ToString();
-                    _lblModelInfoStatus.Text += $" Context window set to {contextWindow.Value:N0}.";
-                    _lblModelInfoStatus.ForeColor = Color.Green;
-                }
+                using var doc = JsonDocument.Parse(body);
+                displayText = JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+            }
+            catch
+            {
+                displayText = body;
+            }
+
+            bool success = statusCode is >= 200 and < 300;
+            _lblModelInfoStatus.ForeColor = SystemColors.GrayText;
+            _lblModelInfoStatus.Text = success ? "Model info loaded." : $"HTTP {statusCode}";
+
+            // Auto-fill the context window only from a successful response; an error body can
+            // contain unrelated numbers that would silently overwrite a good configured value.
+            if (success && UpstreamModelMetadata.TryExtractContextWindow(body, out int? contextWindow)
+                && contextWindow is > 0)
+            {
+                _txtContextWindow.Text = contextWindow.Value.ToString();
+                _lblModelInfoStatus.Text += $" Context window set to {contextWindow.Value:N0}.";
+                _lblModelInfoStatus.ForeColor = Color.Green;
             }
 
             var dialog = new ModelInfoDialog(modelId, displayText);
             dialog.Show(this);
         }
+        catch (OperationCanceledException)
+        {
+            // Dialog closed while fetching; nothing left to update.
+        }
         catch (Exception ex)
         {
-            _lblModelInfoStatus.ForeColor = Color.Red;
-            _lblModelInfoStatus.Text = $"Error: {ex.Message}";
+            if (!IsDisposed)
+            {
+                _lblModelInfoStatus.ForeColor = Color.Red;
+                _lblModelInfoStatus.Text = $"Error: {ex.Message}";
+            }
         }
         finally
         {
-            _btnModelInfo.Enabled = true;
+            if (!IsDisposed)
+                _btnModelInfo.Enabled = true;
         }
     }
 
@@ -1802,19 +1836,28 @@ internal sealed class ModelMappingDialog : Form
         try
         {
             CapabilityDetectionResult result = await CapabilityDetector.DetectAsync(
-                _upstreamUrl, modelId, ResolveApiKey(), CancellationToken.None);
+                _upstreamUrl, modelId, ResolveApiKey(), _dialogCts.Token);
+
+            if (IsDisposed)
+                return;
 
             // Replace the table contents entirely with the detected capabilities.
             Capabilities = result.Capabilities;
             SetCapStatus(result.Summary, result.Capabilities.Count > 0 ? Color.Green : SystemColors.GrayText);
         }
+        catch (OperationCanceledException)
+        {
+            // Dialog closed while detecting; nothing left to update.
+        }
         catch (Exception ex)
         {
-            SetCapStatus($"Error: {ex.Message}", Color.Red);
+            if (!IsDisposed)
+                SetCapStatus($"Error: {ex.Message}", Color.Red);
         }
         finally
         {
-            _btnCapAutoDetect.Enabled = true;
+            if (!IsDisposed)
+                _btnCapAutoDetect.Enabled = true;
         }
     }
 
@@ -1902,6 +1945,35 @@ internal sealed class ModelMappingDialog : Form
             return;
         _dgvCapabilities.Rows[e.RowIndex].Cells[e.ColumnIndex].Value = _pendingCapValue;
         _pendingCapValue = null;
+        PruneUnusedCustomCapabilityItems();
+    }
+
+    /// <summary>
+    /// Removes custom entries that CellValidating had to add to the combo's Items so a typed
+    /// value could commit, but that no row actually uses — otherwise every abandoned typo
+    /// stays in the dropdown for the rest of the dialog's lifetime.
+    /// </summary>
+    private void PruneUnusedCustomCapabilityItems()
+    {
+        if (_dgvCapabilities.Columns["_colCapCapability"] is not DataGridViewComboBoxColumn col)
+            return;
+
+        HashSet<string> used = new(StringComparer.OrdinalIgnoreCase);
+        foreach (DataGridViewRow row in _dgvCapabilities.Rows)
+        {
+            if (row.Cells["_colCapCapability"].Value is string s && !string.IsNullOrWhiteSpace(s))
+                used.Add(s);
+        }
+
+        for (int i = col.Items.Count - 1; i >= 0; i--)
+        {
+            if (col.Items[i] is string item
+                && !ModelCapabilities.Tokens.Contains(item)
+                && !used.Contains(item))
+            {
+                col.Items.RemoveAt(i);
+            }
+        }
     }
 
     /// <summary>Resolves the API key for the currently selected credential, if any.</summary>
@@ -2100,7 +2172,10 @@ internal sealed class ModelMappingDialog : Form
     {
         _cmbUpstreamType.Items.Clear();
         _cmbUpstreamType.Items.Add(UpstreamType.OpenAI.ToDisplayName());
-        _cmbUpstreamType.SelectedItem = selected.ToDisplayName();
+        // LlamaCpp is a legacy persisted value treated as OpenAI-compatible; normalize it so old
+        // mappings don't show a blank combo (and save back as OpenAI).
+        UpstreamType normalized = selected == UpstreamType.LlamaCpp ? UpstreamType.OpenAI : selected;
+        _cmbUpstreamType.SelectedItem = normalized.ToDisplayName();
     }
 
     /// <summary>Display wrapper binding a friendly label to an <see cref="AutoCompactPaths"/> value.</summary>

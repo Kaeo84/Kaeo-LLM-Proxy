@@ -34,8 +34,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
     private readonly StreamMonitor _streamMonitor;
+    private readonly SynchronizationContext? _uiContext;
     private MainForm? _mainForm;
     private bool _disposed;
+    private bool _exiting;
 
     /// <summary>
     /// Creates the tray context. <paramref name="settings"/> must already have runtime settings,
@@ -51,6 +53,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _settings = settings;
         _database = database;
         _moduleHost = moduleHost;
+        _uiContext = SynchronizationContext.Current;
 
         // Initialize Serilog first so all subsequent code can log.
         AppLogger.Initialize(_settings.Logging);
@@ -60,9 +63,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         Log.Information("Kaeo LLM Proxy starting. ListenAddress={Address} ListenPort={Port} MappingsCount={Count}",
             _settings.ListenAddress, _settings.ListenPort, _settings.ModelMappings.Count);
 
-        _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
-        _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp);
-        _nonProxiedStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.NonProxied);
+        _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours,
+            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
+        _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp,
+            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
+        _nonProxiedStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.NonProxied,
+            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
 
         // Modules were initialized with a forwarding sink; point it at the real MCP log store
         // so module activity (e.g. SSH connections) appears in the MCP logs.
@@ -158,21 +164,43 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            _trayIcon.Text = $"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}";
+            SetTrayText($"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}");
             Log.Information("Proxy started on {Address}:{Port}", _settings.ListenAddress, _settings.ListenPort);
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to start proxy on {Address}:{Port}", _settings.ListenAddress, _settings.ListenPort);
-            _trayIcon.Text = "Kaeo LLM Proxy — Error";
+            SetTrayText("Kaeo LLM Proxy — Error");
             MessageBox.Show($"Failed to start proxy: {ex.Message}", "Kaeo LLM Proxy",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
+    /// <summary>
+    /// Sets the tray tooltip text, truncated to the NotifyIcon limit. Call only on the UI thread.
+    /// </summary>
+    private void SetTrayText(string text)
+    {
+        if (_disposed)
+            return;
+        _trayIcon.Text = text.Length > 63 ? text[..63] : text;
+    }
+
     private void OnServerStatusChanged(object? sender, string status)
     {
-        _trayIcon.Text = $"Kaeo LLM Proxy — {status}";
+        // StatusChanged can fire on a threadpool thread (Stop path continuations); NotifyIcon
+        // is not thread-safe, so marshal to the UI thread captured at construction.
+        string text = $"Kaeo LLM Proxy — {status}";
+        if (_uiContext is not null && SynchronizationContext.Current != _uiContext)
+        {
+            // WinForms tray app: there is no JoinableTaskFactory here; the captured
+            // WindowsFormsSynchronizationContext is the correct marshaling mechanism.
+#pragma warning disable VSTHRD001
+            _uiContext.Post(_ => SetTrayText(text), null);
+#pragma warning restore VSTHRD001
+        }
+        else
+            SetTrayText(text);
     }
 
     private void OnTrayDoubleClick(object? sender, EventArgs e) => ShowMainForm();
@@ -204,7 +232,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            _trayIcon.Text = $"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}";
+            SetTrayText($"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}");
         }
         catch (Exception ex)
         {
@@ -305,12 +333,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
 
         _settings.ShowCloseToTrayNotification = false;
-        _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
-        _settings.Save();
+        try
+        {
+            _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
+            _settings.Save();
+        }
+        catch (IOException ex)
+        {
+            // Another instance may hold the DB/settings file; degrade instead of crashing.
+            Log.Warning(ex, "Could not persist 'close to tray' preference");
+        }
     }
 
     private async void OnExit(object? sender, EventArgs e)
     {
+        if (_exiting)
+            return;
+        _exiting = true;
+
         Log.Information("Kaeo LLM Proxy shutting down");
         _trayIcon.Visible = false;
         try
@@ -352,7 +392,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (disposing)
         {
+            _server.StatusChanged -= OnServerStatusChanged;
+            ContextMenuStrip? menu = _trayIcon.ContextMenuStrip;
             _trayIcon.Dispose();
+            menu?.Dispose();
+            // The tray/form icon is a shared cached instance owned by Program; do not dispose it.
+            _mainForm?.Dispose();
+            _mainForm = null;
             _server.Dispose();
             _handler.Dispose();
             _stats.Dispose();
