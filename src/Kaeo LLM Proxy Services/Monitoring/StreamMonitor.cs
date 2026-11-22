@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using Kaeo.LlmProxy.Core.Models;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Services;
 
@@ -109,7 +110,15 @@ internal sealed class StreamMonitor
         ArgumentNullException.ThrowIfNull(log);
 
         StreamMonitorSession session = new(this, log, kind, MaxLiveChars);
-        _sessions[session.RequestId] = session;
+
+        // A client-supplied RequestId can collide with a live stream; overwriting would orphan the
+        // first session (its value-matched removal fails and it never reaches history). Fall back
+        // to a unique id instead.
+        string requestId = session.RequestId;
+        while (!_sessions.TryAdd(requestId, session))
+            requestId = $"{session.RequestId}-{Guid.NewGuid():N}";
+        session.RequestId = requestId;
+
         RaiseStreamsChanged();
         return session;
     }
@@ -144,8 +153,8 @@ internal sealed class StreamMonitor
 
     /// <summary>
     /// Returns a stable, ordered copy of streams that completed within the last
-    /// <see cref="HistoryWindow"/>, newest first. Prunes expired entries on each call
-    /// so memory never grows without bound even if the UI stops polling.
+    /// <see cref="HistoryWindow"/>, newest first. Expired entries are also pruned on every
+    /// insertion, so memory stays bounded even if the UI never polls.
     /// </summary>
     public IReadOnlyList<StreamSnapshot> RecentHistory()
     {
@@ -160,11 +169,18 @@ internal sealed class StreamMonitor
 
     private void AddToHistory(StreamSnapshot entry)
     {
+        DateTime cutoff = DateTime.UtcNow - HistoryWindow;
+
         lock (_historyLock)
         {
+            // Prune here too: with the dashboard closed nothing calls RecentHistory, and each
+            // snapshot can hold up to 64 KB of tail text.
+            _history.RemoveAll(s => s.EndedUtc < cutoff);
             _history.Add(entry);
         }
     }
+
+    private long _lastHandlerFaultLogTicks;
 
     private void RaiseStreamsChanged()
     {
@@ -172,9 +188,15 @@ internal sealed class StreamMonitor
         {
             StreamsChanged?.Invoke(this, EventArgs.Empty);
         }
-        catch
+        catch (Exception ex)
         {
-            // A UI handler must never fault the request pipeline that triggered the change.
+            // A UI handler must never fault the request pipeline that triggered the change, but a
+            // permanently faulting subscriber (e.g. a disposed form) must not be silent either.
+            // Rate-limited to one warning per minute.
+            long now = Environment.TickCount64;
+            long last = Interlocked.Read(ref _lastHandlerFaultLogTicks);
+            if (now - last >= 60_000 && Interlocked.CompareExchange(ref _lastHandlerFaultLogTicks, now, last) == last)
+                Log.Warning(ex, "A StreamsChanged subscriber threw; the dashboard may stop updating");
         }
     }
 }
@@ -228,7 +250,7 @@ internal sealed class StreamMonitorSession : IDisposable
         _lastClientActivityUtc = StartedUtc;
     }
 
-    public string RequestId { get; }
+    public string RequestId { get; internal set; }
     public StreamKind Kind { get; }
     public string Method { get; }
     public string Path { get; }

@@ -53,7 +53,9 @@ partial class OllamaProxyHandler
     {
         await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
         using StreamReader reader = new(stream, Encoding.UTF8);
-        await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
+        // No BOM: Encoding.UTF8 writes a preamble on first flush, which strict NDJSON parsers
+        // (e.g. Go's json.Unmarshal used by Ollama clients) reject on the very first line.
+        await using StreamWriter writer = new(resp.OutputStream, new UTF8Encoding(false), leaveOpen: true);
 
         // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
         // the "after" of the OpenAIâ†’Ollama response translation (not just the content text).
@@ -110,9 +112,13 @@ partial class OllamaProxyHandler
 
             session?.OnUpstreamLine(line);
 
-            // SSE format: "data: {...}" or "data: [DONE]"
-            if (line.StartsWith("data: ", StringComparison.Ordinal))
-                line = line[6..];
+            // SSE format: "data: {...}" or "data:{...}" (the space is optional per the SSE spec).
+            if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                line = line[5..];
+                if (line.StartsWith(' '))
+                    line = line[1..];
+            }
 
             if (line == "[DONE]")
             {
@@ -214,7 +220,8 @@ partial class OllamaProxyHandler
             {
                 await using Stream stream = await upstreamResp.Content.ReadAsStreamAsync(ct);
                 using StreamReader reader = new(stream, Encoding.UTF8);
-                await using StreamWriter writer = new(resp.OutputStream, Encoding.UTF8, leaveOpen: true);
+                // No BOM: a preamble before the first NDJSON line breaks strict parsers.
+                await using StreamWriter writer = new(resp.OutputStream, new UTF8Encoding(false), leaveOpen: true);
 
                 // Accumulate the Ollama-formatted NDJSON actually sent to the client so the log captures
                 // the "after" of the OpenAIâ†’Ollama response translation (not just the content text).
@@ -296,8 +303,13 @@ partial class OllamaProxyHandler
             if (line is null) break;          // end of stream
             if (string.IsNullOrWhiteSpace(line)) continue;
 
-            if (line.StartsWith("data: ", StringComparison.Ordinal))
-                line = line[6..];
+            // The space after "data:" is optional per the SSE spec.
+            if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                line = line[5..];
+                if (line.StartsWith(' '))
+                    line = line[1..];
+            }
 
             // Capture the raw OpenAI upstream chunk (the "before" of the response translation).
             rawUpstreamAccumulator?.Append(line);

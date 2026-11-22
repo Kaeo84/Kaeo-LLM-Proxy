@@ -15,11 +15,17 @@ namespace Kaeo.LlmProxy.Services;
 /// Runs a background timer every 15 minutes to prune entries older than the configured retention window.
 /// All public members are safe to call from any thread.
 /// </summary>
-internal sealed class StatisticsService : IDisposable
+internal class StatisticsService : IDisposable
 {
     private readonly ConcurrentQueue<RequestLog> _logs = new();
     private int _maxEntries;
     private int _retentionHours;
+
+    // How many of the most recent in-memory entries keep their request/response bodies. Older
+    // entries have their bodies trimmed (the SQLite store keeps the full bodies within its own
+    // retention). Mirrors LoggingSettings.MaxLogEntriesWithBodies.
+    private int _maxEntriesWithBodies;
+    private readonly ConcurrentQueue<RequestLog> _bodiedEntries = new();
     private readonly AppDatabase? _store;
     private readonly LogSource _source;
 
@@ -43,8 +49,9 @@ internal sealed class StatisticsService : IDisposable
 
     // Cached snapshot of the in-memory queue returned by GetRecentLogs(). Rebuilt only when
     // the underlying queue changes (_snapshotDirty) to avoid allocating a new array on every
-    // GUI refresh tick.
-    private IReadOnlyList<RequestLog>? _cachedSnapshot;
+    // GUI refresh tick. Published via Volatile.Write; concurrent readers may briefly see the
+    // previous snapshot while a rebuild is in progress (display-only, self-healing next tick).
+    private IReadOnlyList<RequestLog>? _cachedSnapshot = [];
 
     // Dirty flag as an int (1 = dirty, 0 = clean) so GetRecentLogs can claim the rebuild atomically
     // via Interlocked.CompareExchange, preventing multiple concurrent refreshes from each
@@ -55,18 +62,51 @@ internal sealed class StatisticsService : IDisposable
     // upstream liveness probe results. Key: resolved model name. Updated lock-free via Interlocked.
     private readonly ConcurrentDictionary<string, ConnectionHealthStat> _connectionHealth = new(StringComparer.OrdinalIgnoreCase);
 
+    // Coalesces ConnectionHealthChanged bursts (one keep-alive frame per stream per second would
+    // otherwise storm the UI): the first change schedules a single trailing raise; further changes
+    // inside the window are folded into it. The UI also polls GetConnectionHealthStats snapshots.
+    private static readonly TimeSpan HealthNotifyDelay = TimeSpan.FromMilliseconds(500);
+    private readonly System.Threading.Timer _healthNotifyTimer;
+    private int _healthNotifyPending;
+
+    // Keep-alive persistence is coalesced through this timer instead of one thread-pool work item
+    // per frame: a single flusher upserts the latest snapshot per model, so writes stay ordered and
+    // the global database lock is taken at most once per interval instead of once per frame.
+    private static readonly TimeSpan KeepAliveFlushInterval = TimeSpan.FromSeconds(5);
+    private readonly System.Threading.Timer? _keepAliveFlushTimer;
+    private int _keepAliveFlushRunning;
+
+    private int _disposed;
+
     public event EventHandler? StatsChanged;
 
-    /// <summary>Raised when any connection-health counter changes (keep-alive frame or probe).</summary>
+    /// <summary>
+    /// Raised when any connection-health counter changes (keep-alive frame or probe). Bursts are
+    /// coalesced into at most one raise per <see cref="HealthNotifyDelay"/> window.
+    /// </summary>
     public event EventHandler? ConnectionHealthChanged;
 
     public StatisticsService(int maxEntries = 500, AppDatabase? store = null, int retentionHours = 72,
-        LogSource source = LogSource.Proxy)
+        LogSource source = LogSource.Proxy, int maxEntriesWithBodies = 100)
     {
         _maxEntries = maxEntries;
         _retentionHours = retentionHours;
         _store = store;
         _source = source;
+        _maxEntriesWithBodies = Math.Clamp(maxEntriesWithBodies, 0, Math.Max(0, maxEntries));
+
+        _healthNotifyTimer = new System.Threading.Timer(_ =>
+        {
+            Interlocked.Exchange(ref _healthNotifyPending, 0);
+            if (Volatile.Read(ref _disposed) == 0)
+                OnConnectionHealthChanged();
+        }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
+        if (store is not null)
+        {
+            _keepAliveFlushTimer = new System.Threading.Timer(_ => FlushKeepAliveStats(), null,
+                KeepAliveFlushInterval, KeepAliveFlushInterval);
+        }
 
         // Seed in-memory queue from persisted store so the GUI is populated on startup.
         if (store is not null)
@@ -143,6 +183,17 @@ internal sealed class StatisticsService : IDisposable
         _maxEntries = max;
     }
 
+    /// <summary>
+    /// Updates how many of the most recent in-memory entries retain their bodies
+    /// (<c>LoggingSettings.MaxLogEntriesWithBodies</c>). Lowering the limit trims older entries
+    /// immediately; full bodies remain available from the store via <c>LoadFullLogEntry</c>.
+    /// </summary>
+    public void UpdateMaxEntriesWithBodies(int max)
+    {
+        Volatile.Write(ref _maxEntriesWithBodies, Math.Clamp(max, 0, Math.Max(0, Volatile.Read(ref _maxEntries))));
+        TrimBodiedEntries();
+    }
+
     /// <summary>Updates the retention window. Pass 0 to keep entries forever.</summary>
     public void UpdateRetentionHours(int hours)
     {
@@ -151,9 +202,16 @@ internal sealed class StatisticsService : IDisposable
 
     public void AddLog(RequestLog entry, Exception? ex = null)
     {
-        // Enqueue a lightweight copy (no request/response bodies) to keep memory usage low.
-        // The full entry — including bodies — is persisted to SQLite on a background thread below.
-        _logs.Enqueue(CreateSummary(entry));
+        // Enqueue a private copy so later body trimming never mutates the caller's entry (the
+        // original is handed to the persistence channel below with its bodies intact). Only the
+        // most recent _maxEntriesWithBodies copies keep their bodies; older ones are trimmed.
+        RequestLog inMemory = CreateInMemoryCopy(entry);
+        _logs.Enqueue(inMemory);
+        if (inMemory.RequestBody is not null || inMemory.ResponseBody is not null)
+        {
+            _bodiedEntries.Enqueue(inMemory);
+            TrimBodiedEntries();
+        }
         Volatile.Write(ref _snapshotDirty, 1);
 
         long now = Stopwatch.GetTimestamp();
@@ -192,16 +250,31 @@ internal sealed class StatisticsService : IDisposable
             }
         }
 
-        StatsChanged?.Invoke(this, EventArgs.Empty);
+        OnStatsChanged();
     }
 
     /// <summary>
-    /// Creates a lightweight copy of a <see cref="RequestLog"/> without the potentially large
-    /// <see cref="RequestLog.RequestBody"/> and <see cref="RequestLog.ResponseBody"/> strings.
-    /// The in-memory queue holds only these summaries; full bodies live in SQLite and are
-    /// loaded on demand when a detail view is opened.
+    /// Trims bodies from the oldest in-memory entries so only the most recent
+    /// <see cref="_maxEntriesWithBodies"/> retain them. Entries already evicted from the log queue
+    /// may still sit in this queue; trimming them is harmless and they age out naturally.
     /// </summary>
-    private static RequestLog CreateSummary(RequestLog source) => new()
+    private void TrimBodiedEntries()
+    {
+        int limit = Volatile.Read(ref _maxEntriesWithBodies);
+        while (_bodiedEntries.Count > limit && _bodiedEntries.TryDequeue(out RequestLog? oldest))
+        {
+            oldest.RequestBody = null;
+            oldest.ResponseBody = null;
+        }
+    }
+
+    /// <summary>
+    /// Creates the in-memory copy of a <see cref="RequestLog"/>. Bodies are kept initially so the
+    /// detail view can show them without a database round-trip; <see cref="TrimBodiedEntries"/>
+    /// nulls them once the entry falls out of the most recent <see cref="_maxEntriesWithBodies"/>.
+    /// Full bodies always live in SQLite and are loaded on demand via <c>LoadFullLogEntry</c>.
+    /// </summary>
+    private static RequestLog CreateInMemoryCopy(RequestLog source) => new()
     {
         RequestId = source.RequestId,
         Timestamp = source.Timestamp,
@@ -226,8 +299,8 @@ internal sealed class StatisticsService : IDisposable
         DraftN = source.DraftN,
         DraftNAccepted = source.DraftNAccepted,
         ExceptionId = source.ExceptionId,
-        RequestBody = null,
-        ResponseBody = null,
+        RequestBody = source.RequestBody,
+        ResponseBody = source.ResponseBody,
         RequestBytes = source.RequestBytes,
         ResponseBytes = source.ResponseBytes,
     };
@@ -235,22 +308,24 @@ internal sealed class StatisticsService : IDisposable
     public IReadOnlyList<RequestLog> GetRecentLogs()
     {
         // Atomically claim the rebuild: only the thread that flips dirty 1 -> 0 rebuilds the
-        // snapshot. Concurrent callers see 0 and reuse the existing (possibly being-rebuilt)
-        // snapshot rather than each allocating a redundant array.
+        // snapshot. Concurrent callers see 0 and reuse the previous snapshot (published via
+        // Volatile) rather than each allocating a redundant array; they pick up the new one on
+        // the next call. Display-only and self-healing.
         if (Interlocked.CompareExchange(ref _snapshotDirty, 0, 1) == 1)
         {
-            _cachedSnapshot = [.. _logs.Reverse()];
+            Volatile.Write(ref _cachedSnapshot, [.. _logs.Reverse()]);
         }
 
-        return _cachedSnapshot ?? [];
+        return Volatile.Read(ref _cachedSnapshot) ?? [];
     }
 
     /// <summary>
     /// Retrieves the full <see cref="ExceptionDetail"/> for a log entry, or null if
-    /// no exception was recorded or the store is unavailable.
+    /// no exception was recorded or the store is unavailable. Exceptions are persisted for every
+    /// log source, so the lookup is not gated on <see cref="_source"/>.
     /// </summary>
     public ExceptionDetail? GetException(int exceptionId) =>
-        _source == LogSource.Proxy ? _store?.GetException(exceptionId) : null;
+        _store?.GetException(exceptionId);
 
     public long TotalRequests => Interlocked.Read(ref _totalRequests);
     public long TotalErrors => Interlocked.Read(ref _totalErrors);
@@ -278,12 +353,14 @@ internal sealed class StatisticsService : IDisposable
     public void Reset()
     {
         while (_logs.TryDequeue(out _)) { }
+        while (_bodiedEntries.TryDequeue(out _)) { }
+        while (_requestTimestamps.TryDequeue(out _)) { }
         Volatile.Write(ref _snapshotDirty, 1);
         Interlocked.Exchange(ref _totalRequests, 0);
         Interlocked.Exchange(ref _totalErrors, 0);
         Interlocked.Exchange(ref _totalPromptTokens, 0);
         Interlocked.Exchange(ref _totalCompletionTokens, 0);
-        StatsChanged?.Invoke(this, EventArgs.Empty);
+        OnStatsChanged();
     }
 
     /// <summary>
@@ -303,9 +380,11 @@ internal sealed class StatisticsService : IDisposable
             return;
 
         // Channel full or completed — wipe directly so the clear still reaches the database.
+        // Must target this service's own source: the default would wipe the Proxy store even
+        // when called on the MCP/NonProxied instance.
         try
         {
-            _store.ClearLogs();
+            _store.ClearLogs(_source);
         }
         catch (Exception ex) when (ex is SqliteException or IOException)
         {
@@ -328,21 +407,50 @@ internal sealed class StatisticsService : IDisposable
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
         ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
-        long count = Interlocked.Increment(ref stat.Count);
-        long nowTicks = DateTime.UtcNow.Ticks;
-        Interlocked.Exchange(ref stat.LastSentUtcTicks, nowTicks);
-        DateTime lastSentUtc = new(nowTicks, DateTimeKind.Utc);
+        Interlocked.Increment(ref stat.Count);
+        Interlocked.Exchange(ref stat.LastSentUtcTicks, DateTime.UtcNow.Ticks);
 
-        if (_store is not null)
+        // Persistence is coalesced by _keepAliveFlushTimer (latest snapshot per model), not a
+        // per-frame work item: ordered writes, one lock acquisition per interval.
+        NotifyConnectionHealthChanged();
+    }
+
+    /// <summary>
+    /// Upserts the latest keep-alive snapshot for each model whose counters changed since the
+    /// last flush. Single flusher (re-entrancy guarded), so persisted counts never regress.
+    /// </summary>
+    private void FlushKeepAliveStats()
+    {
+        if (_store is null || Volatile.Read(ref _disposed) == 1)
+            return;
+
+        if (Interlocked.CompareExchange(ref _keepAliveFlushRunning, 1, 0) != 0)
+            return;
+
+        try
         {
-            ThreadPool.QueueUserWorkItem(_ =>
+            foreach ((string model, ConnectionHealthStat stat) in _connectionHealth)
             {
-                try { _store.UpsertSseKeepAlive(key, count, lastSentUtc); }
-                catch (Exception storeEx) { Log.Warning(storeEx, "Failed to persist SSE keep-alive stat"); }
-            });
-        }
+                long sentTicks = Interlocked.Read(ref stat.LastSentUtcTicks);
+                if (sentTicks == 0 || sentTicks == Interlocked.Read(ref stat.LastPersistedSentUtcTicks))
+                    continue;
 
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+                long count = Interlocked.Read(ref stat.Count);
+                try
+                {
+                    _store.UpsertSseKeepAlive(model, count, new DateTime(sentTicks, DateTimeKind.Utc));
+                    Interlocked.Exchange(ref stat.LastPersistedSentUtcTicks, sentTicks);
+                }
+                catch (Exception storeEx)
+                {
+                    Log.Warning(storeEx, "Failed to persist SSE keep-alive stat");
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _keepAliveFlushRunning, 0);
+        }
     }
 
     /// <summary>
@@ -358,7 +466,7 @@ internal sealed class StatisticsService : IDisposable
         Interlocked.Exchange(ref stat.LastAttemptUtcTicks, DateTime.UtcNow.Ticks);
         Volatile.Write(ref stat.LastStatus, "Success");
         Volatile.Write(ref stat.LastError, string.Empty);
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        NotifyConnectionHealthChanged();
     }
 
     public void RecordHeartbeatFailure(string? modelName, string errorMessage)
@@ -370,14 +478,14 @@ internal sealed class StatisticsService : IDisposable
         Interlocked.Exchange(ref stat.LastAttemptUtcTicks, DateTime.UtcNow.Ticks);
         Volatile.Write(ref stat.LastStatus, "Failed");
         Volatile.Write(ref stat.LastError, string.IsNullOrWhiteSpace(errorMessage) ? "Unknown failure" : errorMessage.Trim());
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        NotifyConnectionHealthChanged();
     }
 
     public void RegisterHeartbeatModel(string? modelName)
     {
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
         _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        NotifyConnectionHealthChanged();
     }
 
     /// <summary>Restores the persisted SSE keep-alive frame count for a model at startup.</summary>
@@ -386,10 +494,13 @@ internal sealed class StatisticsService : IDisposable
         string key = string.IsNullOrWhiteSpace(modelName) ? "(unknown)" : modelName.Trim();
         ConnectionHealthStat stat = _connectionHealth.GetOrAdd(key, _ => new ConnectionHealthStat());
         Interlocked.Exchange(ref stat.Count, count);
-        stat.LastSentUtcTicks = lastSentUtc.Kind == DateTimeKind.Utc
+        long ticks = lastSentUtc.Kind == DateTimeKind.Utc
             ? lastSentUtc.Ticks
             : lastSentUtc.ToUniversalTime().Ticks;
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        Interlocked.Exchange(ref stat.LastSentUtcTicks, ticks);
+        // The restored value came from the store; no need to write it back until it changes.
+        Interlocked.Exchange(ref stat.LastPersistedSentUtcTicks, ticks);
+        NotifyConnectionHealthChanged();
     }
 
     /// <summary>
@@ -417,7 +528,61 @@ internal sealed class StatisticsService : IDisposable
     {
         _connectionHealth.Clear();
         _store?.ClearSseKeepAlive();
-        ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        NotifyConnectionHealthChanged();
+    }
+
+    /// <summary>
+    /// Raises <see cref="StatsChanged"/> with an exception guard: a throwing UI subscriber must
+    /// never propagate out of the request pipeline (AddLog runs inside request finally blocks).
+    /// </summary>
+    protected virtual void OnStatsChanged()
+    {
+        try
+        {
+            StatsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "A StatsChanged subscriber threw; the request pipeline is unaffected");
+        }
+    }
+
+    /// <summary>
+    /// Raises <see cref="ConnectionHealthChanged"/> with an exception guard. Call
+    /// <see cref="NotifyConnectionHealthChanged"/> from counter paths to coalesce bursts.
+    /// </summary>
+    protected virtual void OnConnectionHealthChanged()
+    {
+        try
+        {
+            ConnectionHealthChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "A ConnectionHealthChanged subscriber threw; the request pipeline is unaffected");
+        }
+    }
+
+    /// <summary>
+    /// Schedules a single coalesced <see cref="ConnectionHealthChanged"/> raise. The first change
+    /// in a quiet period starts the delay; changes while a raise is pending are folded into it.
+    /// </summary>
+    private void NotifyConnectionHealthChanged()
+    {
+        if (Volatile.Read(ref _disposed) == 1)
+            return;
+
+        if (Interlocked.Exchange(ref _healthNotifyPending, 1) == 0)
+        {
+            try
+            {
+                _healthNotifyTimer.Change(HealthNotifyDelay, Timeout.InfiniteTimeSpan);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Shutting down; the pending notification is dropped.
+            }
+        }
     }
 
     /// <summary>
@@ -441,7 +606,7 @@ internal sealed class StatisticsService : IDisposable
                 if (pruned > 0)
                 {
                     Volatile.Write(ref _snapshotDirty, 1);
-                    StatsChanged?.Invoke(this, EventArgs.Empty);
+                    OnStatsChanged();
                 }
             }
 
@@ -460,6 +625,11 @@ internal sealed class StatisticsService : IDisposable
     public void Dispose()
     {
         _cleanupTimer?.Dispose();
+        _healthNotifyTimer.Dispose();
+        _keepAliveFlushTimer?.Dispose();
+
+        // Persist the final keep-alive snapshots before marking disposal complete.
+        FlushKeepAliveStats();
 
         if (_persistChannel is not null)
         {
@@ -474,6 +644,12 @@ internal sealed class StatisticsService : IDisposable
                 Log.Warning(ex, "Timed out or failed while draining request log persistence channel");
             }
         }
+
+        Volatile.Write(ref _disposed, 1);
+
+        // Drop subscriber references so a disposed service does not keep UI objects alive.
+        StatsChanged = null;
+        ConnectionHealthChanged = null;
     }
 }
 
@@ -510,6 +686,9 @@ internal sealed class ConnectionHealthStat
 
     /// <summary>Ticks of the last keep-alive frame sent. Access via <see cref="Interlocked"/>.</summary>
     internal long LastSentUtcTicks;
+
+    /// <summary>LastSentUtcTicks value already written to the store. Access via <see cref="Interlocked"/>.</summary>
+    internal long LastPersistedSentUtcTicks;
 
     /// <summary>Number of liveness-probe attempts. Access via <see cref="Interlocked"/>.</summary>
     internal long Attempts;

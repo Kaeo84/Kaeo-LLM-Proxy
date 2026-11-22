@@ -98,26 +98,31 @@ internal static class OpenAiInbound
                     _ => new ChatFinishReason(fr),
                 };
 
-                // Terminal chunk for this choice: flush its accumulated tool calls.
-                if (fr == "tool_calls")
+                // Terminal chunk for this choice: flush its accumulated tool calls on ANY finish
+                // reason — llama.cpp reports "stop" even when the turn ended in tool calls, so
+                // gating on "tool_calls" would silently drop them.
+                List<(int Choice, int Call)> flushed = [];
+                foreach (var kv in state.ToolCalls)
                 {
-                    foreach (var kv in state.ToolCalls)
-                    {
-                        if (kv.Key.Choice != choiceIndex)
-                            continue;
+                    if (kv.Key.Choice != choiceIndex)
+                        continue;
 
-                        var (id, name, args) = kv.Value;
-                        if (string.IsNullOrEmpty(name))
-                            continue;
+                    flushed.Add(kv.Key);
 
-                        // The fallback id must include the choice index: call indices restart
-                        // per choice, so Call alone would collide across a multi-choice response.
-                        contents.Add(new FunctionCallContent(
-                            string.IsNullOrEmpty(id) ? $"{kv.Key.Choice}-{kv.Key.Call}" : id,
-                            name,
-                            ParseArguments(args.ToString())));
-                    }
+                    var (id, name, args) = kv.Value;
+                    if (string.IsNullOrEmpty(name))
+                        continue;
+
+                    // The fallback id must include the choice index: call indices restart
+                    // per choice, so Call alone would collide across a multi-choice response.
+                    contents.Add(new FunctionCallContent(
+                        string.IsNullOrEmpty(id) ? $"{kv.Key.Choice}-{kv.Key.Call}" : id,
+                        name,
+                        ParseArguments(args.ToString())));
                 }
+
+                foreach (var key in flushed)
+                    state.ToolCalls.Remove(key);
             }
         }
 
@@ -161,6 +166,13 @@ internal static class OpenAiInbound
         System.Text.Json.JsonValueKind.True => true,
         System.Text.Json.JsonValueKind.False => false,
         System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined => null,
+        // Recurse so nested objects/arrays become real CLR structures; GetRawText here would
+        // double-encode them as JSON strings when the arguments are re-serialized downstream.
+        System.Text.Json.JsonValueKind.Object => element.EnumerateObject()
+            .ToDictionary(p => p.Name, p => ToClrValue(p.Value), StringComparer.Ordinal),
+        System.Text.Json.JsonValueKind.Array => element.EnumerateArray()
+            .Select(ToClrValue)
+            .ToList(),
         _ => element.GetRawText(),
     };
 }

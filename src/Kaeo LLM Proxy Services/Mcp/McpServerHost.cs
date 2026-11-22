@@ -35,6 +35,16 @@ internal sealed class McpHttpSession
     public DateTime LastActivityUtc { get; private set; } = DateTime.UtcNow;
 
     public void Touch() => LastActivityUtc = DateTime.UtcNow;
+
+    private int _openGetStream;
+
+    /// <summary>True while a server-to-client GET SSE stream is open on this session.</summary>
+    public bool HasOpenGetStream => Volatile.Read(ref _openGetStream) == 1;
+
+    /// <summary>Claims the single allowed GET stream; false when one is already open.</summary>
+    public bool TryMarkGetOpen() => Interlocked.CompareExchange(ref _openGetStream, 1, 0) == 0;
+
+    public void ClearGetOpen() => Volatile.Write(ref _openGetStream, 0);
 }
 
 /// <summary>
@@ -53,6 +63,8 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     private const string SessionIdHeader = "Mcp-Session-Id";
     private const long MaxPostBodyBytes = 10 * 1024 * 1024;
+    private const int MaxConcurrentSessions = 100;
+    private const long MaxResponseCaptureBytes = 64 * 1024;
     private static readonly TimeSpan IdleSessionTimeout = TimeSpan.FromMinutes(30);
 
     private static readonly JsonTypeInfo<JsonRpcMessage> s_messageTypeInfo =
@@ -72,6 +84,18 @@ internal sealed class McpServerHost : IAsyncDisposable
     private Task? _acceptLoopTask;
     private System.Threading.Timer? _idleSweepTimer;
     private DateTime _startedUtc;
+
+    // In-flight request handlers, drained by StopAsync before sessions/CTS are disposed so a
+    // restart cannot fault active tool calls with ObjectDisposedException races.
+    private int _inFlightHandlers;
+    private TaskCompletionSource _handlersDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // Token bucket bounding the stale-session recovery path (recreate + synthetic handshake):
+    // without a bound, any client looping on random session ids creates unbounded sessions.
+    private const long MaxRecoveryTokens = 20;
+    private readonly object _recoveryLock = new();
+    private long _recoveryTokens = MaxRecoveryTokens;
+    private long _recoveryLastRefillTicks = DateTime.UtcNow.Ticks;
 
     /// <summary>
     /// Creates a host bound to <paramref name="settings"/>. <paramref name="serverOptionsFactory"/>
@@ -136,11 +160,26 @@ internal sealed class McpServerHost : IAsyncDisposable
         _listener = listener;
         _cts = new CancellationTokenSource();
         _startedUtc = DateTime.UtcNow;
+        _handlersDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _acceptLoopTask = Task.Run(() => AcceptLoopAsync(listener, _cts.Token));
         _idleSweepTimer = new System.Threading.Timer(SweepIdleSessions, null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
         IsRunning = true;
 
         Log.Information("MCP server listening at {EndpointUrl}", EndpointUrl);
+
+        // Fail-open auth is only defensible on a loopback bind; warn prominently otherwise.
+        bool loopbackBind = listenerHost is not ("+" or "[::]")
+            && (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+                || host is "127.0.0.1" or "::1" or "[::1]"
+                || (IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? bindAddress) && IPAddress.IsLoopback(bindAddress)));
+        if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName))
+        {
+            Log.Warning(
+                "MCP server is listening on non-loopback address {Host}:{Port} with authentication DISABLED. " +
+                "Any host that can reach this port can execute MCP tools. Configure an auth credential in the MCP settings.",
+                host, _settings.ListenPort);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -179,6 +218,20 @@ internal sealed class McpServerHost : IAsyncDisposable
             {
             }
             _acceptLoopTask = null;
+        }
+
+        // Drain in-flight request handlers (bounded) before disposing sessions and the CTS they
+        // may still reference; a restart while a tool call is streaming is a routine occurrence.
+        if (Volatile.Read(ref _inFlightHandlers) > 0)
+        {
+            try
+            {
+                await _handlersDrained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                Log.Warning("MCP stop timed out draining {Count} in-flight request handlers", Volatile.Read(ref _inFlightHandlers));
+            }
         }
 
         foreach (string sessionId in _sessions.Keys.ToArray())
@@ -221,6 +274,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             }
 
             // Each request runs independently; all exceptions are observed inside the handler.
+            Interlocked.Increment(ref _inFlightHandlers);
             _ = HandleRequestSafeAsync(context, ct);
         }
 
@@ -293,6 +347,9 @@ internal sealed class McpServerHost : IAsyncDisposable
             {
                 // Client already disconnected.
             }
+
+            if (Interlocked.Decrement(ref _inFlightHandlers) == 0)
+                _handlersDrained.TrySetResult();
         }
     }
 
@@ -307,6 +364,17 @@ internal sealed class McpServerHost : IAsyncDisposable
         if (path.Length > 1 && path.EndsWith('/'))
             path = path.TrimEnd('/');
 
+        // DNS-rebinding / drive-by browser protection (MCP spec): a foreign Origin header means a
+        // web page is trying to drive local tools. Non-browser clients send no Origin at all.
+        string? origin = request.Headers["Origin"];
+        if (origin is not null && !IsAllowedOrigin(origin))
+        {
+            Log.Warning("Rejected MCP request with foreign Origin '{Origin}' from {Remote}", origin, request.RemoteEndPoint);
+            response.StatusCode = 403;
+            await WriteTextAsync(response, "Forbidden: cross-origin requests are not allowed.", ct);
+            return;
+        }
+
         if (method == "GET" && path == HealthPath)
         {
             await WriteHealthAsync(response, ct);
@@ -315,6 +383,15 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (method == "GET" && path == SpecPath && ApiExplorer is not null)
         {
+            // The spec lists every tool name/description: reconnaissance aid when auth is on.
+            if (!IsAuthorized(request, out string? specAuthError))
+            {
+                response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
+                response.StatusCode = 401;
+                await WriteTextAsync(response, specAuthError ?? "Unauthorized", ct);
+                return;
+            }
+
             response.StatusCode = 200;
             response.ContentType = "application/json";
             byte[] spec = Encoding.UTF8.GetBytes(ApiExplorer.BuildSpecJson());
@@ -325,6 +402,14 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (method == "GET" && path == ScalarPath && ApiExplorer is not null)
         {
+            if (!IsAuthorized(request, out string? scalarAuthError))
+            {
+                response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
+                response.StatusCode = 401;
+                await WriteTextAsync(response, scalarAuthError ?? "Unauthorized", ct);
+                return;
+            }
+
             response.StatusCode = 200;
             response.ContentType = "text/html; charset=utf-8";
             byte[] page = Encoding.UTF8.GetBytes(await ApiExplorer.BuildScalarHtmlAsync(ct));
@@ -340,7 +425,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             if (!IsAuthorized(request, out string? authError))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                await WriteJsonRpcErrorAsync(response, 401, default, -32001, authError ?? "Unauthorized", ct);
+                await WriteJsonRpcErrorAsync(response, 401, TryProbeRequestId(request, ct), -32001, authError ?? "Unauthorized", ct);
                 return;
             }
 
@@ -383,10 +468,25 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
 
         // Read the full body into a buffer so it can be captured for the log AND deserialized.
+        // The cap is enforced while copying: a chunked request has no Content-Length, so the
+        // pre-check above alone would let an unbounded body buffer in memory.
         byte[] bodyBytes;
-        await using var bodyBuffer = new MemoryStream();
-        await request.InputStream.CopyToAsync(bodyBuffer, ct);
-        bodyBytes = bodyBuffer.ToArray();
+        await using (var bodyBuffer = new MemoryStream())
+        {
+            byte[] readBuffer = new byte[81920];
+            int read;
+            while ((read = await request.InputStream.ReadAsync(readBuffer, ct)) > 0)
+            {
+                if (bodyBuffer.Length + read > MaxPostBodyBytes)
+                {
+                    response.StatusCode = 413;
+                    await WriteTextAsync(response, "Request body too large.", ct);
+                    return;
+                }
+                bodyBuffer.Write(readBuffer, 0, read);
+            }
+            bodyBytes = bodyBuffer.ToArray();
+        }
 
         if (_settings.CollectRequestDetails && bodyBytes.Length > 0)
             log.RequestBody = Encoding.UTF8.GetString(bodyBytes);
@@ -429,7 +529,12 @@ internal sealed class McpServerHost : IAsyncDisposable
         McpHttpSession? session;
         if (message is JsonRpcRequest { Method: RequestMethods.Initialize } && string.IsNullOrEmpty(sessionIdHeader))
         {
-            session = CreateSession(GetClientAddress(request.RemoteEndPoint));
+            session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+            if (session is null)
+            {
+                await WriteSessionUnavailableAsync(response, ct);
+                return;
+            }
             response.Headers[SessionIdHeader] = session.Id;
         }
         else if (string.IsNullOrEmpty(sessionIdHeader))
@@ -446,7 +551,12 @@ internal sealed class McpServerHost : IAsyncDisposable
             // initialize instead of failing the reconnect with 404.
             if (message is JsonRpcRequest { Method: RequestMethods.Initialize })
             {
-                session = CreateSession(GetClientAddress(request.RemoteEndPoint));
+                session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+                if (session is null)
+                {
+                    await WriteSessionUnavailableAsync(response, ct);
+                    return;
+                }
                 response.Headers[SessionIdHeader] = session.Id;
             }
             else
@@ -455,7 +565,20 @@ internal sealed class McpServerHost : IAsyncDisposable
                 // on the stale id and never re-initialize after a 404. Recreate the session and
                 // replay the lifecycle handshake locally so the request executes anyway; the
                 // returned Mcp-Session-Id header lets the client switch to the new session.
-                session = CreateSession(GetClientAddress(request.RemoteEndPoint));
+                // Rate-limited: an unbounded recreate path lets any client mint sessions in a loop.
+                if (!TryAcquireRecoveryToken())
+                {
+                    response.StatusCode = 404;
+                    await WriteTextAsync(response, "Session not found and recovery rate limit reached. Send an initialize request to start a new session.", ct);
+                    return;
+                }
+
+                session = TryCreateSession(GetClientAddress(request.RemoteEndPoint));
+                if (session is null)
+                {
+                    await WriteSessionUnavailableAsync(response, ct);
+                    return;
+                }
                 response.Headers[SessionIdHeader] = session.Id;
                 await ReplayLifecycleHandshakeAsync(session, ct);
             }
@@ -467,10 +590,12 @@ internal sealed class McpServerHost : IAsyncDisposable
         // transport writes its first byte, so status/content type land on the real response.
         Stream outputStream = response.OutputStream;
         MemoryStream? responseCapture = null;
+        TeeStream? tee = null;
         if (_settings.CollectResponseDetails)
         {
             responseCapture = new MemoryStream();
-            outputStream = new TeeStream(response.OutputStream, responseCapture);
+            tee = new TeeStream(response.OutputStream, responseCapture, MaxResponseCaptureBytes);
+            outputStream = tee;
         }
 
         bool wroteResponse = await session.Transport.HandlePostRequestAsync(
@@ -486,10 +611,12 @@ internal sealed class McpServerHost : IAsyncDisposable
             },
             ct);
 
-        if (responseCapture is not null && responseCapture.Length > 0)
+        if (responseCapture is not null && tee is not null && responseCapture.Length > 0)
         {
             log.ResponseBody = Encoding.UTF8.GetString(responseCapture.ToArray());
-            log.ResponseBytes = responseCapture.Length;
+            log.ResponseBytes = tee.TotalBytesWritten;
+            if (tee.TotalBytesWritten > responseCapture.Length)
+                log.ResponseBody += "\n... [response capture truncated at 64 KB]";
         }
 
         if (!wroteResponse)
@@ -533,34 +660,48 @@ internal sealed class McpServerHost : IAsyncDisposable
             return;
         }
 
-        session.Touch();
-        response.StatusCode = 200;
-        response.ContentType = "text/event-stream";
-        response.SendChunked = true;
-        response.Headers[HttpResponseHeader.CacheControl] = "no-cache";
-
-        // Commit the response immediately with an SSE comment line (ignored by SSE parsers).
-        // HttpListener defers sending response headers until the first body byte is written,
-        // and an idle stream may carry no events for a long time.
-        byte[] prime = ": stream open\n\n"u8.ToArray();
-        await response.OutputStream.WriteAsync(prime, ct);
-        await response.OutputStream.FlushAsync(ct);
-
-        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct, session.LifetimeCts.Token);
-        try
+        // Detect the duplicate-GET condition BEFORE the prime comment commits the 200 headers;
+        // afterwards the status line can no longer be rewritten to 409.
+        if (!session.TryMarkGetOpen())
         {
-            // Holds the connection open, streaming unsolicited server-to-client messages until
-            // the session is closed or the client disconnects.
-            await session.Transport.HandleGetRequestAsync(response.OutputStream, linked.Token);
-        }
-        catch (InvalidOperationException)
-        {
-            // A second GET on the same session throws before any bytes are written, so the
-            // status line can still be corrected.
             response.StatusCode = 409;
             response.ContentType = "application/json";
-            response.SendChunked = false;
             await WriteTextAsync(response, "{\"error\":\"A GET stream is already open for this session.\"}", ct);
+            return;
+        }
+
+        try
+        {
+            session.Touch();
+            response.StatusCode = 200;
+            response.ContentType = "text/event-stream";
+            response.SendChunked = true;
+            response.Headers[HttpResponseHeader.CacheControl] = "no-cache";
+
+            // Commit the response immediately with an SSE comment line (ignored by SSE parsers).
+            // HttpListener defers sending response headers until the first body byte is written,
+            // and an idle stream may carry no events for a long time.
+            byte[] prime = ": stream open\n\n"u8.ToArray();
+            await response.OutputStream.WriteAsync(prime, ct);
+            await response.OutputStream.FlushAsync(ct);
+
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct, session.LifetimeCts.Token);
+            try
+            {
+                // Holds the connection open, streaming unsolicited server-to-client messages until
+                // the session is closed or the client disconnects.
+                await session.Transport.HandleGetRequestAsync(response.OutputStream, linked.Token);
+            }
+            catch (InvalidOperationException)
+            {
+                // Headers are already committed (the prime was flushed), so the status cannot be
+                // corrected here; just end the stream.
+                Log.Debug("MCP GET stream for session {SessionId} was rejected by the transport after headers were committed", session.Id);
+            }
+        }
+        finally
+        {
+            session.ClearGetOpen();
         }
     }
 
@@ -581,10 +722,34 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     // ── Sessions ────────────────────────────────────────────────────────────
 
-    private McpHttpSession CreateSession(string? clientAddress)
+    /// <summary>
+    /// Creates a session unless the concurrent-session cap is reached or the host is stopping,
+    /// in which case null is returned and the caller answers 503.
+    /// </summary>
+    private McpHttpSession? TryCreateSession(string? clientAddress)
     {
+        if (_sessions.Count >= MaxConcurrentSessions)
+        {
+            Log.Warning("MCP session limit ({Limit}) reached; rejecting new session from {ClientAddress}",
+                MaxConcurrentSessions, clientAddress ?? "unknown");
+            return null;
+        }
+
+        CancellationTokenSource? hostCts = _cts;
+        if (hostCts is null)
+            return null;
+
         string sessionId = GenerateSessionId();
-        CancellationTokenSource lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(_cts!.Token);
+        CancellationTokenSource lifetimeCts;
+        try
+        {
+            lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(hostCts.Token);
+        }
+        catch (ObjectDisposedException)
+        {
+            // StopAsync disposed the host CTS between the null check and the link.
+            return null;
+        }
 
         McpSessionInfo sessionInfo = new(sessionId, clientAddress);
         StreamableHttpServerTransport transport = new() { SessionId = sessionId };
@@ -603,6 +768,37 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         Log.Debug("MCP session {SessionId} created for client {ClientAddress}", sessionId, clientAddress ?? "unknown");
         return session;
+    }
+
+    private static async Task WriteSessionUnavailableAsync(HttpListenerResponse response, CancellationToken ct)
+    {
+        response.StatusCode = 503;
+        await WriteTextAsync(response, "Too many active MCP sessions or the server is stopping. Try again later.", ct);
+    }
+
+    /// <summary>
+    /// Token bucket for the stale-session recovery path: refills one token per second up to
+    /// <see cref="MaxRecoveryTokens"/>, so legitimate reconnect bursts pass while a loop on random
+    /// session ids is throttled.
+    /// </summary>
+    private bool TryAcquireRecoveryToken()
+    {
+        lock (_recoveryLock)
+        {
+            long now = DateTime.UtcNow.Ticks;
+            long elapsedTicks = now - _recoveryLastRefillTicks;
+            if (elapsedTicks >= TimeSpan.TicksPerSecond)
+            {
+                _recoveryTokens = Math.Min(MaxRecoveryTokens, _recoveryTokens + elapsedTicks / TimeSpan.TicksPerSecond);
+                _recoveryLastRefillTicks = now;
+            }
+
+            if (_recoveryTokens <= 0)
+                return false;
+
+            _recoveryTokens--;
+            return true;
+        }
     }
 
     private const string SyntheticInitializeJson = """
@@ -709,7 +905,9 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         foreach (McpHttpSession session in _sessions.Values)
         {
-            if (session.LastActivityUtc < cutoff)
+            // An open GET SSE stream is liveness even when no POSTs arrive: a quiet-but-connected
+            // client must not be swept out from under its stream.
+            if (session.LastActivityUtc < cutoff && !session.HasOpenGetStream)
             {
                 Log.Information("Closing idle MCP session {SessionId}", session.Id);
                 _ = RemoveSessionAsync(session.Id);
@@ -760,6 +958,63 @@ internal sealed class McpServerHost : IAsyncDisposable
             error = "The supplied bearer token is not valid.";
 
         return match;
+    }
+
+    /// <summary>
+    /// Validates a browser-sent Origin header against loopback hosts (DNS-rebinding protection).
+    /// Only loopback origins are accepted: a page served from any other host must not drive the
+    /// local MCP tools, regardless of which address the server itself is bound to.
+    /// </summary>
+    private static bool IsAllowedOrigin(string origin)
+    {
+        if (string.Equals(origin, "null", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? uri))
+            return false;
+
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+
+        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || (IPAddress.TryParse(uri.Host, out IPAddress? address) && IPAddress.IsLoopback(address));
+    }
+
+    /// <summary>
+    /// Best-effort peek at the JSON-RPC request id before auth rejection so a 401 can be
+    /// correlated by the client. Only probes a seekable, length-bounded body and restores the
+    /// stream position; the body is fully validated later regardless.
+    /// </summary>
+    private static RequestId TryProbeRequestId(HttpListenerRequest request, CancellationToken ct)
+    {
+        if (request.HttpMethod != "POST"
+            || !request.InputStream.CanSeek
+            || request.ContentLength64 is <= 0 or > MaxPostBodyBytes)
+            return default;
+
+        long originalPosition = request.InputStream.Position;
+        try
+        {
+            using JsonDocument probe = JsonDocument.Parse(request.InputStream);
+            if (probe.RootElement.ValueKind == JsonValueKind.Object
+                && probe.RootElement.TryGetProperty("id", out JsonElement idElement))
+            {
+                if (idElement.ValueKind == JsonValueKind.Number && idElement.TryGetInt64(out long numericId))
+                    return new RequestId(numericId);
+                if (idElement.ValueKind == JsonValueKind.String)
+                    return new RequestId(idElement.GetString() ?? string.Empty);
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or OperationCanceledException)
+        {
+            // Correlation is cosmetic; the real parse happens after auth.
+        }
+        finally
+        {
+            request.InputStream.Position = originalPosition;
+        }
+
+        return default;
     }
 
     private async Task WriteHealthAsync(HttpListenerResponse response, CancellationToken ct)
@@ -835,12 +1090,19 @@ internal sealed class TeeStream : Stream
 {
     private readonly Stream _primary;
     private readonly Stream _secondary;
+    private readonly long _maxSecondaryBytes;
+    private long _secondaryWritten;
+    private long _totalWritten;
 
-    public TeeStream(Stream primary, Stream secondary)
+    public TeeStream(Stream primary, Stream secondary, long maxSecondaryBytes = long.MaxValue)
     {
         _primary = primary;
         _secondary = secondary;
+        _maxSecondaryBytes = maxSecondaryBytes;
     }
+
+    /// <summary>Total bytes written to the primary stream, including any beyond the capture cap.</summary>
+    public long TotalBytesWritten => Interlocked.Read(ref _totalWritten);
 
     public override bool CanRead => false;
     public override bool CanSeek => false;
@@ -854,14 +1116,27 @@ internal sealed class TeeStream : Stream
 
     public override void Write(byte[] buffer, int offset, int count)
     {
-        _secondary.Write(buffer, offset, count);
+        CaptureToSecondary(buffer, offset, count);
+        Interlocked.Add(ref _totalWritten, count);
         _primary.Write(buffer, offset, count);
     }
 
     public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        _secondary.Write(buffer, offset, count);
+        CaptureToSecondary(buffer, offset, count);
+        Interlocked.Add(ref _totalWritten, count);
         return _primary.WriteAsync(buffer, offset, count, cancellationToken);
+    }
+
+    private void CaptureToSecondary(byte[] buffer, int offset, int count)
+    {
+        long remaining = _maxSecondaryBytes - _secondaryWritten;
+        if (remaining <= 0)
+            return;
+
+        int toWrite = (int)Math.Min(count, remaining);
+        _secondary.Write(buffer, offset, toWrite);
+        _secondaryWritten += toWrite;
     }
 
     public override void Flush() => _primary.Flush();

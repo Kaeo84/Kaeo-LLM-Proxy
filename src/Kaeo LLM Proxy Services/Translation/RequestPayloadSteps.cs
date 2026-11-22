@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json.Nodes;
 using Kaeo.LlmProxy.Core.Models;
 using Serilog;
@@ -117,6 +119,8 @@ internal sealed class SamplingPriorityStep : IRequestPayloadStep
             {
                 JsonValue jsonValue when jsonValue.TryGetValue(out float number) => number,
                 JsonValue jsonValue when jsonValue.TryGetValue(out double wide) => (float)wide,
+                JsonValue jsonValue when jsonValue.TryGetValue(out string? text)
+                    && float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed) => parsed,
                 _ => null,
             };
         }
@@ -177,8 +181,10 @@ internal sealed class ReasoningEffortStep : IRequestPayloadStep
 
         RemoveMember(context, "reasoning_effort");
         RemoveMember(context, "reasoning");
-        RemoveMember(context, "extra_body");
-        RemoveMember(context, "chat_template_kwargs");
+        // The wrappers carry unrelated client settings too; strip only the reasoning keys
+        // this step owns, and drop a wrapper only when nothing else remains in it.
+        RemoveReasoningKeys(context, "extra_body");
+        RemoveReasoningKeys(context, "chat_template_kwargs");
 
         if (injecting)
         {
@@ -192,13 +198,63 @@ internal sealed class ReasoningEffortStep : IRequestPayloadStep
                 context.Payload["reasoning"] = new JsonObject { ["enable"] = true, ["thinking_level"] = effort };
 
             if (format.HasFlag(ReasoningEffortFormat.QwenCloud))
-                context.Payload["extra_body"] = new JsonObject { ["enable_thinking"] = true, ["reasoning_effort"] = effort };
+                SetWrapperReasoningKeys(context, "extra_body", effort);
 
             if (format.HasFlag(ReasoningEffortFormat.ChatTemplateKwargs))
-                context.Payload["chat_template_kwargs"] = new JsonObject { ["enable_thinking"] = true, ["reasoning_effort"] = effort };
+                SetWrapperReasoningKeys(context, "chat_template_kwargs", effort);
         }
 
         context.Rewritten = true;
+    }
+
+    /// <summary>Removes the reasoning-related keys from a wrapper object, preserving the rest.</summary>
+    private static void RemoveReasoningKeys(RequestPayloadContext context, string wrapperName)
+    {
+        string? key = context.Payload
+            .Select(pair => pair.Key)
+            .FirstOrDefault(k => k.Equals(wrapperName, StringComparison.OrdinalIgnoreCase));
+
+        if (key is null)
+            return;
+
+        if (context.Payload[key] is not JsonObject wrapper)
+        {
+            context.Payload.Remove(key);
+            return;
+        }
+
+        foreach (string member in wrapper.Select(pair => pair.Key).ToList())
+        {
+            if (member.Equals("reasoning_effort", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("enable_thinking", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("thinking_level", StringComparison.OrdinalIgnoreCase)
+                || member.Equals("reasoning", StringComparison.OrdinalIgnoreCase))
+            {
+                wrapper.Remove(member);
+            }
+        }
+
+        if (wrapper.Count == 0)
+            context.Payload.Remove(key);
+    }
+
+    /// <summary>
+    /// Injects the reasoning keys into a wrapper, merging with any surviving client settings
+    /// rather than replacing the whole object.
+    /// </summary>
+    private static void SetWrapperReasoningKeys(RequestPayloadContext context, string wrapperName, string effort)
+    {
+        string? key = context.Payload
+            .Select(pair => pair.Key)
+            .FirstOrDefault(k => k.Equals(wrapperName, StringComparison.OrdinalIgnoreCase));
+
+        JsonObject wrapper = key is not null && context.Payload[key] is JsonObject existing
+            ? existing
+            : new JsonObject();
+
+        wrapper["enable_thinking"] = true;
+        wrapper["reasoning_effort"] = effort;
+        context.Payload[key ?? wrapperName] = wrapper;
     }
 
     private static string? ReadEffort(JsonObject payload)
@@ -351,12 +407,32 @@ internal sealed class ComposeMessagesStep : IRequestPayloadStep
         List<string> contents = [];
         for (int i = 0; i < count && i < messages.Count; i++)
         {
-            if (messages[i] is JsonObject message
-                && message["content"] is JsonValue content
-                && content.TryGetValue(out string? text)
-                && text is not null)
+            if (messages[i] is not JsonObject message)
+                continue;
+
+            switch (message["content"])
             {
-                contents.Add(text);
+                case JsonValue content when content.TryGetValue(out string? text) && text is not null:
+                    contents.Add(text);
+                    break;
+                case JsonArray parts:
+                    // Multimodal system content: concatenate the text parts so instructions
+                    // survive the merge instead of silently dropping the whole message.
+                    StringBuilder joined = new();
+                    foreach (JsonNode? part in parts)
+                    {
+                        if (part is JsonObject partObject
+                            && partObject["text"] is JsonValue partText
+                            && partText.TryGetValue(out string? partString)
+                            && partString is not null)
+                        {
+                            joined.Append(partString);
+                        }
+                    }
+
+                    if (joined.Length > 0)
+                        contents.Add(joined.ToString());
+                    break;
             }
         }
 

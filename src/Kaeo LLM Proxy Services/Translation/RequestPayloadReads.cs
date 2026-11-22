@@ -15,9 +15,11 @@ namespace Kaeo.LlmProxy.Services.Translation;
 internal static class RequestPayloadReads
 {
     /// <summary>
-    /// Extracts the first message's text content from a <c>messages</c> array. Content may be a plain
-    /// string or an array of typed parts (e.g. <c>[{"type":"text","text":"..."}]</c>), which
-    /// OpenAI-compatible clients such as Copilot commonly emit even for plain text.
+    /// Extracts the first non-system message's text content from a <c>messages</c> array. Content
+    /// may be a plain string or an array of typed parts (e.g. <c>[{"type":"text","text":"..."}]</c>),
+    /// which OpenAI-compatible clients such as Copilot commonly emit even for plain text. Leading
+    /// system messages are skipped: a client that leads with a system prompt would otherwise hide
+    /// the compact-signature-bearing user message from the detection logic.
     /// </summary>
     public static string? FirstMessageContent(JsonObject root)
     {
@@ -29,7 +31,14 @@ internal static class RequestPayloadReads
             if (messageNode is not JsonObject message)
                 return null;
 
-            if (message is null || !message.ContainsKey("content"))
+            if (message["role"] is JsonValue roleValue
+                && roleValue.TryGetValue(out string? role)
+                && SystemPromptComposer.IsSystemRole(role))
+            {
+                continue;
+            }
+
+            if (!message.ContainsKey("content"))
                 return null;
 
             switch (message["content"])
@@ -88,8 +97,10 @@ internal static class RequestPayloadReads
     }
 
     /// <summary>
-    /// True when a message is an assistant turn with no tool activity, which several upstreams reject
-    /// when thinking mode is on.
+    /// True when a message is an empty assistant prefill (no content, no tool activity), which
+    /// several upstreams reject when thinking mode is on. A trailing assistant turn carrying real
+    /// content is legitimate history (continuation flows, replayed conversations) and is never
+    /// treated as a prefill — removing it would make the model re-answer the previous user turn.
     /// </summary>
     public static bool IsAssistantResponsePrefill(JsonNode? messageNode)
     {
@@ -113,7 +124,17 @@ internal static class RequestPayloadReads
             return false;
         }
 
-        return true;
+        return message["content"] switch
+        {
+            null => true,
+            JsonValue value when value.TryGetValue(out string? text) => string.IsNullOrWhiteSpace(text),
+            JsonArray parts => !parts.Any(part =>
+                part is JsonObject partObject
+                && partObject["text"] is JsonValue partText
+                && partText.TryGetValue(out string? partString)
+                && !string.IsNullOrWhiteSpace(partString)),
+            _ => false,
+        };
     }
 
     /// <summary>

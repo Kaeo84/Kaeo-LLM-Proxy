@@ -615,12 +615,7 @@ partial class OllamaProxyHandler
                 contextCompacted = true;
                 passthroughBody = reactive;
 
-                using var retryReq = new HttpRequestMessage(HttpMethod.Post, requestPathAndQuery)
-                {
-                    Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
-                };
-                retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-                ApplyApiKey(retryReq, apiKey);
+                using var retryReq = BuildRetryRequest(requestPathAndQuery, reactive, upstreamReq, apiKey);
 
                 upstreamResp = await SendUpstreamAsync(
                     retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -688,12 +683,7 @@ partial class OllamaProxyHandler
                         passthroughBody = reactive;
                         upstreamResp.Dispose();
 
-                        using var retryReq = new HttpRequestMessage(HttpMethod.Post, requestPathAndQuery)
-                        {
-                            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(reactive)),
-                        };
-                        retryReq.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
-                        ApplyApiKey(retryReq, apiKey);
+                        using var retryReq = BuildRetryRequest(requestPathAndQuery, reactive, upstreamReq, apiKey);
 
                         upstreamResp = await SendUpstreamAsync(
                             retryReq, baseUrl, timeout, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -728,18 +718,8 @@ partial class OllamaProxyHandler
         {
             resp.StatusCode = (int)upstreamResp.StatusCode;
 
-            // Copy response headers
-            foreach (var header in upstreamResp.Headers)
-            {
-                if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-                if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
-                resp.Headers[header.Key] = string.Join(",", header.Value);
-            }
-            foreach (var header in upstreamResp.Content.Headers)
-            {
-                if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-                resp.Headers[header.Key] = string.Join(",", header.Value);
-            }
+            // Copy response headers (multi-value safe; hop-by-hop and Content-Length skipped).
+            CopyUpstreamResponseHeaders(resp, upstreamResp);
 
             resp.SendChunked = true;
             resp.KeepAlive = true;
@@ -1227,6 +1207,11 @@ partial class OllamaProxyHandler
 
     private static bool IsStreamingJsonBody(string json)
     {
+        // Fast pre-filter: bodies without the literal key at all cannot match, and the vectorized
+        // IndexOf behind Contains is far cheaper than a regex scan over a multi-megabyte payload.
+        if (!json.Contains("\"stream\"", StringComparison.OrdinalIgnoreCase))
+            return false;
+
         try
         {
             // Match "stream": true with optional whitespace, case-insensitive
@@ -1400,6 +1385,12 @@ partial class OllamaProxyHandler
         TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
 
+        // Tracks whether the bytes forwarded so far end at an SSE frame boundary (a blank line).
+        // A keep-alive comment ends with "\n\n"; injecting it mid-frame would terminate a partial
+        // "data:" line and make the client dispatch incomplete JSON (M4). Start at a boundary so a
+        // keep-alive before the first upstream byte is still safe.
+        int trailingNewlines = 2;
+
         while (!ct.IsCancellationRequested)
         {
             ValueTask<int> readValueTask = source.ReadAsync(buffer, ct);
@@ -1411,6 +1402,10 @@ partial class OllamaProxyHandler
                 Task completed = await Task.WhenAny(readTask, delayTask);
                 if (completed == readTask)
                     break;
+
+                // Only inject at a frame boundary; mid-frame, wait for the upstream to complete it.
+                if (trailingNewlines < 2)
+                    continue;
 
                 await destination.WriteAsync(SseKeepAliveFrameBytes, ct);
                 await destination.FlushAsync(ct);
@@ -1438,12 +1433,44 @@ partial class OllamaProxyHandler
             await destination.FlushAsync(ct);
             // This path is verbatim, so what the client receives is byte-for-byte the upstream chunk.
             session?.OnForwarded(chunkText ?? string.Empty);
+
+            trailingNewlines = TrailingNewlineCount(buffer, bytesRead, trailingNewlines);
         }
 
         // Flush the sniffer first so the token totals it captured from the upstream's own usage frame
         // are available to a synthesized chunk, then emit whatever terminator the upstream omitted.
         usageSniffer?.Flush();
         await EmitTerminalFramesAsync(destination, terminator, tokenCounts, ct);
+    }
+
+    /// <summary>
+    /// Counts the consecutive line-feed bytes at the end of the forwarded stream (carrying
+    /// <paramref name="prior"/> forward when the whole chunk is newlines), treating CR as part of
+    /// CRLF. Two or more means the stream ends at an SSE blank-line frame boundary.
+    /// </summary>
+    private static int TrailingNewlineCount(byte[] buffer, int count, int prior)
+    {
+        int i = count - 1;
+        int run = 0;
+        while (i >= 0)
+        {
+            byte b = buffer[i];
+            if (b == (byte)'\n')
+            {
+                run++;
+                i--;
+            }
+            else if (b == (byte)'\r')
+            {
+                i--;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return i < 0 ? prior + run : run;
     }
 
     /// <summary>
@@ -1489,12 +1516,28 @@ partial class OllamaProxyHandler
         TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
 
         // Phase B: the IR-routed frame translator (Plans/20260914-proxy-meai-phase-b-design.md)
-        // behind a default-off flag; golden byte-parity tests pin it to the legacy rewriter.
-        Func<string, IEnumerable<string>> rewriter = useIrTranslation
-            ? new OpenAiSseFrameTranslation(thinkingMode, declaredToolNames).Process
-            : new OpenAiSseRewriter(thinkingMode, declaredToolNames).Process;
+        // behind a default-off flag; golden byte-parity tests pin it to the legacy rewriter. Both
+        // expose a Flush so buffered tails are drained before the terminal frames (M5).
+        Func<string, IEnumerable<string>> rewriter;
+        Func<IEnumerable<string>> rewriterFlush;
+        if (useIrTranslation)
+        {
+            OpenAiSseFrameTranslation ir = new(thinkingMode, declaredToolNames);
+            rewriter = ir.Process;
+            rewriterFlush = ir.Flush;
+        }
+        else
+        {
+            OpenAiSseRewriter legacy = new(thinkingMode, declaredToolNames);
+            rewriter = legacy.Process;
+            rewriterFlush = legacy.Flush;
+        }
 
         SseUsageSniffer? usageSniffer = onUsage is null ? null : new(onUsage);
+
+        // Lines of the SSE event being accumulated. An event ends at a blank line; the universal
+        // OpenAI shape is a single "data:" line, forwarded byte-for-byte exactly as before (M6).
+        List<string> eventLines = [];
 
         while (!ct.IsCancellationRequested)
         {
@@ -1520,36 +1563,130 @@ partial class OllamaProxyHandler
             // The raw upstream frame, before any thinking/tool-call rewriting is applied.
             session?.OnUpstreamLine(line);
 
-            usageSniffer?.Feed(line + "\n");
+            usageSniffer?.FeedLine(line);
             // The rewriter forwards [DONE] and usage frames verbatim, so observing the inbound line is
             // equivalent to observing what the client received.
             terminator?.ObserveLine(line);
             if (rawCapture is not null)
-                await rawCapture.WriteAsync(Encoding.UTF8.GetBytes(line + "\n"), ct);
-
-            // Upstream framing uses "data: {...}\n\n". ReadLineAsync strips the line
-            // terminator and surfaces the blank terminator line as an empty string.
-            // Because a single inbound "data:" line may expand into multiple outbound
-            // "data:" frames (original + synthesised tool_call deltas), we must emit
-            // each outbound line as its OWN complete SSE event ("\n\n") rather than
-            // relying on the upstream blank line â€” otherwise SSE parsers will join
-            // consecutive data: lines into one event payload and JSON parsing fails.
-            if (line.Length == 0)
-                continue;
-
-            foreach (string outgoingLine in rewriter(line))
             {
-                byte[] lineBytes = Encoding.UTF8.GetBytes(outgoingLine + "\n\n");
-                await destination.WriteAsync(lineBytes, ct);
-                session?.OnForwarded(outgoingLine + "\n\n");
+                await rawCapture.WriteAsync(Encoding.UTF8.GetBytes(line), ct);
+                await rawCapture.WriteAsync(SseLineTerminatorBytes, ct);
             }
-            await destination.FlushAsync(ct);
+
+            // A blank line terminates the current SSE event: translate and emit it now.
+            if (line.Length == 0)
+            {
+                await EmitSseEventAsync(eventLines, rewriter, destination, session, ct);
+                eventLines.Clear();
+                continue;
+            }
+
+            eventLines.Add(line);
         }
+
+        // Emit any event still buffered at EOF (upstream omitted the trailing blank line).
+        await EmitSseEventAsync(eventLines, rewriter, destination, session, ct);
+        eventLines.Clear();
+
+        // Drain rewriter state (a partial think tag or an unterminated call block) before the
+        // terminal frames so nothing the upstream sent is silently lost (M5).
+        foreach (string outgoingLine in rewriterFlush())
+        {
+            await WriteSseLineAsync(destination, outgoingLine, ct);
+            session?.OnForwarded(outgoingLine + "\n\n");
+        }
+        await destination.FlushAsync(ct);
 
         // Flush the sniffer first so the token totals it captured from the upstream's own usage frame
         // are available to a synthesized chunk, then emit whatever terminator the upstream omitted.
         usageSniffer?.Flush();
         await EmitTerminalFramesAsync(destination, terminator, tokenCounts, ct);
+    }
+
+    /// <summary>
+    /// Writes one outbound SSE line as a complete event ("line\n\n"), reusing a static terminator
+    /// instead of allocating a concatenated string per frame (L8).
+    /// </summary>
+    private static async Task WriteSseLineAsync(Stream destination, string line, CancellationToken ct)
+    {
+        await destination.WriteAsync(Encoding.UTF8.GetBytes(line), ct);
+        await destination.WriteAsync(SseEventTerminatorBytes, ct);
+    }
+
+    /// <summary>
+    /// Translates and emits one accumulated SSE event. The common single-"data:"-line case is
+    /// forwarded through the rewriter exactly as before so output stays byte-identical; multi-line
+    /// data events and field lines (event:/id:/retry:) are joined and kept attached to their data
+    /// rather than split into separate, unparseable events (M6).
+    /// </summary>
+    private static async Task EmitSseEventAsync(
+        List<string> eventLines,
+        Func<string, IEnumerable<string>> rewriter,
+        Stream destination,
+        StreamMonitorSession? session,
+        CancellationToken ct)
+    {
+        if (eventLines.Count == 0)
+            return;
+
+        if (eventLines.Count == 1)
+        {
+            foreach (string outgoingLine in rewriter(eventLines[0]))
+            {
+                await WriteSseLineAsync(destination, outgoingLine, ct);
+                session?.OnForwarded(outgoingLine + "\n\n");
+            }
+            await destination.FlushAsync(ct);
+            return;
+        }
+
+        List<string> fieldLines = [];
+        List<string> dataPayloads = [];
+        foreach (string l in eventLines)
+        {
+            if (l.StartsWith("data:", StringComparison.Ordinal))
+            {
+                string payload = l[5..];
+                if (payload.StartsWith(' '))
+                    payload = payload[1..];
+                dataPayloads.Add(payload);
+            }
+            else
+            {
+                fieldLines.Add(l);
+            }
+        }
+
+        if (dataPayloads.Count == 0)
+        {
+            // Comment/field-only event: forward verbatim, terminated by a blank line.
+            foreach (string fl in fieldLines)
+            {
+                await destination.WriteAsync(Encoding.UTF8.GetBytes(fl), ct);
+                await destination.WriteAsync(SseLineTerminatorBytes, ct);
+            }
+            await destination.WriteAsync(SseLineTerminatorBytes, ct);
+            await destination.FlushAsync(ct);
+            return;
+        }
+
+        string joined = "data: " + string.Join("\n", dataPayloads);
+        bool first = true;
+        foreach (string outgoingLine in rewriter(joined))
+        {
+            if (first)
+            {
+                foreach (string fl in fieldLines)
+                {
+                    await destination.WriteAsync(Encoding.UTF8.GetBytes(fl), ct);
+                    await destination.WriteAsync(SseLineTerminatorBytes, ct);
+                }
+                first = false;
+            }
+            await WriteSseLineAsync(destination, outgoingLine, ct);
+            session?.OnForwarded(outgoingLine + "\n\n");
+        }
+        await destination.FlushAsync(ct);
     }
 
     /// <summary>
@@ -1596,17 +1733,48 @@ partial class OllamaProxyHandler
                 return;
 
             _pending.Append(text);
+            Drain();
+        }
 
+        /// <summary>
+        /// Feeds one complete line (without its terminator) from the line-based copier, avoiding a
+        /// per-line "line + \n" concatenation. The newline is appended directly to the buffer.
+        /// </summary>
+        public void FeedLine(string line)
+        {
+            _pending.Append(line);
+            _pending.Append('\n');
+            Drain();
+        }
+
+        // Extracts every complete line in one pass. Each line is materialised on its own rather than
+        // calling ToString() on the whole buffer per line, so a large chunk costs O(n) not O(n²).
+        private void Drain()
+        {
+            int start = 0;
             while (true)
             {
-                string buffered = _pending.ToString();
-                int newline = buffered.IndexOf('\n');
+                int newline = IndexOfNewline(start);
                 if (newline < 0)
                     break;
 
-                _pending.Remove(0, newline + 1);
-                ProcessLine(buffered[..newline]);
+                ProcessLine(_pending.ToString(start, newline - start));
+                start = newline + 1;
             }
+
+            if (start > 0)
+                _pending.Remove(0, start);
+        }
+
+        private int IndexOfNewline(int start)
+        {
+            for (int i = start; i < _pending.Length; i++)
+            {
+                if (_pending[i] == '\n')
+                    return i;
+            }
+
+            return -1;
         }
 
         public void Flush()
@@ -1676,6 +1844,10 @@ partial class OllamaProxyHandler
         // Per-choice buffer of streamed delta.content prior to/within a tool_call block.
         private readonly Dictionary<int, ChoiceState> _state = [];
 
+        // Envelope metadata from the most recent upstream frame, so frames synthesised at flush
+        // time carry the same id/object/created/model as the stream the client already received.
+        private JsonObject? _frameTemplate;
+
         private readonly IReadOnlySet<string>? _declaredToolNames = declaredToolNames;
 
         // Per-choice incremental <think> tag extractor, used in every mode except LeaveInline.
@@ -1715,6 +1887,14 @@ partial class OllamaProxyHandler
                 yield return rawLine;
                 yield break;
             }
+
+            _frameTemplate = new JsonObject
+            {
+                ["id"] = root["id"]?.DeepClone(),
+                ["object"] = root["object"]?.DeepClone(),
+                ["created"] = root["created"]?.DeepClone(),
+                ["model"] = root["model"]?.DeepClone(),
+            };
 
             // Collect extra synthesised frames (tool_call deltas) to emit AFTER the rewritten one.
             List<JsonObject> extraFrames = [];
@@ -1774,20 +1954,8 @@ partial class OllamaProxyHandler
                         inlineDelta.Remove("content");
                 }
 
-                // Mirror reasoning_content â†’ content (when content is empty/null). Only in
-                // LeaveInline mode; in Move/Strip modes we deliberately keep reasoning separate
-                // from (or absent from) the visible answer.
-                if (_thinkingMode == ThinkingMode.LeaveInline
-                    && delta is not null
-                    && delta["reasoning_content"] is JsonValue rv
-                    && rv.TryGetValue(out string? rcStr)
-                    && !string.IsNullOrEmpty(rcStr)
-                    && (delta["content"] is not JsonValue cv
-                        || !cv.TryGetValue(out string? cStr)
-                        || string.IsNullOrEmpty(cStr)))
-                {
-                    delta["content"] = rcStr;
-                }
+                // LeaveInline leaves the upstream's reasoning_content where it is; mirroring it
+                // into content made clients that render both fields show the reasoning twice (L15).
 
                 // Structured tool calls naming functions the client did not declare must be
                 // dropped: OpenAI clients such as Copilot render them as function parts they
@@ -1801,6 +1969,8 @@ partial class OllamaProxyHandler
                             continue;
 
                         int callIndex = call["index"] is JsonValue cix && cix.TryGetValue(out int idx) ? idx : 0;
+                        if (callIndex > cs.MaxNativeToolCallIndex)
+                            cs.MaxNativeToolCallIndex = callIndex;
                         bool valid;
                         if (call["function"] is JsonObject fnNode
                             && fnNode["name"] is JsonValue nameVal
@@ -1861,11 +2031,69 @@ partial class OllamaProxyHandler
                 yield return $"data: {extra.ToJsonString(_jsonOptions)}";
         }
 
+        /// <summary>
+        /// Drains buffered per-choice state at end of stream: a partial think tag held by the
+        /// extractor, a partial call marker, or an unterminated call block. Returns the frames to
+        /// write before the terminal events so nothing the upstream sent is silently lost (M5).
+        /// </summary>
+        public IEnumerable<string> Flush()
+        {
+            JsonObject template = _frameTemplate ?? new JsonObject();
+            List<string> frames = [];
+
+            foreach ((int index, ChoiceState cs) in _state)
+            {
+                string reasoningTail = string.Empty;
+                string contentTail = string.Empty;
+                if (_thinkExtractors.TryGetValue(index, out ThinkTagExtractor? extractor))
+                    (reasoningTail, contentTail) = extractor.Flush();
+
+                string visible = string.Empty;
+                List<JsonObject> tailFrames = [];
+                if (contentTail.Length > 0)
+                    visible = cs.IngestToken(contentTail, template, template, index, tailFrames);
+
+                visible += cs.FlushToolScanner();
+
+                if (reasoningTail.Length > 0 && _thinkingMode != ThinkingMode.StripFromOutput)
+                    frames.Add($"data: {BuildFlushFrame(template, index, new JsonObject { ["reasoning_content"] = reasoningTail }).ToJsonString(_jsonOptions)}");
+
+                if (visible.Length > 0)
+                    frames.Add($"data: {BuildFlushFrame(template, index, new JsonObject { ["content"] = visible }).ToJsonString(_jsonOptions)}");
+
+                foreach (JsonObject tf in tailFrames)
+                    frames.Add($"data: {tf.ToJsonString(_jsonOptions)}");
+            }
+
+            _state.Clear();
+            _thinkExtractors.Clear();
+            return frames;
+        }
+
+        private static JsonObject BuildFlushFrame(JsonObject root, int choiceIndex, JsonObject delta) => new()
+        {
+            ["id"] = root["id"]?.DeepClone(),
+            ["object"] = root["object"]?.DeepClone(),
+            ["created"] = root["created"]?.DeepClone(),
+            ["model"] = root["model"]?.DeepClone(),
+            ["choices"] = new JsonArray(new JsonObject
+            {
+                ["index"] = choiceIndex,
+                ["delta"] = delta,
+                ["finish_reason"] = null,
+            }),
+        };
+
         private sealed class ChoiceState(IReadOnlySet<string>? declaredToolNames)
         {
             private readonly IReadOnlySet<string>? _declaredToolNames = declaredToolNames;
             private readonly StringBuilder _toolBuffer = new();
             private bool _inToolCall;
+
+            // Trailing text that could be the prefix of an open/close marker split across frames.
+            // Held back (never emitted, never buffered into the call) so the next token completes it.
+            private string _pending = string.Empty;
+
             public int EmittedToolCallCount { get; private set; }
 
             /// <summary>Filter verdict per native (upstream-sent) tool-call stream index.</summary>
@@ -1873,6 +2101,12 @@ partial class OllamaProxyHandler
 
             /// <summary>True when at least one upstream tool-call delta survived filtering.</summary>
             public bool HadValidToolCall { get; set; }
+
+            /// <summary>Highest native tool-call stream index observed, so synthesised calls never collide.</summary>
+            public int MaxNativeToolCallIndex { get; set; } = -1;
+
+            /// <summary>Next stream index available for a synthesised call.</summary>
+            public int NextSyntheticToolIndex { get; set; }
 
             /// <summary>
             /// Consumes the next content token, returns the substring that should remain
@@ -1883,6 +2117,11 @@ partial class OllamaProxyHandler
             public string IngestToken(string token, JsonObject root, JsonObject choice, int choiceIndex, List<JsonObject> extraFrames)
             {
                 StringBuilder visible = new();
+                // Scan the concatenation of any held-back partial marker and the new token so a
+                // marker split across SSE chunks is recognised (H2). Reassigning the local keeps the
+                // marker searches below operating on the combined text.
+                token = _pending + token;
+                _pending = string.Empty;
                 int cursor = 0;
 
                 while (cursor < token.Length)
@@ -1892,7 +2131,14 @@ partial class OllamaProxyHandler
                         int end = token.IndexOf("</tool_call>", cursor, StringComparison.OrdinalIgnoreCase);
                         if (end < 0)
                         {
-                            _toolBuffer.Append(token, cursor, token.Length - cursor);
+                            // Hold back a possible partial close marker so a close split across
+                            // frames is still found; the rest joins the captured call body.
+                            int hold = PartialMarkerSuffixLength(token, cursor, InlineXmlToolCall.CloseMarker);
+                            int appendEnd = token.Length - hold;
+                            if (appendEnd > cursor)
+                                _toolBuffer.Append(token, cursor, appendEnd - cursor);
+                            if (hold > 0)
+                                _pending = token[appendEnd..];
                             cursor = token.Length;
                         }
                         else
@@ -1911,7 +2157,12 @@ partial class OllamaProxyHandler
                         int start = token.IndexOf("<tool_call>", cursor, StringComparison.OrdinalIgnoreCase);
                         if (start < 0)
                         {
-                            visible.Append(token, cursor, token.Length - cursor);
+                            int hold = PartialMarkerSuffixLength(token, cursor, InlineXmlToolCall.OpenMarker);
+                            int emitEnd = token.Length - hold;
+                            if (emitEnd > cursor)
+                                visible.Append(token, cursor, emitEnd - cursor);
+                            if (hold > 0)
+                                _pending = token[emitEnd..];
                             cursor = token.Length;
                         }
                         else
@@ -1926,13 +2177,50 @@ partial class OllamaProxyHandler
                 return visible.ToString();
             }
 
+            /// <summary>
+            /// Drains the scanner at end of stream. An unterminated call block is returned verbatim
+            /// (the caller re-emits it as visible text rather than losing it); a held-back partial
+            /// marker is returned as the literal text it turned out to be.
+            /// </summary>
+            public string FlushToolScanner()
+            {
+                string tail = _inToolCall ? _toolBuffer.ToString() + _pending : _pending;
+                _toolBuffer.Clear();
+                _pending = string.Empty;
+                _inToolCall = false;
+                return tail;
+            }
+
+            /// <summary>
+            /// Number of trailing characters of <paramref name="work"/> (from <paramref name="start"/>)
+            /// that form a proper prefix of <paramref name="marker"/> — the amount to hold back so a
+            /// marker split across frames is recognised on the next call.
+            /// </summary>
+            private static int PartialMarkerSuffixLength(string work, int start, string marker)
+            {
+                int max = Math.Min(marker.Length - 1, work.Length - start);
+                for (int len = max; len > 0; len--)
+                {
+                    if (work.AsSpan(work.Length - len, len).Equals(marker.AsSpan(0, len), StringComparison.OrdinalIgnoreCase))
+                        return len;
+                }
+
+                return 0;
+            }
+
             // The incoming choice object is not read: the frame is rebuilt from the parsed XML and the
             // buffered call state, so only the index and the outgoing frame list are needed.
             private void EmitToolCallFromBuffer(JsonObject root, JsonObject _, int choiceIndex, List<JsonObject> extraFrames)
             {
                 string xml = _toolBuffer.ToString();
                 Match m = XmlToolCallRegex().Match(xml);
-                if (!m.Success) return;
+                if (!m.Success)
+                {
+                    // Unparseable block (e.g. a JSON-body template variation): hand it back as
+                    // visible text rather than deleting the model's output (H3).
+                    extraFrames.Add(BuildChoiceFrame(root, choiceIndex, new JsonObject { ["content"] = xml.Trim() }));
+                    return;
+                }
 
                 string name = m.Groups["name"].Value.Trim();
 
@@ -1944,7 +2232,7 @@ partial class OllamaProxyHandler
                     return;
                 }
 
-                Dictionary<string, object?> args = new(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, object?> args = new(StringComparer.Ordinal);
                 foreach (Match pm in XmlParameterRegex().Matches(m.Groups["body"].Value))
                 {
                     args[pm.Groups["n"].Value.Trim()] = ParseXmlToolParameterValue(pm.Groups["v"].Value.Trim());
@@ -1952,7 +2240,11 @@ partial class OllamaProxyHandler
 
                 string argsJson = JsonSerializer.Serialize(args, _jsonOptions);
                 string callId = "call_" + Guid.NewGuid().ToString("N")[..16];
-                int toolIndex = EmittedToolCallCount++;
+                // Allocate above every native index seen so a synthesised call never merges into a
+                // native call's name/arguments on clients that key deltas by index (M7).
+                int toolIndex = Math.Max(NextSyntheticToolIndex, MaxNativeToolCallIndex + 1);
+                NextSyntheticToolIndex = toolIndex + 1;
+                EmittedToolCallCount++;
 
                 // Build a synthesised SSE frame mirroring the original chunk envelope.
                 JsonObject toolDelta = new()
@@ -2337,9 +2629,18 @@ partial class OllamaProxyHandler
 
             return output;
         }
-        catch
+        catch (JsonException ex)
         {
-            // Non-JSON or malformed body â€” forward as-is.
+            // Non-JSON or malformed body — forward as-is.
+            Log.Debug(ex, "Request body is not valid JSON; forwarding un-normalized");
+            return json;
+        }
+        catch (Exception ex)
+        {
+            // An internal normalization failure still forwards the original body, but must leave a
+            // trail: silently forwarding an un-normalized request (model unrewritten, stream_options
+            // intact, prefill present) produces confusing upstream errors with no diagnosis (M17).
+            Log.Error(ex, "Request body normalization failed; forwarding un-normalized");
             return json;
         }
     }
@@ -2469,7 +2770,35 @@ partial class OllamaProxyHandler
             return false;
         }
 
-        return true;
+        // Only a genuine empty/whitespace prefill is stripped; a trailing assistant turn carrying
+        // real content is legitimate history and must be preserved (M1). Mirrors
+        // RequestPayloadReads.IsAssistantResponsePrefill so the legacy and IR paths agree.
+        if (!message.TryGetProperty("content", out JsonElement content))
+            return true;
+
+        return content.ValueKind switch
+        {
+            JsonValueKind.Null => true,
+            JsonValueKind.String => string.IsNullOrWhiteSpace(content.GetString()),
+            JsonValueKind.Array => !HasNonEmptyTextPart(content),
+            _ => false,
+        };
+    }
+
+    private static bool HasNonEmptyTextPart(JsonElement contentArray)
+    {
+        foreach (JsonElement part in contentArray.EnumerateArray())
+        {
+            if (part.ValueKind == JsonValueKind.Object
+                && part.TryGetProperty("text", out JsonElement text)
+                && text.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(text.GetString()))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     internal static string? GetInstructionTextForModel(AppSettings settings, string modelName)
@@ -2883,9 +3212,25 @@ partial class OllamaProxyHandler
             || propertyName.Equals("password", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsAssistantResponsePrefill(LlamaCppMessage message) =>
-        string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase)
-        && (message.ToolCalls is null || message.ToolCalls.Count == 0)
-        && string.IsNullOrWhiteSpace(message.ToolCallId);
+    private static bool IsAssistantResponsePrefill(LlamaCppMessage message)
+    {
+        if (!string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (message.ToolCalls is { Count: > 0 })
+            return false;
+        if (!string.IsNullOrWhiteSpace(message.ToolCallId))
+            return false;
+
+        // Only a genuine empty/whitespace prefill is stripped; real content is legitimate history (M1).
+        return message.Content switch
+        {
+            null => true,
+            string s => string.IsNullOrWhiteSpace(s),
+            JsonElement { ValueKind: JsonValueKind.Null } => true,
+            JsonElement { ValueKind: JsonValueKind.String } je => string.IsNullOrWhiteSpace(je.GetString()),
+            JsonElement { ValueKind: JsonValueKind.Array } arr => !HasNonEmptyTextPart(arr),
+            _ => false,
+        };
+    }
 
 }

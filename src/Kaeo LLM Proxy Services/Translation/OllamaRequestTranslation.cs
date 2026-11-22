@@ -71,10 +71,14 @@ internal static class OllamaRequestTranslation
     {
         List<ChatMessage> ir = ToChatMessages(source);
         List<LlamaCppMessage> mapped = [];
-        Queue<string> pending = new();
+        // Pending assistant call ids awaiting a tool reply. A reply carrying an explicit id
+        // fulfils that specific call (removed from the middle), so a later id-less reply is
+        // never handed an already-fulfilled id; id-less replies consume the remainder FIFO.
+        List<string> pending = [];
 
-        foreach (ChatMessage message in ir)
+        for (int srcIndex = 0; srcIndex < ir.Count; srcIndex++)
         {
+            ChatMessage message = ir[srcIndex];
             List<FunctionCallContent> calls = [.. message.Contents.OfType<FunctionCallContent>()];
             FunctionResultContent? result = message.Contents.OfType<FunctionResultContent>().FirstOrDefault();
             List<TextContent> texts = [.. message.Contents.OfType<TextContent>()];
@@ -106,18 +110,78 @@ internal static class OllamaRequestTranslation
             if (string.Equals(message.Role.Value, "assistant", StringComparison.OrdinalIgnoreCase) && calls.Count > 0)
             {
                 foreach (FunctionCallContent c in calls)
-                    pending.Enqueue(c.CallId ?? string.Empty);
+                    pending.Add(c.CallId ?? string.Empty);
             }
-            else if (string.Equals(message.Role.Value, "tool", StringComparison.OrdinalIgnoreCase)
-                && string.IsNullOrWhiteSpace(mappedMsg.ToolCallId) && pending.Count > 0)
+            else if (string.Equals(message.Role.Value, "tool", StringComparison.OrdinalIgnoreCase))
             {
-                mappedMsg.ToolCallId = pending.Dequeue();
+                if (string.IsNullOrWhiteSpace(mappedMsg.ToolCallId))
+                {
+                    if (pending.Count > 0)
+                    {
+                        mappedMsg.ToolCallId = pending[0];
+                        pending.RemoveAt(0);
+                    }
+                }
+                else
+                {
+                    pending.Remove(mappedMsg.ToolCallId);
+                }
             }
+
+            // Vision parity with the legacy mapper: Ollama message images become OpenAI
+            // image_url content parts. The IR message list is 1:1 with the source list.
+            if (srcIndex < source.Count)
+                ApplyVisionImages(mappedMsg, source[srcIndex].Images);
 
             mapped.Add(mappedMsg);
         }
 
         return mapped;
+    }
+
+    /// <summary>
+    /// Translates Ollama base64 <c>message.images</c> into OpenAI content parts on the mapped
+    /// message. Text content is preserved as a leading text part; each image becomes an
+    /// <c>image_url</c> part with a data URI. Shared by the legacy and IR request routes so
+    /// vision behaves identically behind the <c>UseIrTranslation</c> flag.
+    /// </summary>
+    public static void ApplyVisionImages(LlamaCppMessage target, List<string>? images)
+    {
+        if (images is not { Count: > 0 })
+            return;
+
+        JsonArray parts = [];
+        string? text = target.ContentText;
+        if (!string.IsNullOrEmpty(text))
+            parts.Add(new JsonObject { ["type"] = "text", ["text"] = text });
+
+        foreach (string image in images)
+        {
+            if (string.IsNullOrWhiteSpace(image))
+                continue;
+
+            string url = image.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                ? image
+                : $"data:{SniffImageMimeType(image)};base64,{image}";
+
+            parts.Add(new JsonObject
+            {
+                ["type"] = "image_url",
+                ["image_url"] = new JsonObject { ["url"] = url },
+            });
+        }
+
+        if (parts.Count > 0)
+            target.Content = parts;
+    }
+
+    /// <summary>Identifies the image type from the base64 magic-byte prefix; defaults to PNG.</summary>
+    private static string SniffImageMimeType(string base64)
+    {
+        if (base64.StartsWith("/9j/", StringComparison.Ordinal)) return "image/jpeg";
+        if (base64.StartsWith("R0lGOD", StringComparison.Ordinal)) return "image/gif";
+        if (base64.StartsWith("UklGR", StringComparison.Ordinal)) return "image/webp";
+        return "image/png";
     }
 
     /// <summary>
@@ -161,7 +225,11 @@ internal static class OllamaRequestTranslation
     private static object? ToClrValue(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.String => element.GetString(),
-        JsonValueKind.Number => element.TryGetInt64(out long l) ? l : element.GetRawText(),
+        // Fractional or oversized numbers must stay numeric: GetRawText() would round-trip
+        // them as strings and fail the tool's schema validation.
+        JsonValueKind.Number => element.TryGetInt64(out long l) ? l
+            : element.TryGetDecimal(out decimal d) ? d
+            : element.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null or JsonValueKind.Undefined => null,

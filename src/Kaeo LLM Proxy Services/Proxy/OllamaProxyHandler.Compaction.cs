@@ -423,17 +423,7 @@ partial class OllamaProxyHandler
                 if (!string.IsNullOrWhiteSpace(mediaType))
                     resp.ContentType = mediaType;
 
-                foreach (var header in upstreamResp.Headers)
-                {
-                    if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
-                    resp.Headers[header.Key] = string.Join(",", header.Value);
-                }
-                foreach (var header in upstreamResp.Content.Headers)
-                {
-                    if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-                    resp.Headers[header.Key] = string.Join(",", header.Value);
-                }
+                CopyUpstreamResponseHeaders(resp, upstreamResp);
 
                 resp.SendChunked = true;
                 resp.KeepAlive = true;

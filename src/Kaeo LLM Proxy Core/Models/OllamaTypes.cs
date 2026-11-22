@@ -369,14 +369,67 @@ internal sealed class LlamaCppResponseFormat
 internal sealed class LlamaCppMessage
 {
     [JsonPropertyName("role")] public string Role { get; set; } = string.Empty;
-    [JsonPropertyName("content")] public string? Content { get; set; }
+
+    /// <summary>
+    /// Plain text, or an OpenAI content-parts array (e.g. text + image_url parts for vision).
+    /// Typed <c>object?</c> so multimodal parts can be represented; the converter keeps the
+    /// wire shape identical for plain strings (and restores them as <c>string</c> on read).
+    /// </summary>
+    [JsonPropertyName("content")]
+    [JsonConverter(typeof(LlamaCppMessageContentConverter))]
+    public object? Content { get; set; }
+
     [JsonPropertyName("tool_calls")] public List<LlamaCppToolCall>? ToolCalls { get; set; }
     [JsonPropertyName("tool_call_id")] public string? ToolCallId { get; set; }
+
+    /// <summary>String view of <see cref="Content"/> for text-only consumers; null for non-text parts.</summary>
+    [JsonIgnore]
+    public string? ContentText => Content switch
+    {
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => null,
+    };
 
     [JsonConstructor]
     public LlamaCppMessage() { }
 
     public LlamaCppMessage(string role, string? content) { Role = role; Content = content; }
+}
+
+/// <summary>
+/// Keeps <see cref="LlamaCppMessage.Content"/> backward-compatible: JSON strings deserialize
+/// as <see cref="string"/> (not <see cref="JsonElement"/>), arrays/objects as
+/// <see cref="JsonElement"/>, and serialization writes the runtime shape unchanged.
+/// </summary>
+internal sealed class LlamaCppMessageContentConverter : System.Text.Json.Serialization.JsonConverter<object?>
+{
+    public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Null => null,
+            _ => JsonElement.ParseValue(ref reader),
+        };
+
+    public override void Write(Utf8JsonWriter writer, object? value, JsonSerializerOptions options)
+    {
+        switch (value)
+        {
+            case null:
+                writer.WriteNullValue();
+                break;
+            case string s:
+                writer.WriteStringValue(s);
+                break;
+            case JsonElement je:
+                je.WriteTo(writer);
+                break;
+            default:
+                JsonSerializer.Serialize(writer, value, value.GetType(), options);
+                break;
+        }
+    }
 }
 
 internal sealed class LlamaCppChatRequest : ILlamaCppSamplingRequest

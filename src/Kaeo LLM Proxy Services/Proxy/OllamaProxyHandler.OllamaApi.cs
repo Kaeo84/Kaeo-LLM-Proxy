@@ -57,7 +57,20 @@ partial class OllamaProxyHandler
     private async Task HandleShowAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
     {
         string body = await ReadBodyAsync(req, ct);
-        OllamaShowRequest? showReq = JsonSerializer.Deserialize<OllamaShowRequest>(body, _jsonOptions);
+        OllamaShowRequest? showReq;
+        try
+        {
+            showReq = JsonSerializer.Deserialize<OllamaShowRequest>(body, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            Log.Debug(ex, "Rejected malformed /api/show request body");
+            log.ErrorMessage = "Invalid or malformed request body.";
+            RecordResponseStatus(resp, log, 400);
+            await WriteJsonAsync(resp, new { error = "Invalid or malformed request body." }, ct);
+            return;
+        }
+
         string requestedModel = showReq?.Model ?? showReq?.Name ?? string.Empty;
         ModelMapping? mapping = _settings.FindModelMapping(requestedModel);
         if (mapping is null && !string.IsNullOrWhiteSpace(requestedModel))
@@ -376,8 +389,7 @@ partial class OllamaProxyHandler
             log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {errorBody}";
             if (_settings.CollectResponseDetails && log.ResponseBody is null)
                 log.ResponseBody = errorBody;
-            resp.StatusCode = (int)upstreamResp.StatusCode;
-            resp.Close();
+            await WriteOllamaUpstreamErrorAsync(resp, (int)upstreamResp.StatusCode, errorBody, ct);
             return;
         }
 
@@ -415,7 +427,7 @@ partial class OllamaProxyHandler
                 Model = ollamaReq.Model,
                 Response = text,
                 Done = true,
-                DoneReason = "stop",
+                DoneReason = log.StopReason ?? "stop",
                 TotalDuration = elapsedNs,
                 LoadDuration = 0L,
                 PromptEvalCount = usage?.PromptTokens,
@@ -627,8 +639,7 @@ partial class OllamaProxyHandler
 
             // For context overflow, return 413 so clients like Copilot recognize this as a
             // context limit error and can trigger their own compaction (ContextLimitRetry).
-            resp.StatusCode = isContextOverflow ? 413 : (int)upstreamResp.StatusCode;
-            resp.Close();
+            await WriteOllamaUpstreamErrorAsync(resp, isContextOverflow ? 413 : (int)upstreamResp.StatusCode, errorBody, ct);
             return;
         }
 
@@ -738,7 +749,7 @@ partial class OllamaProxyHandler
 
     // â”€â”€ /api/embeddings â†’ POST /v1/embeddings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    private async Task HandleEmbeddingsAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct)
+    private async Task HandleEmbeddingsAsync(HttpListenerRequest req, HttpListenerResponse resp, RequestLog log, CancellationToken ct, bool isNewEmbedApi)
     {
         string body = await ReadBodyAsync(req, ct);
         OllamaEmbeddingsRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaEmbeddingsRequest>(body, resp, log, ct);
@@ -753,7 +764,6 @@ partial class OllamaProxyHandler
 
         // Resolve input: prefer new `input` (string or string[]), fall back to legacy `prompt`.
         object resolvedInput = ResolveEmbeddingInput(ollamaReq);
-        bool isBatch = resolvedInput is string[] batch && batch.Length > 1;
 
         var llamaReq = new LlamaCppEmbeddingsRequest { Model = resolvedModel, Input = resolvedInput };
 
@@ -769,9 +779,40 @@ partial class OllamaProxyHandler
         log.StatusCode = (int)upstreamResp.StatusCode;
 
         string respBody = await upstreamResp.Content.ReadAsStringAsync(ct);
-        LlamaCppEmbeddingsResponse? llamaResp = JsonSerializer.Deserialize<LlamaCppEmbeddingsResponse>(respBody, _jsonOptions);
 
-        OllamaEmbeddingsResponse ollamaResp = isBatch
+        // An upstream failure must surface as a failure: forwarding 200 with an empty vector
+        // lets RAG clients silently ingest garbage. Non-JSON error bodies (gateway HTML) are
+        // reported verbatim rather than throwing into the generic 500 path.
+        if (!upstreamResp.IsSuccessStatusCode)
+        {
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = $"Upstream {(int)upstreamResp.StatusCode}: {respBody}";
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = respBody;
+            await WriteOllamaUpstreamErrorAsync(resp, (int)upstreamResp.StatusCode, respBody, ct);
+            return;
+        }
+
+        LlamaCppEmbeddingsResponse? llamaResp;
+        try
+        {
+            llamaResp = JsonSerializer.Deserialize<LlamaCppEmbeddingsResponse>(respBody, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            Log.Warning(ex, "Embeddings upstream returned a success status with an unparseable body for model {Model}", ollamaReq.Model);
+            log.Status = RequestStatus.Error;
+            log.ErrorMessage = "Embeddings upstream returned an unparseable response body.";
+            if (_settings.CollectResponseDetails)
+                log.ResponseBody = respBody;
+            await WriteOllamaUpstreamErrorAsync(resp, 502, "Embeddings upstream returned an unparseable response body.", ct);
+            return;
+        }
+
+        // The response shape is a property of the endpoint, not the input cardinality:
+        // /api/embed always returns {"embeddings":[[...]]} (even for one string input),
+        // while legacy /api/embeddings returns {"embedding":[...]}.
+        OllamaEmbeddingsResponse ollamaResp = isNewEmbedApi
             ? new OllamaEmbeddingsResponse
             {
                 Model = ollamaReq.Model,
@@ -787,17 +828,41 @@ partial class OllamaProxyHandler
 
         FillTokenStats(log, llamaResp?.Usage);
 
-        log.Status = upstreamResp.IsSuccessStatusCode ? RequestStatus.Success : RequestStatus.Error;
+        log.Status = RequestStatus.Success;
         if (_settings.CollectResponseDetails)
         {
             // Embedding vectors are huge; the per-mapping redaction (marker by default) keeps
             // them out of the database unless the user explicitly opts in per model.
-            log.ResponseBody = upstreamResp.IsSuccessStatusCode
-                ? RedactResponseBodyForLog(JsonSerializer.Serialize(ollamaResp, _jsonOptions), ollamaReq.Model)
-                : respBody;
+            log.ResponseBody = RedactResponseBodyForLog(JsonSerializer.Serialize(ollamaResp, _jsonOptions), ollamaReq.Model);
         }
 
         await WriteJsonAsync(resp, ollamaResp, ct);
+    }
+
+    /// <summary>
+    /// Writes an Ollama-shaped <c>{"error": "..."}</c> body with the given status, extracting the
+    /// upstream's structured error message when present and falling back to the raw body. Ollama
+    /// clients parse this shape; an empty body makes them report a generic parse failure instead
+    /// of the real cause.
+    /// </summary>
+    private static async Task WriteOllamaUpstreamErrorAsync(HttpListenerResponse resp, int statusCode, string upstreamBody, CancellationToken ct)
+    {
+        string message;
+        try
+        {
+            LlamaCppErrorResponse? parsed = JsonSerializer.Deserialize<LlamaCppErrorResponse>(upstreamBody, _jsonOptions);
+            message = parsed?.Error?.Message is { Length: > 0 } m ? m : upstreamBody;
+        }
+        catch (JsonException)
+        {
+            message = upstreamBody;
+        }
+
+        if (string.IsNullOrWhiteSpace(message))
+            message = $"Upstream returned HTTP {statusCode}.";
+
+        resp.StatusCode = statusCode;
+        await WriteJsonAsync(resp, new { error = message }, ct);
     }
 
     // â”€â”€ Streaming helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

@@ -36,6 +36,10 @@ internal sealed class OpenAiSseFrameTranslation
     private readonly (string OpenTag, string CloseTag) _thinkTags;
     private readonly Dictionary<int, ChoiceState> _states = [];
 
+    // Envelope metadata from the most recent upstream frame, so frames synthesised at flush
+    // time carry the same id/object/created/model as the stream the client already received.
+    private JsonObject? _frameTemplate;
+
     /// <summary>
     /// Creates a translator for one response stream. <paramref name="thinkingMode"/> selects how a
     /// reasoning part is rendered; <paramref name="declaredToolNames"/> is the declared-tool set
@@ -87,6 +91,14 @@ internal sealed class OpenAiSseFrameTranslation
             yield break;
         }
 
+        _frameTemplate = new JsonObject
+        {
+            ["id"] = root["id"]?.DeepClone(),
+            ["object"] = root["object"]?.DeepClone(),
+            ["created"] = root["created"]?.DeepClone(),
+            ["model"] = root["model"]?.DeepClone(),
+        };
+
         // Synthesised tool-call frames are emitted after the rewritten one, mirroring the legacy
         // rewriter's ordering so a client sees content before the call it belongs to.
         List<JsonObject> extraFrames = [];
@@ -119,6 +131,49 @@ internal sealed class OpenAiSseFrameTranslation
     }
 
     /// <summary>
+    /// Drains buffered per-choice state at end of stream: a partial think tag held by the
+    /// extractor, a partial call marker, or an unterminated call block. Returns the frames to
+    /// write before the terminal events so nothing the upstream sent is silently lost.
+    /// </summary>
+    public IEnumerable<string> Flush()
+    {
+        JsonObject template = _frameTemplate ?? new JsonObject();
+        List<string> frames = [];
+
+        foreach ((int index, ChoiceState state) in _states)
+        {
+            string reasoningTail = string.Empty;
+            string contentTail = string.Empty;
+            if (state.Extractors.TryGetValue(index, out ThinkTagExtractor? extractor))
+                (reasoningTail, contentTail) = extractor.Flush();
+
+            string visible = string.Empty;
+            List<string> blocks = [];
+            if (contentTail.Length > 0)
+                (visible, blocks) = state.ScanForInlineCalls(contentTail);
+
+            // An unterminated call block (or a partial marker that never completed) is literal
+            // text the model produced; surface it rather than dropping it.
+            visible += state.FlushToolScanner();
+
+            if (reasoningTail.Length > 0 && _thinkingMode != ThinkingMode.StripFromOutput)
+                frames.Add($"data: {ChoiceFrame.WithReasoning(template, index, reasoningTail).ToJsonString(InlineXmlToolCall.JsonOptions)}");
+
+            if (visible.Length > 0)
+                frames.Add($"data: {ChoiceFrame.WithContent(template, index, visible).ToJsonString(InlineXmlToolCall.JsonOptions)}");
+
+            List<JsonObject> extra = [];
+            foreach (string block in blocks)
+                DeltaParts.EmitInlineCall(_declaredToolNames, state, template, index, extra, block);
+            foreach (JsonObject extraFrame in extra)
+                frames.Add($"data: {extraFrame.ToJsonString(InlineXmlToolCall.JsonOptions)}");
+        }
+
+        _states.Clear();
+        return frames;
+    }
+
+    /// <summary>
     /// Transforms one choice's delta. The delta is decomposed into typed parts, each part is
     /// decided on independently, and the result is written back onto the original delta object so
     /// every field the rewriter does not understand survives untouched.
@@ -128,17 +183,17 @@ internal sealed class OpenAiSseFrameTranslation
     {
         DeltaParts parts = DeltaParts.Read(delta);
 
+        // LeaveInline truly leaves the upstream's reasoning where it is: mirroring it into
+        // content made clients that render both fields show the reasoning twice.
         if (_thinkingMode != ThinkingMode.LeaveInline)
             parts.ApplyThinkTags(_thinkingMode, _thinkTags, index, state);
-        else
-            parts.MirrorReasoningToContent();
 
         // Structured calls naming functions the client did not declare must be dropped: OpenAI
         // clients such as Copilot render them as function parts they cannot bind.
         parts.FilterNativeCalls(_declaredToolNames, state);
 
-                    // Inline markup calls are lifted out of the answer text and re-emitted as structured ones.
-                    parts.ExtractInlineCalls(_declaredToolNames, state, root, index, extraFrames);
+        // Inline markup calls are lifted out of the answer text and re-emitted as structured ones.
+        parts.ExtractInlineCalls(_declaredToolNames, state, root, index, extraFrames);
 
         parts.Write(delta);
     }
@@ -263,21 +318,6 @@ internal sealed class OpenAiSseFrameTranslation
         }
 
         /// <summary>
-        /// LeaveInline keeps reasoning where the upstream put it, but mirrors a reasoning-only
-        /// frame into the answer so a client that ignores <c>reasoning_content</c> still shows text.
-        /// </summary>
-        public void MirrorReasoningToContent()
-        {
-            if (_reasoningIntent == FieldIntent.Set
-                && _reasoning.Length > 0
-                && _contentIntent != FieldIntent.Set)
-            {
-                _content = _reasoning;
-                _contentIntent = FieldIntent.Set;
-            }
-        }
-
-        /// <summary>
         /// Applies the declared-tool filter to native fragments. An argument fragment of an
         /// already-judged call inherits that verdict, because only the first fragment carries a name.
         /// </summary>
@@ -293,6 +333,8 @@ internal sealed class OpenAiSseFrameTranslation
                     continue;
 
                 int callIndex = call["index"] is JsonValue indexValue && indexValue.TryGetValue(out int idx) ? idx : 0;
+                if (callIndex > state.MaxNativeToolCallIndex)
+                    state.MaxNativeToolCallIndex = callIndex;
                 bool valid;
 
                 if (call["function"] is JsonObject function
@@ -347,7 +389,7 @@ internal sealed class OpenAiSseFrameTranslation
                 EmitInlineCall(declaredToolNames, state, root, index, extraFrames, block);
         }
 
-        private static void EmitInlineCall(
+        public static void EmitInlineCall(
             IReadOnlySet<string>? declaredToolNames,
             ChoiceState state,
             JsonObject root,
@@ -357,7 +399,12 @@ internal sealed class OpenAiSseFrameTranslation
         {
             (string Name, Dictionary<string, object?> Arguments)? parsed = InlineXmlToolCall.Parse(block);
             if (parsed is null)
+            {
+                // Unparseable block (e.g. a JSON-body template variation): hand it back as
+                // visible text rather than deleting the model's output.
+                extraFrames.Add(ChoiceFrame.WithContent(root, choiceIndex, block.Trim()));
                 return;
+            }
 
             if (!OllamaProxyHandler.IsToolNameAllowed(declaredToolNames, parsed.Value.Name))
             {
@@ -366,7 +413,11 @@ internal sealed class OpenAiSseFrameTranslation
             }
 
             string callId = "call_" + Guid.NewGuid().ToString("N")[..16];
-            int toolIndex = state.EmittedToolCallCount++;
+            // Allocate above every native index seen so a synthesised call never merges into
+            // a native call's name/arguments on clients that key deltas by index.
+            int toolIndex = Math.Max(state.NextSyntheticToolIndex, state.MaxNativeToolCallIndex + 1);
+            state.NextSyntheticToolIndex = toolIndex + 1;
+            state.EmittedToolCallCount++;
 
             extraFrames.Add(ChoiceFrame.WithToolCall(
                 root, choiceIndex, InlineXmlToolCall.BuildCallObject(parsed.Value.Name, parsed.Value.Arguments, callId, toolIndex)));
@@ -414,6 +465,10 @@ internal sealed class OpenAiSseFrameTranslation
         private readonly StringBuilder _toolBuffer = new();
         private bool _inToolCall;
 
+        // Trailing text that could be the prefix of an open/close marker split across frames.
+        // Held back (never emitted, never buffered into the call) so the next token completes it.
+        private string _pending = string.Empty;
+
         /// <summary>Incremental thought extractors, keyed by choice index.</summary>
         public Dictionary<int, ThinkTagExtractor> Extractors { get; } = [];
 
@@ -426,30 +481,48 @@ internal sealed class OpenAiSseFrameTranslation
         /// <summary>Number of synthesised calls emitted so far.</summary>
         public int EmittedToolCallCount { get; set; }
 
+        /// <summary>Highest native tool-call stream index observed, so synthesised calls never collide.</summary>
+        public int MaxNativeToolCallIndex { get; set; } = -1;
+
+        /// <summary>Next stream index available for a synthesised call.</summary>
+        public int NextSyntheticToolIndex { get; set; }
+
         /// <summary>
         /// Consumes the next answer token, returning the text that should remain visible and the
-        /// complete markup call blocks it contained. Buffers a call that has not yet closed.
+        /// complete markup call blocks it contained. Markers split across tokens are recognised:
+        /// a partial marker suffix is held back until the next token completes it, and an open
+        /// call's close marker is searched across the accumulated boundary as well.
         /// </summary>
         public (string Visible, List<string> Blocks) ScanForInlineCalls(string token)
         {
             StringBuilder visible = new();
             List<string> blocks = [];
+
+            string work = _pending + token;
+            _pending = string.Empty;
             int cursor = 0;
 
-            while (cursor < token.Length)
+            while (cursor < work.Length)
             {
                 if (_inToolCall)
                 {
-                    int end = token.IndexOf(InlineXmlToolCall.CloseMarker, cursor, StringComparison.OrdinalIgnoreCase);
+                    int end = work.IndexOf(InlineXmlToolCall.CloseMarker, cursor, StringComparison.OrdinalIgnoreCase);
                     if (end < 0)
                     {
-                        _toolBuffer.Append(token, cursor, token.Length - cursor);
-                        cursor = token.Length;
+                        // Hold back a possible partial close marker so a close split across
+                        // frames is still found; the rest joins the captured call body.
+                        int hold = PartialMarkerSuffixLength(work, cursor, InlineXmlToolCall.CloseMarker);
+                        int appendEnd = work.Length - hold;
+                        if (appendEnd > cursor)
+                            _toolBuffer.Append(work, cursor, appendEnd - cursor);
+                        if (hold > 0)
+                            _pending = work[appendEnd..];
+                        cursor = work.Length;
                     }
                     else
                     {
                         int closeEnd = end + InlineXmlToolCall.CloseMarker.Length;
-                        _toolBuffer.Append(token, cursor, closeEnd - cursor);
+                        _toolBuffer.Append(work, cursor, closeEnd - cursor);
                         cursor = closeEnd;
                         _inToolCall = false;
 
@@ -459,22 +532,59 @@ internal sealed class OpenAiSseFrameTranslation
                 }
                 else
                 {
-                    int start = token.IndexOf(InlineXmlToolCall.OpenMarker, cursor, StringComparison.OrdinalIgnoreCase);
+                    int start = work.IndexOf(InlineXmlToolCall.OpenMarker, cursor, StringComparison.OrdinalIgnoreCase);
                     if (start < 0)
                     {
-                        visible.Append(token, cursor, token.Length - cursor);
-                        cursor = token.Length;
+                        int hold = PartialMarkerSuffixLength(work, cursor, InlineXmlToolCall.OpenMarker);
+                        int emitEnd = work.Length - hold;
+                        if (emitEnd > cursor)
+                            visible.Append(work, cursor, emitEnd - cursor);
+                        if (hold > 0)
+                            _pending = work[emitEnd..];
+                        cursor = work.Length;
                     }
                     else
                     {
-                        visible.Append(token, cursor, start - cursor);
-                        cursor = start;
+                        visible.Append(work, cursor, start - cursor);
+                        _toolBuffer.Append(work, start, InlineXmlToolCall.OpenMarker.Length);
+                        cursor = start + InlineXmlToolCall.OpenMarker.Length;
                         _inToolCall = true;
                     }
                 }
             }
 
             return (visible.ToString(), blocks);
+        }
+
+        /// <summary>
+        /// Drains the scanner at end of stream. An unterminated call block is returned verbatim
+        /// (the caller re-emits it as visible text rather than losing it); a held-back partial
+        /// marker is returned as the literal text it turned out to be.
+        /// </summary>
+        public string FlushToolScanner()
+        {
+            string tail = _inToolCall ? _toolBuffer.ToString() + _pending : _pending;
+            _toolBuffer.Clear();
+            _pending = string.Empty;
+            _inToolCall = false;
+            return tail;
+        }
+
+        /// <summary>
+        /// Number of trailing characters of <paramref name="work"/> (from <paramref name="start"/>)
+        /// that form a proper prefix of <paramref name="marker"/> — the amount to hold back so a
+        /// marker split across frames is recognised on the next call.
+        /// </summary>
+        private static int PartialMarkerSuffixLength(string work, int start, string marker)
+        {
+            int max = Math.Min(marker.Length - 1, work.Length - start);
+            for (int len = max; len > 0; len--)
+            {
+                if (work.AsSpan(work.Length - len, len).Equals(marker.AsSpan(0, len), StringComparison.OrdinalIgnoreCase))
+                    return len;
+            }
+
+            return 0;
         }
     }
 
@@ -486,6 +596,9 @@ internal sealed class OpenAiSseFrameTranslation
     {
         public static JsonObject WithContent(JsonObject root, int choiceIndex, string content)
             => Build(root, choiceIndex, new JsonObject { ["content"] = content });
+
+        public static JsonObject WithReasoning(JsonObject root, int choiceIndex, string reasoning)
+            => Build(root, choiceIndex, new JsonObject { ["reasoning_content"] = reasoning });
 
         public static JsonObject WithToolCall(JsonObject root, int choiceIndex, JsonObject call)
             => Build(root, choiceIndex, new JsonObject { ["tool_calls"] = new JsonArray(call) });

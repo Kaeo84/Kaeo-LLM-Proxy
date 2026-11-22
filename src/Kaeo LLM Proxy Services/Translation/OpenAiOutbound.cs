@@ -54,6 +54,35 @@ internal static class OpenAiOutbound
 
         var json = new JsonObject { ["role"] = role, ["content"] = content };
 
+        // Vision: image content becomes OpenAI content parts; plain-text messages keep the
+        // string-content shape for back-compat with non-vision upstreams.
+        List<DataContent> images = [.. message.Contents.OfType<DataContent>()
+            .Where(d => d.HasTopLevelMediaType("image"))];
+        if (images.Count > 0)
+        {
+            JsonArray parts = [];
+            if (content.Length > 0)
+                parts.Add(new JsonObject { ["type"] = "text", ["text"] = content });
+
+            foreach (DataContent image in images)
+            {
+                string? url = image.Uri;
+                if (string.IsNullOrEmpty(url) && !image.Data.IsEmpty)
+                    url = $"data:{image.MediaType ?? "image/png"};base64,{Convert.ToBase64String(image.Data.ToArray())}";
+
+                if (!string.IsNullOrEmpty(url))
+                {
+                    parts.Add(new JsonObject
+                    {
+                        ["type"] = "image_url",
+                        ["image_url"] = new JsonObject { ["url"] = url },
+                    });
+                }
+            }
+
+            json["content"] = parts;
+        }
+
         if (reasoning.Length > 0)
             json["reasoning_content"] = reasoning;
 

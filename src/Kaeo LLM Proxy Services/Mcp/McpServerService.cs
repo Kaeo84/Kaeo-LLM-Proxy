@@ -28,6 +28,10 @@ internal sealed class McpServerService : IAsyncDisposable
     private McpApiExplorer? _apiExplorer;
     private string _status = "Stopped";
 
+    // Serializes start/stop/restart/apply so a settings apply and a dashboard Start click cannot
+    // both create hosts and race on the listener bind (leaking the losing host's listener).
+    private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+
     public McpServerService(AppDatabase database, AppSettings settings, ModuleHost moduleHost, StatisticsService statistics)
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -77,6 +81,19 @@ internal sealed class McpServerService : IAsyncDisposable
     /// </summary>
     public async Task StartAsync(bool forceStart = false, CancellationToken cancellationToken = default)
     {
+        await _lifecycleLock.WaitAsync(cancellationToken);
+        try
+        {
+            await StartCoreAsync(forceStart, cancellationToken);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    private async Task StartCoreAsync(bool forceStart, CancellationToken cancellationToken)
+    {
         McpServerSettings settings = _repository.LoadServerSettings();
         if (!settings.Enabled && !forceStart)
         {
@@ -102,14 +119,31 @@ internal sealed class McpServerService : IAsyncDisposable
             ListenPort = settings.ListenPort;
             RaiseStatus($"Running at {_host.EndpointUrl}");
         }
-        catch (Exception ex) when (ex is IOException or SocketException or HttpListenerException)
+        catch (Exception ex) when (ex is IOException or SocketException or HttpListenerException or ArgumentException or InvalidOperationException)
         {
+            // Do not leave the previous run's endpoint on display next to a failure status.
+            ListenAddress = string.Empty;
+            ListenPort = 0;
+            _apiExplorer = null;
             RaiseStatus($"Failed to start: {ex.Message}");
             Log.Error(ex, "MCP server failed to start");
         }
     }
 
     public async Task StopAsync()
+    {
+        await _lifecycleLock.WaitAsync();
+        try
+        {
+            await StopCoreAsync();
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
+    }
+
+    private async Task StopCoreAsync()
     {
         if (_host is { IsRunning: true })
             await _host.StopAsync();
@@ -123,33 +157,57 @@ internal sealed class McpServerService : IAsyncDisposable
     /// <summary>Stops the server when running, then starts it again with the persisted settings.</summary>
     public async Task RestartAsync(CancellationToken cancellationToken = default)
     {
-        if (_host is { IsRunning: true })
-            await _host.StopAsync();
+        await _lifecycleLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_host is { IsRunning: true })
+                await _host.StopAsync();
 
-        await StartAsync(forceStart: true, cancellationToken);
+            await StartCoreAsync(forceStart: true, cancellationToken);
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
     /// <summary>Re-reads persisted settings and restarts (or stops) the listener accordingly.</summary>
     public async Task ApplySettingsAsync()
     {
-        if (_repository.LoadServerSettings().Enabled)
+        await _lifecycleLock.WaitAsync();
+        try
         {
-            await StartAsync();
+            if (_repository.LoadServerSettings().Enabled)
+            {
+                await StartCoreAsync(forceStart: false, CancellationToken.None);
+            }
+            else if (_host is { IsRunning: true })
+            {
+                await StopCoreAsync();
+            }
+            else
+            {
+                RaiseStatus("Disabled");
+            }
         }
-        else if (_host is { IsRunning: true })
+        finally
         {
-            await StopAsync();
-        }
-        else
-        {
-            RaiseStatus("Disabled");
+            _lifecycleLock.Release();
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_host is { IsRunning: true })
-            await _host.StopAsync();
+        await _lifecycleLock.WaitAsync();
+        try
+        {
+            if (_host is { IsRunning: true })
+                await _host.StopAsync();
+        }
+        finally
+        {
+            _lifecycleLock.Release();
+        }
     }
 
     private void RaiseStatus(string status)

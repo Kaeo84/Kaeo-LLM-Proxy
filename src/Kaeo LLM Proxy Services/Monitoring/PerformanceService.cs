@@ -19,6 +19,7 @@ internal sealed class PerformanceService : IDisposable
     private DateTime _lastSampleTime = DateTime.UtcNow;
     private int _sampleCount;
     private bool _enabled;
+    private int _sampling;
 
     /// <summary>Log GC/memory diagnostics every N samples (~60 s at 2 s interval).</summary>
     private const int DiagLogEveryNSamples = 30;
@@ -54,6 +55,23 @@ internal sealed class PerformanceService : IDisposable
             return;
 
         _enabled = enabled;
+
+        if (enabled)
+        {
+            // Rebase the CPU baseline so the first sample after a disable gap does not average
+            // the off period into the CPU percentage.
+            try
+            {
+                _process.Refresh();
+                _lastCpuTime = _process.TotalProcessorTime;
+                _lastSampleTime = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Could not rebase CPU baseline when enabling performance sampling");
+            }
+        }
+
         _timer.Change(enabled ? _intervalMs : Timeout.Infinite,
                       enabled ? _intervalMs : Timeout.Infinite);
 
@@ -62,6 +80,11 @@ internal sealed class PerformanceService : IDisposable
 
     private void Sample(object? _)
     {
+        // Skip overlapping callbacks (a stalled Process.Refresh can outlast the interval) so
+        // _lastCpuTime/_lastSampleTime are only ever updated by one thread at a time.
+        if (Interlocked.CompareExchange(ref _sampling, 1, 0) != 0)
+            return;
+
         try
         {
             _process.Refresh();
@@ -73,7 +96,7 @@ internal sealed class PerformanceService : IDisposable
             if (elapsed > 0)
             {
                 double cpuUsed = (cpuNow - _lastCpuTime).TotalSeconds;
-                CpuPercent = Math.Min(100.0, cpuUsed / (elapsed * Environment.ProcessorCount) * 100.0);
+                CpuPercent = Math.Clamp(cpuUsed / (elapsed * Environment.ProcessorCount) * 100.0, 0.0, 100.0);
             }
 
             _lastCpuTime = cpuNow;
@@ -82,7 +105,13 @@ internal sealed class PerformanceService : IDisposable
             MemoryMb = _process.PrivateMemorySize64 / (1024.0 * 1024.0);
 
             Gen2Collections = GC.CollectionCount(2);
-            LohMb = GC.GetGCMemoryInfo().HeapSizeBytes / (1024.0 * 1024.0);
+
+            // LOH is generation 3; HeapSizeBytes covers all generations and hid LOH growth.
+            GCMemoryInfo gcInfo = GC.GetGCMemoryInfo();
+            ReadOnlySpan<GCGenerationInfo> generations = gcInfo.GenerationInfo;
+            LohMb = generations.Length > 3
+                ? generations[3].SizeAfterBytes / (1024.0 * 1024.0)
+                : gcInfo.HeapSizeBytes / (1024.0 * 1024.0);
 
             _sampleCount++;
             if (_sampleCount % DiagLogEveryNSamples == 0)
@@ -99,12 +128,23 @@ internal sealed class PerformanceService : IDisposable
                     CpuPercent);
             }
 
-            Sampled?.Invoke(this, EventArgs.Empty);
+            try
+            {
+                Sampled?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "A Sampled subscriber threw; sampling continues");
+            }
         }
         catch (Exception ex)
         {
             // Non-fatal: sampling can fail if the process is exiting.
             Log.Debug(ex, "Performance sampling failed; skipping this interval");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sampling, 0);
         }
     }
 

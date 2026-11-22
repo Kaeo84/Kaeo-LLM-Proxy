@@ -43,6 +43,10 @@ internal sealed class OpenAiStreamTerminator
     // are unrelated to SSE framing.
     private readonly StringBuilder _pending = new();
 
+    // How much of _pending has already been scanned for newlines, so Feed never re-materializes
+    // the whole buffer per line (which would be O(n²) over a long stream).
+    private int _scanIndex;
+
     // Identity of the synthesized usage chunk. Taken from the first observed upstream chunk so the
     // frame the proxy invents is indistinguishable from the ones the client already received;
     // falls back to generated values when the upstream sent no parseable chunk at all.
@@ -143,16 +147,21 @@ internal sealed class OpenAiStreamTerminator
 
         _pending.Append(text);
 
-        while (true)
+        int lineStart = 0;
+        int i = _scanIndex;
+        for (; i < _pending.Length; i++)
         {
-            string buffered = _pending.ToString();
-            int newline = buffered.IndexOf('\n');
-            if (newline < 0)
-                break;
+            if (_pending[i] != '\n')
+                continue;
 
-            _pending.Remove(0, newline + 1);
-            ObserveLine(buffered[..newline]);
+            ObserveLine(_pending.ToString(lineStart, i - lineStart));
+            lineStart = i + 1;
         }
+
+        if (lineStart > 0)
+            _pending.Remove(0, lineStart);
+
+        _scanIndex = i - lineStart;
     }
 
     /// <summary>Processes any trailing partial line buffered by <see cref="Feed"/>.</summary>
@@ -163,6 +172,8 @@ internal sealed class OpenAiStreamTerminator
             ObserveLine(_pending.ToString());
             _pending.Clear();
         }
+
+        _scanIndex = 0;
     }
 
     /// <summary>

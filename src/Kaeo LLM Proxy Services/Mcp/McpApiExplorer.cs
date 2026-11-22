@@ -47,10 +47,21 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
         return [new ExplorerDocument("Kaeo LLM Proxy MCP", $"{baseUrl}{McpServerHost.SpecPath}")];
     }
 
+    // Cached per base URL so the template replace does not re-run on every request. Reference
+    // writes are atomic; a benign race just recomputes the same string.
+    private string? _cachedSpecBaseUrl;
+    private string? _cachedSpecJson;
+
     public string BuildSpecJson()
     {
         string baseUrl = BaseUrl ?? "http://localhost:8388";
-        return OpenApiSpecTemplate.Replace("{{SERVER_URL}}", baseUrl);
+        if (_cachedSpecJson is not null && _cachedSpecBaseUrl == baseUrl)
+            return _cachedSpecJson;
+
+        string spec = OpenApiSpecTemplate.Replace("{{SERVER_URL}}", baseUrl);
+        _cachedSpecBaseUrl = baseUrl;
+        _cachedSpecJson = spec;
+        return spec;
     }
 
     /// <summary>
@@ -80,12 +91,14 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
                 documentsJson.Append(',');
 
             // Spec content is validated raw JSON; "</" is escaped so an embedded string value
-            // can never terminate the enclosing <script> block early.
+            // can never terminate the enclosing <script> block early, and "<!--" is escaped via
+            // a JSON unicode escape (valid in both JSON and JS) to avoid the script-data-double-
+            // escape state.
             documentsJson
                 .Append("{\"label\":")
                 .Append(JsonSerializer.Serialize(documents[i].Label))
                 .Append(",\"spec\":")
-                .Append(documents[i].SpecJson.Replace("</", "<\\/"))
+                .Append(documents[i].SpecJson.Replace("</", "<\\/").Replace("<!--", "\\u003C!--"))
                 .Append('}');
         }
         documentsJson.Append(']');
@@ -270,6 +283,15 @@ internal sealed class McpApiExplorer : IApiExplorerDocumentsProvider
                     var select = document.getElementById('kaeo-doc-select');
                     var selector = document.getElementById('kaeo-doc-selector');
                     var instance = null;
+
+                    // Scalar loads from a CDN; on air-gapped hosts show a usable fallback instead
+                    // of a blank page.
+                    if (typeof Scalar === 'undefined') {
+                        mount.innerHTML = '<p style="font-family:sans-serif;padding:2em">' +
+                            'The Scalar API reference script could not be loaded from cdn.jsdelivr.net (network access required). ' +
+                            'The raw OpenAPI document is available at <a href="/openapi/v1/openapi.json">/openapi/v1/openapi.json</a>.</p>';
+                        return;
+                    }
 
                     function configurationFor(doc) {
                         return { spec: { content: doc.spec } };

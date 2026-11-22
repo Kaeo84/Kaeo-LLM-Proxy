@@ -180,8 +180,10 @@ public class OpenAiSseFrameParityTests
     }
 
     [Fact]
-    public void NativeReasoningContentIsMirroredToContentInLeaveInline()
+    public void NativeReasoningContentIsLeftInlineInLeaveInline()
     {
+        // L15: LeaveInline must not mirror reasoning_content into content (clients rendering both
+        // fields would show the reasoning twice). Both implementations leave it where it is.
         AssertParity(
         [
             Frame(Delta(reasoning: "native reasoning")),

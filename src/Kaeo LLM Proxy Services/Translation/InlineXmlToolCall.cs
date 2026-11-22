@@ -43,7 +43,9 @@ internal static partial class InlineXmlToolCall
         if (!match.Success)
             return null;
 
-        Dictionary<string, object?> arguments = new(StringComparer.OrdinalIgnoreCase);
+        // Ordinal keys: parameter names are case-sensitive on the tool's schema, so
+        // case-distinct names must not collapse into one entry.
+        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
         foreach (Match parameter in ParameterRegex().Matches(match.Groups["body"].Value))
             arguments[parameter.Groups["n"].Value.Trim()] = ParseParameterValue(parameter.Groups["v"].Value.Trim());
 
@@ -51,19 +53,24 @@ internal static partial class InlineXmlToolCall
     }
 
     /// <summary>
-    /// Converts a parameter's text to the closest JSON scalar so numbers and booleans reach the
-    /// client typed rather than as strings; anything else stays a string.
+    /// Converts a parameter's text to a JSON scalar only when the conversion is lossless and
+    /// notation-preserving: "007", "1e5", and integers beyond <see cref="long"/> stay strings so
+    /// a tool expecting the literal text (or a 64-bit id) is not handed a mangled number.
+    /// Booleans coerce only for the exact literals "true"/"false". Shared by the legacy handler
+    /// parser so both routes type values identically.
     /// </summary>
-    private static object? ParseParameterValue(string value)
+    public static object? ParseParameterValue(string value)
     {
-        if (bool.TryParse(value, out bool booleanValue))
-            return booleanValue;
+        if (value is "true" or "false")
+            return value == "true";
 
-        if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int integerValue))
+        if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long integerValue)
+            && integerValue.ToString(CultureInfo.InvariantCulture) == value)
             return integerValue;
 
-        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double doubleValue))
-            return doubleValue;
+        if (decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal decimalValue)
+            && decimalValue.ToString(CultureInfo.InvariantCulture) == value)
+            return decimalValue;
 
         return value;
     }

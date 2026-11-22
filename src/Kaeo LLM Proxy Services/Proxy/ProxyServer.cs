@@ -17,6 +17,10 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
     private readonly OllamaProxyHandler _handler = handler;
     private bool _disposed;
 
+    // Number of requests currently being handled (slot acquired, inside HandleAsync). Lets StopAsync
+    // drain in-flight work gracefully before forcing cancellation.
+    private int _inFlightRequests;
+
     // Caps the number of concurrently processed requests. When saturated, new requests are
     // rejected with 503 instead of queueing without bound (which would exhaust memory/threads).
     // Recreated on Start() so the limit tracks the current settings value.
@@ -94,6 +98,14 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
                 $"{netshCommand}\n\n" +
                 "Then try starting the proxy again.", ex);
         }
+        catch
+        {
+            // Any other start failure (port already in use, invalid prefix, etc.) must not leak the
+            // partially-created listener (L10).
+            _listener.Close();
+            _listener = null;
+            throw;
+        }
 
         int gateSize = Math.Max(1, maxConcurrentRequests);
         _concurrencyGate?.Dispose();
@@ -127,9 +139,9 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         HttpListener? listener = _listener;
         Task? listenTask = _listenTask;
 
-        cts?.Cancel();
-
-        // Close() alone stops the listener and releases its resources; a separate Stop() is redundant.
+        // Stop accepting new connections first WITHOUT cancelling in-flight requests so they can
+        // drain gracefully (L10). Closing the listener makes the accept loop's GetContextAsync fail
+        // and exit; the server token stays uncancelled during the grace period.
         listener?.Close();
 
         if (listenTask is not null)
@@ -137,6 +149,12 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
             try { await listenTask.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
         }
+
+        // Give in-flight requests up to 10s to finish before forcing cancellation.
+        for (int i = 0; i < 200 && Volatile.Read(ref _inFlightRequests) > 0; i++)
+            await Task.Delay(50).ConfigureAwait(false);
+
+        cts?.Cancel();
 
         cts?.Dispose();
         _cts = null;
@@ -185,30 +203,33 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
             if (gate is null)
                 break;
 
-            // Acquire a concurrency slot before dispatching. If none frees up within the
-            // acquire timeout, shed load immediately with 503 rather than queueing without
-            // bound (which would exhaust memory and thread-pool resources).
-            bool acquired;
+            // Take a slot without blocking the accept loop (L10). When saturated, hand the context
+            // to a background task that waits for a slot (up to the acquire timeout) and then either
+            // handles it or sheds it with 503 — the loop keeps accepting and shedding load instead
+            // of stalling for the whole acquire timeout.
+            bool slotTaken;
             try
             {
-                acquired = await gate.WaitAsync(_acquireTimeout, ct).ConfigureAwait(false);
+                slotTaken = gate.Wait(0);
             }
-            catch (OperationCanceledException)
+            catch (ObjectDisposedException)
             {
+                // Gate disposed during shutdown.
+                try { context.Response.Close(); } catch { }
                 break;
             }
 
-            if (!acquired)
+            if (slotTaken)
             {
-                _ = Task.Run(() => RejectOverloadedAsync(context), ct);
-                continue;
+                // Fire-and-forget each request on the thread pool. Exceptions are observed
+                // inside HandleRequestSafelyAsync so a client disconnect never surfaces as an
+                // unobserved TaskScheduler exception. The slot is released there too.
+                _ = Task.Run(() => HandleRequestSafelyAsync(context, gate, ct), ct);
             }
-
-            // Fire-and-forget each request on the thread pool. Exceptions are observed
-            // here so a client disconnect (HttpListenerException / I/O abort) never
-            // surfaces as an unobserved TaskScheduler exception. The acquired slot is
-            // released inside HandleRequestSafelyAsync.
-            _ = Task.Run(() => HandleRequestSafelyAsync(context, gate, ct), ct);
+            else
+            {
+                _ = Task.Run(() => AwaitSlotThenHandleAsync(context, gate, ct), ct);
+            }
         }
 
         // If the loop exited while GetContextAsync was still pending (e.g. cancellation
@@ -260,11 +281,44 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         }
     }
 
-    private async Task HandleRequestSafelyAsync(HttpListenerContext context, SemaphoreSlim gate, CancellationToken ct)
+    private async Task AwaitSlotThenHandleAsync(HttpListenerContext context, SemaphoreSlim gate, CancellationToken ct)
     {
+        bool acquired;
         try
         {
-            await _handler.HandleAsync(context, ct).ConfigureAwait(false);
+            acquired = await gate.WaitAsync(_acquireTimeout, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try { context.Response.Close(); } catch { /* Client gone or server stopping. */ }
+            return;
+        }
+        catch (ObjectDisposedException)
+        {
+            // Gate disposed during shutdown.
+            try { context.Response.Close(); } catch { }
+            return;
+        }
+
+        if (!acquired)
+        {
+            await RejectOverloadedAsync(context).ConfigureAwait(false);
+            return;
+        }
+
+        await HandleRequestSafelyAsync(context, gate, ct).ConfigureAwait(false);
+    }
+
+    private async Task HandleRequestSafelyAsync(HttpListenerContext context, SemaphoreSlim gate, CancellationToken ct)
+    {
+        // Per-request cancellation scope linked to the server lifetime token (M16): the handler
+        // flows this token into the upstream call, so this request can be cancelled on its own
+        // (client abort, shutdown) without affecting other in-flight requests.
+        using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Interlocked.Increment(ref _inFlightRequests);
+        try
+        {
+            await _handler.HandleAsync(context, requestCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -285,6 +339,7 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         }
         finally
         {
+            Interlocked.Decrement(ref _inFlightRequests);
             try { context.Response.Close(); }
             catch { /* Already closed or aborted. */ }
 

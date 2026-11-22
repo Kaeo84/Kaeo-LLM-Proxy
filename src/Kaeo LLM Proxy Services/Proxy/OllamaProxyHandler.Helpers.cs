@@ -86,8 +86,9 @@ partial class OllamaProxyHandler
         return je.ValueKind.ToString();
     }
 
-    private static LlamaCppMessage MapMessage(OllamaMessage m) =>
-        new(m.Role, m.Content)
+    private static LlamaCppMessage MapMessage(OllamaMessage m)
+    {
+        LlamaCppMessage mapped = new(m.Role, m.Content)
         {
             ToolCallId = m.ToolCallId,
             ToolCalls = m.ToolCalls is not null
@@ -108,6 +109,11 @@ partial class OllamaProxyHandler
                 : null,
         };
 
+        // Vision: Ollama's base64 images become OpenAI image_url content parts.
+        OllamaRequestTranslation.ApplyVisionImages(mapped, m.Images);
+        return mapped;
+    }
+
     /// <summary>
     /// Maps Ollama messages to OpenAI/llama.cpp messages and rewrites tool_call IDs so that:
     ///   â€¢ each assistant tool_call gets a stable id (preserved if supplied, generated otherwise),
@@ -118,8 +124,8 @@ partial class OllamaProxyHandler
     internal static List<LlamaCppMessage> MapMessagesWithToolCorrelation(List<OllamaMessage> source)
     {
         List<LlamaCppMessage> mapped = [.. source.Select(MapMessage)];
-        // Queue of (id, function name) per pending assistant tool_call.
-        Queue<(string Id, string? Name)> pending = new();
+        // Ids of assistant tool_calls still awaiting a tool reply.
+        List<string> pending = [];
 
         for (int i = 0; i < mapped.Count; i++)
         {
@@ -129,13 +135,21 @@ partial class OllamaProxyHandler
                 && msg.ToolCalls is { Count: > 0 })
             {
                 foreach (LlamaCppToolCall tc in msg.ToolCalls)
-                    pending.Enqueue((tc.Id!, tc.Function?.Name)); // MapMessage always assigns a non-null id.
+                    pending.Add(tc.Id!); // MapMessage always assigns a non-null id.
             }
-            else if (string.Equals(msg.Role, "tool", StringComparison.OrdinalIgnoreCase)
-                && string.IsNullOrWhiteSpace(msg.ToolCallId)
-                && pending.Count > 0)
+            else if (string.Equals(msg.Role, "tool", StringComparison.OrdinalIgnoreCase))
             {
-                msg.ToolCallId = pending.Dequeue().Id;
+                if (!string.IsNullOrWhiteSpace(msg.ToolCallId))
+                {
+                    // An explicitly correlated reply fulfils exactly its own call, not the
+                    // oldest pending one (out-of-order replies must not shift the queue).
+                    pending.Remove(msg.ToolCallId);
+                }
+                else if (pending.Count > 0)
+                {
+                    msg.ToolCallId = pending[0];
+                    pending.RemoveAt(0);
+                }
             }
         }
 
@@ -196,7 +210,7 @@ partial class OllamaProxyHandler
                 {
                     string name = match.Groups["name"].Value.Trim();
                     string body = match.Groups["body"].Value;
-                    Dictionary<string, object?> arguments = new(StringComparer.OrdinalIgnoreCase);
+                    Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
 
                     foreach (Match parameterMatch in XmlToolCallParameterRegex().Matches(body))
                                 {
@@ -215,23 +229,23 @@ partial class OllamaProxyHandler
             });
         }
 
-        string strippedContent = matches.Aggregate(content, static (current, match) => current.Replace(match.Value, string.Empty)).Trim();
+        // Remove exactly the matched tool-call spans (left-to-right, non-overlapping) instead of
+        // repeatedly calling string.Replace over the whole content, which is O(n²) and would also
+        // strip identical text occurring outside a match (L6).
+        var stripped = new StringBuilder(content.Length);
+        int pos = 0;
+        foreach (Match match in matches)
+        {
+            stripped.Append(content, pos, match.Index - pos);
+            pos = match.Index + match.Length;
+        }
+        stripped.Append(content, pos, content.Length - pos);
+        string strippedContent = stripped.ToString().Trim();
         return new(strippedContent, toolCalls);
     }
 
     private static object? ParseXmlToolParameterValue(string value)
-    {
-        if (bool.TryParse(value, out bool booleanValue))
-            return booleanValue;
-
-        if (int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int integerValue))
-            return integerValue;
-
-        if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double doubleValue))
-            return doubleValue;
-
-        return value;
-    }
+        => InlineXmlToolCall.ParseParameterValue(value);
 
     private static List<OllamaToolCall>? MapToolCallsToOllama(List<LlamaCppToolCall>? toolCalls)
     {
@@ -431,7 +445,9 @@ partial class OllamaProxyHandler
             buffer.Write(chunk, 0, read);
         }
 
-        return req.ContentEncoding.GetString(buffer.ToArray());
+        return buffer.TryGetBuffer(out ArraySegment<byte> bodySegment)
+            ? req.ContentEncoding.GetString(bodySegment.Array!, bodySegment.Offset, bodySegment.Count)
+            : req.ContentEncoding.GetString(buffer.ToArray());
     }
 
     /// <summary>Indicates a request body exceeded <see cref="AppSettings.MaxRequestBodyBytes"/>.</summary>
@@ -600,6 +616,70 @@ partial class OllamaProxyHandler
         resp.ContentLength64 = bytes.Length;
         await resp.OutputStream.WriteAsync(bytes, ct);
         resp.Close();
+    }
+
+    /// <summary>
+    /// Builds an overflow-retry request that carries the same header set as the original. The first
+    /// send copies the client's headers (Authorization, Accept, User-Agent, …); a retry built from
+    /// scratch would drop them, so a credential-less mapping that relies on client-token passthrough
+    /// (the documented VS Copilot scenario) would get a 401 on the compacted retry instead of an
+    /// answer. Replaying <paramref name="original"/>'s headers — already hop-by-hop-filtered and
+    /// authorization-gated — and re-applying the mapping key keeps the retry identical to the first
+    /// attempt apart from the shrunken body.
+    /// </summary>
+    private static HttpRequestMessage BuildRetryRequest(
+        string requestPathAndQuery, string body, HttpRequestMessage original, string? apiKey)
+    {
+        var retry = new HttpRequestMessage(HttpMethod.Post, requestPathAndQuery)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body)),
+        };
+        retry.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+
+        foreach (KeyValuePair<string, IEnumerable<string>> header in original.Headers)
+            retry.Headers.TryAddWithoutValidation(header.Key, header.Value);
+
+        ApplyApiKey(retry, apiKey);
+        return retry;
+    }
+
+    /// <summary>
+    /// Copies the upstream's response headers to the client response, skipping hop-by-hop headers
+    /// <see cref="HttpClient"/> manages and Content-Length (the proxy re-frames the body). Values are
+    /// added individually rather than comma-joined so multi-value headers that forbid joining
+    /// (Set-Cookie, WWW-Authenticate) survive intact.
+    /// </summary>
+    private static void CopyUpstreamResponseHeaders(HttpListenerResponse resp, HttpResponseMessage upstreamResp)
+    {
+        foreach (KeyValuePair<string, IEnumerable<string>> header in upstreamResp.Headers)
+        {
+            if (header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) continue;
+            if (header.Key.Equals("Connection", StringComparison.OrdinalIgnoreCase)) continue;
+            AddResponseHeaderValues(resp, header.Key, header.Value);
+        }
+
+        foreach (KeyValuePair<string, IEnumerable<string>> header in upstreamResp.Content.Headers)
+        {
+            if (header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
+            AddResponseHeaderValues(resp, header.Key, header.Value);
+        }
+    }
+
+    private static void AddResponseHeaderValues(HttpListenerResponse resp, string name, IEnumerable<string> values)
+    {
+        string[] array = values as string[] ?? [.. values];
+        if (array.Length == 0)
+            return;
+
+        if (array.Length == 1)
+        {
+            // Single value: the indexer is the proven path for restricted headers such as Content-Type.
+            resp.Headers[name] = array[0];
+            return;
+        }
+
+        foreach (string value in array)
+            resp.Headers.Add(name, value);
     }
 
     // â”€â”€ API Explorer (Scalar) / OpenAPI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1292,7 +1372,13 @@ partial class OllamaProxyHandler
     /// <summary>Captures bytes written through it while forwarding them immediately to the inner stream.</summary>
     private sealed class ResponseCaptureStream(Stream inner) : Stream
     {
+        // The capture feeds request logs only, so bound it: a multi-gigabyte stream with
+        // CollectResponseDetails/DebugMode enabled must not grow this buffer without limit.
+        // The client still receives every byte; only the logged copy is capped.
+        private const long MaxCaptureBytes = 8 * 1024 * 1024;
+
         private readonly MemoryStream _capture = new();
+        private bool _truncated;
 
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -1304,24 +1390,47 @@ partial class OllamaProxyHandler
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
 
-        public string GetCapturedText() => Encoding.UTF8.GetString(_capture.ToArray());
+        public string GetCapturedText()
+        {
+            string text = _capture.TryGetBuffer(out ArraySegment<byte> segment)
+                ? Encoding.UTF8.GetString(segment.Array!, segment.Offset, segment.Count)
+                : Encoding.UTF8.GetString(_capture.ToArray());
+            return _truncated ? text + "\n…[response capture truncated at 8 MiB]" : text;
+        }
+
+        private void Capture(ReadOnlySpan<byte> data)
+        {
+            if (_truncated)
+                return;
+
+            long remaining = MaxCaptureBytes - _capture.Length;
+            if (data.Length <= remaining)
+            {
+                _capture.Write(data);
+            }
+            else
+            {
+                _capture.Write(data[..(int)remaining]);
+                _truncated = true;
+            }
+        }
 
         public override void Write(byte[] buffer, int offset, int count)
         {
             inner.Write(buffer, offset, count);
-            _capture.Write(buffer, offset, count);
+            Capture(buffer.AsSpan(offset, count));
         }
 
         public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
         {
             await inner.WriteAsync(buffer.AsMemory(offset, count), ct);
-            await _capture.WriteAsync(buffer.AsMemory(offset, count), ct);
+            Capture(buffer.AsSpan(offset, count));
         }
 
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
         {
             await inner.WriteAsync(buffer, ct);
-            await _capture.WriteAsync(buffer, ct);
+            Capture(buffer.Span);
         }
     }
 

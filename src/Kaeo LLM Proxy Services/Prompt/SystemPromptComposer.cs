@@ -68,9 +68,44 @@ internal static class SystemPromptComposer
     {
         List<string> contents = [];
         for (int i = 0; i < count && i < messages.Count; i++)
-            contents.Add(messages[i].Content ?? string.Empty);
+            contents.Add(ContentAsText(messages[i]));
 
         return contents;
+    }
+
+    /// <summary>
+    /// Extracts the textual content of a message whose content may be a string or multimodal
+    /// content parts; for parts, the text segments are concatenated so instructions survive.
+    /// </summary>
+    private static string ContentAsText(LlamaCppMessage message)
+    {
+        if (message.ContentText is { } text)
+            return text;
+
+        if (message.Content is JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.Array)
+            {
+                System.Text.StringBuilder joined = new();
+                foreach (JsonElement part in element.EnumerateArray())
+                {
+                    if (part.ValueKind == JsonValueKind.Object
+                        && part.TryGetProperty("text", out JsonElement partText)
+                        && partText.ValueKind == JsonValueKind.String)
+                    {
+                        joined.Append(partText.GetString());
+                    }
+                }
+
+                return joined.ToString();
+            }
+
+            return element.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+                ? string.Empty
+                : element.GetRawText();
+        }
+
+        return message.Content?.ToString() ?? string.Empty;
     }
 
     /// <summary>Counts the leading JSON messages whose role is system, stopping at the first other role.</summary>

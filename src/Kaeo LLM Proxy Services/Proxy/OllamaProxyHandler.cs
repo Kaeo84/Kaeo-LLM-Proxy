@@ -113,15 +113,15 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             HttpClient old = _httpClient;
             _httpClient = BuildHttpClient();
 
-        // Dispose the superseded client only once no in-flight requests remain that could still
-        // be using it. A fixed delay is unsafe because requests can run up to the per-mapping
-        // upstream timeout (e.g. 300 s). We poll the in-flight counter and fall back to a hard
-        // 5-minute safety timeout so the old client is never leaked indefinitely.
+        // Dispose the superseded client only once no in-flight work remains that could still be
+        // using it. Requests and heartbeat probes both increment the counter, and a steady stream
+        // can legitimately run for hours, so the deadline is a last-resort leak guard rather than
+        // a normal exit — cutting off at minutes would dispose the client under a live generation.
         _ = Task.Run(async () =>
         {
             try
             {
-                DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+                DateTime deadline = DateTime.UtcNow.AddHours(24);
                 while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
                     await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
             }
@@ -216,46 +216,57 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (string.IsNullOrWhiteSpace(modelName))
             return;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
-        ApplyApiKey(request, _settings.ResolveApiKey(mapping));
-        int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
-        using HttpResponseMessage response = await SendUpstreamAsync(
-            request,
-            mapping.UpstreamUrl.TrimEnd('/'),
-            timeout,
-            HttpCompletionOption.ResponseHeadersRead,
-            ct);
-
-        // ResponseHeadersRead leaves the body unread, and disposing a response with an unread
-        // body tears the pooled connection down instead of returning it — a periodic probe would
-        // churn sockets (TIME_WAIT growth) instead of keeping one warm. Drain it with a bound;
-        // an oversized or unreadable body merely loses connection reuse for that one probe.
+        // The probe sends on the shared _httpClient, which UpdateSettings can swap at any moment.
+        // Hold an in-flight count for the whole probe so the superseded client is not disposed
+        // while this send (or its body drain) is still using it.
+        Interlocked.Increment(ref _inFlightRequests);
         try
         {
-            await response.Content.LoadIntoBufferAsync(MaxHeartbeatBodyBytes).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+            ApplyApiKey(request, _settings.ResolveApiKey(mapping));
+            int timeout = mapping.UpstreamTimeoutSeconds > 0 ? mapping.UpstreamTimeoutSeconds : 300;
+            using HttpResponseMessage response = await SendUpstreamAsync(
+                request,
+                mapping.UpstreamUrl.TrimEnd('/'),
+                timeout,
+                HttpCompletionOption.ResponseHeadersRead,
+                ct);
+
+            // ResponseHeadersRead leaves the body unread, and disposing a response with an unread
+            // body tears the pooled connection down instead of returning it — a periodic probe would
+            // churn sockets (TIME_WAIT growth) instead of keeping one warm. Drain it with a bound;
+            // an oversized or unreadable body merely loses connection reuse for that one probe.
+            try
+            {
+                await response.Content.LoadIntoBufferAsync(MaxHeartbeatBodyBytes).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Probe outcomes never depend on the body, so drain failures are not worth logging.
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                // This is the periodic upstream liveness probe, not a client-facing SSE keep-alive,
+                // so it records probe state rather than bumping the keep-alive frame counter.
+                _stats.RecordHeartbeatProbeSuccess(modelName);
+                return;
+            }
+
+            string error = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
+            _stats.RecordHeartbeatFailure(modelName, error);
+
+            // Same treatment as the exception path above: a non-success probe answer repeats forever for a
+            // model that is down, so it is Debug plus the marker rather than Warning, and the configured
+            // heartbeat threshold decides whether it is recorded at all. The message marker additionally
+            // lets the System Logs tab isolate or hide these lines.
+            Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
+                .Debug(AppLogger.HeartbeatMessage("Heartbeat probe for model {Model} returned {Error}"), modelName, error);
         }
-        catch (Exception)
+        finally
         {
-            // Probe outcomes never depend on the body, so drain failures are not worth logging.
+            Interlocked.Decrement(ref _inFlightRequests);
         }
-
-        if (response.IsSuccessStatusCode)
-        {
-            // This is the periodic upstream liveness probe, not a client-facing SSE keep-alive,
-            // so it records probe state rather than bumping the keep-alive frame counter.
-            _stats.RecordHeartbeatProbeSuccess(modelName);
-            return;
-        }
-
-        string error = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-        _stats.RecordHeartbeatFailure(modelName, error);
-
-        // Same treatment as the exception path above: a non-success probe answer repeats forever for a
-        // model that is down, so it is Debug plus the marker rather than Warning, and the configured
-        // heartbeat threshold decides whether it is recorded at all. The message marker additionally
-        // lets the System Logs tab isolate or hide these lines.
-        Log.ForContext(AppLogger.HeartbeatMarkerProperty, true)
-            .Debug(AppLogger.HeartbeatMessage("Heartbeat probe for model {Model} returned {Error}"), modelName, error);
     }
 
     private void RecordPeriodicHeartbeatFailure(ModelMapping mapping, string errorMessage)
@@ -273,14 +284,16 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         StopHeartbeatMonitors();
 
         // Mirror the same in-flight guard used in UpdateSettings: wait for active
-        // requests to drain before disposing the HttpClient to avoid
-        // ObjectDisposedException on streams still being consumed.
+        // requests and probes to drain before disposing the HttpClients to avoid
+        // ObjectDisposedException on streams still being consumed. Compaction runs
+        // inside counted requests, so its client is safe to dispose after the drain.
         HttpClient clientToDispose = _httpClient;
+        HttpClient compactionClientToDispose = _autoCompactionService.HttpClient;
         _ = Task.Run(async () =>
         {
             try
             {
-                DateTime deadline = DateTime.UtcNow.AddMinutes(5);
+                DateTime deadline = DateTime.UtcNow.AddHours(24);
                 while (Volatile.Read(ref _inFlightRequests) > 0 && DateTime.UtcNow < deadline)
                     await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
             }
@@ -291,6 +304,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             finally
             {
                 clientToDispose.Dispose();
+                compactionClientToDispose.Dispose();
             }
         });
     }
@@ -323,20 +337,27 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (string.IsNullOrWhiteSpace(ollamaModel))
         {
             return _settings.ModelMappings.FirstOrDefault(m => m.IsEnabled)
-                ?? throw new InvalidOperationException("No enabled model mappings are configured.");
+                ?? throw new ModelResolutionException("No enabled model mappings are configured.");
         }
 
-        throw new InvalidOperationException(
+        throw new ModelResolutionException(
             $"No mapping found for model '{ollamaModel}'. " +
             "Add a mapping in settings with ProxyName, ModelName, and UpstreamUrl.");
     }
+
+    /// <summary>
+    /// A request named a model the proxy cannot route (unknown, disabled, or misconfigured mapping).
+    /// This is a client/configuration error answered with 404 <c>model_not_found</c>, not a server
+    /// fault: surfacing it as 500 made retry-on-5xx clients hammer the proxy over a typo.
+    /// </summary>
+    private sealed class ModelResolutionException(string message) : Exception(message);
 
     private (string BaseUrl, int TimeoutSeconds, string? ApiKey) ResolveUpstream(ModelMapping mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
 
         if (string.IsNullOrWhiteSpace(mapping.UpstreamUrl))
-            throw new InvalidOperationException(
+            throw new ModelResolutionException(
                 $"Model mapping '{mapping.ProxyName}' has no upstream URL configured. " +
                 "Each mapping must specify its own UpstreamUrl.");
 
@@ -773,6 +794,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
     private static readonly byte[] SseKeepAliveFrameBytes = Encoding.UTF8.GetBytes(SseKeepAliveFrame);
 
+    // Reused byte terminators so the SSE hot path writes a frame's payload followed by a static
+    // suffix instead of allocating a concatenated "line + \n\n" string per outbound frame.
+    private static readonly byte[] SseEventTerminatorBytes = "\n\n"u8.ToArray();
+    private static readonly byte[] SseLineTerminatorBytes = "\n"u8.ToArray();
+
     /// <summary>
     /// Returns whether SSE keep-alive frames should be emitted to the client for the given model,
     /// combining the global toggle with the per-mapping
@@ -1065,11 +1091,21 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
                     int compactedTokens = EstimateTokenCount(compactedBody);
 
-                    // Add headers to signal compaction happened. These survive on the eventual
-                    // upstream response, so the client learns the proxy compacted its context.
-                    resp.Headers["X-Context-Compacted"] = "true";
-                    resp.Headers["X-Context-Original-Tokens"] = estimated.ToString();
-                    resp.Headers["X-Context-Compacted-Tokens"] = compactedTokens.ToString();
+                    // Add headers to signal compaction happened. On the streaming path the SSE
+                    // headers are already on the wire (the start notification above committed
+                    // them), so this write can throw; that must not discard the compacted body
+                    // and fall back to the oversized original — the in-stream notification is
+                    // the client's signal there.
+                    try
+                    {
+                        resp.Headers["X-Context-Compacted"] = "true";
+                        resp.Headers["X-Context-Original-Tokens"] = estimated.ToString();
+                        resp.Headers["X-Context-Compacted-Tokens"] = compactedTokens.ToString();
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or HttpListenerException or ObjectDisposedException)
+                    {
+                        Log.Debug(ex, "Compaction headers could not be set because the response is already committed; the in-stream notification carries the signal");
+                    }
 
                     Log.Information(
                         "Auto-compaction succeeded for model {Model} using {CompactModel}: {OriginalTokens} -> {CompactedTokens} est. tokens; forwarding the compacted request upstream",
@@ -1235,6 +1271,12 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// Sends <paramref name="req"/> to the resolved upstream URL, enforcing the per-mapping timeout
     /// via a linked <see cref="CancellationTokenSource"/>.
     /// </summary>
+    /// <remarks>
+    /// With <see cref="HttpCompletionOption.ResponseHeadersRead"/> the send completes at the headers,
+    /// so the timeout must not end there: the CTS is handed to the response content, which re-arms it
+    /// as a per-read idle window for the body. A steady generation runs indefinitely; a stalled
+    /// upstream is cancelled after the mapping's timeout instead of hanging the client forever.
+    /// </remarks>
     private async Task<HttpResponseMessage> SendUpstreamAsync(
         HttpRequestMessage req,
         string baseUrl,
@@ -1247,10 +1289,141 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         // or naive string concatenation without risking a 404 from the upstream.
         req.RequestUri = UpstreamUriHelper.BuildRequestUri(baseUrl, req.RequestUri!.ToString());
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        HttpResponseMessage? response = null;
+        try
+        {
+            response = await _httpClient.SendAsync(req, completionOption, cts.Token).ConfigureAwait(false);
 
-        return await _httpClient.SendAsync(req, completionOption, cts.Token);
+            if (completionOption == HttpCompletionOption.ResponseContentRead)
+            {
+                // The whole body was already buffered under the total timeout.
+                cts.Dispose();
+                return response;
+            }
+
+            // Headers arrived: stop the total timer and switch to the per-read idle window.
+            cts.CancelAfter(Timeout.InfiniteTimeSpan);
+
+            // Transfer the content into a wrapper that owns the CTS. The original response shell
+            // must NOT be disposed afterwards — disposal would tear down the content the wrapper
+            // now owns — so it is abandoned here; the wrapper disposes the content (and the CTS)
+            // when the caller disposes the returned response.
+            var wrappedContent = new UpstreamTimeoutContent(response.Content, cts, TimeSpan.FromSeconds(timeoutSeconds));
+            var wrappedResponse = new HttpResponseMessage(response.StatusCode)
+            {
+                Version = response.Version,
+                ReasonPhrase = response.ReasonPhrase,
+                RequestMessage = response.RequestMessage,
+                Content = wrappedContent,
+            };
+            foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers)
+                wrappedResponse.Headers.TryAddWithoutValidation(header.Key, header.Value);
+
+            response = null; // ownership transferred; the catch below must not dispose the shell
+            return wrappedResponse;
+        }
+        catch
+        {
+            response?.Dispose();
+            cts.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Response content that keeps the per-mapping timeout CTS alive for the whole body and
+    /// re-arms it as an idle window around every read. Disposing the content (which happens when
+    /// the caller disposes the response) disposes the inner content and the CTS together.
+    /// </summary>
+    private sealed class UpstreamTimeoutContent : HttpContent
+    {
+        private readonly HttpContent _inner;
+        private readonly CancellationTokenSource _cts;
+        private readonly TimeSpan _idleTimeout;
+
+        public UpstreamTimeoutContent(HttpContent inner, CancellationTokenSource cts, TimeSpan idleTimeout)
+        {
+            _inner = inner;
+            _cts = cts;
+            _idleTimeout = idleTimeout;
+            foreach (KeyValuePair<string, IEnumerable<string>> header in inner.Headers)
+                Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        protected override async Task<Stream> CreateContentReadStreamAsync()
+            => new IdleTimeoutReadStream(await _inner.ReadAsStreamAsync().ConfigureAwait(false), _cts, _idleTimeout);
+
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            // Route buffering (LoadIntoBufferAsync/CopyToAsync) through the idle window too.
+            using Stream read = await CreateContentReadStreamAsync().ConfigureAwait(false);
+            await read.CopyToAsync(stream).ConfigureAwait(false);
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            long? contentLength = _inner.Headers.ContentLength;
+            length = contentLength ?? 0;
+            return contentLength.HasValue;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+                _cts.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>
+    /// Delegating stream that re-arms the upstream idle timeout around every read: each successful
+    /// read resets the window, so only a genuinely stalled upstream trips it while a slow-but-steady
+    /// generation completes normally.
+    /// </summary>
+    private sealed class IdleTimeoutReadStream(Stream inner, CancellationTokenSource cts, TimeSpan idleTimeout) : Stream
+    {
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => inner.CanWrite;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+        public override void Flush() => inner.Flush();
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            cts.CancelAfter(idleTimeout);
+            try { return inner.Read(buffer, offset, count); }
+            finally { cts.CancelAfter(Timeout.InfiniteTimeSpan); }
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            cts.CancelAfter(idleTimeout);
+            try { return await inner.ReadAsync(buffer, offset, count, cancellationToken).ConfigureAwait(false); }
+            finally { cts.CancelAfter(Timeout.InfiniteTimeSpan); }
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            cts.CancelAfter(idleTimeout);
+            try { return await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false); }
+            finally { cts.CancelAfter(Timeout.InfiniteTimeSpan); }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     private static void ApplyApiKey(HttpRequestMessage request, string? apiKey)
@@ -1648,7 +1821,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             else if (method == "POST" && (path == "/api/embeddings" || path == "/api/embed"))
             {
                 log.UpstreamPath = "/v1/embeddings";
-                await HandleEmbeddingsAsync(req, resp, log, ct);
+                await HandleEmbeddingsAsync(req, resp, log, ct, isNewEmbedApi: path == "/api/embed");
             }
             else if (path is "/api/pull" or "/api/push" or "/api/create" or "/api/copy" or "/api/delete")
             {
@@ -1729,9 +1902,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 // in the log as a 404 rather than defaulting to a success with no status code.
                 RecordResponseStatus(resp, log, 404);
                 log.ErrorMessage = $"Unknown endpoint: {path}";
-                string errorJson = $"{{\"error\":\"Unknown endpoint: {path}\"}}";
-                await CaptureRejectedBodyAsync(req, log, errorJson, ct);
-                await WriteJsonAsync(resp, new { error = $"Unknown endpoint: {path}" }, ct);
+                if (method == "HEAD")
+                {
+                    // HEAD responses carry headers only; writing a body risks a
+                    // ProtocolViolationException from http.sys.
+                    resp.ContentType = "application/json";
+                    resp.Close();
+                }
+                else
+                {
+                    string errorJson = $"{{\"error\":\"Unknown endpoint: {path}\"}}";
+                    await CaptureRejectedBodyAsync(req, log, errorJson, ct);
+                    await WriteJsonAsync(resp, new { error = $"Unknown endpoint: {path}" }, ct);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -1768,6 +1951,34 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
 
             if (!await TryWriteErrorResponseAsync(resp, log, 408, new { error = "Request body timed out.", requestId }, CancellationToken.None))
                 RecordUndeliverableError(log, 408);
+
+            sw.Stop();
+            log.DurationMs = sw.Elapsed.TotalMilliseconds;
+            return;
+        }
+        catch (ModelResolutionException ex)
+        {
+            // A typo'd or unconfigured model is a client error, not a server crash. Mirror the
+            // /v1/models/{id} 404 shape so OpenAI-compatible clients report "model not found"
+            // instead of retrying a 5xx forever.
+            log.ErrorMessage = ex.Message;
+            Log.Warning("Model resolution failed for {Method} {Path}: {Message}", method, path, ex.Message);
+
+            if (!await TryWriteErrorResponseAsync(resp, log, 404, new
+            {
+                error = new
+                {
+                    message = ex.Message,
+                    type = "invalid_request_error",
+                    param = "model",
+                    code = "model_not_found",
+                },
+                requestId,
+            }, CancellationToken.None))
+            {
+                RecordUndeliverableError(log, 404);
+                CloseResponseQuietly(resp);
+            }
 
             sw.Stop();
             log.DurationMs = sw.Elapsed.TotalMilliseconds;
@@ -1903,6 +2114,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)
             || name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)
             || name.Equals("Connection", StringComparison.OrdinalIgnoreCase)
+            // The proxy reads upstream bodies as UTF-8 text (SSE frames, JSON rewrites) and has
+            // no decompression stage. Relaying the client's Accept-Encoding would let a gzip
+            // upstream answer with compressed bytes that every downstream parser reads as
+            // garbage, so the upstream is always asked for identity encoding.
+            || name.Equals("Accept-Encoding", StringComparison.OrdinalIgnoreCase)
             || name.Equals("Forwarded", StringComparison.OrdinalIgnoreCase)
             || name.Equals("X-Real-IP", StringComparison.OrdinalIgnoreCase)
             || name.StartsWith("X-Forwarded-", StringComparison.OrdinalIgnoreCase);

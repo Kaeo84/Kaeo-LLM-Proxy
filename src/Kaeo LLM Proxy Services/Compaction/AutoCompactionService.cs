@@ -37,6 +37,13 @@ internal sealed class AutoCompactionService
     private const int MaxCompactionAttempts = 3;
 
     /// <summary>
+    /// Cooldown after which an open circuit half-opens (one probe attempt is allowed through), and
+    /// the window after which untouched session states are evicted. Without it a transient upstream
+    /// outage disabled compaction for the affected conversations until app restart.
+    /// </summary>
+    private static readonly TimeSpan CircuitCooldown = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// Fraction of the compact model's context window to use as the max tokens per chunk.
     /// Leaves headroom for system prompt, response generation, and token estimation error.
     /// </summary>
@@ -176,17 +183,34 @@ internal sealed class AutoCompactionService
         /// </summary>
         private int _targetTokens;
 
-        internal sealed record CompactionState
+        /// <summary>
+        /// Per-conversation breaker state. A class (not a record) with Interlocked/Volatile access:
+        /// concurrent requests for the same key share one instance, and plain field increments lost
+        /// updates under contention.
+        /// </summary>
+        internal sealed class CompactionState
         {
-            public int Attempts;
-            public DateTime LastAttemptUtc;
-            public bool CircuitOpen;
+            /// <summary>Attempts that actually reached the upstream. Access via <see cref="Interlocked"/>.</summary>
+            internal long Attempts;
+
+            /// <summary>UTC ticks of the last real attempt. Access via <see cref="Interlocked"/>.</summary>
+            internal long LastAttemptUtcTicks;
+
+            /// <summary>1 = open. Access via <see cref="Volatile"/>.</summary>
+            internal int CircuitOpen;
         }
 
         public AutoCompactionService(HttpClient httpClient)
         {
             _httpClient = httpClient;
         }
+
+        /// <summary>
+        /// The client this service sends compaction requests with. Ownership stays with the creator
+        /// (the proxy handler builds it and disposes it on shutdown); the service never disposes it,
+        /// so tests can share one client across several service instances.
+        /// </summary>
+        internal HttpClient HttpClient => _httpClient;
 
         /// <summary>
         /// Applies the global compaction settings: the instruction set that drives summarization and the
@@ -239,15 +263,19 @@ internal sealed class AutoCompactionService
         /// </remarks>
         private int _maxConcurrentCompactions = AppSettings.DefaultMaxConcurrentCompactions;
 
+        /// <summary>Serializes gate swaps so two concurrent settings changes cannot leak a gate.</summary>
+        private readonly object _gateSwapLock = new();
+
         /// <summary>
         /// Applies <see cref="AppSettings.MaxConcurrentCompactions"/>, replacing the gate when the
         /// limit changes.
         /// </summary>
         /// <remarks>
         /// A semaphore's limit is fixed at construction, so a changed setting needs a new gate. A run
-        /// already holding the old gate releases into an abandoned semaphore, which is harmless: the new
-        /// gate starts fully available, so at worst one extra run overlaps a still-finishing one rather
-        /// than the limit being permanently ignored.
+        /// captures the gate instance it waited on and releases that same instance, so a swap never
+        /// causes a release into the wrong (possibly full) semaphore. The old gate is disposed only
+        /// when all of its own permits are available — comparing against the new limit would dispose
+        /// a still-held semaphore whenever the limit shrinks.
         /// </remarks>
         /// <param name="maxConcurrent">Maximum simultaneous runs; values below 1 are treated as 1.</param>
         internal void SetMaxConcurrentCompactions(int maxConcurrent)
@@ -257,18 +285,22 @@ internal sealed class AutoCompactionService
                 AppSettings.MinMaxConcurrentCompactions,
                 AppSettings.MaxMaxConcurrentCompactions);
 
-            if (_maxConcurrentCompactions == clamped)
-                return;
+            lock (_gateSwapLock)
+            {
+                if (_maxConcurrentCompactions == clamped)
+                    return;
 
-            _maxConcurrentCompactions = clamped;
+                int oldLimit = _maxConcurrentCompactions;
+                _maxConcurrentCompactions = clamped;
 
-            SemaphoreSlim previous = _compactionGate;
-            _compactionGate = new SemaphoreSlim(clamped, clamped);
+                SemaphoreSlim previous = _compactionGate;
+                _compactionGate = new SemaphoreSlim(clamped, clamped);
 
-            // Only dispose when nothing can still be holding it; an in-flight run would otherwise
-            // release into a disposed semaphore and throw inside its own finally.
-            if (previous.CurrentCount == clamped)
-                previous.Dispose();
+                // Only dispose when nothing can still be holding it; an in-flight run would otherwise
+                // release into a disposed semaphore and throw inside its own finally.
+                if (previous.CurrentCount == oldLimit)
+                    previous.Dispose();
+            }
         }
 
         /// <summary>
@@ -367,14 +399,54 @@ internal sealed class AutoCompactionService
         // so the circuit breaker is per-conversation, not global.
         sessionKey = BuildSessionKey(mapping.ProxyName, requestBody);
 
-        // Circuit breaker check.
-        if (_sessionStates.TryGetValue(sessionKey, out CompactionState? state) && state.CircuitOpen)
+        EvictStaleSessionStates();
+
+        // Circuit breaker check, with a time-based half-open: after the cooldown one probe attempt
+        // is allowed through so a transient outage cannot disable compaction forever.
+        if (_sessionStates.TryGetValue(sessionKey, out CompactionState? state)
+            && Volatile.Read(ref state.CircuitOpen) == 1)
         {
-            Log.Debug("Auto-compaction circuit breaker open for session {SessionKey}", sessionKey);
-            return false;
+            long lastTicks = Interlocked.Read(ref state.LastAttemptUtcTicks);
+            if (DateTime.UtcNow.Ticks - lastTicks < CircuitCooldown.Ticks)
+            {
+                Log.Debug("Auto-compaction circuit breaker open for session {SessionKey}", sessionKey);
+                return false;
+            }
+
+            Volatile.Write(ref state.CircuitOpen, 0);
+            Interlocked.Exchange(ref state.Attempts, MaxCompactionAttempts - 1);
+            Log.Information("Auto-compaction circuit breaker half-open for session {SessionKey} after cooldown", sessionKey);
         }
 
         return true;
+    }
+
+    private long _lastStateEvictionTicks;
+
+    /// <summary>
+    /// Evicts session states untouched for longer than the cooldown window (at most once a minute).
+    /// Keys drift after a successful compaction changes the first user message, so without eviction
+    /// the dictionary would grow one dead entry per conversation forever.
+    /// </summary>
+    private void EvictStaleSessionStates()
+    {
+        long now = DateTime.UtcNow.Ticks;
+        long last = Interlocked.Read(ref _lastStateEvictionTicks);
+        if (now - last < TimeSpan.TicksPerMinute)
+            return;
+        if (Interlocked.CompareExchange(ref _lastStateEvictionTicks, now, last) != last)
+            return;
+
+        long cutoff = now - CircuitCooldown.Ticks;
+        foreach ((string key, CompactionState state) in _sessionStates)
+        {
+            long lastAttempt = Interlocked.Read(ref state.LastAttemptUtcTicks);
+            // A freshly created state has no recorded attempt yet (ticks == 0); evicting it would
+            // discard the in-progress breaker sequence and reset the attempt count. Only evict
+            // states that were actually attempted and have since gone stale.
+            if (lastAttempt > 0 && lastAttempt < cutoff)
+                _sessionStates.TryRemove(key, out _);
+        }
     }
 
     /// <summary>
@@ -417,19 +489,19 @@ internal sealed class AutoCompactionService
         CompactionFormat format = CompactionFormat.Proxy,
         bool isCopilotSummary = false)
     {
-        // Record the attempt.
-        CompactionState state = _sessionStates.GetOrAdd(sessionKey, _ => new());
-        state.Attempts++;
-        state.LastAttemptUtc = DateTime.UtcNow;
-
-        if (state.Attempts > MaxCompactionAttempts)
+        // Defensive self-target guard: summarizing an overflowing conversation with the same
+        // mapping's model fails repeatedly and trips the breaker. The caller resolves the compact
+        // target; this catches a misconfigured ContextSummarizeModelId that points at itself.
+        if (string.Equals(compactModelName, mapping.ProxyName, StringComparison.OrdinalIgnoreCase))
         {
-            state.CircuitOpen = true;
             Log.Warning(
-                "Auto-compaction circuit breaker opened for session {SessionKey} after {Attempts} attempts",
-                sessionKey, state.Attempts);
+                "Auto-compaction skipped for session {SessionKey}: compact model '{Model}' is the mapping being compacted (self-target)",
+                sessionKey, compactModelName);
             return null;
         }
+
+        CompactionState state = _sessionStates.GetOrAdd(sessionKey, _ => new());
+        EvictStaleSessionStates();
 
         // Serialize runs so their chunk requests cannot interleave on one upstream. Each run awaits its
         // chunks in order, so the concurrency that matters is between runs: an automatic compaction, a
@@ -438,19 +510,23 @@ internal sealed class AutoCompactionService
         //
         // The wait is logged when it is not immediate, because from the client's side a queued
         // compaction is indistinguishable from a slow one and the reason should be visible.
-        bool gateHeld = false;
-        if (_compactionGate.CurrentCount == 0)
+        //
+        // Capture the gate instance: a settings change may swap the field mid-run, and the permit
+        // must be returned to the semaphore it was taken from, not whichever one the field holds now.
+        SemaphoreSlim gate = _compactionGate;
+        if (gate.CurrentCount == 0)
             Log.Information(
                 "Auto-compaction for session {SessionKey} is waiting for another compaction to finish (limit {Limit})",
                 sessionKey, _maxConcurrentCompactions);
 
         try
         {
-            await _compactionGate.WaitAsync(ct).ConfigureAwait(false);
-            gateHeld = true;
+            await gate.WaitAsync(ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
+            // A cancelled queue wait never reached the upstream, so it must not count against the
+            // circuit breaker.
             Log.Debug(
                 "Auto-compaction for session {SessionKey} was cancelled while waiting for the compaction gate",
                 sessionKey);
@@ -459,8 +535,21 @@ internal sealed class AutoCompactionService
 
         try
         {
+            // Record the attempt only now that the run holds the gate and will contact the upstream.
+            long attempt = Interlocked.Increment(ref state.Attempts);
+            Interlocked.Exchange(ref state.LastAttemptUtcTicks, DateTime.UtcNow.Ticks);
+
+            if (attempt > MaxCompactionAttempts)
+            {
+                Volatile.Write(ref state.CircuitOpen, 1);
+                Log.Warning(
+                    "Auto-compaction circuit breaker opened for session {SessionKey} after {Attempts} attempts",
+                    sessionKey, attempt);
+                return null;
+            }
+
             Log.Information("Auto-compaction starting for session {SessionKey}, attempt {Attempt}/{MaxAttempts}, compact model {CompactModel}, target model context window {TargetContextWindow}, maxTokensPerChunk {MaxTokens}",
-                sessionKey, state.Attempts, MaxCompactionAttempts, compactModelName, targetModelContextWindow, maxTokensPerChunk);
+                sessionKey, attempt, MaxCompactionAttempts, compactModelName, targetModelContextWindow, maxTokensPerChunk);
 
             // Extract messages and split into chunks for map-reduce summarization.
             // This prevents the compact model itself from overflowing on very large conversations.
@@ -495,7 +584,8 @@ internal sealed class AutoCompactionService
                     object truncated = TruncateMessageIfNeeded(messages[i], maxTokensPerMessage);
                     // Convert back to JsonElement
                     string truncatedJson = JsonSerializer.Serialize(truncated);
-                    messages[i] = JsonDocument.Parse(truncatedJson).RootElement.Clone();
+                    using JsonDocument truncatedDoc = JsonDocument.Parse(truncatedJson);
+                    messages[i] = truncatedDoc.RootElement.Clone();
                 }
             }
 
@@ -510,6 +600,7 @@ internal sealed class AutoCompactionService
                 messages.Count, totalEstimatedTokens);
 
             var chunkSummaries = new List<string>();
+            int succeededChunks = 0;
 
             // Map phase: summarize each chunk independently.
             // Split purely by token count to avoid overflow on the compact model.
@@ -520,6 +611,10 @@ internal sealed class AutoCompactionService
 
             while (chunkStart < messages.Count)
             {
+                // Stop working on a request nobody is waiting for; the per-call catches rethrow
+                // client cancellation so it lands here instead of being logged as a chunk failure.
+                ct.ThrowIfCancellationRequested();
+
                 chunkNumber++;
                 int chunkEnd = chunkStart;
                 int estimatedChunkTokens = 0;
@@ -549,18 +644,25 @@ internal sealed class AutoCompactionService
                 if (chunkSummary is not null)
                 {
                     chunkSummaries.Add(chunkSummary);
+                    succeededChunks++;
                     Log.Debug("Auto-compaction: chunk {ChunkNumber} summarized successfully ({SummaryLength} chars)",
                         chunkNumber, chunkSummary.Length);
                 }
                 else
                 {
-                    Log.Warning("Auto-compaction: chunk {ChunkNumber} summarization failed", chunkNumber);
+                    // Carry the failed chunk's truncated raw text into the reduce input so its
+                    // content is degraded, not silently deleted from the conversation.
+                    Log.Warning("Auto-compaction: chunk {ChunkNumber} summarization failed; carrying truncated raw text forward", chunkNumber);
+                    chunkSummaries.Add(BuildRawChunkFallback(chunk, DefaultSummaryMaxTokens));
                 }
 
                 chunkStart = chunkEnd;
             }
 
-            if (chunkSummaries.Count == 0)
+            // Raw-text fallbacks supplement a partial success; if every chunk failed there is no
+            // real summary to reduce, so abort (return null) and let the circuit breaker accumulate
+            // the failed attempt instead of fabricating a "compaction" from raw text (M7).
+            if (succeededChunks == 0)
             {
                 Log.Warning("Auto-compaction: all chunk summaries failed for session {SessionKey}", sessionKey);
                 return null;
@@ -599,11 +701,13 @@ internal sealed class AutoCompactionService
                 return null;
             }
 
-            // Post-compaction validation: check if compacted body fits in target model's context window
-            if (compactedMessageTokens > targetModelContextWindow)
+            // Post-compaction validation: the compacted body must fit in the target model's window
+            // with room left for the model's own reply, or generation still overflows.
+            int replyReserve = Math.Max(DefaultSummaryMaxTokens, targetModelContextWindow / 10);
+            if (compactedMessageTokens + replyReserve > targetModelContextWindow)
             {
-                Log.Warning("Auto-compaction result still exceeds target model context window: {CompactedTokens} tokens > {TargetContextWindow} context window. Returning null.",
-                    compactedMessageTokens, targetModelContextWindow);
+                Log.Warning("Auto-compaction result still exceeds target model context window (with reply reserve): {CompactedTokens} + {ReplyReserve} tokens > {TargetContextWindow} context window. Returning null.",
+                    compactedMessageTokens, replyReserve, targetModelContextWindow);
                 return null;
             }
 
@@ -611,6 +715,11 @@ internal sealed class AutoCompactionService
                 compactedMessageTokens, targetModelContextWindow);
 
             return compactedBody;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Log.Debug("Auto-compaction cancelled by the client for session {SessionKey}", sessionKey);
+            return null;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
@@ -626,9 +735,9 @@ internal sealed class AutoCompactionService
         {
             // Released in a finally so every exit path — success, size guard, upstream failure, or an
             // unexpected throw — frees the gate. A leaked permit would eventually stall all compaction
-            // with no error, which is worse than the contention this prevents.
-            if (gateHeld)
-                _compactionGate.Release();
+            // with no error, which is worse than the contention this prevents. Release the captured
+            // instance, never the (possibly swapped) field.
+            gate.Release();
         }
     }
 
@@ -639,32 +748,65 @@ internal sealed class AutoCompactionService
     {
         if (_sessionStates.TryGetValue(sessionKey, out CompactionState? state))
         {
-            state.Attempts = 0;
-            state.CircuitOpen = false;
+            Interlocked.Exchange(ref state.Attempts, 0);
+            Volatile.Write(ref state.CircuitOpen, 0);
         }
+    }
+
+    /// <summary>
+    /// Degraded stand-in for a chunk whose summarization failed: a truncated raw transcript so the
+    /// reduce step still sees the chunk's content instead of losing it entirely.
+    /// </summary>
+    private static string BuildRawChunkFallback(List<JsonElement> chunk, int maxTokens)
+    {
+        int maxChars = Math.Max(500, maxTokens * 4);
+        var sb = new StringBuilder("[Summarization failed for this chunk; raw transcript excerpt follows]\n");
+        foreach (JsonElement msg in chunk)
+        {
+            if (sb.Length >= maxChars)
+                break;
+
+            string role = msg.TryGetProperty("role", out JsonElement roleEl) ? roleEl.GetString() ?? "?" : "?";
+            string text = GetContentText(msg);
+            if (msg.TryGetProperty("tool_calls", out JsonElement toolCalls) && toolCalls.ValueKind == JsonValueKind.Array)
+                text += " " + toolCalls.GetRawText();
+
+            sb.Append(role).Append(": ").Append(text).Append('\n');
+        }
+
+        string result = sb.ToString();
+        return result.Length <= maxChars ? result : result[..maxChars] + "\n... [truncated]";
     }
 
     private static string BuildSessionKey(string modelName, string requestBody)
     {
-        // Extract the first user message content for session identity.
+        // Session identity: hash of the pinned system prompt plus the FULL first user message.
+        // Hashing only the opening 200 chars made conversations with identical template openers
+        // share one circuit breaker.
         try
         {
             using JsonDocument doc = JsonDocument.Parse(requestBody);
             if (doc.RootElement.TryGetProperty("messages", out JsonElement messages)
                 && messages.ValueKind == JsonValueKind.Array)
             {
+                string? pinnedSystem = null;
+                bool first = true;
                 foreach (JsonElement msg in messages.EnumerateArray())
                 {
-                    if (msg.TryGetProperty("role", out JsonElement role)
-                        && role.GetString()?.Equals("user", StringComparison.OrdinalIgnoreCase) == true
+                    string? role = msg.TryGetProperty("role", out JsonElement roleEl) ? roleEl.GetString() : null;
+
+                    if (first && role?.Equals("system", StringComparison.OrdinalIgnoreCase) == true)
+                        pinnedSystem = GetContentText(msg);
+                    first = false;
+
+                    if (role?.Equals("user", StringComparison.OrdinalIgnoreCase) == true
                         && msg.TryGetProperty("content", out JsonElement content))
                     {
                         string text = content.ValueKind == JsonValueKind.String
                             ? content.GetString() ?? string.Empty
                             : content.GetRawText();
 
-                        // Use first 200 chars as session identity.
-                        string hashInput = $"{modelName}:{text[..Math.Min(text.Length, 200)]}";
+                        string hashInput = $"{modelName}\u0001{pinnedSystem}\u0001{text}";
                         return Convert.ToHexString(
                             SHA256.HashData(
                                 Encoding.UTF8.GetBytes(hashInput)))[..16];
@@ -711,7 +853,7 @@ internal sealed class AutoCompactionService
     /// split a call from its result) while giving the summarizer an explicit block to turn
     /// into a '## Tool activity' section.
     /// </summary>
-    private static List<object> BuildTranscriptMessages(List<JsonElement> chunkMessages, int maxTokensPerMessage)
+    private static List<object> BuildTranscriptMessages(List<JsonElement> chunkMessages, int maxTokensPerMessage, int toolBlockMaxTokens)
     {
         var transcript = new List<object>();
         var toolLines = new List<string>();
@@ -804,10 +946,17 @@ internal sealed class AutoCompactionService
 
         if (toolLines.Count > 0)
         {
+            // Each line is capped, but the number of lines is not: budget the flattened block so a
+            // tool-heavy chunk cannot overflow the summarizer's prompt window.
+            string toolBlock = "<toolcalls>\n" + string.Join("\n", toolLines) + "\n</toolcalls>";
+            int maxChars = Math.Max(500, toolBlockMaxTokens * 4);
+            if (toolBlock.Length > maxChars)
+                toolBlock = toolBlock[..maxChars] + "\n... [tool activity truncated to fit the summarizer budget]\n</toolcalls>";
+
             transcript.Add(new
             {
                 role = "user",
-                content = "<toolcalls>\n" + string.Join("\n", toolLines) + "\n</toolcalls>",
+                content = toolBlock,
             });
         }
 
@@ -871,6 +1020,7 @@ internal sealed class AutoCompactionService
         int maxTokensPerRequest = GetSummaryPromptBudget(compactModelContextWindow, EffectiveSummaryMaxTokens);
         // Derive per-message cap from the budget instead of using a hardcoded value
         int maxTokensPerMessage = Math.Max(1000, maxTokensPerRequest / 2);
+        int toolBlockMaxTokens = Math.Max(256, maxTokensPerRequest / 2);
 
         int estimatedTokens = EstimateChunkTokens(chunkMessages);
 
@@ -883,6 +1033,8 @@ internal sealed class AutoCompactionService
             int subChunkStart = 0;
             while (subChunkStart < chunkMessages.Count)
             {
+                ct.ThrowIfCancellationRequested();
+
                 int subChunkEnd = subChunkStart;
                 int subChunkTokens = 0;
 
@@ -933,8 +1085,8 @@ internal sealed class AutoCompactionService
             }
         };
 
-        // Add the chunk messages (tool calls flattened into a <toolcalls> section).
-        messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage));
+        // Add the chunk messages (tool calls flattened into a budgeted <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(chunkMessages, maxTokensPerMessage, toolBlockMaxTokens));
 
         var request = new
         {
@@ -993,6 +1145,11 @@ internal sealed class AutoCompactionService
             Log.Warning("Chunk summarization response missing content");
             return null;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Client cancellation, not the timeout: propagate so the chunk loop stops.
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
             Log.Warning(ex, "Chunk summarization request failed");
@@ -1024,8 +1181,8 @@ internal sealed class AutoCompactionService
             }
         };
 
-        // Add the sub-chunk messages (tool calls flattened into a <toolcalls> section).
-        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage));
+        // Add the sub-chunk messages (tool calls flattened into a budgeted <toolcalls> section).
+        messages.AddRange(BuildTranscriptMessages(subChunkMessages, maxTokensPerMessage, Math.Max(256, maxTokensPerMessage)));
 
         var request = new
         {
@@ -1082,6 +1239,11 @@ internal sealed class AutoCompactionService
             Log.Warning("Sub-chunk summarization response missing content");
             return null;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Client cancellation, not the timeout: propagate so the chunk loop stops.
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
             Log.Warning(ex, "Sub-chunk summarization request failed");
@@ -1091,22 +1253,14 @@ internal sealed class AutoCompactionService
 
     private static int EstimateChunkTokens(List<JsonElement> messages)
     {
-        int totalChars = 0;
-        foreach (var msg in messages)
-        {
-            if (msg.TryGetProperty("content", out JsonElement content))
-            {
-                string? text = content.ValueKind == JsonValueKind.String
-                    ? content.GetString()
-                    : content.GetRawText();
-                if (!string.IsNullOrEmpty(text))
-                {
-                    totalChars += text.Length;
-                }
-            }
-        }
-        // Rough estimate: 1 token ≈ 4 characters, with safety factor applied
-        return (int)((totalChars / 4.0) * TokenEstimationSafetyFactor);
+        // Reuse the per-message estimator so tool_calls payloads are counted: a chunk of assistant
+        // messages with large tool arguments and empty content otherwise estimated ~0 tokens and
+        // bypassed the sub-chunk splitter, overflowing the compact model.
+        int totalTokens = 0;
+        foreach (JsonElement msg in messages)
+            totalTokens += EstimateMessageTokens(msg);
+
+        return (int)(totalTokens * TokenEstimationSafetyFactor);
     }
 
     private static int EstimateMessageTokens(JsonElement message)
@@ -1194,10 +1348,14 @@ internal sealed class AutoCompactionService
 
         while (true)
         {
+            ct.ThrowIfCancellationRequested();
+
             pass++;
             string combinedInput = string.Join("\n\n---\n\n",
                 current.Select((s, i) => $"Chunk {i + 1} Summary:\n{s}"));
-            int combinedTokens = (int)(Encoding.UTF8.GetByteCount(combinedInput) / 4 * TokenEstimationSafetyFactor);
+            // Char-based like every other estimator (and the char-based truncation below); a UTF-8
+            // byte count overestimated non-ASCII text ~3x and forced needless extra passes.
+            int combinedTokens = (int)(combinedInput.Length / 4.0 * TokenEstimationSafetyFactor);
 
             if (combinedTokens <= maxTokensPerRequest)
                 return await CombineOnceAsync(model, combinedInput, baseUrl, apiKey, timeoutSeconds, ct).ConfigureAwait(false);
@@ -1223,7 +1381,7 @@ internal sealed class AutoCompactionService
             int batchTokens = 0;
             foreach (string s in current)
             {
-                int sTokens = (int)(Encoding.UTF8.GetByteCount(s) / 4 * TokenEstimationSafetyFactor);
+                int sTokens = (int)(s.Length / 4.0 * TokenEstimationSafetyFactor);
                 if (batch.Count > 0 && batchTokens + sTokens > maxTokensPerRequest)
                 {
                     batches.Add(batch);
@@ -1327,6 +1485,11 @@ internal sealed class AutoCompactionService
 
             Log.Warning("Summary combination response missing content, using fallback");
             return combinedInput;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Client cancellation: do not return a "compacted" fallback for a dead request.
+            throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
