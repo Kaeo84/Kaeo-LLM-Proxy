@@ -169,7 +169,7 @@ internal sealed class RequestLog
     public long RequestBytes { get; set; }
 
     /// <summary>Size of the outbound response body in bytes. -1 when unknown.</summary>
-    public long ResponseBytes { get; set; }
+    public long ResponseBytes { get; set; } = -1;
 
     /// <summary>
     /// The caller's IP address as seen by the listener, used to attribute a request to its source

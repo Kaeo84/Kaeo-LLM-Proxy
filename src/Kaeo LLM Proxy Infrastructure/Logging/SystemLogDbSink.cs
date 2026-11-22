@@ -1,14 +1,17 @@
+using System.Threading.Channels;
 using Microsoft.Data.Sqlite;
 using Serilog.Core;
+using Serilog.Debugging;
 using Serilog.Events;
 
 namespace Kaeo.LlmProxy.Infrastructure;
 
 /// <summary>
 /// Serilog sink that persists log events to the <c>system_logs</c> table in the application
-/// SQLite database. When the database is unavailable (locked, corrupted, missing), events
-/// are written to a fallback CLEF file instead. The sink periodically retries the database
-/// to recover automatically.
+/// SQLite database. Events are handed to a bounded in-memory queue and written by a single
+/// background task, so <see cref="Emit"/> never blocks on database IO. When the database is
+/// unavailable (locked, corrupted, missing), events are written to a fallback CLEF file instead.
+/// The sink periodically retries the database to recover automatically.
 /// </summary>
 internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 {
@@ -17,10 +20,20 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
     private const string SourceContextKey = "$sourceContext";
     private readonly object _lock = new();
 
-    // DB health tracking
-    private int _consecutiveDbFailures;
+    // Bounded queue + single writer. Emit only enqueues; when the queue is full the newest
+    // event is dropped and counted, shedding load instead of blocking the emitting thread.
+    private readonly Channel<LogEvent> _channel;
+    private readonly Task _writerTask;
+    private long _droppedEvents;
+
+    // DB health tracking: the fallback trips on the failure RATE (>= 5 failures within 60s),
+    // so recurring transient contention degrades to the file instead of stalling forever.
+    private readonly Queue<DateTime> _dbFailureTimesUtc = new();
+    private const int FailureRateThreshold = 5;
+    private static readonly TimeSpan FailureRateWindow = TimeSpan.FromSeconds(60);
     private DateTime _lastDbRetryUtc = DateTime.MinValue;
-    private const int FailureThreshold = 3;
+    private int _recoveryProbeSuccesses;
+    private const int RecoveryProbeThreshold = 2;
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(30);
 
     // Fallback file state
@@ -36,7 +49,8 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
     /// </summary>
     private const long MaxFallbackFileBytes = 5 * 1024 * 1024;
     private bool _tableEnsured;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private bool _closed;
 
     /// <summary>
     /// Creates a new DB-backed system log sink.
@@ -52,9 +66,22 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
         {
             DataSource = dbPath,
             Mode = SqliteOpenMode.ReadWriteCreate,
+            // Short busy timeout: a contended write fails fast into the fallback file instead
+            // of parking the writer task for the 30s default.
+            DefaultTimeout = 2,
         }.ToString();
 
         _fallbackFilePath = fallbackFilePath;
+
+        _channel = Channel.CreateBounded<LogEvent>(new BoundedChannelOptions(1000)
+        {
+            // Wait mode + TryWrite gives drop-newest with a detectable false return; TryWrite
+            // never blocks, so Emit cannot stall on a slow consumer.
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false,
+        });
+        _writerTask = Task.Run(ProcessQueueAsync);
     }
 
     /// <summary>True when events are being routed to the database; false when in file-fallback mode.</summary>
@@ -67,16 +94,33 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
     {
         if (_disposed) return;
 
-        string renderedMessage = logEvent.RenderMessage();
-        string? exception = logEvent.Exception?.ToString();
-        string? sourceContext = GetSourceContext(logEvent);
-
-        lock (_lock)
+        if (!_channel.Writer.TryWrite(logEvent))
         {
-            if (_dbHealthy)
-                TryEmitToDb(logEvent, renderedMessage, exception, sourceContext);
-            else
-                TryEmitToFallback(logEvent);
+            long dropped = Interlocked.Increment(ref _droppedEvents);
+            if (dropped % 100 == 1)
+                SelfLog.WriteLine("SystemLogDbSink queue full; {0} log events dropped so far.", dropped);
+        }
+    }
+
+    private async Task ProcessQueueAsync()
+    {
+        try
+        {
+            await foreach (LogEvent logEvent in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                lock (_lock)
+                {
+                    if (_closed) return;
+                    if (_dbHealthy)
+                        WriteToDb(logEvent);
+                    else
+                        WriteToFallback(logEvent);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            SelfLog.WriteLine("SystemLogDbSink writer loop failed: {0}", ex);
         }
     }
 
@@ -90,7 +134,7 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
             ? property is ScalarValue { Value: string context } ? context : property?.ToString().Trim('"')
             : null;
 
-    private void TryEmitToDb(LogEvent logEvent, string message, string? exception, string? sourceContext)
+    private void WriteToDb(LogEvent logEvent)
     {
         try
         {
@@ -109,50 +153,55 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
                 "VALUES ($ts, $level, $msg, $ex, $ctx)";
             command.Parameters.AddWithValue("$ts", logEvent.Timestamp.UtcDateTime.ToString("O"));
             command.Parameters.AddWithValue("$level", logEvent.Level.ToString());
-            command.Parameters.AddWithValue("$msg", message);
-            command.Parameters.AddWithValue("$ex", (object?)exception ?? DBNull.Value);
-            command.Parameters.AddWithValue("$ctx", (object?)sourceContext ?? DBNull.Value);
+            command.Parameters.AddWithValue("$msg", logEvent.RenderMessage());
+            command.Parameters.AddWithValue("$ex", (object?)logEvent.Exception?.ToString() ?? DBNull.Value);
+            command.Parameters.AddWithValue("$ctx", (object?)GetSourceContext(logEvent) ?? DBNull.Value);
             command.ExecuteNonQuery();
-
-            // Successful write — reset failure counter and clear table-ensured
-            // flag so DDL retries on connection-recovery (e.g. DB recreated on disk).
-            _consecutiveDbFailures = 0;
         }
-        catch
+        catch (Exception ex)
         {
             _tableEnsured = false;
-            _consecutiveDbFailures++;
+            SelfLog.WriteLine("SystemLogDbSink database write failed: {0}", ex.Message);
 
-            if (_consecutiveDbFailures >= FailureThreshold)
-            {
+            DateTime nowUtc = DateTime.UtcNow;
+            _dbFailureTimesUtc.Enqueue(nowUtc);
+            while (_dbFailureTimesUtc.Count > 0 && nowUtc - _dbFailureTimesUtc.Peek() > FailureRateWindow)
+                _dbFailureTimesUtc.Dequeue();
+
+            if (_dbFailureTimesUtc.Count >= FailureRateThreshold)
                 _dbHealthy = false;
-                OpenFallbackWriter();
-            }
-            else
-            {
-                // Below threshold — write to fallback for this event to avoid data loss
-                EmitToFallbackInternal(logEvent);
-            }
+
+            // Whether or not the rate tripped, this event still goes to the fallback file so a
+            // failed DB write is not lost.
+            EmitToFallbackInternal(logEvent);
         }
     }
 
-    private void TryEmitToFallback(LogEvent logEvent)
+    private void WriteToFallback(LogEvent logEvent)
     {
-        // Periodically retry the DB while in fallback mode
+        // Periodically probe the DB while in fallback mode.
         DateTime nowUtc = DateTime.UtcNow;
         if ((nowUtc - _lastDbRetryUtc) >= RetryInterval)
         {
             _lastDbRetryUtc = nowUtc;
             if (TryTestDbConnection())
             {
-                _dbHealthy = true;
-                _consecutiveDbFailures = 0;
-                CloseFallbackWriter();
-
-                // Retry this event through the DB path
-                string msg = logEvent.RenderMessage();
-                TryEmitToDb(logEvent, msg, logEvent.Exception?.ToString(), GetSourceContext(logEvent));
-                return;
+                _recoveryProbeSuccesses++;
+                // Recover only after sustained success so a flapping database does not bounce
+                // every event between the two stores.
+                if (_recoveryProbeSuccesses >= RecoveryProbeThreshold)
+                {
+                    _dbHealthy = true;
+                    _dbFailureTimesUtc.Clear();
+                    _recoveryProbeSuccesses = 0;
+                    CloseFallbackWriter();
+                    WriteToDb(logEvent);
+                    return;
+                }
+            }
+            else
+            {
+                _recoveryProbeSuccesses = 0;
             }
         }
 
@@ -177,19 +226,7 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
     private static void EnsureTableExists(SqliteConnection connection)
     {
         using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            CREATE TABLE IF NOT EXISTS system_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp_utc TEXT NOT NULL,
-                level TEXT NOT NULL,
-                message TEXT NOT NULL,
-                exception TEXT NULL,
-                source_context TEXT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp_utc ON system_logs(timestamp_utc);
-            CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level);
-            """;
+        command.CommandText = SystemLogSchema.CreateSql;
         command.ExecuteNonQuery();
     }
 
@@ -226,27 +263,37 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
     private void OpenFallbackWriter()
     {
-        if (_fallbackWriter is not null) return;
+        if (_fallbackWriter is not null || _closed) return;
 
-        string? dir = Path.GetDirectoryName(_fallbackFilePath);
-        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
-
-        RollOverFallbackFileIfOversized();
-
-        FileStream stream = File.Open(_fallbackFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
         try
         {
-            _fallbackWriter = new StreamWriter(stream);
-        }
-        catch
-        {
-            // Don't leak the raw FileStream if the writer construction ever fails.
-            stream.Dispose();
-            throw;
-        }
+            string? dir = Path.GetDirectoryName(_fallbackFilePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
 
-        _fallbackBytesWritten = new FileInfo(_fallbackFilePath).Length;
+            RollOverFallbackFileIfOversized();
+
+            FileStream stream = File.Open(_fallbackFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            try
+            {
+                _fallbackWriter = new StreamWriter(stream);
+            }
+            catch
+            {
+                // Don't leak the raw FileStream if the writer construction ever fails.
+                stream.Dispose();
+                throw;
+            }
+
+            _fallbackBytesWritten = new FileInfo(_fallbackFilePath).Length;
+        }
+        catch (Exception ex)
+        {
+            // The fallback itself may be locked by another instance (AllowMultipleInstances);
+            // degrade to dropping events rather than throwing from a logging path.
+            SelfLog.WriteLine("SystemLogDbSink could not open fallback writer: {0}", ex);
+            CloseFallbackWriter();
+        }
     }
 
     /// <summary>
@@ -275,8 +322,18 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
 
     private void CloseFallbackWriter()
     {
-        _fallbackWriter?.Dispose();
-        _fallbackWriter = null;
+        try
+        {
+            _fallbackWriter?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            SelfLog.WriteLine("SystemLogDbSink could not close fallback writer: {0}", ex);
+        }
+        finally
+        {
+            _fallbackWriter = null;
+        }
     }
 
     public void Dispose()
@@ -285,7 +342,27 @@ internal sealed class SystemLogDbSink : ILogEventSink, IDisposable
         {
             if (_disposed) return;
             _disposed = true;
+        }
+
+        // Bounded drain: let the writer flush what is already queued, then force-close.
+        _channel.Writer.TryComplete();
+        try
+        {
+            _writerTask.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex)
+        {
+            SelfLog.WriteLine("SystemLogDbSink drain failed: {0}", ex);
+        }
+
+        lock (_lock)
+        {
+            _closed = true;
             CloseFallbackWriter();
         }
+
+        long dropped = Interlocked.Read(ref _droppedEvents);
+        if (dropped > 0)
+            SelfLog.WriteLine("SystemLogDbSink dropped {0} log events over its lifetime (queue full).", dropped);
     }
 }

@@ -5,8 +5,8 @@ namespace Kaeo.LlmProxy.Infrastructure.Modules;
 
 /// <summary>
 /// Implements the contracts-library <see cref="IModuleDatabase"/> gateway over the shared
-/// <see cref="AppDatabase"/> so module data lives in the existing database file and every
-/// command is serialized with the host's own data access.
+/// <see cref="AppDatabase"/> so module data lives in the existing database file. Commands run
+/// on dedicated connections outside the host lock; WAL and the busy timeout serialize writers.
 /// </summary>
 internal sealed class ModuleDatabaseGateway(AppDatabase database) : IModuleDatabase
 {
@@ -38,5 +38,16 @@ internal sealed class ModuleDatabaseGateway(AppDatabase database) : IModuleDatab
         ArgumentException.ThrowIfNullOrWhiteSpace(commandText);
         ArgumentNullException.ThrowIfNull(map);
         return _database.ExecuteModuleQuery(commandText, map, configureCommand);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> inside a single transaction on a dedicated connection,
+    /// committing on return and rolling back if it throws. Not yet part of the Core
+    /// <see cref="IModuleDatabase"/> contract; host-side callers use the concrete gateway.
+    /// </summary>
+    public void ExecuteInTransaction(Action<DbConnection, DbTransaction> work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        _database.ExecuteModuleTransaction(work);
     }
 }

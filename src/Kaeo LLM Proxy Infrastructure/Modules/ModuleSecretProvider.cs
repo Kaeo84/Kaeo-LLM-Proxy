@@ -12,8 +12,33 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
 {
     private readonly AppSettings _settings = settings;
 
+    /// <summary>
+    /// Snapshot of the credentials list. The host may mutate the live list (settings save)
+    /// while a module reads it; copying first avoids collection-modified races.
+    /// </summary>
+    private StoredCredential[] SnapshotCredentials()
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                return _settings.Credentials.ToArray();
+            }
+            catch (ArgumentException)
+            {
+                // List<T>.ToArray can throw if the list is resized mid-copy; retry once.
+            }
+        }
+
+        return [];
+    }
+
+    private StoredCredential? FindCredential(string credentialName) =>
+        SnapshotCredentials().FirstOrDefault(
+            credential => string.Equals(credential.Name, credentialName, StringComparison.OrdinalIgnoreCase));
+
     public IReadOnlyList<string> ListCredentialNames() =>
-        _settings.Credentials
+        SnapshotCredentials()
             .Select(credential => credential.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -21,7 +46,7 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
 
     public string? ResolveSecret(string credentialName)
     {
-        StoredCredential? credential = _settings.FindCredential(credentialName);
+        StoredCredential? credential = FindCredential(credentialName);
         return credential is not null && !string.IsNullOrWhiteSpace(credential.Secret)
             ? credential.Secret
             : null;
@@ -29,7 +54,7 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
 
     public CredentialMaterial? ResolveCredential(string credentialName)
     {
-        StoredCredential? credential = _settings.FindCredential(credentialName);
+        StoredCredential? credential = FindCredential(credentialName);
         if (credential is null)
             return null;
 

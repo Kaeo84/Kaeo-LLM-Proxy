@@ -51,10 +51,14 @@ internal sealed class PooledCharBuffer : IDisposable
         _buffer[_length++] = value;
     }
 
-    /// <summary>Returns the accumulated content as a string.</summary>
+    /// <summary>
+    /// Returns the accumulated content as a string, or "&lt;disposed&gt;" after disposal —
+    /// ToString must never throw (debuggers and string interpolation call it blindly).
+    /// </summary>
     public override string ToString()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_disposed)
+            return "<disposed>";
         return _length == 0 ? string.Empty : new string(_buffer, 0, _length);
     }
 

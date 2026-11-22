@@ -94,8 +94,8 @@ public class OllamaIrParityTests
 
         foreach (List<LlamaCppMessage> path in new[] { legacy, ir })
         {
-            string firstId = path[1].ToolCalls![0].Id;
-            string secondId = path[1].ToolCalls![1].Id;
+            string firstId = path[1].ToolCalls![0].Id!;
+            string secondId = path[1].ToolCalls![1].Id!;
             Assert.Matches("^[0-9a-f]{32}$", firstId);
             Assert.Matches("^[0-9a-f]{32}$", secondId);
             Assert.NotEqual(firstId, secondId);

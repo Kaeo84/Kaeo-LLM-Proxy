@@ -1,5 +1,6 @@
 using System.Net.Http;
 using System.Text.Json;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Infrastructure;
 
@@ -27,9 +28,14 @@ internal static class UpstreamModelMetadata
     /// <summary>
     /// Shared client for upstream model discovery. Avoids socket churn when model lists are
     /// fetched repeatedly; per-call timeouts are enforced via linked CancellationTokenSources
-    /// and apply to discovery calls only, not proxied traffic.
+    /// and apply to discovery calls only, not proxied traffic. The pooled-connection lifetime
+    /// forces periodic re-resolution so DNS changes at hosted providers are picked up.
     /// </summary>
-    private static readonly HttpClient _client = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private static readonly HttpClient _client = new(new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    })
+    { Timeout = Timeout.InfiniteTimeSpan };
 
     /// <summary>Outcome of an upstream <c>/v1/models</c> discovery call, for request logging.</summary>
     internal sealed record FetchResult(
@@ -92,6 +98,12 @@ internal static class UpstreamModelMetadata
             }
 
             return new FetchResult(models, (int)resp.StatusCode, body, null);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Our timeout fired, not the caller's token: report it as an error result.
+            int seconds = timeoutSeconds > 0 ? timeoutSeconds : DefaultTimeoutSeconds;
+            return new FetchResult([], 0, null, $"Upstream model discovery timed out after {seconds}s.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -238,8 +250,14 @@ internal static class UpstreamModelMetadata
             string body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
             return (body, (int)response.StatusCode, response.IsSuccessStatusCode);
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Log.Debug("Model metadata request to {Uri} timed out after {Timeout}s", uri, DefaultTimeoutSeconds);
+            return (string.Empty, 0, false);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            Log.Debug(ex, "Model metadata request to {Uri} failed", uri);
             return (string.Empty, 0, false);
         }
     }
@@ -250,10 +268,11 @@ internal static class UpstreamModelMetadata
     /// providers. Returns false when no usable figure is present.
     /// </summary>
     /// <remarks>
-    /// The candidate field names and the nesting strategies are retained exactly as they were in the
-    /// Model Mapping dialog, where they were derived against live upstreams. A figure is only
-    /// accepted when it is a positive integer, so a provider that reports <c>0</c> or a string
-    /// number is treated as "not stated" rather than silently clamping the proxy's budget to zero.
+    /// The candidate field names and the nesting strategies were derived against live upstreams in
+    /// the Model Mapping dialog; misleading keys (max_tokens, sliding_window) have since been
+    /// removed. A figure is only accepted when it is a positive integer, so a provider that reports
+    /// <c>0</c> or a string number is treated as "not stated" rather than silently clamping the
+    /// proxy's budget to zero.
     /// </remarks>
     public static bool TryExtractContextWindow(string json, out int? contextWindow)
     {
@@ -263,11 +282,12 @@ internal static class UpstreamModelMetadata
             using var doc = JsonDocument.Parse(json);
             JsonElement root = doc.RootElement;
 
-            // Search common field names for context window size.
+            // Search common field names for context window size. max_tokens (an output-token
+            // cap) and sliding_window (an attention span, not the full window) are deliberately
+            // excluded: they routinely understate the real context window.
             string[] candidateNames = [
                 "context_window", "context_length", "max_context_length", "max_context",
-                "context", "num_ctx", "max_tokens", "max_position_embeddings",
-                "sliding_window", "n_ctx_train"
+                "context", "num_ctx", "max_position_embeddings", "n_ctx_train"
             ];
 
             // 1. Root-level candidates first.

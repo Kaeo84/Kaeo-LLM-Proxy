@@ -25,6 +25,49 @@ internal sealed class ModuleHost
     // while the modules tab or an MCP session enumerates the list on another thread.
     private readonly object _modulesLock = new();
 
+    // Per-module gates serialize enable/disable/remove so the check+load (or check+unload)
+    // sequence is atomic per module without blocking unrelated modules.
+    private readonly Dictionary<int, SemaphoreSlim> _moduleGates = [];
+    private readonly object _moduleGatesLock = new();
+
+    private SemaphoreSlim GetModuleGate(int id)
+    {
+        lock (_moduleGatesLock)
+        {
+            if (!_moduleGates.TryGetValue(id, out SemaphoreSlim? gate))
+            {
+                gate = new SemaphoreSlim(1, 1);
+                _moduleGates[id] = gate;
+            }
+            return gate;
+        }
+    }
+
+    /// <summary>
+    /// Runs a module lifecycle call with a 30s bound. On timeout the call is abandoned with a
+    /// warning and a fault-observing continuation so the zombie task cannot go unobserved;
+    /// returns false. Other exceptions propagate to the caller's existing handling.
+    /// </summary>
+    private static async Task<bool> TryRunLifecycleAsync(string moduleName, string operation, Func<Task> action)
+    {
+        Task task = Task.Run(action);
+        try
+        {
+            await task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            Log.Warning("Module {Name} did not complete {Operation} within 30s; abandoning the call.", moduleName, operation);
+            _ = task.ContinueWith(
+                t => Log.Warning(t.Exception, "Abandoned module {Name} {Operation} call later faulted", moduleName, operation),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            return false;
+        }
+    }
+
     public ModuleHost(AppDatabase database, AppSettings settings)
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
@@ -162,7 +205,7 @@ internal sealed class ModuleHost
             }
             catch
             {
-                loadContext.Unload();
+                loadContext.UnloadWithVerification();
                 throw;
             }
 
@@ -170,7 +213,7 @@ internal sealed class ModuleHost
             if (_database.LoadModuleRegistry().Any(e =>
                     string.Equals(e.ModuleId, module.Id, StringComparison.OrdinalIgnoreCase)))
             {
-                loadContext.Unload();
+                loadContext.UnloadWithVerification();
                 throw new InvalidOperationException($"A module with id '{module.Id}' is already registered.");
             }
 
@@ -187,18 +230,44 @@ internal sealed class ModuleHost
             try
             {
                 string importDataDirectory = Path.GetDirectoryName(_database.DatabasePath) ?? AppContext.BaseDirectory;
-                module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, importDataDirectory));
+                ModuleContext context = new(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, importDataDirectory);
+                bool initialized = TryRunLifecycleAsync(module.Name, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; })
+                    .GetAwaiter().GetResult();
+                if (!initialized)
+                    throw new TimeoutException($"Module '{module.Name}' Initialize did not complete within 30s.");
             }
             catch
             {
-                loadContext.Unload();
+                loadContext.UnloadWithVerification();
                 throw;
             }
 
-            _database.InsertModuleRegistry(entry);
-            lock (_modulesLock)
+            try
             {
-                _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
+                _database.InsertModuleRegistry(entry);
+                lock (_modulesLock)
+                {
+                    _loadedModules.Add(new LoadedModule { Entry = entry, Module = module, LoadContext = loadContext });
+                }
+            }
+            catch
+            {
+                // Roll back the initialized module so a failed registration does not leave a
+                // running module or a pinned load context behind.
+                if (module is IRunnableModule { IsRunning: true } runnable)
+                {
+                    try
+                    {
+                        TryRunLifecycleAsync(module.Name, "StopAsync", runnable.StopAsync).GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Error stopping module {Name} during import rollback", module.Name);
+                    }
+                }
+
+                loadContext.UnloadWithVerification();
+                throw;
             }
 
             Log.Information("Imported module {Name} {Version} from {Path}", module.Name, module.Version, fullPath);
@@ -230,26 +299,59 @@ internal sealed class ModuleHost
     {
         ArgumentNullException.ThrowIfNull(entry);
 
-        entry.IsEnabled = enabled;
-
-        if (enabled)
+        SemaphoreSlim gate = GetModuleGate(entry.Id);
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            bool alreadyLoaded;
-            lock (_modulesLock)
+            if (enabled)
             {
-                alreadyLoaded = _loadedModules.Any(m => m.Entry.Id == entry.Id);
-            }
-
-            if (!alreadyLoaded)
-            {
-                LoadedModule loaded = LoadModule(entry);
+                bool alreadyLoaded;
                 lock (_modulesLock)
                 {
-                    _loadedModules.Add(loaded);
+                    alreadyLoaded = _loadedModules.Any(m => m.Entry.Id == entry.Id);
+                }
+
+                if (!alreadyLoaded)
+                {
+                    LoadedModule loaded = LoadModule(entry);
+                    lock (_modulesLock)
+                    {
+                        _loadedModules.Add(loaded);
+                    }
                 }
             }
+            else
+            {
+                LoadedModule? loaded;
+                lock (_modulesLock)
+                {
+                    loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+                }
+
+                if (loaded is not null)
+                    await UnloadAsync(loaded).ConfigureAwait(false);
+            }
+
+            // Persist and publish only after the load/unload succeeded; on failure the entry
+            // keeps its previous state and the exception propagates to the caller.
+            entry.IsEnabled = enabled;
+            TryUpdateEntry(entry);
+            ModulesChanged?.Invoke(this, EventArgs.Empty);
         }
-        else
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>Removes a module from the registry, stopping and unloading it first when loaded.</summary>
+    public async Task RemoveAsync(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+
+        SemaphoreSlim gate = GetModuleGate(entry.Id);
+        await gate.WaitAsync().ConfigureAwait(false);
+        try
         {
             LoadedModule? loaded;
             lock (_modulesLock)
@@ -259,29 +361,15 @@ internal sealed class ModuleHost
 
             if (loaded is not null)
                 await UnloadAsync(loaded).ConfigureAwait(false);
+
+            _database.DeleteModuleRegistry(entry.Id);
+            Log.Information("Removed module {Name} ({Path}) from the registry", entry.Name, entry.AssemblyPath);
+            ModulesChanged?.Invoke(this, EventArgs.Empty);
         }
-
-        TryUpdateEntry(entry);
-        ModulesChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    /// <summary>Removes a module from the registry, stopping and unloading it first when loaded.</summary>
-    public async Task RemoveAsync(ModuleRegistryEntry entry)
-    {
-        ArgumentNullException.ThrowIfNull(entry);
-
-        LoadedModule? loaded;
-        lock (_modulesLock)
+        finally
         {
-            loaded = _loadedModules.FirstOrDefault(m => m.Entry.Id == entry.Id);
+            gate.Release();
         }
-
-        if (loaded is not null)
-            await UnloadAsync(loaded).ConfigureAwait(false);
-
-        _database.DeleteModuleRegistry(entry.Id);
-        Log.Information("Removed module {Name} ({Path}) from the registry", entry.Name, entry.AssemblyPath);
-        ModulesChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Stops all runnable modules (used during application shutdown).</summary>
@@ -301,7 +389,7 @@ internal sealed class ModuleHost
 
             try
             {
-                await runnable.StopAsync().ConfigureAwait(false);
+                await TryRunLifecycleAsync(loaded.Entry.Name ?? loaded.Entry.AssemblyPath, "StopAsync", runnable.StopAsync).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -341,11 +429,15 @@ internal sealed class ModuleHost
             // to the module so it stores its files beside the host database.
             string? appDbPath = _database.DatabasePath;
             string dataDirectory = Path.GetDirectoryName(appDbPath) ?? AppContext.BaseDirectory;
-            module.Initialize(new ModuleContext(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, dataDirectory));
+            ModuleContext context = new(_databaseGateway, _secretProvider, BuildHostInfo(), _activityLog, dataDirectory);
+            bool initialized = TryRunLifecycleAsync(entry.Name ?? entry.AssemblyPath, "Initialize", () => { module.Initialize(context); return Task.CompletedTask; })
+                .GetAwaiter().GetResult();
+            if (!initialized)
+                throw new TimeoutException($"Module '{entry.Name ?? entry.AssemblyPath}' Initialize did not complete within 30s.");
         }
         catch
         {
-            loadContext.Unload();
+            loadContext.UnloadWithVerification();
             throw;
         }
 
@@ -363,7 +455,7 @@ internal sealed class ModuleHost
         try
         {
             if (loaded.Module is IRunnableModule { IsRunning: true } runnable)
-                await runnable.StopAsync().ConfigureAwait(false);
+                await TryRunLifecycleAsync(loaded.Entry.Name ?? loaded.Entry.AssemblyPath, "StopAsync", runnable.StopAsync).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -375,7 +467,7 @@ internal sealed class ModuleHost
             _loadedModules.Remove(loaded);
         }
 
-        loaded.LoadContext.Unload();
+        loaded.LoadContext.UnloadWithVerification();
     }
 
     private static IKaeoModule CreateModuleInstance(Assembly assembly)

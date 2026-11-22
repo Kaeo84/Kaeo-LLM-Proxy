@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Loader;
 using Serilog;
 
@@ -38,17 +40,30 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
     }
 
     /// <summary>
-    /// Live module directories, registered when a context is created and removed when it is
-    /// unloaded. Used by the default-context <c>Resolving</c> handler to locate module
-    /// dependencies that the host's deps.json does not list.
+    /// Live module contexts, registered when a context is created and removed when it is
+    /// unloaded. Keyed by context (not directory) so two modules sharing a directory do not
+    /// remove each other's registration, and so the default-context <c>Resolving</c> handler
+    /// can resolve a dependency into its OWNING collectible context instead of Default.
     /// </summary>
-    private static readonly HashSet<string> _moduleDirectories = new();
-    private static readonly object _moduleDirectoriesLock = new();
+    private static readonly List<ModuleAssemblyLoadContext> _liveContexts = [];
+    private static readonly object _liveContextsLock = new();
     private static bool _resolvingHandlerRegistered;
+
+    /// <summary>
+    /// Cache of assemblies loaded in the default context, kept current via <c>AssemblyLoad</c>.
+    /// Avoids enumerating <c>Default.Assemblies</c> on every resolution and enables the
+    /// version comparison that rejects unifying with an older host copy.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, Assembly> _defaultAssemblyCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object _defaultCacheLock = new();
+    private static volatile bool _defaultCacheInitialized;
 
     private readonly AssemblyDependencyResolver _resolver;
     private readonly string _moduleDirectory;
     private readonly string _moduleAssemblyFullPath;
+    private readonly string _moduleAssemblyName;
+    private readonly object _nativeCacheLock = new();
+    private Dictionary<string, string>? _nativeDllCache;
 
     public ModuleAssemblyLoadContext(string moduleAssemblyPath)
         : base(name: Path.GetFileNameWithoutExtension(moduleAssemblyPath), isCollectible: true)
@@ -57,10 +72,11 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         _resolver = new AssemblyDependencyResolver(fullPath);
         _moduleDirectory = Path.GetDirectoryName(fullPath) ?? string.Empty;
         _moduleAssemblyFullPath = fullPath;
+        _moduleAssemblyName = Path.GetFileNameWithoutExtension(fullPath);
 
-        lock (_moduleDirectoriesLock)
+        lock (_liveContextsLock)
         {
-            _moduleDirectories.Add(_moduleDirectory);
+            _liveContexts.Add(this);
 
             // Registered under the same lock so two contexts constructed concurrently cannot
             // both pass the flag check and subscribe the default-context handler twice.
@@ -71,7 +87,66 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
             }
         }
 
-        Unloading += ctx => { lock (_moduleDirectoriesLock) { _moduleDirectories.Remove(_moduleDirectory); } };
+        Unloading += ctx => { lock (_liveContextsLock) { _liveContexts.Remove(this); } };
+    }
+
+    /// <summary>
+    /// Unloads this context and verifies on a background task that it actually gets collected.
+    /// A surviving context means some reference (event handler, static, running task) still
+    /// pins the module; that is logged so the leak is visible instead of silent.
+    /// </summary>
+    public void UnloadWithVerification()
+    {
+        string contextName = Name ?? "<unnamed>";
+        WeakReference reference = new(this, trackResurrection: true);
+        Unload();
+
+        // The closure captures only locals — capturing 'this' would itself root the context.
+        _ = Task.Run(() =>
+        {
+            for (int pass = 0; pass < 2 && reference.IsAlive; pass++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+
+            if (reference.IsAlive)
+                Log.Warning("Module load context {Context} survived unload after GC; a lingering reference is keeping the module alive.", contextName);
+        });
+    }
+
+    private static Assembly? GetDefaultAssembly(string name)
+    {
+        if (!_defaultCacheInitialized)
+        {
+            lock (_defaultCacheLock)
+            {
+                if (!_defaultCacheInitialized)
+                {
+                    // Subscribe before enumerating so an assembly loaded mid-scan is not missed;
+                    // duplicate writes are harmless (the indexer overwrites). ALC has no load
+                    // event of its own, so filter the AppDomain event to the default context.
+                    AppDomain.CurrentDomain.AssemblyLoad += (_, args) =>
+                    {
+                        if (ReferenceEquals(AssemblyLoadContext.GetLoadContext(args.LoadedAssembly), AssemblyLoadContext.Default)
+                            && args.LoadedAssembly.GetName().Name is { } loadedName)
+                        {
+                            _defaultAssemblyCache[loadedName] = args.LoadedAssembly;
+                        }
+                    };
+
+                    foreach (Assembly assembly in AssemblyLoadContext.Default.Assemblies)
+                    {
+                        if (assembly.GetName().Name is { } loadedName)
+                            _defaultAssemblyCache[loadedName] = assembly;
+                    }
+
+                    _defaultCacheInitialized = true;
+                }
+            }
+        }
+
+        return _defaultAssemblyCache.TryGetValue(name, out Assembly? cached) ? cached : null;
     }
 
     /// <summary>
@@ -99,24 +174,43 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
 
     /// <summary>
     /// Fallback handler for the default load context. When the host's deps.json and base
-    /// directory probing both fail, check each loaded module's directory for the requested
-    /// assembly. This covers cases where the default context encounters a module-specific
-    /// type reference (e.g. through exception type matching or cross-context casts).
+    /// directory probing both fail, resolve the request into the OWNING module's collectible
+    /// context — never into Default, which is non-collectible and would pin the assembly for
+    /// the process lifetime. A module's own assembly is never served here at all; only its
+    /// dependencies. If no module owns the assembly, returning null leaves Default probing
+    /// the host directory, i.e. only host-approved shared dependencies load there.
     /// </summary>
     private static Assembly? OnDefaultContextResolving(AssemblyLoadContext context, AssemblyName assemblyName)
     {
-        string[] dirs;
-        lock (_moduleDirectoriesLock)
+        if (assemblyName.Name is null)
+            return null;
+
+        ModuleAssemblyLoadContext[] owners;
+        lock (_liveContextsLock)
         {
-            dirs = _moduleDirectories.ToArray();
+            owners = [.. _liveContexts];
         }
 
-        foreach (string dir in dirs)
+        // A module's own assembly must never enter the default context.
+        foreach (ModuleAssemblyLoadContext owner in owners)
         {
-            string candidate = Path.Combine(dir, $"{assemblyName.Name}.dll");
-            if (File.Exists(candidate))
-                return context.LoadFromAssemblyPath(candidate);
+            if (string.Equals(owner._moduleAssemblyName, assemblyName.Name, StringComparison.OrdinalIgnoreCase))
+                return null;
         }
+
+        foreach (ModuleAssemblyLoadContext owner in owners)
+        {
+            // Prefer an instance the owner already loaded (keeps type identity within the module).
+            Assembly? alreadyLoaded = owner.Assemblies.FirstOrDefault(
+                a => string.Equals(a.GetName().Name, assemblyName.Name, StringComparison.OrdinalIgnoreCase));
+            if (alreadyLoaded is not null)
+                return alreadyLoaded;
+
+            string candidate = Path.Combine(owner._moduleDirectory, $"{assemblyName.Name}.dll");
+            if (File.Exists(candidate))
+                return owner.LoadFromAssemblyPath(candidate);
+        }
+
         return null;
     }
 
@@ -125,20 +219,29 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         if (assemblyName.Name is null)
             return null;
 
-        // 0. If the assembly is already loaded in the default context, reuse that exact
-        //    instance. This is the strongest guarantee that shared contract types (e.g.
-        //    IKaeoModule) keep a single type identity between the host and this module.
+        // 0. If the assembly is already loaded in the default context at the same or a higher
+        //    version, reuse that exact instance so shared contract types (e.g. IKaeoModule)
+        //    keep a single type identity. An OLDER host copy is a downgrade for this module:
+        //    skip unification (and the host-resolver step) and load the module's own copy.
+        bool rejectedDowngrade = false;
         try
         {
-            foreach (Assembly a in AssemblyLoadContext.Default.Assemblies)
+            if (GetDefaultAssembly(assemblyName.Name) is { } loaded)
             {
-                if (string.Equals(a.GetName().Name, assemblyName.Name, StringComparison.OrdinalIgnoreCase))
+                Version? loadedVersion = loaded.GetName().Version;
+                Version? requestedVersion = assemblyName.Version;
+                if (requestedVersion is null || loadedVersion is null || loadedVersion >= requestedVersion)
                     return null;
+
+                rejectedDowngrade = true;
+                Log.Debug(
+                    "Default context holds {Assembly} {LoadedVersion} but module {Context} requests {RequestedVersion}; loading the module's own copy",
+                    assemblyName.Name, loadedVersion, Name, requestedVersion);
             }
         }
         catch
         {
-            // Ignore enumeration failures; fall through to the other resolution steps.
+            // Ignore cache/enumeration failures; fall through to the other resolution steps.
         }
 
         // 1. If the host's deps.json can resolve this assembly, defer to the default
@@ -146,14 +249,17 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         //    unify with the host's copies. Using the host's deps.json (not mere file
         //    existence) prevents module-specific dependencies that happen to also exist
         //    in the host directory from being incorrectly deferred.
-        try
+        if (!rejectedDowngrade)
         {
-            if (HostResolver.ResolveAssemblyToPath(assemblyName) is not null)
-                return null;
-        }
-        catch (Exception ex)
-        {
-            Log.Debug(ex, "Host AssemblyDependencyResolver failed for {Assembly}", assemblyName.Name);
+            try
+            {
+                if (HostResolver.ResolveAssemblyToPath(assemblyName) is not null)
+                    return null;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug(ex, "Host AssemblyDependencyResolver failed for {Assembly}", assemblyName.Name);
+            }
         }
 
         // 2. Embedded dependencies: small runtime dependencies (< 10 MB) are embedded
@@ -200,25 +306,15 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
         if (File.Exists(hostCandidate))
             return LoadUnmanagedDllFromPath(hostCandidate);
 
-        // 2. Module's own directory: direct probe first, then recursive subdirectory
-        //    search (covers runtimes/{rid}/native/ and other NuGet native dependency
-        //    layouts), then deps.json resolution as a fallback.
+        // 2. Module's own directory: direct probe first, then a cached recursive scan
+        //    (covers runtimes/{rid}/native/ and other NuGet native dependency layouts,
+        //    preferring the current RID's native assets), then deps.json resolution.
         string siblingCandidate = Path.Combine(_moduleDirectory, fileName);
         if (File.Exists(siblingCandidate))
             return LoadUnmanagedDllFromPath(siblingCandidate);
 
-        try
-        {
-            string? subdirCandidate = Directory
-                .EnumerateFiles(_moduleDirectory, fileName, SearchOption.AllDirectories)
-                .FirstOrDefault();
-            if (subdirCandidate is not null)
-                return LoadUnmanagedDllFromPath(subdirCandidate);
-        }
-        catch (Exception ex)
-        {
-            Log.Debug(ex, "Recursive native DLL probe failed in {ModuleDir}", _moduleDirectory);
-        }
+        if (GetNativeDllCache().TryGetValue(fileName, out string? subdirCandidate))
+            return LoadUnmanagedDllFromPath(subdirCandidate);
 
         try
         {
@@ -233,5 +329,42 @@ internal sealed class ModuleAssemblyLoadContext : AssemblyLoadContext
 
         // 3. Let the runtime fall back to its default probing (PATH, system directories).
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// One recursive scan of the module directory, cached for the context's lifetime. Entries
+    /// under <c>runtimes/&lt;current-rid&gt;/native</c> win over other platforms' copies of the
+    /// same file name. A failed scan is not cached so a transient sharing violation retries.
+    /// </summary>
+    private Dictionary<string, string> GetNativeDllCache()
+    {
+        lock (_nativeCacheLock)
+        {
+            if (_nativeDllCache is not null)
+                return _nativeDllCache;
+
+            Dictionary<string, string> cache = new(StringComparer.OrdinalIgnoreCase);
+            bool scanCompleted = false;
+            try
+            {
+                string ridNativeSegment = Path.Combine("runtimes", RuntimeInformation.RuntimeIdentifier, "native") + Path.DirectorySeparatorChar;
+                foreach (string path in Directory.EnumerateFiles(_moduleDirectory, "*.dll", SearchOption.AllDirectories))
+                {
+                    string name = Path.GetFileName(path);
+                    bool isCurrentRid = path.Contains(ridNativeSegment, StringComparison.OrdinalIgnoreCase);
+                    if (isCurrentRid || !cache.ContainsKey(name))
+                        cache[name] = path;
+                }
+                scanCompleted = true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Debug(ex, "Native DLL directory scan failed in {ModuleDir}", _moduleDirectory);
+            }
+
+            if (scanCompleted)
+                _nativeDllCache = cache;
+            return cache;
+        }
     }
 }

@@ -26,20 +26,23 @@ internal sealed class SystemLogSink : ILogEventSink, IDisposable
 
     private readonly object _lock = new();
     private readonly List<SystemLogEntry> _entries = new();
+    private bool _disposed;
 
     public void Emit(LogEvent logEvent)
     {
-        var entry = new SystemLogEntry(
-            logEvent.Timestamp.LocalDateTime,
-            logEvent.Level.ToString(),
-            logEvent.RenderMessage(),
-            logEvent.Exception?.ToString(),
-            logEvent.Properties.TryGetValue("$sourceContext", out var sc)
-                ? sc.ToString().Trim('"')
-                : null);
-
         lock (_lock)
         {
+            if (_disposed) return;
+
+            var entry = new SystemLogEntry(
+                logEvent.Timestamp.LocalDateTime,
+                logEvent.Level.ToString(),
+                logEvent.RenderMessage(),
+                logEvent.Exception?.ToString(),
+                logEvent.Properties.TryGetValue("$sourceContext", out var sc)
+                    ? sc.ToString().Trim('"')
+                    : null);
+
             _entries.Add(entry);
             if (_entries.Count > Capacity)
                 _entries.RemoveRange(0, _entries.Count - Capacity);
@@ -68,6 +71,7 @@ internal sealed class SystemLogSink : ILogEventSink, IDisposable
     {
         lock (_lock)
         {
+            _disposed = true;
             _entries.Clear();
         }
     }

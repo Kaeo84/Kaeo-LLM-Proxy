@@ -5,7 +5,9 @@ obj/
 
 # Application data folder (portable mode)
 # All runtime configuration, logs, and database files
-Data/
+# Root-anchored: an unanchored "Data/" also ignored source folders like
+# src/Kaeo LLM Proxy Infrastructure/Data/ (AppDatabase.cs was silently untracked).
+/Data/
 docs/docs/copilot-sdk/
 ollama-docs/
 openai-docs/

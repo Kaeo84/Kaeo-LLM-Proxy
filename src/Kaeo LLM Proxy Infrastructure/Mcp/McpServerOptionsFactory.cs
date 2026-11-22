@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Core.Modules;
 using ModelContextProtocol.Protocol;
@@ -20,6 +21,10 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
 
     private readonly ModuleHost _moduleHost = moduleHost;
 
+    // Tool descriptors cached per target type. A ConditionalWeakTable keeps the cache from
+    // rooting module types (and their collectible load contexts) after a module is unloaded.
+    private static readonly ConditionalWeakTable<Type, MethodInfo[]> _toolMethodCache = new();
+
     /// <summary>
     /// Builds options for the session described by <paramref name="session"/>, handing the
     /// session info to each module so targets can attribute activity to the calling client.
@@ -40,17 +45,13 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
 
         foreach (object target in _moduleHost.GetMcpToolTargets(session))
         {
+            MethodInfo[] methods;
             try
             {
-                foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
-                {
-                    if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
-                        continue;
-
-                    McpServerPrimitiveCollection<McpServerTool> toolCollection =
-                        options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
-                    toolCollection.Add(McpServerTool.Create(method, target));
-                }
+                methods = _toolMethodCache.GetValue(target.GetType(), static type =>
+                    type.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                        .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
+                        .ToArray());
             }
             catch (Exception ex)
             {
@@ -58,6 +59,22 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                 // can throw (e.g. attributes whose types failed to unify). Skip the bad target
                 // instead of failing the whole MCP session build.
                 Log.Warning(ex, "Failed to enumerate MCP tools on target {Target}; skipping it.", target.GetType().FullName);
+                continue;
+            }
+
+            foreach (MethodInfo method in methods)
+            {
+                try
+                {
+                    McpServerPrimitiveCollection<McpServerTool> toolCollection =
+                        options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
+                    toolCollection.Add(McpServerTool.Create(method, target));
+                }
+                catch (Exception ex)
+                {
+                    // One bad or duplicate tool must not skip the target's remaining tools.
+                    Log.Warning(ex, "Failed to add MCP tool {Tool} from target {Target}; skipping it.", method.Name, target.GetType().FullName);
+                }
             }
         }
 

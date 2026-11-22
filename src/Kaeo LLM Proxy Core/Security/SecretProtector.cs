@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Kaeo.LlmProxy.Core.Models;
@@ -7,12 +8,14 @@ namespace Kaeo.LlmProxy.Core.Security;
 /// <summary>
 /// Encrypts and decrypts secret strings (e.g. API keys) using AES-256-GCM with a key derived
 /// from a user-supplied passphrase via PBKDF2-SHA256. Encrypted values are wrapped in a
-/// versioned envelope (<c>kaeo-enc:v1:…</c>) so plaintext and encrypted values can coexist
-/// during migration.
+/// versioned envelope so plaintext and encrypted values can coexist during migration.
+/// New envelopes use <c>kaeo-enc:v2:…</c> (iteration count stored in the payload); legacy
+/// <c>kaeo-enc:v1:…</c> envelopes (fixed 100,000 iterations) still decrypt unchanged.
 /// </summary>
 internal static class SecretProtector
 {
     private const string EnvelopePrefix = "kaeo-enc:v1:";
+    private const string EnvelopePrefixV2 = "kaeo-enc:v2:";
 
     /// <summary>
     /// Prefix for a SHA-256 hash of the user's passphrase stored in
@@ -20,17 +23,25 @@ internal static class SecretProtector
     /// value is a one-way hash, not the raw passphrase. The hash itself is used as PBKDF2
     /// input so that decryption works without prompting.
     /// </summary>
-    private const string HashPrefix = "!pwh!";
+    internal const string HashPrefix = "!pwh!";
 
     private const int SaltSize = 16;
     private const int NonceSize = 12; // AES-GCM standard nonce size
     private const int TagSize = 16;   // AES-GCM tag size
     private const int KeySize = 32;   // AES-256
-    private const int Iterations = 100_000;
+    private const int LegacyIterations = 100_000;  // v1 envelopes; never change or old data breaks
+    private const int CurrentIterations = 600_000; // v2 envelopes (OWASP PBKDF2-SHA256 guidance)
 
-    /// <summary>Returns true when <paramref name="value"/> carries the encrypted envelope prefix.</summary>
+    // Bounds on the iteration count read from a v2 envelope so a tampered header cannot
+    // force an arbitrarily expensive key derivation.
+    private const int MinIterations = 1_000;
+    private const int MaxIterations = 10_000_000;
+
+    /// <summary>Returns true when <paramref name="value"/> carries an encrypted envelope prefix.</summary>
     public static bool IsEncrypted(string? value) =>
-        !string.IsNullOrEmpty(value) && value.StartsWith(EnvelopePrefix, StringComparison.Ordinal);
+        !string.IsNullOrEmpty(value)
+        && (value.StartsWith(EnvelopePrefix, StringComparison.Ordinal)
+            || value.StartsWith(EnvelopePrefixV2, StringComparison.Ordinal));
 
     /// <summary>
     /// Encrypts <paramref name="plaintext"/> with the supplied <paramref name="passphrase"/> and
@@ -43,7 +54,7 @@ internal static class SecretProtector
 
         byte[] salt = RandomNumberGenerator.GetBytes(SaltSize);
         byte[] nonce = RandomNumberGenerator.GetBytes(NonceSize);
-        byte[] key = DeriveKey(passphrase, salt);
+        byte[] key = DeriveKey(passphrase, salt, CurrentIterations);
 
         byte[] plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
         byte[] ciphertext = new byte[plaintextBytes.Length];
@@ -60,14 +71,15 @@ internal static class SecretProtector
             CryptographicOperations.ZeroMemory(plaintextBytes);
         }
 
-        // Envelope payload: salt | nonce | tag | ciphertext
-        byte[] payload = new byte[SaltSize + NonceSize + TagSize + ciphertext.Length];
+        // Envelope payload: salt | nonce | tag | iterations (int32 LE) | ciphertext
+        byte[] payload = new byte[SaltSize + NonceSize + TagSize + sizeof(int) + ciphertext.Length];
         salt.CopyTo(payload, 0);
         nonce.CopyTo(payload, SaltSize);
         tag.CopyTo(payload, SaltSize + NonceSize);
-        ciphertext.CopyTo(payload, SaltSize + NonceSize + TagSize);
+        BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(SaltSize + NonceSize + TagSize, sizeof(int)), CurrentIterations);
+        ciphertext.CopyTo(payload, SaltSize + NonceSize + TagSize + sizeof(int));
 
-        return EnvelopePrefix + Convert.ToBase64String(payload);
+        return EnvelopePrefixV2 + Convert.ToBase64String(payload);
     }
 
     /// <summary>
@@ -83,17 +95,29 @@ internal static class SecretProtector
         if (!IsEncrypted(envelope))
             throw new ArgumentException("Value is not an encrypted envelope.", nameof(envelope));
 
-        byte[] payload = Convert.FromBase64String(envelope[EnvelopePrefix.Length..]);
+        bool isV2 = envelope.StartsWith(EnvelopePrefixV2, StringComparison.Ordinal);
+        string prefix = isV2 ? EnvelopePrefixV2 : EnvelopePrefix;
+        byte[] payload = Convert.FromBase64String(envelope[prefix.Length..]);
 
-        if (payload.Length < SaltSize + NonceSize + TagSize)
+        int headerSize = SaltSize + NonceSize + TagSize + (isV2 ? sizeof(int) : 0);
+        if (payload.Length < headerSize)
             throw new CryptographicException("Encrypted payload is too short.");
 
         byte[] salt = payload[..SaltSize];
         byte[] nonce = payload[SaltSize..(SaltSize + NonceSize)];
         byte[] tag = payload[(SaltSize + NonceSize)..(SaltSize + NonceSize + TagSize)];
-        byte[] ciphertext = payload[(SaltSize + NonceSize + TagSize)..];
+        byte[] ciphertext = payload[headerSize..];
 
-        byte[] key = DeriveKey(passphrase, salt);
+        int iterations = LegacyIterations;
+        if (isV2)
+        {
+            iterations = BinaryPrimitives.ReadInt32LittleEndian(
+                payload.AsSpan(SaltSize + NonceSize + TagSize, sizeof(int)));
+            if (iterations is < MinIterations or > MaxIterations)
+                throw new CryptographicException("Encrypted payload declares an out-of-range iteration count.");
+        }
+
+        byte[] key = DeriveKey(passphrase, salt, iterations);
         byte[] plaintext = new byte[ciphertext.Length];
 
         try
@@ -123,14 +147,15 @@ internal static class SecretProtector
             plaintext = Decrypt(envelope, passphrase);
             return true;
         }
-        catch (CryptographicException)
+        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException)
         {
+            // FormatException: corrupt Base64. ArgumentException: not an envelope / empty input.
             plaintext = null;
             return false;
         }
     }
 
-    private static byte[] DeriveKey(string passphrase, byte[] salt)
+    private static byte[] DeriveKey(string passphrase, byte[] salt, int iterations)
     {
         byte[] passphraseBytes = Encoding.UTF8.GetBytes(passphrase);
         try
@@ -138,7 +163,7 @@ internal static class SecretProtector
             return Rfc2898DeriveBytes.Pbkdf2(
                 passphraseBytes,
                 salt,
-                Iterations,
+                iterations,
                 HashAlgorithmName.SHA256,
                 KeySize);
         }
@@ -205,7 +230,7 @@ internal static class SecretProtector
     /// <summary>
     /// The three field names on <see cref="StoredCredential"/> that carry secret material.
     /// </summary>
-    internal static string[] SecretMaterialFields { get; } = ["Secret", "PrivateKey", "Certificate"];
+    internal static IReadOnlyList<string> SecretMaterialFields { get; } = ["Secret", "PrivateKey", "Certificate"];
 
     /// <summary>
     /// Returns true when any of the secret-bearing fields on <paramref name="credential"/>

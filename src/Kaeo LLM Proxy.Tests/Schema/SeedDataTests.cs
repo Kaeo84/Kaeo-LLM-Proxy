@@ -85,7 +85,7 @@ public class SeedDataTests
         List<ModelMapping> mappings = OpenAndLoad();
 
         Assert.Equal(
-            [(SamplingPriority.Proxy, "medium", "off,low,medium,high,x-high")],
+            [(SamplingPriority.Proxy, "medium", "off,low,medium,high,xhigh")],
             mappings
                 .Select(m => (m.ReasoningEffortPriority, m.ReasoningEffort, string.Join(",", m.ReasoningEffortValues)))
                 .Distinct());
@@ -129,12 +129,12 @@ public class SeedDataTests
     }
 
     [Fact]
-    public void SeededMappingsLeaveRedactionDisabled()
+    public void SeededMappingsKeepRedactionEnabled()
     {
         List<ModelMapping> mappings = OpenAndLoad();
 
         Assert.Equal(
-            [(false, false, false)],
+            [(true, true, true)],
             mappings
                 .Select(m => (m.RedactRequestBodies, m.RedactResponseBodies, m.RedactSensitiveJsonFields))
                 .Distinct());

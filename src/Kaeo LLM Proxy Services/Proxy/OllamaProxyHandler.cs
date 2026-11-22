@@ -749,7 +749,7 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     {
         request.Temperature = ResolveSamplingValue(
             mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
-            options?.Temperature,
+            (float?)options?.Temperature,
             (float)(mapping?.Temperature ?? 0.7));
         request.TopP = options?.TopP;
         request.TopK = options?.TopK;
@@ -837,34 +837,37 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         if (string.IsNullOrWhiteSpace(body))
             return false;
 
+        string? errorMessage = null;
+        string? errorType = null;
         try
         {
-            // Try to parse as structured error
+            // Try to parse as structured error. A parse failure must never skip the
+            // plain-text fallback scan below (some providers return non-JSON bodies).
             LlamaCppErrorResponse? errorResp = JsonSerializer.Deserialize<LlamaCppErrorResponse>(body, _jsonOptions);
-            string? errorMessage = errorResp?.Error?.Message;
-            string? errorType = errorResp?.Error?.Type;
-
-            // Most reliable: the structured error type from llama.cpp
-            if (!string.IsNullOrWhiteSpace(errorType)
-                && errorType.Contains("context", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            if (string.IsNullOrWhiteSpace(errorMessage))
-                errorMessage = body;
-
-            // Check for common context overflow patterns across providers.
-            // "exceed" matches both "exceeds" (llama.cpp) and "exceeded" (OpenAI/Anthropic).
-            return errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
-                && (errorMessage.Contains("exceed", StringComparison.OrdinalIgnoreCase)
-                 || errorMessage.Contains("too large", StringComparison.OrdinalIgnoreCase)
-                 || errorMessage.Contains("too long", StringComparison.OrdinalIgnoreCase)
-                 || errorMessage.Contains("max tokens", StringComparison.OrdinalIgnoreCase)
-                 || errorMessage.Contains("token limit", StringComparison.OrdinalIgnoreCase));
+            errorMessage = errorResp?.Error?.Message;
+            errorType = errorResp?.Error?.Type;
         }
-        catch
+        catch (JsonException)
         {
-            return false;
+            // Fall through to the plain-text scan.
         }
+
+        // Most reliable: the structured error type from llama.cpp
+        if (!string.IsNullOrWhiteSpace(errorType)
+            && errorType.Contains("context", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (string.IsNullOrWhiteSpace(errorMessage))
+            errorMessage = body;
+
+        // Check for common context overflow patterns across providers.
+        // "exceed" matches both "exceeds" (llama.cpp) and "exceeded" (OpenAI/Anthropic).
+        return errorMessage.Contains("context", StringComparison.OrdinalIgnoreCase)
+            && (errorMessage.Contains("exceed", StringComparison.OrdinalIgnoreCase)
+             || errorMessage.Contains("too large", StringComparison.OrdinalIgnoreCase)
+             || errorMessage.Contains("too long", StringComparison.OrdinalIgnoreCase)
+             || errorMessage.Contains("max tokens", StringComparison.OrdinalIgnoreCase)
+             || errorMessage.Contains("token limit", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

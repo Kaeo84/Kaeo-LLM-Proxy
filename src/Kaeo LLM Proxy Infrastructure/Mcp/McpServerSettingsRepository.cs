@@ -47,13 +47,35 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        UpsertKeyValue(ServerEnabledKey, settings.Enabled ? "1" : "0");
-        UpsertKeyValue(ServerListenAddressKey, settings.ListenAddress);
-        UpsertKeyValue(ServerListenPortKey, ClampPort(settings.ListenPort).ToString());
-        UpsertKeyValue(ServerApiExplorerKey, settings.EnableApiExplorer ? "1" : "0");
-        UpsertKeyValue(ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty);
-        UpsertKeyValue(ServerCollectRequestKey, settings.CollectRequestDetails ? "1" : "0");
-        UpsertKeyValue(ServerCollectResponseKey, settings.CollectResponseDetails ? "1" : "0");
+        (string Key, string Value)[] pairs =
+        [
+            (ServerEnabledKey, settings.Enabled ? "1" : "0"),
+            (ServerListenAddressKey, settings.ListenAddress),
+            (ServerListenPortKey, ClampPort(settings.ListenPort).ToString()),
+            (ServerApiExplorerKey, settings.EnableApiExplorer ? "1" : "0"),
+            (ServerAuthCredentialKey, settings.AuthCredentialName ?? string.Empty),
+            (ServerCollectRequestKey, settings.CollectRequestDetails ? "1" : "0"),
+            (ServerCollectResponseKey, settings.CollectResponseDetails ? "1" : "0"),
+        ];
+
+        // One connection + one transaction for all keys so a concurrent reader never sees a
+        // half-saved settings set.
+        _database.ExecuteModuleTransaction((connection, transaction) =>
+        {
+            foreach ((string key, string value) in pairs)
+            {
+                using DbCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT INTO mcp_server_settings (key, value) VALUES ($key, $value)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """;
+                AddParameter(command, "$key", key);
+                AddParameter(command, "$value", value);
+                command.ExecuteNonQuery();
+            }
+        });
     }
 
     private static int ClampPort(int port) => Math.Clamp(port, McpServerSettings.MinPort, McpServerSettings.MaxPort);
@@ -96,18 +118,6 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
         return new Dictionary<string, string>(rows, StringComparer.OrdinalIgnoreCase);
     }
 
-    private void UpsertKeyValue(string key, string value) =>
-        _database.ExecuteModuleNonQuery(
-            """
-            INSERT INTO mcp_server_settings (key, value) VALUES ($key, $value)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-            """,
-            command =>
-            {
-                AddParameter(command, "$key", key);
-                AddParameter(command, "$value", value);
-            });
-
     /// <summary>Creates and adds a parameter in a provider-agnostic way.</summary>
     private static void AddParameter(DbCommand command, string name, object? value)
     {
@@ -118,7 +128,9 @@ internal sealed class McpServerSettingsRepository(AppDatabase database)
     }
 
     private static bool ReadBool(Dictionary<string, string> values, string key, bool fallback) =>
-        values.TryGetValue(key, out string? raw) ? raw is "1" or "true" : fallback;
+        values.TryGetValue(key, out string? raw)
+            ? raw.Trim() is "1" || (bool.TryParse(raw.Trim(), out bool parsed) && parsed)
+            : fallback;
 
     private static int ReadInt(Dictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out string? raw) && int.TryParse(raw, out int parsed) ? parsed : fallback;

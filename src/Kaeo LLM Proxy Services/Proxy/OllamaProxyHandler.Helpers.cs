@@ -129,7 +129,7 @@ partial class OllamaProxyHandler
                 && msg.ToolCalls is { Count: > 0 })
             {
                 foreach (LlamaCppToolCall tc in msg.ToolCalls)
-                    pending.Enqueue((tc.Id, tc.Function?.Name));
+                    pending.Enqueue((tc.Id!, tc.Function?.Name)); // MapMessage always assigns a non-null id.
             }
             else if (string.Equals(msg.Role, "tool", StringComparison.OrdinalIgnoreCase)
                 && string.IsNullOrWhiteSpace(msg.ToolCallId)

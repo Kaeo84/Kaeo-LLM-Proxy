@@ -29,6 +29,12 @@ internal static class ReasoningEffortProfiles
 
         string model = modelName.Trim();
 
+        // Hosted routers prefix a provider segment ("openrouter/deepseek-v4", "hosted/glm-5");
+        // strip one leading segment so every family match below sees the bare model name.
+        int slashIndex = model.IndexOf('/');
+        if (slashIndex >= 0)
+            model = model[(slashIndex + 1)..];
+
         // Kimi K3 only accepts maximum-intensity inference.
         if (model.Contains("kimi-k3", StringComparison.OrdinalIgnoreCase))
         {
@@ -47,9 +53,10 @@ internal static class ReasoningEffortProfiles
         }
 
         // DeepSeek-V4 and GLM series: high (default) and max; low/medium map to high and
-        // xhigh maps to max on the provider side.
-        if (model.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase)
-            || model.StartsWith("glm-5", StringComparison.OrdinalIgnoreCase))
+        // xhigh maps to max on the provider side. Contains keeps matching consistent with the
+        // other families so prefixed or suffixed variants still resolve.
+        if (model.Contains("deepseek-v4", StringComparison.OrdinalIgnoreCase)
+            || model.Contains("glm-5", StringComparison.OrdinalIgnoreCase))
         {
             values = ["high", "max"];
             defaultValue = "high";

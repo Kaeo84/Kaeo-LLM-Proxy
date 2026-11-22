@@ -49,6 +49,10 @@ internal static class ModelCapabilities
         if (tokens is null)
             return [];
 
+        // Materialize once (the input may be a lazy sequence) and drop null/blank entries,
+        // which would otherwise throw inside the case-insensitive set lookups.
+        List<string> input = tokens.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+
         HashSet<string> known = new(StringComparer.OrdinalIgnoreCase);
         foreach (string t in Tokens)
             known.Add(t);
@@ -59,7 +63,7 @@ internal static class ModelCapabilities
         // Known tokens first, in canonical order.
         foreach (string t in Tokens)
         {
-            if (ContainsToken(tokens, t))
+            if (ContainsToken(input, t))
             {
                 ordered.Add(t);
                 seen.Add(t);
@@ -67,7 +71,7 @@ internal static class ModelCapabilities
         }
 
         // Custom (unknown) tokens after, preserving their original order.
-        foreach (string t in tokens)
+        foreach (string t in input)
         {
             if (!known.Contains(t) && seen.Add(t))
                 ordered.Add(t);

@@ -428,20 +428,28 @@ internal sealed class StatisticsService : IDisposable
     /// </summary>
     private void PruneExpired()
     {
-        if (_retentionHours <= 0 || _store is null)
+        if (_store is null)
             return;
-
-        DateTime cutoff = DateTime.UtcNow.AddHours(-_retentionHours);
 
         try
         {
-            int pruned = _store.DeleteOlderThan(cutoff, _source);
-
-            if (pruned > 0)
+            if (_retentionHours > 0)
             {
-                Volatile.Write(ref _snapshotDirty, 1);
-                StatsChanged?.Invoke(this, EventArgs.Empty);
+                DateTime cutoff = DateTime.UtcNow.AddHours(-_retentionHours);
+                int pruned = _store.DeleteOlderThan(cutoff, _source);
+
+                if (pruned > 0)
+                {
+                    Volatile.Write(ref _snapshotDirty, 1);
+                    StatsChanged?.Invoke(this, EventArgs.Empty);
+                }
             }
+
+            // system_logs has its own bounded retention (30 days / 100k rows) regardless of the
+            // request-log setting; only the proxy instance prunes it — both services share the
+            // same database file.
+            if (_source == LogSource.Proxy)
+                _store.PruneSystemLogs(TimeSpan.FromDays(30), 100_000);
         }
         catch (Exception ex)
         {

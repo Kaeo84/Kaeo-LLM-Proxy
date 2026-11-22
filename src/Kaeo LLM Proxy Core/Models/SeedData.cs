@@ -198,15 +198,16 @@ internal static class SeedData
         // priorities pass the client's field through or omit it entirely.
         ReasoningEffortPriority = SamplingPriority.Proxy,
         ReasoningEffort = "medium",
-        ReasoningEffortValues = ["off", "low", "medium", "high", "x-high"],
+        ReasoningEffortValues = ["off", "low", "medium", "high", "xhigh"],
         ReasoningEffortFormat = reasoningEffortFormat,
 
         Capabilities = ["chat", "reasoning", "vision", "function_calling", "text"],
 
-        // Redaction off: this is a local development database and readable captures are the point.
-        RedactRequestBodies = false,
-        RedactResponseBodies = false,
-        RedactSensitiveJsonFields = false,
+        // Safe defaults: seeded mappings redact bodies and sensitive fields; the operator can
+        // opt in to readable captures per mapping once they know what the proxy logs.
+        RedactRequestBodies = true,
+        RedactResponseBodies = true,
+        RedactSensitiveJsonFields = true,
     };
 
     /// <summary>

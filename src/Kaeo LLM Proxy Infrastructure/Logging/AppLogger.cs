@@ -1,5 +1,6 @@
 using Kaeo.LlmProxy.Core.Models;
 using Serilog;
+using Serilog.Debugging;
 using Serilog.Events;
 
 namespace Kaeo.LlmProxy.Infrastructure;
@@ -12,6 +13,7 @@ namespace Kaeo.LlmProxy.Infrastructure;
 /// </summary>
 internal static class AppLogger
 {
+    private static readonly object InitLock = new();
     private static bool _initialized;
 
     /// <summary>Default threshold for heartbeat-failure logging when settings cannot be read.</summary>
@@ -87,62 +89,106 @@ internal static class AppLogger
     /// </remarks>
     public static void Initialize(LoggingSettings settings)
     {
-        // Close any existing logger before reconfiguring.
-        if (_initialized)
+        lock (InitLock)
         {
-            Log.CloseAndFlush();
-            DbSink?.Dispose();
+            // Close any existing logger before reconfiguring. CloseAndFlush disposes the sinks;
+            // the explicit disposals are idempotent safety nets for partially-built pipelines.
+            if (_initialized)
+            {
+                Log.CloseAndFlush();
+                DbSink?.Dispose();
+                DbSink = null;
+                SysLog.Dispose();
+            }
+
+            string appLogDir = Path.Combine(settings.LogDirectory, "app");
+            bool fileSinkAvailable = true;
+            try
+            {
+                Directory.CreateDirectory(appLogDir);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                SelfLog.WriteLine("AppLogger could not create log directory {0}: {1}", appLogDir, ex);
+                fileSinkAvailable = false;
+            }
+
+            if (!Enum.TryParse<LogEventLevel>(settings.MinimumLevel, ignoreCase: true, out LogEventLevel level))
+                level = LogEventLevel.Information;
+
+            _heartbeatMinimumLevel = ParseLevel(settings.HeartbeatMinimumLevel, LogEventLevel.Debug);
+
+            var syslog = new SystemLogSink();
+            SysLog = syslog;
+
+            string dbPath = settings.GetApplicationDatabasePath();
+            string fallbackPath = Path.Combine(appLogDir, "system-logs.fallback.clef");
+            var dbSink = new SystemLogDbSink(dbPath, fallbackPath);
+            DbSink = dbSink;
+
+            // A single event-property marker identifies heartbeat failures so the logger-wide exclusion below
+            // can apply its own threshold without a brittle prefix match on the message. Trim() gives
+            // middle-of-path matching without pulling in Regex.
+            const string heartbeatProperty = HeartbeatMarkerProperty;
+
+            LoggerConfiguration BaseConfiguration() => new LoggerConfiguration()
+                .MinimumLevel.Is(level)
+                .WriteTo.Sink(syslog)
+                .WriteTo.Sink(dbSink)
+                .Filter.ByExcluding(logEvent =>
+                    logEvent.Properties.TryGetValue(heartbeatProperty, out LogEventPropertyValue? marker)
+                    && marker is ScalarValue { Value: bool isHeartbeat }
+                    && isHeartbeat
+                    && logEvent.Level < _heartbeatMinimumLevel);
+
+            if (fileSinkAvailable)
+            {
+                try
+                {
+                    Log.Logger = BaseConfiguration()
+                        .WriteTo.File(
+                            Path.Combine(appLogDir, "app-.log"),
+                            rollingInterval: RollingInterval.Day,
+                            fileSizeLimitBytes: Math.Max(1, settings.AppLogFileSizeLimitMb) * 1024L * 1024L,
+                            rollOnFileSizeLimit: true,
+                            retainedFileCountLimit: Math.Max(1, settings.AppLogRetainedFileCount),
+                            // Shared so concurrent instances (AllowMultipleInstances) can write the
+                            // same rolling file without a sharing violation.
+                            shared: true,
+                            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+                            // The file sink's own floor is Verbose so nothing is dropped by the level check;
+                            // the exclusion below is what implements the heartbeat threshold.
+                            restrictedToMinimumLevel: LogEventLevel.Verbose)
+                        .CreateLogger();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    SelfLog.WriteLine("AppLogger file sink unavailable: {0}", ex);
+                    fileSinkAvailable = false;
+                }
+            }
+
+            if (!fileSinkAvailable)
+                Log.Logger = BaseConfiguration().CreateLogger();
+
+            _initialized = true;
+            if (!fileSinkAvailable)
+                Log.Warning("AppLogger file sink unavailable; continuing with database/in-memory logging only. Directory={Directory}", appLogDir);
+            Log.Information(
+                "AppLogger initialized. Level={Level} HeartbeatLevel={HeartbeatLevel} DbPath={DbPath} Fallback={Fallback} File={File}",
+                level, _heartbeatMinimumLevel, dbPath, fallbackPath, appLogDir);
         }
-
-        string appLogDir = Path.Combine(settings.LogDirectory, "app");
-        Directory.CreateDirectory(appLogDir);
-
-        if (!Enum.TryParse<LogEventLevel>(settings.MinimumLevel, ignoreCase: true, out LogEventLevel level))
-            level = LogEventLevel.Information;
-
-        _heartbeatMinimumLevel = ParseLevel(settings.HeartbeatMinimumLevel, LogEventLevel.Debug);
-
-        var syslog = new SystemLogSink();
-        SysLog = syslog;
-
-        string dbPath = settings.GetApplicationDatabasePath();
-        string fallbackPath = Path.Combine(appLogDir, "system-logs.fallback.clef");
-        var dbSink = new SystemLogDbSink(dbPath, fallbackPath);
-        DbSink = dbSink;
-
-        // A single event-property marker identifies heartbeat failures so the logger-wide exclusion below
-        // can apply its own threshold without a brittle prefix match on the message. Trim() gives
-        // middle-of-path matching without pulling in Regex.
-        const string heartbeatProperty = HeartbeatMarkerProperty;
-
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Is(level)
-            .WriteTo.Sink(syslog)
-            .WriteTo.Sink(dbSink)
-            .WriteTo.File(
-                Path.Combine(appLogDir, "app-.log"),
-                rollingInterval: RollingInterval.Day,
-                fileSizeLimitBytes: Math.Max(1, settings.AppLogFileSizeLimitMb) * 1024L * 1024L,
-                rollOnFileSizeLimit: true,
-                retainedFileCountLimit: Math.Max(1, settings.AppLogRetainedFileCount),
-                shared: false,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
-                // The file sink's own floor is Verbose so nothing is dropped by the level check;
-                // the exclusion below is what implements the heartbeat threshold.
-                restrictedToMinimumLevel: LogEventLevel.Verbose)
-            .Filter.ByExcluding(logEvent =>
-                logEvent.Properties.TryGetValue(heartbeatProperty, out LogEventPropertyValue? marker)
-                && marker is ScalarValue { Value: bool isHeartbeat }
-                && isHeartbeat
-                && logEvent.Level < _heartbeatMinimumLevel)
-            .CreateLogger();
-
-        _initialized = true;
-        Log.Information(
-            "AppLogger initialized. Level={Level} HeartbeatLevel={HeartbeatLevel} DbPath={DbPath} Fallback={Fallback} File={File}",
-            level, _heartbeatMinimumLevel, dbPath, fallbackPath, appLogDir);
     }
 
     /// <summary>Flushes and closes the current logger. Call on application exit.</summary>
-    public static void Shutdown() => Log.CloseAndFlush();
+    public static void Shutdown()
+    {
+        lock (InitLock)
+        {
+            Log.CloseAndFlush();
+            DbSink?.Dispose();
+            DbSink = null;
+            _initialized = false;
+        }
+    }
 }

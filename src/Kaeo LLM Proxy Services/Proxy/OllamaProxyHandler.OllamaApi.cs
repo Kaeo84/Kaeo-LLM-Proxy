@@ -533,7 +533,7 @@ partial class OllamaProxyHandler
             debugNotes.AppendLine(DebugNotes.SamplingDecision(
                 "temperature",
                 mapping?.TemperaturePriority ?? SamplingPriority.ClientApp,
-                ollamaReq.Options?.Temperature,
+                (float?)ollamaReq.Options?.Temperature,
                 (float)(mapping?.Temperature ?? 0.7)));
             debugNotes.AppendLine(DebugNotes.SamplingDecision(
                 "repeat_penalty",

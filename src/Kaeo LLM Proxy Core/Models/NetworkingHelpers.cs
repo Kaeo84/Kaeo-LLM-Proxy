@@ -22,9 +22,10 @@ internal static class NetworkingHelpers
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || uri.Host is not { Length: > 0 } host)
             return false;
 
+        // host.docker.internal is deliberately NOT loopback: it names the Docker host from
+        // inside a container, which is a different machine than the container this runs in.
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-            || host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase))
+            || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }

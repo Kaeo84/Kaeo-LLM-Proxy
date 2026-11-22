@@ -40,10 +40,19 @@ public class AppSettingsCloneTests
                 continue;
             }
 
-            // LoggingSettings is a reference type — must be deep-copied.
-            if (sourceValue is LoggingSettings)
+            // LoggingSettings is a reference type — must be deep-copied, and every one of its
+            // properties must carry over (a missed property silently resets on each save).
+            if (sourceValue is LoggingSettings sourceLogging && cloneValue is LoggingSettings cloneLogging)
             {
                 Assert.NotSame(sourceValue, cloneValue);
+                foreach (PropertyInfo loggingProp in typeof(LoggingSettings).GetProperties(
+                    BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (!loggingProp.CanRead || !loggingProp.CanWrite || loggingProp.GetIndexParameters().Length > 0)
+                        continue;
+
+                    Assert.Equal(loggingProp.GetValue(sourceLogging), loggingProp.GetValue(cloneLogging));
+                }
                 continue;
             }
 
@@ -97,6 +106,9 @@ public class AppSettingsCloneTests
             // a Windows-shaped literal breaks the suite on non-Windows runners.
             ApplicationDatabasePath = Path.Combine(Path.GetTempPath(), "test.db"),
             LogRetentionHours = 48,
+            MaxLogEntriesWithBodies = 25,
+            // Non-default so a Clone() that forgets LogDirectory cannot pass unnoticed.
+            LogDirectory = Path.Combine(Path.GetTempPath(), "kaeo-clone-test-logs"),
         };
 
         s.CollectNonProxiedCategories.Add(NonProxiedCategory.HealthProbes);

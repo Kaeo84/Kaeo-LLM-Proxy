@@ -35,11 +35,34 @@ internal sealed class ExceptionDetail
             Model         = log.Model,
         };
 
-        Exception? inner = ex.InnerException;
-        while (inner is not null)
+        // Walk the inner-exception tree breadth-first so AggregateException fan-out is captured,
+        // bounded in depth and guarded against self-referencing chains.
+        const int maxDepth = 10;
+        HashSet<Exception> visited = [ex];
+        Queue<(Exception Ex, int Depth)> pending = new();
+        pending.Enqueue((ex, 0));
+
+        while (pending.Count > 0)
         {
-            detail.InnerExceptions.Add($"{inner.GetType().Name}: {inner.Message}");
-            inner = inner.InnerException;
+            (Exception current, int depth) = pending.Dequeue();
+            if (depth >= maxDepth)
+                continue;
+
+            if (current is AggregateException aggregate)
+            {
+                foreach (Exception inner in aggregate.InnerExceptions)
+                {
+                    if (!visited.Add(inner))
+                        continue;
+                    detail.InnerExceptions.Add($"{inner.GetType().Name}: {inner.Message}");
+                    pending.Enqueue((inner, depth + 1));
+                }
+            }
+            else if (current.InnerException is { } inner && visited.Add(inner))
+            {
+                detail.InnerExceptions.Add($"{inner.GetType().Name}: {inner.Message}");
+                pending.Enqueue((inner, depth + 1));
+            }
         }
 
         return detail;

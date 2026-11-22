@@ -45,6 +45,8 @@ public sealed class HostInfo
     public HostInfo(string listenAddress, int listenPort, bool apiExplorerEnabled, string? openApiSpecUrl)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(listenAddress);
+        if (listenPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(listenPort), listenPort, "Listen port must be between 1 and 65535.");
 
         ListenAddress = listenAddress;
         ListenPort = listenPort;
@@ -75,7 +77,7 @@ public sealed class HostInfo
         get
         {
             string host = ListenAddress.Trim();
-            if (host.Length == 0 || host is "0.0.0.0" or "+" or "[::]" or "::")
+            if (host.Length == 0 || host is "0.0.0.0" or "+" or "*" or "[::]" or "::")
                 return "localhost";
             return host;
         }

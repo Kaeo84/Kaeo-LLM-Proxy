@@ -10,6 +10,8 @@ internal static class HelpPages
     /// <summary>A scrollable, read-only text page that follows the current color mode.</summary>
     internal static TabPage TextPage(string title, string body)
     {
+        // Colors deliberately left unset: assigning SystemColors snapshots the current theme,
+        // while the defaults track live system-color changes automatically.
         TextBox text = new()
         {
             Multiline = true,
@@ -18,8 +20,6 @@ internal static class HelpPages
             ScrollBars = ScrollBars.Vertical,
             Dock = DockStyle.Fill,
             BorderStyle = BorderStyle.None,
-            BackColor = SystemColors.Window,
-            ForeColor = SystemColors.WindowText,
             Text = body,
         };
 

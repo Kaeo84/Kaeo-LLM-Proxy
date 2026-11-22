@@ -1,5 +1,9 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Kaeo.LlmProxy.Core.Security;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Core.Models;
@@ -290,11 +294,17 @@ internal static class NonProxiedCategorySet
         HashSet<NonProxiedCategory> result = [];
         foreach (string part in stored.Split(Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            if (Enum.TryParse(part, ignoreCase: true, out NonProxiedCategory category))
+            // Named values only: Enum.TryParse also accepts raw numbers and flag combinations.
+            if (!part.Any(char.IsDigit)
+                && Enum.TryParse(part, ignoreCase: true, out NonProxiedCategory category)
+                && Enum.IsDefined(category))
+            {
                 result.Add(category);
+            }
         }
 
-        return result;
+        // A non-blank value that yielded nothing valid is corrupt, not "capture nothing".
+        return result.Count > 0 ? result : [.. Default];
     }
 
     /// <summary>Formats a set for storage, in <see cref="All"/> order so the stored value is stable.</summary>
@@ -858,7 +868,7 @@ internal sealed class ModelMapping
         if (absoluteTokens > 0)
             return absoluteTokens;
         if (percent > 0)
-            return (int)(contextWindow * percent / 100.0);
+            return (int)((long)contextWindow * percent / 100);
         return 0;
     }
 
@@ -946,8 +956,7 @@ internal sealed class ModelMapping
     /// </summary>
     internal void AssignNewId()
     {
-        Id = 0;
-        EnsureId();
+        Id = Interlocked.Increment(ref _nextId);
     }
 }
 
@@ -1006,6 +1015,14 @@ internal sealed class LoggingSettings
     /// Set to 0 to keep entries forever. Default: 72 hours (3 days).
     /// </summary>
     public int LogRetentionHours { get; set; } = 72;
+
+    /// <summary>
+    /// How many of the newest in-memory request log entries retain their request/response body
+    /// strings. Older entries keep their metadata but their bodies are dropped to bound memory.
+    /// 0 keeps no bodies at all. Min: 0, Max: <see cref="AppSettings.MaxLogEntries"/> (clamped in
+    /// Normalize). Default: 100. Consumed by the in-memory request log store.
+    /// </summary>
+    public int MaxLogEntriesWithBodies { get; set; } = 100;
 
     /// <summary>Root directory for all log output. Relative to executable directory for portable deployment.</summary>
     public string LogDirectory { get; set; } = Path.Combine(
@@ -1433,12 +1450,14 @@ internal sealed class AppSettings
     /// passphrase each launch.
     /// </summary>
     /// <remarks>
-    /// <para><b>Security note:</b> The stored value is a one-way SHA-256 hash, not the
-    /// raw passphrase. An attacker with read access to <c>settings.jsonc</c> cannot
-    /// recover the original passphrase, but the hash can still decrypt API keys
-    /// stored in the same file. For strongest protection, leave this null and
-    /// enter the passphrase each launch.</para>
+    /// <para><b>Security note:</b> The in-memory value is a one-way SHA-256 hash, not the
+    /// raw passphrase. On disk it is additionally wrapped with DPAPI (CurrentUser scope,
+    /// <c>dpapi:</c> prefix) so a copied settings file alone cannot decrypt API keys on
+    /// another machine or under another Windows user. Legacy <c>!pwh!</c> and raw values
+    /// are still read and are upgraded to DPAPI on the next save. For strongest protection,
+    /// leave this null and enter the passphrase each launch.</para>
     /// </remarks>
+    [JsonConverter(typeof(SecurityPassphraseConverter))]
     public string? SecurityPassphrase { get; set; }
 
     /// <summary>
@@ -1462,21 +1481,33 @@ internal sealed class AppSettings
             string json = File.ReadAllText(_settingsPath);
             return JsonSerializer.Deserialize<AppSettings>(json, _readOptions) ?? new AppSettings();
         }
-        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             // The on-disk file exists but is unreadable (corrupt JSON, encoding issue, etc.).
             // Before silently falling back to defaults, back up the original file so the
             // user's settings are recoverable rather than permanently lost without notice.
-            string backupPath = _settingsPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMddHHmmss");
-            try { File.Copy(_settingsPath, backupPath, overwrite: false); }
+            string backupPath = _settingsPath + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+            bool backupSaved = false;
+            try { File.Copy(_settingsPath, backupPath, overwrite: false); backupSaved = true; }
             catch { /* Best-effort backup; don't block the fallback. */ }
 
-            Log.Error(ex,
-                "Failed to load settings from {Path} — configuration is corrupt or unreadable. " +
-                "A backup was saved to {BackupPath}. Falling back to defaults. " +
-                "Your previous settings have NOT been applied. Restart the application after " +
-                "restoring the backup to recover your configuration.",
-                _settingsPath, backupPath);
+            if (backupSaved)
+            {
+                Log.Error(ex,
+                    "Failed to load settings from {Path} — configuration is corrupt or unreadable. " +
+                    "A backup was saved to {BackupPath}. Falling back to defaults. " +
+                    "Your previous settings have NOT been applied. Restart the application after " +
+                    "restoring the backup to recover your configuration.",
+                    _settingsPath, backupPath);
+            }
+            else
+            {
+                Log.Error(ex,
+                    "Failed to load settings from {Path} — configuration is corrupt or unreadable. " +
+                    "The backup copy to {BackupPath} also FAILED; the original file is left in place. " +
+                    "Falling back to defaults. Your previous settings have NOT been applied.",
+                    _settingsPath, backupPath);
+            }
             return new AppSettings();
         }
     }
@@ -1486,17 +1517,89 @@ internal sealed class AppSettings
         // Clamp/validate before persisting so the on-disk configuration is always sane.
         Normalize();
 
+        string json = JsonSerializer.Serialize(this, _writeOptions);
+
+        // Cross-process save lock for AllowMultipleInstances. Semantics are last-writer-wins:
+        // the mutex prevents interleaved/corrupt writes, it does not merge concurrent edits
+        // made in two instances (full merge semantics are out of scope).
+        string mutexName = "KaeoLlmProxy_Settings_" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(_settingsPath.ToLowerInvariant())))[..16];
+        Mutex? mutex = null;
+        bool ownsMutex = false;
         try
         {
-            string dir = Path.GetDirectoryName(_settingsPath)
-                ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(_settingsPath, JsonSerializer.Serialize(this, _writeOptions));
+            try
+            {
+                mutex = new Mutex(initiallyOwned: false, @"Global\" + mutexName);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Global namespace may be denied for non-elevated sessions; per-session is enough
+                // for the common case of two instances of the same user.
+                mutex = new Mutex(initiallyOwned: false, @"Local\" + mutexName);
+            }
+
+            try { ownsMutex = mutex.WaitOne(TimeSpan.FromSeconds(10)); }
+            catch (AbandonedMutexException) { ownsMutex = true; }
+
+            if (!ownsMutex)
+                Log.Warning("Timed out waiting for the settings save lock; saving without cross-process serialization.");
+
+            WriteSettingsFile(json);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Log.Error(ex, "Failed to save settings to {Path}", _settingsPath);
-            throw;
+            Log.Warning(ex, "Could not acquire the settings save lock; saving without cross-process serialization.");
+            WriteSettingsFile(json);
+        }
+        finally
+        {
+            if (ownsMutex)
+                mutex!.ReleaseMutex();
+            mutex?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Writes the settings atomically: temp file in the same directory, then replace with a
+    /// one-generation backup. Transient sharing violations (another instance reading the file)
+    /// are retried briefly; a persistent failure is logged as a warning and the app keeps running
+    /// on its in-memory settings rather than crashing (AllowMultipleInstances must tolerate this).
+    /// </summary>
+    private static void WriteSettingsFile(string json)
+    {
+        string dir = Path.GetDirectoryName(_settingsPath)
+            ?? throw new InvalidOperationException($"Settings path '{_settingsPath}' has no directory component.");
+        Directory.CreateDirectory(dir);
+
+        string tempPath = _settingsPath + ".tmp-" + Guid.NewGuid().ToString("N");
+        for (int attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                File.WriteAllText(tempPath, json);
+                if (File.Exists(_settingsPath))
+                    File.Replace(tempPath, _settingsPath, _settingsPath + ".bak", ignoreMetadataErrors: true);
+                else
+                    File.Move(tempPath, _settingsPath);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { File.Delete(tempPath); }
+                catch (Exception cleanupEx) when (cleanupEx is IOException or UnauthorizedAccessException) { }
+
+                if (attempt == 3 || ex is UnauthorizedAccessException)
+                {
+                    Log.Warning(ex,
+                        "Failed to save settings to {Path}; continuing with in-memory settings. " +
+                        "Another instance may be holding the file, or access is denied.",
+                        _settingsPath);
+                    return;
+                }
+
+                Thread.Sleep(100 * attempt);
+            }
         }
     }
 
@@ -1515,6 +1618,10 @@ internal sealed class AppSettings
         MaxConcurrentRequests = Math.Clamp(MaxConcurrentRequests, 1, 10000);
         MaxRequestBodyBytes = Math.Max(MaxRequestBodyBytes, 1024);
         MaxLogEntries = Math.Clamp(MaxLogEntries, 10, 100000);
+        Logging.MaxLogEntriesWithBodies = Math.Clamp(Logging.MaxLogEntriesWithBodies, 0, MaxLogEntries);
+        Logging.AppLogFileSizeLimitMb = Math.Clamp(Logging.AppLogFileSizeLimitMb, 1, 1000);
+        Logging.AppLogRetainedFileCount = Math.Clamp(Logging.AppLogRetainedFileCount, 1, 999);
+        Logging.LogRetentionHours = Math.Max(Logging.LogRetentionHours, 0);
         SseKeepAliveIntervalSeconds = Math.Clamp(
             SseKeepAliveIntervalSeconds, MinSseKeepAliveIntervalSeconds, MaxSseKeepAliveIntervalSeconds);
         HeartbeatIntervalSeconds = Math.Clamp(
@@ -1549,6 +1656,7 @@ internal sealed class AppSettings
 
             mapping.Temperature = Math.Clamp(mapping.Temperature, 0.0, 2.0);
             mapping.RepeatPenalty = Math.Clamp(mapping.RepeatPenalty, 0.0, 2.0);
+            mapping.ProactiveOverflowPercent = Math.Clamp(mapping.ProactiveOverflowPercent, 0, 100);
 
             if (!string.IsNullOrWhiteSpace(mapping.UpstreamUrl)
                 && Uri.TryCreate(mapping.UpstreamUrl, UriKind.Absolute, out Uri? uri)
@@ -1621,6 +1729,8 @@ internal sealed class AppSettings
                 RequestLogFileSizeLimitMb = Logging.RequestLogFileSizeLimitMb,
                 ApplicationDatabasePath = Logging.ApplicationDatabasePath,
                 LogRetentionHours = Logging.LogRetentionHours,
+                MaxLogEntriesWithBodies = Logging.MaxLogEntriesWithBodies,
+                LogDirectory = Logging.LogDirectory,
             },
             SecurityPassphrase = SecurityPassphrase,
             RuntimePassphrase = RuntimePassphrase,
@@ -1706,8 +1816,15 @@ internal sealed class AppSettings
     /// </summary>
     public string ResolveModelName(string requestedModel)
     {
-        string normalizedRequested = NormalizeModelTag(requestedModel);
+        // Exact full-name matches win so a mapping deliberately named with a tag is never
+        // shadowed by another mapping whose name only matches after normalization.
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (mapping.IsEnabled && string.Equals(mapping.ProxyName, requestedModel, StringComparison.OrdinalIgnoreCase))
+                return mapping.ModelName;
+        }
 
+        string normalizedRequested = NormalizeModelTag(requestedModel);
         foreach (ModelMapping mapping in ModelMappings)
         {
             if (mapping.IsEnabled && string.Equals(NormalizeModelTag(mapping.ProxyName), normalizedRequested, StringComparison.OrdinalIgnoreCase))
@@ -1719,14 +1836,27 @@ internal sealed class AppSettings
 
     /// <summary>
     /// Finds an enabled model mapping by either the exposed proxy name or the upstream model name.
-    /// Returns null when no enabled configured mapping matches. Comparisons ignore any Ollama-style
-    /// ":tag" suffix (e.g. "myqwen:latest" matches a mapping configured as "myqwen"), since Ollama
-    /// clients commonly append ":latest" even when the proxy name has no tag.
+    /// Returns null when no enabled configured mapping matches. Exact case-insensitive full-name
+    /// matches are tried first (proxy name, then upstream name); only when none exists does a
+    /// fallback pass ignore a trailing Ollama-style ":latest" suffix (e.g. "myqwen:latest" matches
+    /// a mapping configured as "myqwen"), since Ollama clients commonly append ":latest" even when
+    /// the proxy name has no tag. Other tags are significant and never stripped.
     /// </summary>
     public ModelMapping? FindModelMapping(string requestedModel)
     {
-        string normalizedRequested = NormalizeModelTag(requestedModel);
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (mapping.IsEnabled && string.Equals(mapping.ProxyName, requestedModel, StringComparison.OrdinalIgnoreCase))
+                return mapping;
+        }
 
+        foreach (ModelMapping mapping in ModelMappings)
+        {
+            if (mapping.IsEnabled && string.Equals(mapping.ModelName, requestedModel, StringComparison.OrdinalIgnoreCase))
+                return mapping;
+        }
+
+        string normalizedRequested = NormalizeModelTag(requestedModel);
         foreach (ModelMapping mapping in ModelMappings)
         {
             if (!mapping.IsEnabled)
@@ -1784,14 +1914,24 @@ internal sealed class AppSettings
         ArgumentNullException.ThrowIfNull(source);
 
         if (!string.IsNullOrWhiteSpace(source.ContextSummarizeModelName)
-            && FindModelMapping(source.ContextSummarizeModelName) is { } byName)
+            && FindModelMapping(source.ContextSummarizeModelName) is { } byName
+            && byName.Id != source.Id)
         {
             return byName;
         }
 
-        return source.ContextSummarizeModelId is > 0 and int id
-            ? FindModelMappingById(id)
-            : null;
+        // The ID fallback must clear the same usability bar as the name path: an enabled,
+        // routable mapping that is not the source itself (self-compaction is never valid).
+        if (source.ContextSummarizeModelId is > 0 and int id
+            && FindModelMappingById(id) is { } byId
+            && byId.Id != source.Id
+            && byId.IsEnabled
+            && !string.IsNullOrWhiteSpace(byId.UpstreamUrl))
+        {
+            return byId;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1832,9 +1972,9 @@ internal sealed class AppSettings
     /// rename of a compaction target does not leave the references pointing at the old name.
     /// </summary>
     /// <remarks>
-    /// Only the name is refreshed, never the ID: <see cref="ModelMapping.Id"/> is stable across a
-    /// rename, which is exactly why it remains the fallback that identifies the target once the
-    /// stored name has gone stale.
+    /// Both keys are re-pinned to the resolved target: the stored name is refreshed and the ID is
+    /// updated to match, so the two references agree after a commit. The ID still serves as the
+    /// stable fallback that identifies the target when the stored name has gone stale.
     /// </remarks>
     public void RefreshCompactionTargetNames()
     {
@@ -1850,16 +1990,19 @@ internal sealed class AppSettings
     }
 
     /// <summary>
-    /// Strips a trailing Ollama-style ":tag" suffix (e.g. ":latest") from a model name for
-    /// comparison purposes. Returns the original string unchanged when no tag suffix is present.
+    /// Strips a trailing Ollama-style ":latest" suffix from a model name for comparison purposes.
+    /// Other tags (e.g. ":q4_k_m") distinguish different models and are kept. Returns the original
+    /// string unchanged when no ":latest" suffix is present.
     /// </summary>
     public static string NormalizeModelTag(string? modelName)
     {
         if (string.IsNullOrWhiteSpace(modelName))
             return string.Empty;
 
-        int colonIndex = modelName.IndexOf(':');
-        return colonIndex < 0 ? modelName : modelName[..colonIndex];
+        const string latestTag = ":latest";
+        return modelName.EndsWith(latestTag, StringComparison.OrdinalIgnoreCase)
+            ? modelName[..^latestTag.Length]
+            : modelName;
     }
 
     /// <summary>
@@ -1951,8 +2094,10 @@ internal sealed class AppSettings
             return;
         }
 
-        string escapedDatabasePath = Logging.ApplicationDatabasePath.Replace("\\", "\\\\");
-        string escapedLogDir = Logging.LogDirectory.Replace("\\", "\\\\");
+        // JsonSerializer.Serialize emits a fully escaped JSON string literal (quotes included),
+        // so paths with backslashes, quotes or control characters stay valid JSON.
+        string escapedDatabasePath = JsonSerializer.Serialize(Logging.ApplicationDatabasePath);
+        string escapedLogDir = JsonSerializer.Serialize(Logging.LogDirectory);
 
         string content = $$"""
             {
@@ -1987,16 +2132,21 @@ internal sealed class AppSettings
                 // Min: 1  Max: 999  Default: 7
                 "AppLogRetainedFileCount": {{Logging.AppLogRetainedFileCount}},
 
-                // Archive the LiteDB application database when it reaches this size (MB).
-                // Min: 1  Max: 5000  Default: 50
+                // How many of the newest in-memory request log entries keep their request/response
+                // body strings; older entries keep metadata only. 0 keeps no bodies.
+                // Min: 0  Max: MaxLogEntries  Default: 100
+                "MaxLogEntriesWithBodies": {{Logging.MaxLogEntriesWithBodies}},
+
+                // Legacy setting kept for settings-file compatibility; unused by the SQLite store
+                // (request-log growth is controlled by retention cleanup instead).
                 "RequestLogFileSizeLimitMb": {{Logging.RequestLogFileSizeLimitMb}},
 
-                // Full path to the central LiteDB application database file.
+                // Full path to the central SQLite application database file.
                 // Empty uses Data/Database/kaeo_llm_proxy.db under the application directory.
-                "ApplicationDatabasePath": "{{escapedDatabasePath}}",
+                "ApplicationDatabasePath": {{escapedDatabasePath}},
 
                 // Root directory for text log files.
-                "LogDirectory": "{{escapedLogDir}}"
+                "LogDirectory": {{escapedLogDir}}
               }
             }
             """;

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Kaeo.LlmProxy.Core.Models;
@@ -69,6 +70,31 @@ internal sealed class OllamaGenerateRequest
     [JsonPropertyName("stream")] public bool Stream { get; set; } = true;
     [JsonPropertyName("format")] public object? Format { get; set; }
     [JsonPropertyName("options")] public OllamaOptions? Options { get; set; }
+
+    /// <summary>Base64-encoded images for multimodal models (Ollama <c>images</c>).</summary>
+    [JsonPropertyName("images")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? Images { get; set; }
+
+    /// <summary>Text appended after the generated response (fill-in-the-middle suffix).</summary>
+    [JsonPropertyName("suffix")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Suffix { get; set; }
+
+    /// <summary>Raw mode: no prompt templating; the prompt is fed to the model verbatim.</summary>
+    [JsonPropertyName("raw")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Raw { get; set; }
+
+    /// <summary>Conversation context tokens returned by a previous generate response.</summary>
+    [JsonPropertyName("context")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<int>? Context { get; set; }
+
+    /// <summary>How long the model stays loaded after the request: duration string ("5m") or seconds.</summary>
+    [JsonPropertyName("keep_alive")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? KeepAlive { get; set; }
 }
 
 internal sealed class OllamaGenerateResponse
@@ -118,6 +144,11 @@ internal sealed class OllamaChatRequest
     [JsonPropertyName("tools")] public List<OllamaTool>? Tools { get; set; }
     [JsonPropertyName("format")] public object? Format { get; set; }
     [JsonPropertyName("options")] public OllamaOptions? Options { get; set; }
+
+    /// <summary>How long the model stays loaded after the request: duration string ("5m") or seconds.</summary>
+    [JsonPropertyName("keep_alive")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public object? KeepAlive { get; set; }
 }
 
 internal sealed class OllamaChatResponse
@@ -238,7 +269,7 @@ internal sealed class OllamaEmbeddingsResponse
 /// </summary>
 internal sealed class OllamaOptions
 {
-    [JsonPropertyName("temperature")] public float? Temperature { get; set; }
+    [JsonPropertyName("temperature")] public double? Temperature { get; set; }
     [JsonPropertyName("top_p")] public float? TopP { get; set; }
     [JsonPropertyName("top_k")] public int? TopK { get; set; }
     [JsonPropertyName("min_p")] public float? MinP { get; set; }
@@ -253,6 +284,26 @@ internal sealed class OllamaOptions
     [JsonPropertyName("mirostat")] public int? Mirostat { get; set; }
     [JsonPropertyName("mirostat_tau")] public float? MirostatTau { get; set; }
     [JsonPropertyName("mirostat_eta")] public float? MirostatEta { get; set; }
+
+    /// <summary>Locally typical sampling probability mass (llama.cpp <c>typical_p</c>).</summary>
+    [JsonPropertyName("typical_p")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? TypicalP { get; set; }
+
+    /// <summary>Number of layers to offload to the GPU (llama.cpp <c>n_gpu_layers</c>).</summary>
+    [JsonPropertyName("num_gpu")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NumGpu { get; set; }
+
+    /// <summary>Prompt processing batch size (llama.cpp <c>n_batch</c>).</summary>
+    [JsonPropertyName("num_batch")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? NumBatch { get; set; }
+
+    /// <summary>Whether newline tokens are penalized by the repeat penalty.</summary>
+    [JsonPropertyName("penalize_newline")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PenalizeNewline { get; set; }
 }
 
 // ─────────────────────────── llama.cpp / OpenAI types ─────────────────────
@@ -299,7 +350,10 @@ internal sealed class LlamaCppToolCallFunction
 internal sealed class LlamaCppToolCall
 {
     [JsonPropertyName("index")] public int? Index { get; set; }
-    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+    /// <summary>Null when the upstream did not supply an id, so no empty id is emitted.</summary>
+    [JsonPropertyName("id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Id { get; set; }
     [JsonPropertyName("type")] public string Type { get; set; } = "function";
     [JsonPropertyName("function")] public LlamaCppToolCallFunction? Function { get; set; }
 }
@@ -338,6 +392,10 @@ internal sealed class LlamaCppChatRequest : ILlamaCppSamplingRequest
     [JsonPropertyName("top_k")] public int? TopK { get; set; }
     [JsonPropertyName("min_p")] public float? MinP { get; set; }
     [JsonPropertyName("max_tokens")] public int? MaxTokens { get; set; }
+    /// <summary>OpenAI's newer completion-token cap; some hosted providers reject <c>max_tokens</c>.</summary>
+    [JsonPropertyName("max_completion_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxCompletionTokens { get; set; }
     [JsonPropertyName("stop")] public List<string>? Stop { get; set; }
     [JsonPropertyName("seed")] public int? Seed { get; set; }
     [JsonPropertyName("presence_penalty")] public float? PresencePenalty { get; set; }
@@ -428,6 +486,21 @@ internal sealed class LlamaCppStreamChunk
     [JsonPropertyName("choices")] public List<LlamaCppChoice> Choices { get; set; } = [];
     [JsonPropertyName("usage")] public LlamaCppUsage? Usage { get; set; }
     [JsonPropertyName("timings")] public LlamaCppTimings? Timings { get; set; }
+
+    /// <summary>Model name echoed by OpenAI-compatible upstreams on every chunk.</summary>
+    [JsonPropertyName("model")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; set; }
+
+    /// <summary>Unix creation timestamp echoed by OpenAI-compatible upstreams.</summary>
+    [JsonPropertyName("created")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? Created { get; set; }
+
+    /// <summary>Backend configuration fingerprint sent by some hosted providers.</summary>
+    [JsonPropertyName("system_fingerprint")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SystemFingerprint { get; set; }
 }
 
 internal sealed class LlamaCppTimings
@@ -521,6 +594,14 @@ internal sealed class LlamaCppErrorDetail
 {
     [JsonPropertyName("message")] public string? Message { get; set; }
     [JsonPropertyName("type")] public string? Type { get; set; }
-    [JsonPropertyName("code")] public int? Code { get; set; }
+
+    /// <summary>
+    /// Error code as sent by the upstream: a number for llama.cpp/OpenAI, but a string
+    /// (e.g. "context_length_exceeded") for many hosted providers. JsonElement accepts both
+    /// so a string code never fails the whole error-body deserialization.
+    /// </summary>
+    [JsonPropertyName("code")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? Code { get; set; }
 }
 
