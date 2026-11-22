@@ -6,6 +6,9 @@
 	<File Path="docs/Proxy API Mapping Documentation.html" />
 	<File Path="docs/PROXY_DATA_FLOW.html" />
   </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Kaeo LLM Proxy Module Chat Interface/Kaeo LLM Proxy Module Chat Interface.csproj" />
+  </Folder>
   <Project Path="src/Kaeo LLM Proxy Core/Kaeo LLM Proxy Core.csproj" />
   <Project Path="src/Kaeo LLM Proxy Infrastructure/Kaeo LLM Proxy Infrastructure.csproj" />
   <Project Path="src/Kaeo LLM Proxy Services/Kaeo LLM Proxy Services.csproj" />

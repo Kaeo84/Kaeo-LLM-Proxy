@@ -43,6 +43,7 @@
     <CopyModulesToHost>true</CopyModulesToHost>
   </PropertyGroup>
   <ItemGroup>
+    <ModuleProject Include="..\Kaeo LLM Proxy Module Chat Interface" />
     <ModuleProject Include="..\Kaeo LLM Proxy Module Code Vector Store" />
     <ModuleProject Include="..\Kaeo LLM Proxy Module SSH" />
     <ModuleProject Include="..\Kaeo LLM Proxy Module Web Search" />

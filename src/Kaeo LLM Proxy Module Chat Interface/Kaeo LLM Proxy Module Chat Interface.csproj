@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<RootNamespace>Kaeo.LlmProxy.Module.ChatInterface</RootNamespace>
+		<AssemblyName>Kaeo LLM Proxy Module Chat Interface</AssemblyName>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<UseWindowsForms>true</UseWindowsForms>
+		<!-- Class libraries do not copy NuGet runtime assemblies by default; keep the flag for
+			 parity with the other modules even though this module has no unique NuGet deps. -->
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- Shared libraries (contracts + infrastructure): compile-time only. The host always
+			 runs these and supplies the runtime copies, so the module's types unify with the
+			 host's at load time. ExcludeAssets=runtime;native drops the whole transitive subtree
+			 (Serilog, MCP, ...) from the module's runtime graph; the ModuleBuild.targets
+			 host-shared list then strips the Core/Infrastructure assemblies themselves. This
+			 module talks to the chat platforms over plain REST (HttpClient + System.Text.Json),
+			 so it has no unique runtime dependencies and ships as a single DLL. -->
+		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" Private="false" ExcludeAssets="runtime;native" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" Private="false" ExcludeAssets="runtime;native" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<IsModuleProject>true</IsModuleProject>
+	</PropertyGroup>
+
+	<Import Project="..\ModuleBuild.targets" />
+
+</Project>
