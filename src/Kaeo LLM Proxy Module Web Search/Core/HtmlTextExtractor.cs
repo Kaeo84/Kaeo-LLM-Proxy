@@ -17,20 +17,31 @@ namespace Kaeo.LlmProxy.Module.WebSearch;
 /// </summary>
 internal static partial class HtmlTextExtractor
 {
-    [GeneratedRegex("<(script|style|noscript|template|svg)\\b[^>]*>.*?</\\1>", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    // Every scanner runs on attacker-controlled HTML outside the fetch timeout, so each carries a
+    // 2 s match timeout (M4); ToText/Clean catch RegexMatchTimeoutException and fall back to a
+    // linear-time tag strip rather than hanging the tool call on catastrophic backtracking.
+    private const int MatchTimeoutMs = 2000;
+
+    [GeneratedRegex("<(script|style|noscript|template|svg)\\b[^>]*>.*?</\\1>", RegexOptions.IgnoreCase | RegexOptions.Singleline, MatchTimeoutMs)]
     private static partial Regex ScriptStyleRegex();
 
-    [GeneratedRegex("<[^>]+>")]
+    [GeneratedRegex("<[^>]+>", RegexOptions.None, MatchTimeoutMs)]
     private static partial Regex TagRegex();
 
-    [GeneratedRegex("\\s+")]
+    [GeneratedRegex("\\s+", RegexOptions.None, MatchTimeoutMs)]
     private static partial Regex WhitespaceRegex();
 
-    [GeneratedRegex("</(p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|pre|br)\\s*>", RegexOptions.IgnoreCase)]
+    [GeneratedRegex("</(p|div|li|tr|td|th|h[1-6]|section|article|header|footer|blockquote|pre|br)\\s*>", RegexOptions.IgnoreCase, MatchTimeoutMs)]
     private static partial Regex BlockCloseRegex();
 
+    // The void <br> tag (with optional self-closing slash) also produces a line break (L6).
+    [GeneratedRegex("<br\\s*/?>", RegexOptions.IgnoreCase, MatchTimeoutMs)]
+    private static partial Regex BreakRegex();
+
+    private static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(MatchTimeoutMs);
+
     // HTML comments: a classic hiding place for injected instructions that never render for humans.
-    private static readonly Regex CommentRegex = new("<!--.*?-->", RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex CommentRegex = new("<!--.*?-->", RegexOptions.Singleline | RegexOptions.Compiled, MatchTimeout);
 
     // Best-effort removal of elements hidden from humans (hidden attribute, display:none,
     // visibility:hidden, aria-hidden="true") — the primary covert channel for indirect
@@ -38,11 +49,11 @@ internal static partial class HtmlTextExtractor
     // sanitization layer.
     private static readonly Regex HiddenElementRegex = new(
         "<([a-zA-Z][a-zA-Z0-9]*)((?:(?!</?\\1[\\s>]).)*?(?:\\shidden(?=[\\s=>/])|aria-hidden\\s*=\\s*[\"']?true[\"']?|style\\s*=\\s*[\"'][^\"']*(?:display\\s*:\\s*none|visibility\\s*:\\s*hidden))[^>]*)>.*?</\\1\\s*>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled, MatchTimeout);
 
     // Zero-width / directional / soft-hyphen characters: invisible to humans, visible to models.
     private static readonly Regex InvisibleUnicodeRegex = new(
-        "[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]", RegexOptions.Compiled);
+        "[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]", RegexOptions.Compiled, MatchTimeout);
 
     /// <summary>Converts a full HTML document to readable plain text (block structure preserved).</summary>
     public static string ToText(string html)
@@ -50,32 +61,62 @@ internal static partial class HtmlTextExtractor
         if (string.IsNullOrWhiteSpace(html))
             return string.Empty;
 
-        string text = CommentRegex.Replace(html, "\n");
-        text = HiddenElementRegex.Replace(text, "\n");
-        text = ScriptStyleRegex().Replace(text, "\n");
-        text = BlockCloseRegex().Replace(text, "\n");
-        text = TagRegex().Replace(text, " ");
-        text = DecodeEntities(text);
-        text = InvisibleUnicodeRegex.Replace(text, string.Empty);
-
-        var output = new StringBuilder();
-        foreach (string rawLine in text.Split('\n'))
+        try
         {
-            string line = WhitespaceRegex().Replace(rawLine, " ").Trim();
-            if (line.Length > 0)
-                output.AppendLine(line);
-        }
+            string text = CommentRegex.Replace(html, "\n");
+            text = HiddenElementRegex.Replace(text, "\n");
+            text = ScriptStyleRegex().Replace(text, "\n");
+            text = BlockCloseRegex().Replace(text, "\n");
+            text = BreakRegex().Replace(text, "\n");
+            text = TagRegex().Replace(text, " ");
+            text = DecodeEntities(text);
+            text = InvisibleUnicodeRegex.Replace(text, string.Empty);
 
-        return output.ToString().Trim();
+            var output = new StringBuilder();
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = WhitespaceRegex().Replace(rawLine, " ").Trim();
+                if (line.Length > 0)
+                    output.AppendLine(line);
+            }
+
+            return output.ToString().Trim();
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return FallbackStrip(html, preserveLines: true);
+        }
     }
 
     /// <summary>Strips tags and decodes entities in a small inline HTML fragment.</summary>
     public static string Clean(string fragment)
     {
-        string text = CommentRegex.Replace(fragment, " ");
-        text = HiddenElementRegex.Replace(text, " ");
-        text = InvisibleUnicodeRegex.Replace(DecodeEntities(TagRegex().Replace(text, " ")), string.Empty);
-        return WhitespaceRegex().Replace(text, " ").Trim();
+        try
+        {
+            string text = CommentRegex.Replace(fragment, " ");
+            text = HiddenElementRegex.Replace(text, " ");
+            text = InvisibleUnicodeRegex.Replace(DecodeEntities(TagRegex().Replace(text, " ")), string.Empty);
+            return WhitespaceRegex().Replace(text, " ").Trim();
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return FallbackStrip(fragment, preserveLines: false);
+        }
+    }
+
+    /// <summary>
+    /// Linear-time fallback used when a structured scanner times out on hostile HTML (M4). Only
+    /// the non-backtracking tag/whitespace regexes and the entity decoder run, so this cannot hang.
+    /// </summary>
+    private static string FallbackStrip(string html, bool preserveLines)
+    {
+        string text = TagRegex().Replace(html, preserveLines ? "\n" : " ");
+        text = DecodeEntities(text);
+        text = InvisibleUnicodeRegex.Replace(text, string.Empty);
+        text = WhitespaceRegex().Replace(text, " ").Trim();
+
+        const int fallbackCap = 200_000;
+        return text.Length > fallbackCap ? text[..fallbackCap] + " [content truncated]" : text;
     }
 
     /// <summary>Decodes the common named and numeric HTML entities.</summary>
@@ -107,27 +148,27 @@ internal static partial class HtmlTextExtractor
             }
 
             string entity = value[(ampersand + 1)..semicolon];
-            char? decoded = entity switch
+            string? decoded = entity switch
             {
-                "amp" => '&',
-                "lt" => '<',
-                "gt" => '>',
-                "quot" => '"',
-                "apos" => '\'',
-                "nbsp" => ' ',
-                "ndash" => '\u2013',
-                "mdash" => '\u2014',
-                "hellip" => '\u2026',
-                "lsquo" => '\u2018',
-                "rsquo" => '\u2019',
-                "ldquo" => '\u201C',
-                "rdquo" => '\u201D',
+                "amp" => "&",
+                "lt" => "<",
+                "gt" => ">",
+                "quot" => "\"",
+                "apos" => "'",
+                "nbsp" => " ",
+                "ndash" => "\u2013",
+                "mdash" => "\u2014",
+                "hellip" => "\u2026",
+                "lsquo" => "\u2018",
+                "rsquo" => "\u2019",
+                "ldquo" => "\u201C",
+                "rdquo" => "\u201D",
                 _ => DecodeNumericEntity(entity),
             };
 
-            if (decoded.HasValue)
+            if (decoded is not null)
             {
-                result.Append(decoded.Value);
+                result.Append(decoded);
                 index = semicolon + 1;
             }
             else
@@ -140,7 +181,7 @@ internal static partial class HtmlTextExtractor
         return result.ToString();
     }
 
-    private static char? DecodeNumericEntity(string entity)
+    private static string? DecodeNumericEntity(string entity)
     {
         int codePoint;
 
@@ -156,6 +197,11 @@ internal static partial class HtmlTextExtractor
             return null;
         }
 
-        return codePoint is >= 1 and <= 0xFFFF ? (char)codePoint : null;
+        // Allow the full Unicode range (astral emoji included) but reject lone surrogates, which
+        // would produce invalid UTF-16 and could break downstream JSON serialization (L6).
+        if (codePoint < 1 || codePoint > 0x10FFFF || codePoint is >= 0xD800 and <= 0xDFFF)
+            return null;
+
+        return char.ConvertFromUtf32(codePoint);
     }
 }

@@ -57,6 +57,9 @@ internal sealed class WebSearchService
             AllowAutoRedirect = false,
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             ConnectCallback = ConnectWithSsrfGuardAsync,
+            // Request and transparently decompress gzip/deflate/br bodies (L4). The size cap is
+            // applied to the decompressed stream, so a compression bomb cannot exhaust memory.
+            AutomaticDecompression = DecompressionMethods.All,
         };
 
         HttpClient client = new(handler, disposeHandler: true)
@@ -125,12 +128,22 @@ internal sealed class WebSearchService
         NetworkSafety.AllowLocalNetworks = settings.AllowLocalNetworks;
         int capped = Math.Clamp(Math.Min(maxResults, settings.MaxResults), 1, 20);
 
-        using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
+        // Load the provider list and domain rules once per search rather than per provider/hop (L7).
+        List<SearchProviderConfig> configs = [.. _repository.LoadProviders()];
+        IReadOnlyList<DomainRule> rules = _domainPolicy.LoadRules();
+
+        TimeSpan perProvider = TimeSpan.FromSeconds(settings.TimeoutSeconds);
+        int enabledCount = configs.Count(c => c.IsEnabled);
+
+        // An overall budget bounds the whole loop so a sequence of slow providers cannot run
+        // unbounded; each provider also gets its own slice so one slow backend cannot starve the
+        // others (L3).
+        using CancellationTokenSource overallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        overallCts.CancelAfter(perProvider * Math.Max(1, enabledCount));
 
         var failures = new List<string>();
 
-        foreach (SearchProviderConfig config in _repository.LoadProviders())
+        foreach (SearchProviderConfig config in configs)
         {
             if (!config.IsEnabled)
                 continue;
@@ -158,18 +171,28 @@ internal sealed class WebSearchService
                 }
             }
 
+            using CancellationTokenSource providerCts = CancellationTokenSource.CreateLinkedTokenSource(overallCts.Token);
+            providerCts.CancelAfter(perProvider);
+
             try
             {
                 IReadOnlyList<SearchResult> results = await provider.SearchAsync(
-                    config, query, capped, apiKey, SharedClient, timeoutCts.Token);
+                    config, query, capped, apiKey, SharedClient, settings.MaxResponseBytes, providerCts.Token);
 
-                if (results.Count > 0)
-                    return results.Take(capped).ToList();
+                // Drop results whose URL is blocked by the domain policy or is not http/https before
+                // returning them, so web_search cannot surface links web_fetch would refuse (L7).
+                List<SearchResult> allowed = [.. results.Where(r => IsResultAllowed(r.Url, rules))];
+                if (allowed.Count > 0)
+                    return allowed.Take(capped).ToList();
 
-                failures.Add($"{config.Name}: returned no results.");
+                failures.Add(results.Count > 0
+                    ? $"{config.Name}: all results blocked by the domain rules."
+                    : $"{config.Name}: returned no results.");
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || overallCts.IsCancellationRequested)
             {
+                // Caller cancellation or exhaustion of the overall budget propagates to the tool,
+                // which reports a friendly timeout; a single provider timing out is handled below.
                 throw;
             }
             catch (OperationCanceledException)
@@ -189,6 +212,16 @@ internal sealed class WebSearchService
     }
 
     /// <summary>
+    /// True when a search result URL is an absolute http/https URL permitted by the domain policy.
+    /// </summary>
+    private bool IsResultAllowed(string url, IReadOnlyList<DomainRule> rules)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && _domainPolicy.IsAllowed(uri, rules);
+    }
+
+    /// <summary>
     /// Fetches <paramref name="url"/> honoring the domain policy, network safety guard, and the
     /// configured timeout/response-size limits. HTML content is converted to plain text.
     /// </summary>
@@ -200,19 +233,24 @@ internal sealed class WebSearchService
         if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
             throw new InvalidOperationException($"'{url}' is not a valid absolute URL.");
 
+        // Load the domain rules once and reuse them across every redirect hop (L7).
+        IReadOnlyList<DomainRule> rules = _domainPolicy.LoadRules();
+
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(settings.TimeoutSeconds));
 
-        using HttpResponseMessage response = await FetchWithValidatedRedirectsAsync(uri, settings, timeoutCts.Token);
+        using HttpResponseMessage response = await FetchWithValidatedRedirectsAsync(uri, settings, rules, timeoutCts.Token);
         response.EnsureSuccessStatusCode();
 
         string contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
-        string body = await ReadCappedAsync(response, settings.MaxResponseBytes, timeoutCts.Token);
+        (string body, bool truncated) = await HttpContentReader.ReadCappedAsync(response, settings.MaxResponseBytes, timeoutCts.Token);
 
-        if (contentType.Contains("html", StringComparison.OrdinalIgnoreCase) || LooksLikeHtml(body))
-            return HtmlTextExtractor.ToText(body);
+        string text = contentType.Contains("html", StringComparison.OrdinalIgnoreCase) || LooksLikeHtml(body)
+            ? HtmlTextExtractor.ToText(body)
+            : body;
 
-        return body;
+        // Tell the model the page was cut off at the size cap rather than silently dropping content (M5).
+        return truncated ? text + "\n[content truncated]" : text;
     }
 
     /// <summary>
@@ -221,7 +259,7 @@ internal sealed class WebSearchService
     /// so a public URL cannot redirect the fetch into private networks or blocked domains.
     /// </summary>
     private async Task<HttpResponseMessage> FetchWithValidatedRedirectsAsync(
-        Uri start, WebSearchSettings settings, CancellationToken cancellationToken)
+        Uri start, WebSearchSettings settings, IReadOnlyList<DomainRule> rules, CancellationToken cancellationToken)
     {
         Uri current = start;
 
@@ -229,7 +267,7 @@ internal sealed class WebSearchService
         {
             await NetworkSafety.ValidateAsync(current, settings.AllowLocalNetworks, cancellationToken);
 
-            if (!_domainPolicy.IsAllowed(current))
+            if (!_domainPolicy.IsAllowed(current, rules))
                 throw new InvalidOperationException(
                     $"Domain '{current.Host}' is blocked by the configured allow/deny domain rules.");
 
@@ -247,28 +285,6 @@ internal sealed class WebSearchService
 
             current = next;
         }
-    }
-
-    private static async Task<string> ReadCappedAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
-    {
-        await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-
-        var buffer = new byte[8192];
-        var output = new MemoryStream();
-        int totalRead = 0;
-
-        while (totalRead < maxBytes)
-        {
-            int toRead = Math.Min(buffer.Length, maxBytes - totalRead);
-            int read = await stream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-            if (read == 0)
-                break;
-
-            output.Write(buffer, 0, read);
-            totalRead += read;
-        }
-
-        return Encoding.UTF8.GetString(output.GetBuffer(), 0, (int)output.Length);
     }
 
     private static bool LooksLikeHtml(string body)

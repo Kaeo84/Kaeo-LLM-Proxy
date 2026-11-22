@@ -27,6 +27,7 @@ internal sealed class SearXngSearchProvider : ISearchProvider
         int maxResults,
         string? apiKey,
         HttpClient httpClient,
+        int maxResponseBytes,
         CancellationToken cancellationToken)
     {
         string endpoint = string.IsNullOrWhiteSpace(config.Endpoint)
@@ -41,7 +42,7 @@ internal sealed class SearXngSearchProvider : ISearchProvider
 
         using HttpResponseMessage response = await httpClient.GetAsync(builder.Uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(cancellationToken);
+        string json = await HttpContentReader.ReadCappedAsStringAsync(response, maxResponseBytes, cancellationToken);
 
         var results = new List<SearchResult>();
         using JsonDocument document = JsonDocument.Parse(json);

@@ -27,19 +27,30 @@ internal sealed class BingSearchProvider : ISearchProvider
         int maxResults,
         string? apiKey,
         HttpClient httpClient,
+        int maxResponseBytes,
         CancellationToken cancellationToken)
     {
         string endpoint = string.IsNullOrWhiteSpace(config.Endpoint)
             ? "https://api.bing.microsoft.com/v7.0/search"
             : config.Endpoint.Trim();
 
-        using HttpRequestMessage request = new(HttpMethod.Get, $"{endpoint}?q={Uri.EscapeDataString(query)}&count={maxResults}");
+        // Merge the query into any existing query string rather than appending a second '?' (L5).
+        UriBuilder builder = new(endpoint);
+        if (!string.Equals(builder.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            throw new HttpRequestException("Bing requires an https:// endpoint; the API key would otherwise be sent in cleartext.");
+
+        string newQuery = $"q={Uri.EscapeDataString(query)}&count={maxResults}";
+        builder.Query = string.IsNullOrEmpty(builder.Query) || builder.Query == "?"
+            ? newQuery
+            : $"{builder.Query.TrimStart('?')}&{newQuery}";
+
+        using HttpRequestMessage request = new(HttpMethod.Get, builder.Uri);
         request.Headers.Add("Ocp-Apim-Subscription-Key", apiKey);
         request.Headers.Add("Accept", "application/json");
 
         using HttpResponseMessage response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
-        string json = await response.Content.ReadAsStringAsync(cancellationToken);
+        string json = await HttpContentReader.ReadCappedAsStringAsync(response, maxResponseBytes, cancellationToken);
 
         var results = new List<SearchResult>();
         using JsonDocument document = JsonDocument.Parse(json);

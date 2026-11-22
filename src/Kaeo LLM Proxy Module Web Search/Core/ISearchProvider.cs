@@ -30,5 +30,6 @@ internal interface ISearchProvider
         int maxResults,
         string? apiKey,
         HttpClient httpClient,
+        int maxResponseBytes,
         CancellationToken cancellationToken);
 }

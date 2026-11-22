@@ -32,7 +32,8 @@ internal sealed class WebSearchTools(WebSearchService service, WebSearchReposito
         [Description("Maximum number of results to return. Optional; capped by the module's configured limit.")] int? maxResults = null,
         CancellationToken cancellationToken = default)
     {
-        WebSearchSettings settings = _repository.LoadWebSearchSettings();
+        if (!TryLoadSettings(out WebSearchSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.WebSearchToolEnabled)
             return "The web_search tool is disabled in the Web Search module settings.";
 
@@ -70,6 +71,11 @@ internal sealed class WebSearchTools(WebSearchService service, WebSearchReposito
         {
             return $"Web search failed: {ex.Message}";
         }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            Log.Warning(ex, "Web search failed because the settings store is unavailable.");
+            return "Web search failed: the settings store is temporarily unavailable (the database may be locked by another instance). Try again shortly.";
+        }
     }
 
     [McpServerTool(Name = "web_fetch"), Description(
@@ -81,7 +87,8 @@ internal sealed class WebSearchTools(WebSearchService service, WebSearchReposito
         [Description("The absolute http or https URL of the page to fetch.")] string url,
         CancellationToken cancellationToken = default)
     {
-        WebSearchSettings settings = _repository.LoadWebSearchSettings();
+        if (!TryLoadSettings(out WebSearchSettings settings, out string? settingsError))
+            return settingsError!;
         if (!settings.WebFetchToolEnabled)
             return "The web_fetch tool is disabled in the Web Search module settings.";
 
@@ -106,6 +113,36 @@ internal sealed class WebSearchTools(WebSearchService service, WebSearchReposito
         catch (HttpRequestException ex)
         {
             return $"Fetch failed: {ex.Message}";
+        }
+        catch (IOException ex)
+        {
+            return $"Fetch failed: {ex.Message}";
+        }
+        catch (DbException ex)
+        {
+            Log.Warning(ex, "Web fetch failed because the settings store is unavailable.");
+            return "Fetch failed: the settings store is temporarily unavailable (the database may be locked by another instance). Try again shortly.";
+        }
+    }
+
+    /// <summary>
+    /// Loads the feature settings, degrading gracefully when the shared database is locked by
+    /// another instance (H3) instead of throwing an unhandled exception out of the tool.
+    /// </summary>
+    private bool TryLoadSettings(out WebSearchSettings settings, out string? error)
+    {
+        try
+        {
+            settings = _repository.LoadWebSearchSettings();
+            error = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            Log.Warning(ex, "Web Search settings store is unavailable.");
+            settings = null!;
+            error = "The Web Search settings store is temporarily unavailable (the database may be locked by another instance). Try again shortly.";
+            return false;
         }
     }
 

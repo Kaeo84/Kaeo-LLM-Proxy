@@ -48,12 +48,34 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        UpsertKeyValue("mcp_web_search_settings", WebSearchEnabledKey, settings.WebSearchToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_web_search_settings", WebFetchEnabledKey, settings.WebFetchToolEnabled ? "1" : "0");
-        UpsertKeyValue("mcp_web_search_settings", MaxResultsKey, settings.MaxResults.ToString());
-        UpsertKeyValue("mcp_web_search_settings", TimeoutSecondsKey, settings.TimeoutSeconds.ToString());
-        UpsertKeyValue("mcp_web_search_settings", MaxResponseBytesKey, settings.MaxResponseBytes.ToString());
-        UpsertKeyValue("mcp_web_search_settings", AllowLocalNetworksKey, settings.AllowLocalNetworks ? "1" : "0");
+        (string Key, string Value)[] values =
+        [
+            (WebSearchEnabledKey, settings.WebSearchToolEnabled ? "1" : "0"),
+            (WebFetchEnabledKey, settings.WebFetchToolEnabled ? "1" : "0"),
+            (MaxResultsKey, settings.MaxResults.ToString()),
+            (TimeoutSecondsKey, settings.TimeoutSeconds.ToString()),
+            (MaxResponseBytesKey, settings.MaxResponseBytes.ToString()),
+            (AllowLocalNetworksKey, settings.AllowLocalNetworks ? "1" : "0"),
+        ];
+
+        // M11: write every key in one transaction so a failure or a concurrent writer cannot leave
+        // a partially updated configuration (e.g. a new timeout paired with an old size cap).
+        _database.ExecuteInTransaction((connection, transaction) =>
+        {
+            foreach ((string key, string value) in values)
+            {
+                using DbCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText =
+                    """
+                    INSERT INTO mcp_web_search_settings (key, value) VALUES ($key, $value)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                    """;
+                AddParameter(command, "$key", key);
+                AddParameter(command, "$value", value);
+                command.ExecuteNonQuery();
+            }
+        });
     }
 
     // ── Search providers ────────────────────────────────────────────────────
@@ -95,38 +117,31 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
             });
     }
 
-    /// <summary>Inserts the default provider catalog on first run (does nothing when rows exist).</summary>
+    /// <summary>
+    /// Inserts the default provider catalog. Each row uses INSERT OR IGNORE against the UNIQUE
+    /// name column, so seeding is idempotent and safe under concurrent first-run initialization
+    /// without a COUNT-then-insert race (L8).
+    /// </summary>
     public void SeedDefaultProviders()
     {
-        object? count = _database.ExecuteScalar("SELECT COUNT(*) FROM mcp_web_search_providers;");
-        if (Convert.ToInt64(count) > 0)
-            return;
-
-        UpsertProvider(new SearchProviderConfig
-        {
-            Name = "DuckDuckGo",
-            IsEnabled = true,
-            Endpoint = "https://duckduckgo.com/html/",
-        });
-        UpsertProvider(new SearchProviderConfig
-        {
-            Name = "SearXNG",
-            IsEnabled = false,
-            Endpoint = "http://localhost:8888/search",
-        });
-        UpsertProvider(new SearchProviderConfig
-        {
-            Name = "Brave",
-            IsEnabled = false,
-            Endpoint = "https://api.search.brave.com/res/v1/web/search",
-        });
-        UpsertProvider(new SearchProviderConfig
-        {
-            Name = "Bing",
-            IsEnabled = false,
-            Endpoint = "https://api.bing.microsoft.com/v7.0/search",
-        });
+        InsertProviderIfAbsent("DuckDuckGo", true, "https://duckduckgo.com/html/");
+        InsertProviderIfAbsent("SearXNG", false, "http://localhost:8888/search");
+        InsertProviderIfAbsent("Brave", false, "https://api.search.brave.com/res/v1/web/search");
+        InsertProviderIfAbsent("Bing", false, "https://api.bing.microsoft.com/v7.0/search");
     }
+
+    private void InsertProviderIfAbsent(string name, bool isEnabled, string endpoint) =>
+        _database.Execute(
+            """
+            INSERT OR IGNORE INTO mcp_web_search_providers (name, is_enabled, endpoint, credential_name)
+            VALUES ($name, $isEnabled, $endpoint, NULL);
+            """,
+            command =>
+            {
+                AddParameter(command, "$name", name);
+                AddParameter(command, "$isEnabled", isEnabled ? 1 : 0);
+                AddParameter(command, "$endpoint", endpoint);
+            });
 
     // ── Domain rules ────────────────────────────────────────────────────────
 
@@ -168,7 +183,7 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
     {
         // Only allow known safe table names to prevent SQL injection if
         // callers are changed in the future to accept external input.
-        if (table is not ("mcp_web_search_settings" or "mcp_web_search_providers"))
+        if (table is not "mcp_web_search_settings")
             throw new ArgumentException($"Unknown table name: {table}", nameof(table));
 
         IReadOnlyList<KeyValuePair<string, string>> rows = _database.Query(
@@ -177,18 +192,6 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
 
         return new Dictionary<string, string>(rows, StringComparer.OrdinalIgnoreCase);
     }
-
-    private void UpsertKeyValue(string table, string key, string value) =>
-        _database.Execute(
-            $"""
-             INSERT INTO {table} (key, value) VALUES ($key, $value)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-             """,
-            command =>
-            {
-                AddParameter(command, "$key", key);
-                AddParameter(command, "$value", value);
-            });
 
     /// <summary>Creates and adds a parameter in a provider-agnostic way.</summary>
     private static void AddParameter(DbCommand command, string name, object? value)
@@ -204,8 +207,4 @@ internal sealed class WebSearchRepository(IModuleDatabase database)
 
     private static int ReadInt(Dictionary<string, string> values, string key, int fallback) =>
         values.TryGetValue(key, out string? raw) && int.TryParse(raw, out int parsed) ? parsed : fallback;
-
-    private static string ReadString(Dictionary<string, string> values, string key, string fallback) =>
-        values.TryGetValue(key, out string? raw) && !string.IsNullOrWhiteSpace(raw) ? raw : fallback;
-
     }

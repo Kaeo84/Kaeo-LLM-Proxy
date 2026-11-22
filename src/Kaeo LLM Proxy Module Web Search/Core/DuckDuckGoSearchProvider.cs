@@ -40,6 +40,7 @@ internal sealed partial class DuckDuckGoSearchProvider : ISearchProvider
         int maxResults,
         string? apiKey,
         HttpClient httpClient,
+        int maxResponseBytes,
         CancellationToken cancellationToken)
     {
         string endpoint = string.IsNullOrWhiteSpace(config.Endpoint)
@@ -65,12 +66,19 @@ internal sealed partial class DuckDuckGoSearchProvider : ISearchProvider
             {
                 if (hop >= 5)
                     throw new HttpRequestException($"Too many redirects while searching DuckDuckGo from '{endpoint}'.");
-                currentUrl = new Uri(currentUrl, response.Headers.Location);
+
+                Uri next = new(currentUrl, response.Headers.Location);
+                // The query is re-POSTed to the redirect target; refuse non-HTTPS hops so it cannot
+                // be bounced to a cleartext endpoint (L11). The connect-time SSRF guard still applies.
+                if (next.Scheme != Uri.UriSchemeHttps)
+                    throw new HttpRequestException($"DuckDuckGo redirect to a non-HTTPS URL '{next}' was blocked.");
+
+                currentUrl = next;
                 continue;
             }
 
             response.EnsureSuccessStatusCode();
-            html = await response.Content.ReadAsStringAsync(cancellationToken);
+            html = await HttpContentReader.ReadCappedAsStringAsync(response, maxResponseBytes, cancellationToken);
             break;
         }
 
@@ -111,7 +119,9 @@ internal sealed partial class DuckDuckGoSearchProvider : ISearchProvider
         var snippets = new List<string>();
         foreach (Match openTag in SnippetOpenRegex().Matches(html))
         {
-            int end = html.IndexOf("</", openTag.Index + openTag.Length, StringComparison.Ordinal);
+            // Snippets are anchor bodies containing inline markup (<b>…</b>); scan to the closing
+            // </a> rather than the first inner closing tag, which truncated highlighted terms (M6).
+            int end = html.IndexOf("</a>", openTag.Index + openTag.Length, StringComparison.OrdinalIgnoreCase);
             if (end < 0)
                 break;
 
@@ -143,9 +153,15 @@ internal sealed partial class DuckDuckGoSearchProvider : ISearchProvider
         if (redirect.Success)
         {
             string decoded = Uri.UnescapeDataString(redirect.Groups[1].Value);
-            return Uri.TryCreate(decoded, UriKind.Absolute, out Uri? target) ? target.ToString() : null;
+            return Uri.TryCreate(decoded, UriKind.Absolute, out Uri? target) && IsHttpScheme(target)
+                ? target.ToString()
+                : null;
         }
 
-        return uri.ToString();
+        return IsHttpScheme(uri) ? uri.ToString() : null;
     }
+
+    // Only surface http/https result links; javascript:/data: URLs are never useful to fetch (L11).
+    private static bool IsHttpScheme(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
 }

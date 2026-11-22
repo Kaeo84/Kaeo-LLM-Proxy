@@ -39,10 +39,20 @@ public sealed class WebSearchModule : IKaeoModule, IMcpToolModule, IHelpModule
         ArgumentNullException.ThrowIfNull(context);
         _context = context;
 
-        ApplySchema(context.Database);
-
         _repository = new WebSearchRepository(context.Database);
-        _repository.SeedDefaultProviders();
+
+        // H3: a sharing violation (another instance holds the database) must not crash module
+        // discovery. Log and continue; the tools report a friendly error per call until the
+        // database becomes available again.
+        try
+        {
+            ApplySchema(context.Database);
+            _repository.SeedDefaultProviders();
+        }
+        catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+        {
+            Serilog.Log.Warning(ex, "Web Search module could not initialize its database schema; it will retry on demand.");
+        }
 
         _webSearchService = new WebSearchService(_repository, context.Secrets);
     }

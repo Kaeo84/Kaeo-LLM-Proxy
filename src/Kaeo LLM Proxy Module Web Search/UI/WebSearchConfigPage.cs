@@ -242,6 +242,11 @@ internal sealed class WebSearchConfigPage : TabPage
             _nudMaxBytes.Value = web.MaxResponseBytes;
             _chkAllowLocal.Checked = web.AllowLocalNetworks;
         }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("load the Web Search settings", ex);
+            return;
+        }
         finally
         {
             _loading = false;
@@ -267,6 +272,10 @@ internal sealed class WebSearchConfigPage : TabPage
                 _lstProviders.Items.Add(item);
             }
         }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("load the search providers", ex);
+        }
         finally
         {
             _lstProviders.EndUpdate();
@@ -289,6 +298,10 @@ internal sealed class WebSearchConfigPage : TabPage
                 _lstDomainRules.Items.Add(item);
             }
         }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("load the domain rules", ex);
+        }
         finally
         {
             _lstDomainRules.EndUpdate();
@@ -302,15 +315,23 @@ internal sealed class WebSearchConfigPage : TabPage
         if (_loading)
             return;
 
-        _module.Repository.SaveWebSearchSettings(new WebSearchSettings
+        try
         {
-            WebSearchToolEnabled = _chkWebSearchTool.Checked,
-            WebFetchToolEnabled = _chkWebFetchTool.Checked,
-            MaxResults = (int)_nudMaxResults.Value,
-            TimeoutSeconds = (int)_nudTimeout.Value,
-            MaxResponseBytes = (int)_nudMaxBytes.Value,
-            AllowLocalNetworks = _chkAllowLocal.Checked,
-        });
+            _module.Repository.SaveWebSearchSettings(new WebSearchSettings
+            {
+                WebSearchToolEnabled = _chkWebSearchTool.Checked,
+                WebFetchToolEnabled = _chkWebFetchTool.Checked,
+                MaxResults = (int)_nudMaxResults.Value,
+                TimeoutSeconds = (int)_nudTimeout.Value,
+                MaxResponseBytes = (int)_nudMaxBytes.Value,
+                AllowLocalNetworks = _chkAllowLocal.Checked,
+            });
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("save the Web Search settings", ex);
+            LoadSettingsToUi();   // revert the controls to the last persisted state
+        }
     }
 
     // ── Event handlers ──────────────────────────────────────────────────────
@@ -345,8 +366,16 @@ internal sealed class WebSearchConfigPage : TabPage
         }
 
         provider.IsEnabled = !provider.IsEnabled;
-        _module.Repository.UpsertProvider(provider);
-        RefreshProviders();
+        try
+        {
+            _module.Repository.UpsertProvider(provider);
+            RefreshProviders();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            provider.IsEnabled = !provider.IsEnabled;   // revert the optimistic toggle
+            ShowDbError("update the search provider", ex);
+        }
     }
 
     private void BtnConfigureProvider_Click(object? sender, EventArgs e)
@@ -362,8 +391,15 @@ internal sealed class WebSearchConfigPage : TabPage
         using ProviderConfigDialog dialog = new(provider, _module.Secrets.ListCredentialNames(), requiresKey);
         if (dialog.ShowDialog(this) == DialogResult.OK)
         {
-            _module.Repository.UpsertProvider(provider);
-            RefreshProviders();
+            try
+            {
+                _module.Repository.UpsertProvider(provider);
+                RefreshProviders();
+            }
+            catch (Exception ex) when (ex is IOException or DbException)
+            {
+                ShowDbError("save the search provider", ex);
+            }
         }
     }
 
@@ -381,6 +417,14 @@ internal sealed class WebSearchConfigPage : TabPage
         string pattern = dialog.Value.Trim();
         if (pattern.Length == 0)
             return;
+
+        if (!IsValidDomainPattern(pattern))
+        {
+            MessageBox.Show(this,
+                "Enter a valid domain pattern such as example.com or *.example.com (no scheme, path, port, or spaces).",
+                title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         try
         {
@@ -402,11 +446,48 @@ internal sealed class WebSearchConfigPage : TabPage
             return;
         }
 
-        _module.Repository.RemoveDomainRule(rule.Id);
-        RefreshDomainRules();
+        try
+        {
+            _module.Repository.RemoveDomainRule(rule.Id);
+            RefreshDomainRules();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDbError("remove the domain rule", ex);
+        }
     }
 
     // ── Small helpers ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Reports a database sharing/locking failure to the user instead of letting it crash the
+    /// configuration page (H3). The shared gateway rethrows these unchanged, so the UI must cope.
+    /// </summary>
+    private void ShowDbError(string operation, Exception ex)
+    {
+        Log.Warning(ex, "Web Search configuration could not {Operation}.", operation);
+        MessageBox.Show(this,
+            $"Could not {operation}: the database may be locked by another instance. Try again shortly.\n\n{ex.Message}",
+            "Web Search", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// <summary>
+    /// Validates a domain allow/deny pattern (L12): an optional "*." wildcard prefix followed by a
+    /// syntactically valid host, with no scheme, path, port, whitespace, or empty labels.
+    /// </summary>
+    private static bool IsValidDomainPattern(string pattern)
+    {
+        if (pattern.IndexOfAny(['/', '\\', '?', '#', ' ', '\t', ':']) >= 0)
+            return false;
+
+        string host = pattern.StartsWith("*.", StringComparison.Ordinal) ? pattern[2..] : pattern;
+        host = host.TrimEnd('.');
+
+        if (host.Length == 0 || host.StartsWith('.') || host.Contains(".."))
+            return false;
+
+        return Uri.CheckHostName(host) != UriHostNameType.Unknown;
+    }
 
     private static Label MakeCaption(string text) => new()
     {

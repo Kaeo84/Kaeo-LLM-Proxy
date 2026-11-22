@@ -18,10 +18,12 @@ internal sealed class ProviderConfigDialog : Form
     private readonly TextBox _txtEndpoint;
     private readonly ComboBox _cmbCredential;
     private readonly CheckBox _chkEnabled;
+    private readonly bool _requiresKey;
 
     public ProviderConfigDialog(SearchProviderConfig provider, IReadOnlyList<string> credentialNames, bool requiresKey)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        _requiresKey = requiresKey;
 
         Text = $"Configure {_provider.Name}";
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -95,6 +97,15 @@ internal sealed class ProviderConfigDialog : Form
             || (endpointUri.Scheme != Uri.UriSchemeHttp && endpointUri.Scheme != Uri.UriSchemeHttps))
         {
             MessageBox.Show(this, "The endpoint must be a valid absolute http:// or https:// URL.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DialogResult = DialogResult.None;
+            return;
+        }
+
+        // M7: a provider that sends an API key must use https so the key is never transmitted in
+        // clear text; the runtime providers enforce this too, but warn here at configuration time.
+        if (_requiresKey && endpointUri.Scheme != Uri.UriSchemeHttps)
+        {
+            MessageBox.Show(this, "This provider sends an API key, so its endpoint must use https://.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             DialogResult = DialogResult.None;
             return;
         }

@@ -19,15 +19,25 @@ namespace Kaeo.LlmProxy.Module.WebSearch;
 /// </summary>
 internal sealed class DomainPolicyService(WebSearchRepository repository)
 {
+    private static readonly System.Globalization.IdnMapping Idn = new();
+
     private readonly WebSearchRepository _repository = repository;
 
-    public bool IsAllowed(Uri uri)
+    /// <summary>Loads the current rule set once so a multi-hop fetch can reuse it (L7).</summary>
+    public IReadOnlyList<DomainRule> LoadRules() => _repository.LoadDomainRules();
+
+    public bool IsAllowed(Uri uri) => IsAllowed(uri, LoadRules());
+
+    /// <summary>
+    /// Checks <paramref name="uri"/> against a preloaded rule set, avoiding a database read per
+    /// redirect hop. Host and patterns are normalized identically (trailing dot removed, IDN
+    /// converted to ASCII) so a deny rule cannot be bypassed with "example.com." or a Unicode form.
+    /// </summary>
+    public bool IsAllowed(Uri uri, IReadOnlyList<DomainRule> rules)
     {
-        string host = uri.Host.Trim().ToLowerInvariant();
+        string host = NormalizeHost(uri.Host);
         if (host.Length == 0)
             return false;
-
-        IReadOnlyList<DomainRule> rules = _repository.LoadDomainRules();
 
         foreach (DomainRule rule in rules)
         {
@@ -44,7 +54,7 @@ internal sealed class DomainPolicyService(WebSearchRepository repository)
 
     /// <summary>
     /// Matches a domain pattern: exact ("example.com") or wildcard subdomain ("*.example.com",
-    /// which also matches the apex "example.com").
+    /// which also matches the apex "example.com"). <paramref name="host"/> is already normalized.
     /// </summary>
     private static bool Matches(string pattern, string host)
     {
@@ -54,11 +64,31 @@ internal sealed class DomainPolicyService(WebSearchRepository repository)
 
         if (pattern.StartsWith("*.", StringComparison.Ordinal))
         {
-            string suffix = pattern[1..];          // ".example.com"
-            string apex = pattern[2..];             // "example.com"
-            return host == apex || host.EndsWith(suffix, StringComparison.Ordinal);
+            string apex = NormalizeHost(pattern[2..]);   // "example.com"
+            return host == apex || host.EndsWith("." + apex, StringComparison.Ordinal);
         }
 
-        return host == pattern;
+        return host == NormalizeHost(pattern);
+    }
+
+    /// <summary>
+    /// Lower-cases, strips a trailing FQDN dot, and converts IDN labels to their ASCII (punycode)
+    /// form so rules and hosts compare on the same representation. <see cref="Uri.Host"/> already
+    /// yields punycode for IDN hosts; normalizing rules the same way makes Unicode rules match.
+    /// </summary>
+    private static string NormalizeHost(string host)
+    {
+        host = host.Trim().TrimEnd('.').ToLowerInvariant();
+        if (host.Length == 0)
+            return host;
+
+        try
+        {
+            return Idn.GetAscii(host);
+        }
+        catch (ArgumentException)
+        {
+            return host;
+        }
     }
 }
