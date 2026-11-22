@@ -209,7 +209,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     }
                 for (int i = 0; i < _instructions.Count; i++)
                     _instructions[i].Order = i;
-                InstructionFileLoader.EnsureDefaultFiles(_instructions, InstructionFileLoader.GetSolutionRootPath());
+                // M7: resolve the solution root and seed default files off the UI thread.
+                var solutionRoot = await InstructionFileLoader.GetSolutionRootPathAsync();
+                await Task.Run(() => InstructionFileLoader.EnsureDefaultFiles(_instructions, solutionRoot));
 
                 var d = _settings.Defaults ??= new Defaults();
                 HeartbeatBox.Text = d.HeartbeatMinutes.ToString();
@@ -289,6 +291,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     Enabled = m.Enabled,
                     IsPinned = false,
                     ReasoningSource = m.ReasoningSource,
+                    ContextSize = m.ContextSize,
                 });
             }
             WireForSave(copy);
@@ -795,19 +798,27 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// Points the instruction editor at the selected entry. For a file entry, the current on-disk
         /// content is loaded into the text area so the user edits the real file body.
         /// </summary>
-        private void ShowInstructionEditor(InstructionEntry? entry)
+        private async void ShowInstructionEditor(InstructionEntry? entry)
         {
             InstructionEditor.DataContext = entry;
             bool has = entry is not null;
             InstructionEditor.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
             NoInstructionHint.Visibility = has ? Visibility.Collapsed : Visibility.Visible;
 
-            if (entry is { IsFile: true })
-                entry.Content = InstructionFileLoader.ReadFileContent(entry.Path);
+            // M7: read the file body off the UI thread, and only when the buffer is empty so
+            // re-selecting an entry never clobbers unsaved edits. Guard against a stale apply if
+            // the user moved to another entry while the read was in flight.
+            if (entry is { IsFile: true, Content: null })
+            {
+                var path = entry.Path;
+                var content = await Task.Run(() => InstructionFileLoader.ReadFileContent(path));
+                if (ReferenceEquals(InstructionEditor.DataContext, entry))
+                    entry.Content = content;
+            }
         }
 
         /// <summary>Browses for a Markdown/text file and loads its content into the editor.</summary>
-        private void BrowseInstructionFile_Click(object sender, RoutedEventArgs e)
+        private async void BrowseInstructionFile_Click(object sender, RoutedEventArgs e)
         {
             if (InstructionEditor.DataContext is not InstructionEntry entry)
                 return;
@@ -821,8 +832,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (dialog.ShowDialog() != true)
                 return;
 
-            entry.Path = MakeRelativeIfUnderSolution(dialog.FileName);
-            entry.Content = InstructionFileLoader.ReadFileContent(entry.Path);
+            entry.Path = await MakeRelativeIfUnderSolutionAsync(dialog.FileName);
+            var path = entry.Path;
+            entry.Content = await Task.Run(() => InstructionFileLoader.ReadFileContent(path));
             SaveNow();
         }
 
@@ -861,9 +873,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         }
 
         /// <summary>Converts an absolute path under the solution root into a solution-relative one.</summary>
-        private static string MakeRelativeIfUnderSolution(string absolutePath)
+        private static async Task<string> MakeRelativeIfUnderSolutionAsync(string absolutePath)
         {
-            var root = InstructionFileLoader.GetSolutionRootPath();
+            var root = await InstructionFileLoader.GetSolutionRootPathAsync();
             if (string.IsNullOrEmpty(root))
                 return absolutePath;
             try
@@ -988,7 +1000,47 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         private void PersistSave()
         {
-            _ = _store.SaveAsync(_settings).ContinueWith(t =>
+            // M1: merge the dialog-owned sections into a freshly-loaded snapshot under the store's
+            // write lock instead of overwriting the whole file with the snapshot captured at open.
+            // Fields owned by concurrent writers (notably Defaults.Model/Mode, set by the tool
+            // window) are preserved because the dialog never edits them.
+            var connections = _settings.Connections;
+            var mcpServers = _settings.McpServers;
+            var instructions = _settings.Instructions;
+            var agents = _settings.Agents;
+            var edited = _settings.Defaults;
+
+            _ = _store.UpdateAsync(current =>
+            {
+                current.Connections = connections;
+                current.McpServers = mcpServers;
+                current.Instructions = instructions;
+                current.Agents = agents;
+                var d = current.Defaults ??= new Defaults();
+                if (edited is not null)
+                {
+                    d.Agent = edited.Agent;
+                    d.AutoAttachContext = edited.AutoAttachContext;
+                    d.DefaultTemperature = edited.DefaultTemperature;
+                    d.HeartbeatMinutes = edited.HeartbeatMinutes;
+                    d.MaxToolIterations = edited.MaxToolIterations;
+                    d.AutoPilotBudget = edited.AutoPilotBudget;
+                    d.ProcessingDefault = edited.ProcessingDefault;
+                    d.ReasoningDisplay = edited.ReasoningDisplay;
+                    d.ToolsDefault = edited.ToolsDefault;
+                    d.AlwaysAllowedTools = edited.AlwaysAllowedTools;
+                    d.ReasoningForeground = edited.ReasoningForeground;
+                    d.ReasoningBackground = edited.ReasoningBackground;
+                    d.UserMessageAlignment = edited.UserMessageAlignment;
+                    d.UserMessageBackground = edited.UserMessageBackground;
+                    d.UserMessageForeground = edited.UserMessageForeground;
+                    d.AgentMessageAlignment = edited.AgentMessageAlignment;
+                    d.AgentMessageBackground = edited.AgentMessageBackground;
+                    d.AgentMessageForeground = edited.AgentMessageForeground;
+                    // Model and Mode are owned by the tool window; keep the freshly-loaded values.
+                }
+                return Task.CompletedTask;
+            }).ContinueWith(t =>
             {
                 if (t.IsFaulted)
                 {

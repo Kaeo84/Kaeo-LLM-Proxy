@@ -555,9 +555,55 @@ internal static class BuiltInVsTools
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
+        catch (OperationCanceledException)
+        {
+            // Cancellation must propagate so the agent loop stops; never hand it back as a result.
+            throw;
+        }
         catch (Exception ex)
         {
+            DebugLog.Error($"Built-in tool '{toolName}' failed.", ex);
             return $"Tool execution failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Runs a file read/write with a short retry/backoff on <see cref="IOException"/> (a second
+    /// devenv instance, an editor lock, or an AV scan can hold the file briefly). Each retry is
+    /// logged as a warning; after the budget the exception propagates to <see cref="ExecuteAsync"/>,
+    /// which logs it and returns a graceful error rather than crashing (project sharing rule).
+    /// </summary>
+    private static T FileIoWithRetry<T>(string path, Func<T> op)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return op();
+            }
+            catch (IOException ex) when (attempt < 2)
+            {
+                DebugLog.Warn($"File '{path}' is busy (attempt {attempt + 1}); retrying: {ex.Message}");
+                System.Threading.Thread.Sleep(50 * (attempt + 1));
+            }
+        }
+    }
+
+    /// <summary>Void-returning overload of <see cref="FileIoWithRetry{T}"/> for writes/deletes.</summary>
+    private static void FileIoWithRetry(string path, Action op)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                op();
+                return;
+            }
+            catch (IOException ex) when (attempt < 2)
+            {
+                DebugLog.Warn($"File '{path}' is busy (attempt {attempt + 1}); retrying: {ex.Message}");
+                System.Threading.Thread.Sleep(50 * (attempt + 1));
+            }
         }
     }
 
@@ -666,7 +712,7 @@ internal static class BuiltInVsTools
         if (!File.Exists(filePath))
             return $"File not found: {filePath}";
 
-        var lines = File.ReadAllLines(filePath);
+        var lines = FileIoWithRetry(filePath, () => File.ReadAllLines(filePath));
         if (startLine < 1 || startLine > lines.Length)
             return $"Start line {startLine} is out of range (file has {lines.Length} lines).";
         if (endLine < startLine || endLine > lines.Length)
@@ -1031,6 +1077,7 @@ internal static class BuiltInVsTools
                 dte.ExecuteCommand("TestExplorer.RunAllTests");
                 return "Tests started. Check the Test Explorer window for results.";
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 return $"Could not start tests: {ex.Message}";
@@ -1044,15 +1091,16 @@ internal static class BuiltInVsTools
 
         try
         {
-            // Run tests. DTE commands:
-            //   TestExplorer.RunAllTests - runs everything
-            //   TestExplorer.RunTestsInContext - runs selected tests
+            // DTE exposes TestExplorer.RunAllTests / RunTestsInContext but no command that applies
+            // an arbitrary filterType/filterValue. Run the suite and surface the requested scope so
+            // the model knows what was asked for; finer filtering needs the Test Explorer
+            // extensibility API or vstest.console (a larger integration).
             dte.ExecuteCommand("TestExplorer.RunAllTests");
 
-            // Poll the test pane until the run finishes (output stabilizes).
+            // Poll the test pane until a real run-summary appears and the output stabilizes.
             string? lastText = null;
             int stableCount = 0;
-            const int maxWaitMs = 120_000; // 2 minute timeout
+            const int maxWaitMs = 300_000; // 5 minute ceiling
             const int pollIntervalMs = 2000;
             var elapsed = 0;
 
@@ -1070,8 +1118,10 @@ internal static class BuiltInVsTools
                 if (currentText == lastText)
                 {
                     stableCount++;
-                    if (stableCount >= 3 && currentText.Length > 0)
-                        break; // output hasn't changed for 3 polls, run is done
+                    // Require a summary marker as well as stability so a quiet discovery phase
+                    // (>6 s of no output) does not end the wait early with partial results.
+                    if (stableCount >= 3 && HasTestRunSummary(currentText))
+                        break;
                 }
                 else
                 {
@@ -1082,22 +1132,46 @@ internal static class BuiltInVsTools
 
             var finalText = lastText ?? "No test output captured.";
             var lines = finalText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 10)));
 
-            // Try to extract summary: "Passed: X, Failed: Y, Skipped: Z"
             var summaryLine = lines.LastOrDefault(l =>
                 l.Contains("Passed", StringComparison.OrdinalIgnoreCase) ||
                 l.Contains("Failed", StringComparison.OrdinalIgnoreCase) ||
                 l.Contains("No tests found", StringComparison.OrdinalIgnoreCase) ||
                 l.Contains("Test execution time", StringComparison.OrdinalIgnoreCase));
 
+            var scopeNote = string.IsNullOrWhiteSpace(filterValue)
+                ? string.Empty
+                : $" (requested filter: {filterType}={filterValue}; DTE ran the full suite)";
+
+            // If no summary ever appeared, the run did not finish within the ceiling — label the
+            // output as partial rather than claiming completion.
+            if (!HasTestRunSummary(finalText))
+                return $"Test run did not finish within {maxWaitMs / 1000}s{scopeNote}; partial output:\n{tail}";
+
             return summaryLine is not null
-                ? $"Test run complete.\n{summaryLine.Trim()}"
-                : $"Test run complete.\n{string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 10)))}";
+                ? $"Test run complete{scopeNote}.\n{summaryLine.Trim()}"
+                : $"Test run complete{scopeNote}.\n{tail}";
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             return $"Test execution failed: {ex.Message}";
         }
+    }
+
+    /// <summary>True once the Test pane shows a run-summary marker (passed/failed counts or timing).</summary>
+    private static bool HasTestRunSummary(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return false;
+        return text.IndexOf("Passed!", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("Failed!", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("Passed:", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("Failed:", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("Total tests:", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("No tests found", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("Test execution time", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static async Task<string> GetDiagnosticsAsync(JsonNode? args, CancellationToken ct)
@@ -1184,7 +1258,7 @@ internal static class BuiltInVsTools
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(filePath, content);
+        FileIoWithRetry(filePath, () => File.WriteAllText(filePath, content));
         return Task.FromResult($"File created: {filePath}");
     }
 
@@ -1202,7 +1276,7 @@ internal static class BuiltInVsTools
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(filePath, content);
+        FileIoWithRetry(filePath, () => File.WriteAllText(filePath, content));
         return Task.FromResult($"Plan file created: {filePath}");
     }
 
@@ -1239,15 +1313,75 @@ internal static class BuiltInVsTools
         var oldString = args?["oldString"]?.GetValue<string>() ?? throw new ArgumentException("oldString is required");
         var newString = args?["newString"]?.GetValue<string>() ?? throw new ArgumentException("newString is required");
 
+        if (oldString.Length == 0)
+            return Task.FromResult("oldString must not be empty.");
         if (!File.Exists(filePath))
             return Task.FromResult($"File not found: {filePath}");
 
-        var content = File.ReadAllText(filePath);
-        if (!content.Contains(oldString))
-            return Task.FromResult($"String not found in file: {oldString}");
+        // Read raw bytes so the original encoding and BOM can be preserved on rewrite.
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(filePath);
+        }
+        catch (IOException ex)
+        {
+            DebugLog.Warn($"Could not read '{filePath}' for replace: {ex.Message}");
+            return Task.FromResult($"Could not read file: {ex.Message}");
+        }
 
-        var updated = content.Replace(oldString, newString);
-        File.WriteAllText(filePath, updated);
+        System.Text.Encoding encoding;
+        int preamble;
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        { encoding = new System.Text.UTF8Encoding(true); preamble = 3; }
+        else if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        { encoding = new System.Text.UnicodeEncoding(false, true); preamble = 2; }
+        else if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+        { encoding = new System.Text.UnicodeEncoding(true, true); preamble = 2; }
+        else
+        { encoding = new System.Text.UTF8Encoding(false); preamble = 0; }
+
+        var content = encoding.GetString(bytes, preamble, bytes.Length - preamble);
+
+        // The contract is a unique single-instance replace; count occurrences before editing.
+        var count = 0;
+        var scan = 0;
+        while ((scan = content.IndexOf(oldString, scan, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            scan += oldString.Length;
+        }
+        if (count == 0)
+            return Task.FromResult($"String not found in file: {oldString}");
+        if (count > 1)
+            return Task.FromResult($"oldString occurs {count} times in {filePath}; add surrounding context so it matches exactly one occurrence.");
+
+        var pos = content.IndexOf(oldString, StringComparison.Ordinal);
+        var updated = content.Substring(0, pos) + newString + content.Substring(pos + oldString.Length);
+
+        try
+        {
+            var body = encoding.GetBytes(updated);
+            var bom = encoding.GetPreamble();
+            byte[] output;
+            if (bom.Length > 0)
+            {
+                output = new byte[bom.Length + body.Length];
+                Buffer.BlockCopy(bom, 0, output, 0, bom.Length);
+                Buffer.BlockCopy(body, 0, output, bom.Length, body.Length);
+            }
+            else
+            {
+                output = body;
+            }
+            File.WriteAllBytes(filePath, output);
+        }
+        catch (IOException ex)
+        {
+            DebugLog.Warn($"Could not write '{filePath}' for replace: {ex.Message}");
+            return Task.FromResult($"Could not write file: {ex.Message}");
+        }
+
         return Task.FromResult($"Replaced in {filePath}");
     }
 
@@ -1436,7 +1570,7 @@ internal static class BuiltInVsTools
             }
         }
 
-        File.Delete(filePath);
+        FileIoWithRetry(filePath, () => File.Delete(filePath));
         return $"Deleted: {filePath}";
     }
 
@@ -1498,9 +1632,30 @@ internal static class BuiltInVsTools
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
         var dialog = new ToolWindow.InquiryDialog(question, suggestions);
-        var owner = System.Windows.Application.Current?.MainWindow;
-        if (owner != null)
-            dialog.Owner = owner;
+        // M9: Application.Current.MainWindow is null inside devenv, so parent the dialog to the
+        // VS main window HWND via the shell service instead (otherwise it can open behind the IDE).
+        if (Package.GetGlobalService(typeof(SVsUIShell)) is IVsUIShell uiShell
+            && uiShell.GetDialogOwnerHwnd(out IntPtr ownerHwnd) == 0 // S_OK
+            && ownerHwnd != IntPtr.Zero)
+        {
+            new System.Windows.Interop.WindowInteropHelper(dialog).Owner = ownerHwnd;
+        }
+
+        // M9: cancelling the turn must dismiss the modal dialog. Marshal the close to the UI thread;
+        // a closed dialog yields DialogResult != true, so the inquiry resolves to "cancelled".
+        // Deliberate fire-and-forget: the registration is disposed once ShowDialog returns, so there
+        // is nothing to await/join here (VSSDK007 does not apply to this dismissal path).
+#pragma warning disable VSSDK007
+        using var registration = ct.Register(() =>
+        {
+            _ = ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+            {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                try { dialog.Close(); }
+                catch (InvalidOperationException) { /* already closed */ }
+            });
+        });
+#pragma warning restore VSSDK007
 
         var result = dialog.ShowDialog();
         if (result == true)
@@ -1535,10 +1690,10 @@ internal static class BuiltInVsTools
             filePath = ResolveToolPath(filePath!);
         }
 
-        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+        if (filePath is null || filePath.Length == 0 || !File.Exists(filePath))
             return "No file to analyze.";
 
-        var content = File.ReadAllText(filePath);
+        var content = FileIoWithRetry(filePath, () => File.ReadAllText(filePath));
         var memories = new List<string>();
 
         // Detect using directives patterns

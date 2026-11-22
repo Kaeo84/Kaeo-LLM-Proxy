@@ -462,10 +462,23 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     public async Task PersistCurrentModelAsync()
     {
         if (string.IsNullOrEmpty(CurrentModel)) return;
-        var s = await _settings.LoadAsync();
-        s.Defaults ??= new Defaults();
-        s.Defaults.Model = CurrentModel;
-        await _settings.SaveAsync(s);
+        try
+        {
+            // M1: merge just the model selection into a freshly-loaded snapshot under the store's
+            // write lock so a concurrent settings save (e.g. the Settings dialog) is not clobbered.
+            var model = CurrentModel;
+            await _settings.UpdateAsync(s =>
+            {
+                s.Defaults ??= new Defaults();
+                s.Defaults.Model = model;
+                return Task.CompletedTask;
+            });
+        }
+        catch (Exception ex)
+        {
+            // M2: a sharing violation from another instance writing settings must degrade gracefully.
+            DebugLog.Warn($"Failed to persist the current model: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -780,6 +793,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         Lines.Add(streaming);
         var streamingIndex = Lines.Count - 1; // for inserting permission cards above this line
 
+        // M5: buffer streaming deltas and flush on a throttle instead of concatenating the
+        // growing transcript string on every token (which is O(n²) over a long turn).
+        var streamingText = new ThrottledText(streaming);
+
         // Narration from successive tool-loop iterations would otherwise concatenate into one
         // run-on line ("...coveredNow let me check..."). Insert a blank line before the first
         // text delta that follows a completed tool call so each iteration reads as a paragraph.
@@ -796,17 +813,17 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 {
                     TextDelta = delta =>
                     {
-                        // Collapse contiguous whitespace: if the current text ends with whitespace
+                        // Collapse contiguous whitespace: if the buffered text ends with whitespace
                         // and the incoming delta starts with whitespace, trim the delta's leading
                         // whitespace. Also trim leading whitespace when no real text exists yet.
-                        if (streaming.Text.Length == 0 || streaming.Text.EndsWith("\n") || streaming.Text.EndsWith(" ") || streaming.Text.EndsWith("\r"))
+                        if (streamingText.EndsWithWhitespace)
                             delta = delta.TrimStart();
                         if (delta.Length == 0) return;
 
-                        if (pendingSeparator && streaming.Text.Length > 0)
-                            streaming.Text += "\n\n";
+                        if (pendingSeparator && streamingText.Length > 0)
+                            streamingText.Append("\n\n");
                         pendingSeparator = false;
-                        streaming.Text += delta;
+                        streamingText.Append(delta);
                     },
             ReasoningDelta = delta =>
             {
@@ -857,6 +874,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         try
         {
             var result = await _engine.RunAsync(client, agent, modelName, mode, _history, prompt, events, _cts.Token);
+            // M5: flush the buffered deltas so the line holds the complete streamed text.
+            streamingText.Flush();
             // Fill the line only when nothing streamed in (e.g. a tool-only turn that ended
             // with a terse final answer) - otherwise the streamed text is already here and
             // reassigning would duplicate it.
@@ -888,6 +907,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         }
         finally
         {
+            streamingText.Stop();
             IsBusy = false;
             _cts?.Dispose();
             _cts = null;
@@ -987,10 +1007,15 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     {
         try
         {
-            var settings = await _settings.LoadAsync();
-            settings.Defaults ??= new Defaults();
-            settings.Defaults.AlwaysAllowedTools = _alwaysAllowed.ToArray();
-            await _settings.SaveAsync(settings);
+            // M1: merge just the always-allowed list into a freshly-loaded snapshot under the
+            // store's write lock so concurrent writers' fields are preserved.
+            var tools = _alwaysAllowed.ToArray();
+            await _settings.UpdateAsync(s =>
+            {
+                s.Defaults ??= new Defaults();
+                s.Defaults.AlwaysAllowedTools = tools;
+                return Task.CompletedTask;
+            });
         }
         catch (Exception ex)
         {
@@ -1011,7 +1036,14 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         }
     }
 
-    public void Cancel() => _cts?.Cancel();
+    public void Cancel()
+    {
+        // M3: the turn's finally block disposes _cts concurrently; tolerate the dispose race.
+        var cts = _cts;
+        if (cts is null) return;
+        try { cts.Cancel(); }
+        catch (ObjectDisposedException) { /* turn already finished and disposed the source */ }
+    }
 
         /// <summary>
         /// Creates a ChatLine and applies the user/agent message style (alignment, background,
@@ -1048,8 +1080,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
             // System tokens: first message in history is the merged system prompt
             var systemMsg = _history.FirstOrDefault(m => m.Role == ChatRole.System);
+            // M4: ChatMessage.Text mirrors the TextContent items in Contents, so counting both
+            // double-counts the system prompt. Use the content characters alone.
             _contextTokensSystem = systemMsg is not null
-                ? Math.Max(1, ((systemMsg.Text?.Length ?? 0) + MessageContentChars(systemMsg)) / 4)
+                ? Math.Max(1, MessageContentChars(systemMsg) / 4)
                 : 0;
 
             ContextTokensUsed = EstimateTokenCount(_history);
@@ -1063,7 +1097,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             var totalChars = 0;
             foreach (var msg in messages)
             {
-                totalChars += msg.Text?.Length ?? 0;
+                // M4: Text mirrors the TextContent items in Contents; count content chars only.
                 totalChars += MessageContentChars(msg);
             }
             return Math.Max(1, totalChars / 4);
@@ -1124,6 +1158,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             var ct = _cts.Token;
             var streaming = CreateLine("assistant");
             Lines.Add(streaming);
+            var streamingText = new ThrottledText(streaming);
 
             try
             {
@@ -1133,7 +1168,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                     compactionPrompt,
                     new AgentEvents
                     {
-                        TextDelta = delta => streaming.Text += delta,
+                        TextDelta = delta => streamingText.Append(delta),
                         RequestPermission = _ => Task.FromResult(false),
                         TurnComplete = r =>
                         {
@@ -1147,6 +1182,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                                 "[Conversation compacted — previous summary:]"));
                             _history.Add(new ChatMessage(ChatRole.Assistant, r.FinalText));
 
+                            streamingText.Stop();
                             streaming.Text = r.FinalText;
                             UpdateContextBar();
                         },
@@ -1170,10 +1206,61 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             }
             finally
             {
+                streamingText.Stop();
                 IsBusy = false;
                 _cts?.Dispose();
                 _cts = null;
             }
+        }
+
+        /// <summary>
+        /// M5: buffers streaming text deltas in a StringBuilder and flushes to the chat line on a
+        /// low-frequency dispatcher timer, avoiding the O(n²) cost of concatenating the growing
+        /// transcript string on every token. All access is on the UI thread (deltas and timer ticks
+        /// both run on the dispatcher), so no locking is required.
+        /// </summary>
+        private sealed class ThrottledText
+        {
+            private readonly System.Text.StringBuilder _sb = new();
+            private readonly ChatLine _target;
+            private readonly System.Windows.Threading.DispatcherTimer _timer;
+
+            public ThrottledText(ChatLine target)
+            {
+                _target = target;
+                _timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background)
+                {
+                    Interval = TimeSpan.FromMilliseconds(40),
+                };
+                _timer.Tick += (_, _) => _target.Text = _sb.ToString();
+            }
+
+            public int Length => _sb.Length;
+
+            public bool EndsWithWhitespace
+            {
+                get
+                {
+                    if (_sb.Length == 0) return true;
+                    var c = _sb[_sb.Length - 1];
+                    return c == '\n' || c == '\r' || c == ' ';
+                }
+            }
+
+            public void Append(string text)
+            {
+                _sb.Append(text);
+                if (!_timer.IsEnabled) _timer.Start();
+            }
+
+            /// <summary>Stops the timer and writes the full buffered text to the line.</summary>
+            public void Flush()
+            {
+                _timer.Stop();
+                _target.Text = _sb.ToString();
+            }
+
+            public void Stop() => _timer.Stop();
         }
 
         public event PropertyChangedEventHandler? PropertyChanged;

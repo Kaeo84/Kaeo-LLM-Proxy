@@ -62,6 +62,11 @@ internal sealed class OllamaApiClient : IUpstreamClient
             using var resp = await _http.SendAsync(request, ct).ConfigureAwait(false);
             return resp.IsSuccessStatusCode;
         }
+        catch (OperationCanceledException)
+        {
+            // Cancellation (shutdown/Stop) is not "server down" — let it propagate.
+            throw;
+        }
         catch
         {
             return false;

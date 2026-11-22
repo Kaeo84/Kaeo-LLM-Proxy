@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using EnvDTE;
 using EnvDTE80;
@@ -85,8 +86,25 @@ internal static class InstructionFileLoader
         var full = ResolvePath(path);
         if (string.IsNullOrEmpty(full) || !File.Exists(full))
             return string.Empty;
-        try { return File.ReadAllText(full); }
-        catch { return string.Empty; }
+        // Project sharing rule: a concurrent writer (second instance, editor, AV) must not
+        // silently yield empty instructions — retry briefly, warn, then degrade.
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return File.ReadAllText(full);
+            }
+            catch (IOException ex) when (attempt < 2)
+            {
+                DebugLog.Warn($"Instruction file '{full}' is busy (attempt {attempt + 1}); retrying: {ex.Message}");
+                System.Threading.Thread.Sleep(100 * (attempt + 1));
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"Failed to read instruction file '{full}'; degrading to empty content: {ex.Message}");
+                return string.Empty;
+            }
+        }
     }
 
     /// <summary>Writes <paramref name="content"/> to the file entry's resolved path, creating directories as needed.</summary>
@@ -95,10 +113,28 @@ internal static class InstructionFileLoader
         var full = ResolvePath(path);
         if (string.IsNullOrEmpty(full))
             throw new ArgumentException("No file path is set for this instruction.", nameof(path));
-        var dir = Path.GetDirectoryName(full);
-        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-            Directory.CreateDirectory(dir);
-        File.WriteAllText(full, content ?? string.Empty);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                File.WriteAllText(full, content ?? string.Empty);
+                return;
+            }
+            catch (IOException ex) when (attempt < 2)
+            {
+                DebugLog.Warn($"Instruction file '{full}' is busy (attempt {attempt + 1}); retrying: {ex.Message}");
+                System.Threading.Thread.Sleep(100 * (attempt + 1));
+            }
+            catch (IOException ex)
+            {
+                // Surface to the caller after the retry budget; the failure is logged either way.
+                DebugLog.Warn($"Failed to write instruction file '{full}' after retries: {ex.Message}");
+                throw;
+            }
+        }
     }
 
     /// <summary>Resolves a possibly relative path to an absolute path (null when empty). Global scope resolves against the user profile; otherwise the solution root.</summary>
@@ -188,12 +224,15 @@ internal static class InstructionFileLoader
 
     /// <summary>
     /// Gets the solution root path from the current Visual Studio solution, or null when no
-    /// solution is open or the path cannot be determined. DTE is STA-affinitized, so when the
-    /// caller is on a background thread (agent runtime) the read is marshaled to the UI thread
-    /// through the JoinableTaskFactory instead of touching COM cross-thread.
+    /// solution is open or the path cannot be determined. The result is cached and invalidated
+    /// by DTE solution open/close events, so repeated calls (per agent turn, per tool path
+    /// resolution) do not marshal to the UI thread each time. DTE is STA-affinitized, so a
+    /// background-thread caller is marshaled through the JoinableTaskFactory.
     /// </summary>
     public static string? GetSolutionRootPath()
     {
+        if (s_rootCached)
+            return s_cachedRoot;
         try
         {
             var solutionPath = ThreadHelper.CheckAccess()
@@ -204,14 +243,74 @@ internal static class InstructionFileLoader
                     return ReadSolutionFullName();
                 });
 
-            if (string.IsNullOrEmpty(solutionPath))
-                return null;
-
-            return Path.GetDirectoryName(solutionPath!);
+            return CacheRoot(solutionPath);
         }
-        catch
+        catch (Exception ex)
         {
+            DebugLog.Warn($"Failed to read solution root: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Async variant for callers already in async code: awaits the UI-thread switch instead of
+    /// blocking on <c>JoinableTaskFactory.Run</c> (sync-over-async from a background thread can
+    /// deadlock when the UI thread is waiting on the agent task).
+    /// </summary>
+    public static async Task<string?> GetSolutionRootPathAsync()
+    {
+        if (s_rootCached)
+            return s_cachedRoot;
+        try
+        {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+            return CacheRoot(ReadSolutionFullName());
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"Failed to read solution root: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string? s_cachedRoot;
+    private static volatile bool s_rootCached;
+    private static bool s_solutionEventsHooked;
+
+    /// <summary>Caches the root (UI thread). Caching is only enabled once solution events are
+    /// hooked, so a failed hook can never pin a stale root for the process lifetime.</summary>
+    private static string? CacheRoot(string? solutionPath)
+    {
+        HookSolutionEvents();
+        var root = string.IsNullOrEmpty(solutionPath) ? null : Path.GetDirectoryName(solutionPath!);
+        if (s_solutionEventsHooked)
+        {
+            s_cachedRoot = root;
+            s_rootCached = true;
+        }
+        return root;
+    }
+
+    /// <summary>Invalidates the cached root when a solution opens or closes. UI thread only.</summary>
+    private static void HookSolutionEvents()
+    {
+        if (s_solutionEventsHooked)
+            return;
+        try
+        {
+#pragma warning disable VSTHRD010
+            var dte = Package.GetGlobalService(typeof(DTE)) as DTE2;
+            if (dte?.Events?.SolutionEvents is { } events)
+            {
+                events.Opened += () => s_rootCached = false;
+                events.AfterClosing += () => s_rootCached = false;
+                s_solutionEventsHooked = true;
+            }
+#pragma warning restore VSTHRD010
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Warn($"Failed to hook solution events for root caching: {ex.Message}");
         }
     }
 

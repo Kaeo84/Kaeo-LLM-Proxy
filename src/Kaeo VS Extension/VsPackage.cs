@@ -61,6 +61,27 @@ public sealed class VsPackage : AsyncPackage
             var commandId = new CommandID(CommandSet, OpenKaeoAssistantCommandId);
             commandService.AddCommand(new OleMenuCommand(OnOpenKaeoAssistant, commandId));
         }
+
+        // Seed the default instruction files once at package load (off the per-turn path) so the
+        // common case has its rules on disk without every agent turn re-checking (review M2).
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            try
+            {
+                var root = await InstructionFileLoader.GetSolutionRootPathAsync().ConfigureAwait(false);
+                if (root is null)
+                    return;
+                var settings = await new ExtensionSettingsStore().LoadAsync().ConfigureAwait(false);
+                IEnumerable<InstructionEntry> entries = settings.Instructions is { Length: > 0 }
+                    ? settings.Instructions
+                    : InstructionFileLoader.DefaultEntries();
+                await Task.Run(() => InstructionFileLoader.EnsureDefaultFiles(entries, root)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"Failed to seed default instruction files: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>

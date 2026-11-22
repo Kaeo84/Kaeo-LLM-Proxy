@@ -21,6 +21,7 @@ internal sealed class OllamaChatClient : IChatClient
     private readonly bool _ownsHttpClient;
     private readonly string _baseUrl;
     private readonly string _defaultModel;
+    private readonly string? _apiKey;
     private readonly ReasoningSource _reasoningSource;
 
     public OllamaChatClient(
@@ -35,6 +36,7 @@ internal sealed class OllamaChatClient : IChatClient
 
         _baseUrl = baseUrl.TrimEnd('/');
         _defaultModel = defaultModel ?? string.Empty;
+        _apiKey = apiKey;
         _reasoningSource = reasoningSource;
 
         if (httpClient is not null)
@@ -48,7 +50,9 @@ internal sealed class OllamaChatClient : IChatClient
             _ownsHttpClient = true;
         }
 
-        HttpHelpers.SetBearerAuth(_http, apiKey);
+        // Auth is applied per request (see StreamAsync), never on DefaultRequestHeaders:
+        // the client may be shared across connections with different keys, and mutating the
+        // default headers is not thread-safe against in-flight sends (credential mix-up).
     }
 
     /// <inheritdoc />
@@ -84,6 +88,8 @@ internal sealed class OllamaChatClient : IChatClient
             HttpMethod.Post,
             BuildEndpointUri("/api/chat"));
         request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        if (!string.IsNullOrWhiteSpace(_apiKey))
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
 
         using var response = await _http
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
@@ -100,13 +106,18 @@ internal sealed class OllamaChatClient : IChatClient
                 + (string.IsNullOrWhiteSpace(errorBody) ? string.Empty : $": {Truncate(errorBody, 2000)}"));
         }
 
-        // net48 has only the parameterless ReadAsStreamAsync; ReadLineAsync (no
-        // CancellationToken overload) is available, so read lines without parking a
-        // thread-pool thread for the whole generation. Cancellation is still honored
-        // between lines by the ThrowIfCancellationRequested below.
-        using var reader = new StreamReader(
-            await response.Content.ReadAsStreamAsync().ConfigureAwait(false),
-            Encoding.UTF8);
+        // net48 has only the parameterless ReadAsStreamAsync and ReadLineAsync has no
+        // CancellationToken overload, so a stalled upstream (no more NDJSON lines) would
+        // otherwise ignore Stop indefinitely — HttpClient's timeout does not cover the
+        // response body after headers. Registering cancellation to dispose the stream faults
+        // the pending read; the loop below translates that into OperationCanceledException.
+        var responseStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        using var reader = new StreamReader(responseStream, Encoding.UTF8);
+        using var cancellationRegistration = cancellationToken.Register(static state =>
+        {
+            try { ((Stream)state!).Dispose(); }
+            catch { /* best-effort: fault the pending read */ }
+        }, responseStream);
 
         // One splitter per stream: inline thinking tags can span chunk boundaries.
         ThinkTagStreamSplitter? splitter = _reasoningSource is ReasoningSource.Auto or ReasoningSource.InlineTags
@@ -114,8 +125,18 @@ internal sealed class OllamaChatClient : IChatClient
             : null;
 
         string? line;
-        while ((line = await reader.ReadLineAsync().ConfigureAwait(false)) is not null)
+        while (true)
         {
+            try
+            {
+                line = await reader.ReadLineAsync().ConfigureAwait(false);
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+            if (line is null)
+                break;
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(line))
                 continue;

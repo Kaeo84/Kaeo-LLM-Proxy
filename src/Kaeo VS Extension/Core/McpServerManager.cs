@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Linq;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -18,9 +20,25 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 internal sealed class McpServerManager
 {
     private readonly ExtensionSettingsStore _settings;
-    private readonly Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The live server map. Re-initialization builds a fresh dictionary and swaps the reference
+    /// under <see cref="_serversLock"/>; readers snapshot the reference under the same lock and
+    /// enumerate the (immutable-after-publish) snapshot. This avoids "Collection was modified"
+    /// when a settings-change re-init races the heartbeat timer or a tool execution.
+    /// </summary>
+    private Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _serversLock = new object();
+    private readonly SemaphoreSlim _initGate = new SemaphoreSlim(1, 1);
+    private int _heartbeatRunning;
     private Timer? _heartbeatTimer;
     private TimeSpan _heartbeatInterval = TimeSpan.FromMinutes(5);
+
+    /// <summary>A stable snapshot of the server map safe to enumerate without holding the lock.</summary>
+    private Dictionary<string, McpServer> ServersSnapshot
+    {
+        get { lock (_serversLock) return _servers; }
+    }
 
     /// <summary>The settings instance <see cref="InitializeAsync"/> loaded; pulls are cached back into it.</summary>
     private ExtensionSettings? _loadedSettings;
@@ -38,23 +56,37 @@ internal sealed class McpServerManager
     /// </summary>
     public async Task InitializeAsync(CancellationToken ct = default)
     {
-        var all = await _settings.LoadAsync().ConfigureAwait(false);
-        _loadedSettings = all;
-        _heartbeatInterval = TimeSpan.FromMinutes(Math.Max(1, all.Defaults?.HeartbeatMinutes ?? 5));
-        _servers.Clear();
-        foreach (var server in all.McpServers ?? Array.Empty<McpServer>())
+        await _initGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            if (!server.Enabled || string.IsNullOrWhiteSpace(server.Name))
-                continue;
-            // The built-in VS tools are synthesized in GetAvailableToolDefinitions; never connect/pull.
-            if (string.Equals(server.Transport, "builtin", StringComparison.OrdinalIgnoreCase))
-                continue;
-            _servers[server.Name!] = server;
-            Observe(PullAndCacheAsync(server, ct));
-        }
+            var all = await _settings.LoadAsync().ConfigureAwait(false);
+            _loadedSettings = all;
+            _heartbeatInterval = TimeSpan.FromMinutes(Math.Max(1, all.Defaults?.HeartbeatMinutes ?? 5));
 
-        // Start heartbeat monitoring
-        StartHeartbeat();
+            // Build a fresh map and swap it in atomically so a concurrent heartbeat/tool call
+            // never observes a half-built collection.
+            var map = new Dictionary<string, McpServer>(StringComparer.OrdinalIgnoreCase);
+            foreach (var server in all.McpServers ?? Array.Empty<McpServer>())
+            {
+                if (!server.Enabled || string.IsNullOrWhiteSpace(server.Name))
+                    continue;
+                // The built-in VS tools are synthesized in GetAvailableToolDefinitions; never connect/pull.
+                if (string.Equals(server.Transport, "builtin", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                map[server.Name!] = server;
+            }
+            lock (_serversLock) _servers = map;
+
+            foreach (var server in map.Values)
+                Observe(PullAndCacheAsync(server, ct));
+
+            // Start heartbeat monitoring
+            StartHeartbeat();
+        }
+        finally
+        {
+            _initGate.Release();
+        }
     }
 
     /// <summary>
@@ -101,24 +133,35 @@ internal sealed class McpServerManager
     /// </summary>
     private async Task HeartbeatAsync()
     {
-        foreach (var server in _servers.Values.Where(s => s.Enabled))
+        // Skip a tick if the previous heartbeat is still running (a slow probe must not stack
+        // overlapping cycles that mutate the same servers concurrently).
+        if (Interlocked.CompareExchange(ref _heartbeatRunning, 1, 0) != 0)
+            return;
+        try
         {
-            try
+            foreach (var server in ServersSnapshot.Values.Where(s => s.Enabled))
             {
-                await TestConnectionAsync(server).ConfigureAwait(false);
-                bool wasStale = server.Stale;
-                server.Stale = false;
-                if (wasStale)
-                    ServerHealthChanged?.Invoke(server, true);
-            }
-            catch
-            {
-                if (!server.Stale)
+                try
                 {
-                    server.Stale = true;
-                    ServerHealthChanged?.Invoke(server, false);
+                    await TestConnectionAsync(server).ConfigureAwait(false);
+                    bool wasStale = server.Stale;
+                    server.Stale = false;
+                    if (wasStale)
+                        ServerHealthChanged?.Invoke(server, true);
+                }
+                catch
+                {
+                    if (!server.Stale)
+                    {
+                        server.Stale = true;
+                        ServerHealthChanged?.Invoke(server, false);
+                    }
                 }
             }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _heartbeatRunning, 0);
         }
     }
 
@@ -127,7 +170,7 @@ internal sealed class McpServerManager
     /// </summary>
     public IReadOnlyList<McpServer> GetUnhealthyServers()
     {
-        return _servers.Values
+        return ServersSnapshot.Values
             .Where(s => s.Enabled && s.Stale)
             .ToList();
     }
@@ -197,11 +240,18 @@ internal sealed class McpServerManager
     /// <summary>Sends an MCP <c>initialize</c> request and returns the advertised server name/version.</summary>
     private static async Task<(string Name, string Version)> InitializeHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
-
-                var doc = await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
-                var info = doc?["result"]?["serverInfo"];
-                return (TextOf(info?["name"]), TextOf(info?["version"]));
+        var session = new McpHttpSession(GetSharedHttpClient(url));
+        try
+        {
+            var doc = await SendJsonRpcAsync(session, CreateInitializeRequest(), apiKey, ct).ConfigureAwait(false);
+            var info = doc?["result"]?["serverInfo"];
+            return (TextOf(info?["name"]), TextOf(info?["version"]));
+        }
+        finally
+        {
+            // The probe opened a server-side session; release it so tests don't leak sessions.
+            await TerminateSessionAsync(session).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Reads a JSON value as text without throwing when the server sends a non-string.</summary>
@@ -285,7 +335,7 @@ internal sealed class McpServerManager
             return;
 
         var owned = new Dictionary<string, McpServer>(StringComparer.OrdinalIgnoreCase);
-        foreach (var server in _servers.Values)
+        foreach (var server in ServersSnapshot.Values)
             if (!string.IsNullOrWhiteSpace(server.Name))
                 owned[server.Name!] = server;
 
@@ -344,7 +394,7 @@ internal sealed class McpServerManager
         }
 
         // Add external MCP server tools
-        foreach (var server in _servers.Values)
+        foreach (var server in ServersSnapshot.Values)
         {
             if (!server.Enabled) continue;
             foreach (var tool in server.Tools ?? Array.Empty<McpTool>())
@@ -384,7 +434,7 @@ internal sealed class McpServerManager
         // Splitting on the first dash breaks when a server name itself contains a dash
         // (e.g. "AI-on-Proxy"), so instead match the full prefix per enabled server - longest
         // server name first so a name that is a prefix of another resolves to the longer one.
-        var enabledServers = _servers.Values.Where(s => s.Enabled).ToList();
+        var enabledServers = ServersSnapshot.Values.Where(s => s.Enabled).ToList();
         foreach (var server in enabledServers.OrderByDescending(s => s.Name?.Length ?? 0))
         {
             var prefix = $"{server.Name}-";
@@ -450,20 +500,99 @@ internal sealed class McpServerManager
     /// state (Mcp-Session-Id) therefore rides on individual requests, never on
     /// DefaultRequestHeaders, so concurrent sessions cannot corrupt each other.
     /// </summary>
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, HttpClient> SharedHttpClients =
+    private static readonly ConcurrentDictionary<string, HttpClient> SharedHttpClients =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Returns the shared HttpClient for the given MCP endpoint, created on first use with
     /// optional Bearer auth.
     /// </summary>
-    private static HttpClient GetSharedHttpClient(string url, string? apiKey) =>
-        SharedHttpClients.GetOrAdd(url + "|" + (apiKey ?? string.Empty), _ =>
+    private static HttpClient GetSharedHttpClient(string url) =>
+        SharedHttpClients.GetOrAdd(url, _ => new HttpClient { BaseAddress = new Uri(url) });
+
+    /// <summary>
+    /// Initialized MCP sessions cached per endpoint so a tool call costs a single tools/call
+    /// round-trip instead of re-running initialize + initialized + call every time. A session
+    /// the server has expired (HTTP 404) is dropped and re-initialized once.
+    /// </summary>
+    private static readonly ConcurrentDictionary<string, McpHttpSession> HttpSessions =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> SessionLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Upper bound for a single MCP tools/call over HTTP (builds/test runs can be slow).</summary>
+    private static readonly TimeSpan HttpToolCallTimeout = TimeSpan.FromMinutes(10);
+
+    /// <summary>Thrown when the server rejects a request because the MCP session has expired (404).</summary>
+    private sealed class McpSessionExpiredException : Exception
+    {
+        public McpSessionExpiredException() : base("The MCP session expired (HTTP 404).") { }
+    }
+
+    /// <summary>Returns an initialized session for the endpoint, creating and caching it on first use.</summary>
+    private static async Task<McpHttpSession> GetInitializedSessionAsync(string url, string? apiKey, CancellationToken ct)
+    {
+        var gate = SessionLocks.GetOrAdd(url, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            var http = new HttpClient { BaseAddress = new Uri(url) };
-            HttpHelpers.SetBearerAuth(http, apiKey);
-            return http;
-        });
+            if (HttpSessions.TryGetValue(url, out var existing))
+                return existing;
+
+            var session = new McpHttpSession(GetSharedHttpClient(url));
+            await SendJsonRpcAsync(session, CreateInitializeRequest(), apiKey, ct).ConfigureAwait(false);
+            await SendJsonRpcAsync(session, CreateInitializedNotification(), apiKey, ct).ConfigureAwait(false);
+            HttpSessions[url] = session;
+            return session;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>Drops a cached session and best-effort terminates it server-side.</summary>
+    private static void InvalidateSession(string url)
+    {
+        if (HttpSessions.TryRemove(url, out var old))
+            Observe(TerminateSessionAsync(old));
+    }
+
+    /// <summary>Sends a DELETE for the session ID so the server can release its state.</summary>
+    private static async Task TerminateSessionAsync(McpHttpSession session)
+    {
+        if (string.IsNullOrEmpty(session.SessionId))
+            return;
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Delete, string.Empty);
+            request.Headers.TryAddWithoutValidation(McpSessionIdHeader, session.SessionId);
+            using var resp = await session.Http.SendAsync(request).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Verbose($"MCP session teardown failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Sends a request on a cached initialized session, re-initializing once if the server
+    /// reports the session expired.
+    /// </summary>
+    private static async Task<JsonNode?> SendWithSessionAsync(string url, string? apiKey, JsonObject body, CancellationToken ct)
+    {
+        var session = await GetInitializedSessionAsync(url, apiKey, ct).ConfigureAwait(false);
+        try
+        {
+            return await SendJsonRpcAsync(session, body, apiKey, ct).ConfigureAwait(false);
+        }
+        catch (McpSessionExpiredException)
+        {
+            InvalidateSession(url);
+            session = await GetInitializedSessionAsync(url, apiKey, ct).ConfigureAwait(false);
+            return await SendJsonRpcAsync(session, body, apiKey, ct).ConfigureAwait(false);
+        }
+    }
 
     /// <summary>Builds the MCP <c>initialize</c> JSON-RPC request body.</summary>
     private static JsonObject CreateInitializeRequest(int id = 0) => new()
@@ -529,54 +658,111 @@ internal sealed class McpServerManager
     }
 
     /// <summary>
-    /// Parses an SSE-framed response body and extracts the JSON payload from the first "data:" line.
-    /// MCP Streamable HTTP wraps JSON-RPC responses in SSE frames like:
+    /// Parses an SSE-framed response body, concatenating continuation "data:" lines per event
+    /// and correlating the JSON-RPC id so a leading notification/ping is not mistaken for the
+    /// response. MCP Streamable HTTP wraps JSON-RPC responses in SSE frames like:
     ///   event: message
     ///   data: {"jsonrpc":"2.0",...}
     /// </summary>
-    private static JsonNode? ParseSseResponse(string sseBody)
+    private static JsonNode? ParseSseResponse(string sseBody, int? expectedId)
     {
         if (string.IsNullOrWhiteSpace(sseBody))
             return null;
 
-        // Look for "data:" lines and extract the JSON payload
-        foreach (var line in sseBody.Split('\n'))
+        // Some servers answer with plain JSON (no SSE framing).
+        if (sseBody.TrimStart().StartsWith("{", StringComparison.Ordinal))
         {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("data:", StringComparison.Ordinal))
-            {
-                var json = trimmed.Substring("data:".Length).Trim();
-                if (!string.IsNullOrEmpty(json))
-                    return JsonNode.Parse(json);
-            }
+            try { return JsonNode.Parse(sseBody); }
+            catch (System.Text.Json.JsonException) { }
         }
 
-        // Fallback: try parsing the whole body as JSON (some servers may not use SSE framing)
-        if (sseBody.TrimStart().StartsWith("{", StringComparison.Ordinal))
-            return JsonNode.Parse(sseBody);
+        // An SSE event is a run of field lines terminated by a blank line; its payload is the
+        // concatenation of all its "data:" lines (continuation lines are spec-legal).
+        var events = new List<JsonNode>();
+        var data = new StringBuilder();
+        void Flush()
+        {
+            if (data.Length == 0)
+                return;
+            try
+            {
+                var node = JsonNode.Parse(data.ToString());
+                if (node != null)
+                    events.Add(node);
+            }
+            catch (System.Text.Json.JsonException) { }
+            data.Clear();
+        }
 
-        return null;
+        foreach (var raw in sseBody.Split('\n'))
+        {
+            var line = raw.TrimEnd('\r');
+            if (line.Length == 0)
+            {
+                Flush();
+                continue;
+            }
+            if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                var payload = line.Substring("data:".Length);
+                if (payload.StartsWith(" ", StringComparison.Ordinal))
+                    payload = payload.Substring(1);
+                if (data.Length > 0)
+                    data.Append('\n');
+                data.Append(payload);
+            }
+        }
+        Flush();
+
+        if (events.Count == 0)
+            return null;
+
+        // Prefer the event whose JSON-RPC id matches the request.
+        if (expectedId is int id)
+        {
+            foreach (var e in events)
+                if (e["id"] is JsonValue v && v.TryGetValue<int>(out var eid) && eid == id)
+                    return e;
+        }
+        // Otherwise take the first event that carries a result/error (a response, not a notification).
+        foreach (var e in events)
+            if (e["result"] is not null || e["error"] is not null)
+                return e;
+        return events[0];
     }
 
     /// <summary>
     /// Sends a JSON-RPC POST to the MCP endpoint and returns the parsed response body.
     /// Handles SSE-framed responses and tracks the session ID.
     /// </summary>
-    private static async Task<JsonNode?> SendJsonRpcAsync(McpHttpSession session, JsonObject body, CancellationToken ct)
+    private static async Task<JsonNode?> SendJsonRpcAsync(McpHttpSession session, JsonObject body, string? apiKey, CancellationToken ct)
     {
-        // The client is shared across sessions, so the per-session ID must ride on the request
-        // itself instead of the client's DefaultRequestHeaders.
+        // The client is shared across sessions, so the per-session ID and credential must ride
+        // on the request itself instead of the client's DefaultRequestHeaders.
         var request = new HttpRequestMessage(HttpMethod.Post, string.Empty)
         {
             Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json"),
         };
+        // MCP Streamable HTTP requires the client to accept both JSON and SSE responses.
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        if (!string.IsNullOrEmpty(apiKey))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         if (!string.IsNullOrEmpty(session.SessionId))
             request.Headers.TryAddWithoutValidation(McpSessionIdHeader, session.SessionId);
+
+        int? expectedId = null;
+        if (body["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id))
+            expectedId = id;
 
         JsonNode? result;
         using (request)
         {
             using var resp = await session.Http.SendAsync(request, ct).ConfigureAwait(false);
+
+            // A 404 on a request that carried a session ID means the server expired the session.
+            if (resp.StatusCode == System.Net.HttpStatusCode.NotFound && !string.IsNullOrEmpty(session.SessionId))
+                throw new McpSessionExpiredException();
             resp.EnsureSuccessStatusCode();
 
             // Capture session ID from response if present
@@ -589,8 +775,8 @@ internal sealed class McpServerManager
 
             var respText = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-            // Parse SSE-framed response
-            result = ParseSseResponse(respText);
+            // Parse SSE-framed response, correlating the JSON-RPC id.
+            result = ParseSseResponse(respText, expectedId);
         }
 
         return result;
@@ -598,33 +784,26 @@ internal sealed class McpServerManager
 
     private static async Task<IReadOnlyList<McpTool>> PullToolsHttpAsync(string url, string? apiKey, CancellationToken ct)
     {
-        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
-
-                // Perform initialize handshake and capture session ID
-                await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
-
-                // Send initialized notification (no response expected)
-                await SendJsonRpcAsync(session, CreateInitializedNotification(), ct).ConfigureAwait(false);
-
-                // Now pull tools
-                var doc = await SendJsonRpcAsync(session, CreateToolsListRequest(), ct).ConfigureAwait(false);
-                return ParseToolsList(doc);
-            }
+        var doc = await SendWithSessionAsync(url, apiKey, CreateToolsListRequest(), ct).ConfigureAwait(false);
+        return ParseToolsList(doc);
+    }
 
     private static async Task<string> ExecuteToolHttpAsync(string url, string? apiKey, string toolName, string? argsJson, CancellationToken ct)
     {
-        var session = new McpHttpSession(GetSharedHttpClient(url, apiKey));
-
-                // Perform initialize handshake
-                await SendJsonRpcAsync(session, CreateInitializeRequest(), ct).ConfigureAwait(false);
-
-                // Send initialized notification
-                await SendJsonRpcAsync(session, CreateInitializedNotification(), ct).ConfigureAwait(false);
-
-                // Call the tool
-                var doc = await SendJsonRpcAsync(session, CreateToolsCallRequest(toolName, argsJson), ct).ConfigureAwait(false);
-                return doc?["result"]?.ToJsonString() ?? string.Empty;
-            }
+        // Bound the call with a generous per-request timeout (the shared client's default is too
+        // short for long-running tools such as builds/test runs) while remaining cancellable.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(HttpToolCallTimeout);
+        try
+        {
+            var doc = await SendWithSessionAsync(url, apiKey, CreateToolsCallRequest(toolName, argsJson), timeoutCts.Token).ConfigureAwait(false);
+            return doc?["result"]?.ToJsonString() ?? string.Empty;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException($"MCP tool '{toolName}' did not complete within {HttpToolCallTimeout.TotalMinutes:0} minutes.");
+        }
+    }
 
     // --- stdio transport (JSON-RPC over stdin/stdout of a child process) ---
 
@@ -706,9 +885,10 @@ internal sealed class McpServerManager
                 CreateNoWindow = true,
             };
 
-            // Join args with proper quoting
+            // Join args with correct Windows (CommandLineToArgvW) quoting so embedded quotes,
+            // empty arguments, and trailing backslashes survive the round-trip to the child.
             if (args.Length > 0)
-                info.Arguments = string.Join(" ", args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+                info.Arguments = string.Join(" ", args.Select(QuoteWindowsArg));
 
             var process = new Process { StartInfo = info };
             // Drain stderr continuously: MCP servers log there, and an unread redirected
@@ -721,6 +901,49 @@ internal sealed class McpServerManager
             process.Start();
             process.BeginErrorReadLine();
             return process;
+        }
+
+        /// <summary>
+        /// Quotes a single argument per the Windows CommandLineToArgvW rules: backslashes are
+        /// literal except when they precede a double quote (2n+1 backslashes + quote => n
+        /// backslashes + literal quote), and trailing backslashes are doubled before the closing
+        /// quote. Arguments with no whitespace or quotes are returned unchanged; an empty
+        /// argument becomes "".
+        /// </summary>
+        private static string QuoteWindowsArg(string arg)
+        {
+            if (arg.Length > 0 && !arg.Any(c => char.IsWhiteSpace(c) || c == '"'))
+                return arg;
+
+            var sb = new StringBuilder();
+            sb.Append('"');
+            int backslashes = 0;
+            foreach (var c in arg)
+            {
+                if (c == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (c == '"')
+                {
+                    sb.Append('\\', backslashes * 2 + 1);
+                    sb.Append('"');
+                    backslashes = 0;
+                }
+                else
+                {
+                    if (backslashes > 0)
+                    {
+                        sb.Append('\\', backslashes);
+                        backslashes = 0;
+                    }
+                    sb.Append(c);
+                }
+            }
+            sb.Append('\\', backslashes * 2);
+            sb.Append('"');
+            return sb.ToString();
         }
 
         private static async Task WriteJsonRpcAsync(Process process, JsonObject body, CancellationToken ct)

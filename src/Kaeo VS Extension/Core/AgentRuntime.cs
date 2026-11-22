@@ -133,6 +133,11 @@ internal sealed class AgentRuntime
         var autoPilotContinued = false;
         var autopilotBudget = defaults.AutoPilotBudget > 0 ? defaults.AutoPilotBudget : DefaultAutoPilotBudget;
 
+        // Instruction files + settings are read ONCE per turn, not per tool-loop iteration
+        // (the old per-iteration load re-read/decrypted settings and probed the disk up to
+        // 50× per turn and resurrected deliberately deleted default files).
+        var instructionContent = await LoadInstructionFilesAsync();
+
         // MCP tools are projected as AIFunctions so the request payload carries their
         // schemas; execution stays manual (not middleware-driven) so each call passes the
         // mode's permission gate and raises the tool events the UI renders.
@@ -162,7 +167,7 @@ internal sealed class AgentRuntime
                         history.Add(new ChatMessage(ChatRole.User, redirect));
                 }
 
-                var messages = await BuildRequestMessagesAsync(agent, history);
+                var messages = BuildRequestMessages(agent, history, instructionContent);
 
                 var options = new ChatOptions
                 {
@@ -228,12 +233,13 @@ internal sealed class AgentRuntime
 
                     events.ToolCallStart?.Invoke(tc);
 
-                    // Permission gate based on mode.
+                    // Permission gate based on mode. A missing Interactive handler is a wiring
+                    // bug, not consent: deny rather than silently degrading to Bypass.
                     var approved = mode switch
                     {
                         AgentMode.Bypass => true,
                         AgentMode.AutoPilot => true,
-                        AgentMode.Interactive => await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(true)),
+                        AgentMode.Interactive => await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(false)),
                         _ => true
                     };
 
@@ -285,14 +291,13 @@ internal sealed class AgentRuntime
     /// "System message must be at the beginning." otherwise, so the parts must be merged
     /// rather than sent as separate system messages.
     /// </summary>
-    private async Task<List<ChatMessage>> BuildRequestMessagesAsync(AgentConfig agent, List<ChatMessage> history)
+    private static List<ChatMessage> BuildRequestMessages(AgentConfig agent, List<ChatMessage> history, string instructionContent)
     {
         var messages = new List<ChatMessage>();
 
         var systemParts = new List<string>();
 
-        // Load and inject instruction files into system context
-        var instructionContent = await LoadInstructionFilesAsync();
+        // Inject the per-turn instruction snapshot into system context.
         if (!string.IsNullOrWhiteSpace(instructionContent))
         {
             systemParts.Add(instructionContent);
@@ -349,9 +354,23 @@ internal sealed class AgentRuntime
     /// </summary>
     private static bool LooksIncomplete(string text)
     {
-        // Simple heuristic: the model explicitly signals continuation intent.
-        var t = text.Trim().ToLowerInvariant();
-        return t.Contains("not done") || t.Contains("incomplete") || t.Contains("continue with") || t.Contains("next step");
+        // Anchor to the FINAL sentence: ordinary prose merely mentioning "next step" or
+        // "incomplete" mid-answer ("The next step is to run tests.") must not trigger an
+        // AutoPilot continuation — only a closing statement that signals unfinished work.
+        var trimmed = text.Trim();
+        if (trimmed.Length == 0)
+            return false;
+
+        var lastSentence = trimmed
+            .Split(new[] { '.', '!', '?', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault()
+            ?.Trim()
+            .ToLowerInvariant();
+        if (lastSentence is null || lastSentence.Length == 0)
+            return false;
+
+        return lastSentence.Contains("not done") || lastSentence.Contains("incomplete")
+            || lastSentence.Contains("continue with") || lastSentence.Contains("next step");
     }
 
     /// <summary>
@@ -363,15 +382,19 @@ internal sealed class AgentRuntime
     {
         try
         {
-            var solutionRoot = InstructionFileLoader.GetSolutionRootPath(); var settings = await _settings.LoadAsync().ConfigureAwait(false);
+            var solutionRoot = await InstructionFileLoader.GetSolutionRootPathAsync();
+            var settings = await _settings.LoadAsync().ConfigureAwait(false);
             var entries = settings.Instructions;
             if (entries is null || entries.Length == 0)
                 entries = InstructionFileLoader.DefaultEntries().ToArray();
-            var instructions = await Task.Run(() => { InstructionFileLoader.EnsureDefaultFiles(entries, solutionRoot); return InstructionFileLoader.LoadFromSettings(entries, solutionRoot); }).ConfigureAwait(false);
+            // Default files are seeded at package/settings init, not here: recreating them
+            // per turn resurrected files the user deliberately deleted.
+            var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);
             return InstructionFileLoader.CombineInstructions(instructions);
         }
-        catch
+        catch (Exception ex)
         {
+            DebugLog.Warn($"Failed to load instruction files; continuing without them: {ex.Message}");
             return string.Empty;
         }
     }

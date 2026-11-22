@@ -26,7 +26,6 @@ internal static class BuiltinAgents
         "vs_get_web_pages",
         "vs_list_instructions",
         "vs_read_instruction",
-        "vs_update_instruction",
         "vs_inquiry",
         "vs_create_plan_file",
     };

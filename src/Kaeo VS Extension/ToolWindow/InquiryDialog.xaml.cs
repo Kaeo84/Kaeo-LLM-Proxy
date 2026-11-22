@@ -3,7 +3,7 @@ using System.Windows;
 
 namespace Kaeo.LlmProxy.VSExtension.ToolWindow
 {
-    public partial class InquiryDialog : Window
+    public partial class InquiryDialog : Microsoft.VisualStudio.PlatformUI.DialogWindow
     {
         public string? Response { get; private set; }
         public int? SelectedSuggestionIndex { get; private set; }

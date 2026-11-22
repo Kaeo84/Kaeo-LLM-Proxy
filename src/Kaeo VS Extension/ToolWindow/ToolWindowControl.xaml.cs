@@ -398,14 +398,13 @@ public partial class ToolWindowControl : UserControl
     {
         if (_vm is null || _vm.IsBusy) return;
 
-        // Confirm with the user
-        var result = System.Windows.MessageBox.Show(
-            "Request the model to summarize the conversation to reduce context usage?",
+        // T4: confirm with a VS-themed, async message box (the plain WPF MessageBox ignores the
+        // VS theme and blocks the UI thread).
+        bool confirmed = await VS.MessageBox.ShowConfirmAsync(
             "Compact Context",
-            System.Windows.MessageBoxButton.OKCancel,
-            System.Windows.MessageBoxImage.Question);
+            "Request the model to summarize the conversation to reduce context usage?");
 
-        if (result != System.Windows.MessageBoxResult.OK) return;
+        if (!confirmed) return;
 
         try
         {

@@ -1,4 +1,4 @@
-<Window x:Class="Kaeo.LlmProxy.VSExtension.ToolWindow.InquiryDialog"
+<vsui:DialogWindow x:Class="Kaeo.LlmProxy.VSExtension.ToolWindow.InquiryDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
@@ -63,4 +63,4 @@
                     Click="CancelButton_Click" IsCancel="True"/>
         </StackPanel>
     </Grid>
-</Window>
+</vsui:DialogWindow>

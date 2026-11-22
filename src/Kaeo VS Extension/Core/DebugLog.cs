@@ -14,9 +14,17 @@ namespace Kaeo.LlmProxy.VSExtension.Core
         private const int MaxLines = 4000;
         private static readonly object _gate = new object();
         private static readonly Queue<string> _lines = new Queue<string>();
+        private static long _seq;
 
         /// <summary>Raised for every recorded line, possibly from a background thread.</summary>
         public static event Action<string>? LineWritten;
+
+        /// <summary>
+        /// Raised for every recorded line with its monotonic sequence number, possibly from a
+        /// background thread. Lets a subscriber subscribe before snapshotting and skip lines the
+        /// snapshot already covers (sequence &lt;= snapshot sequence) without losing or duplicating any.
+        /// </summary>
+        public static event Action<long, string>? LineWrittenSequenced;
 
         /// <summary>True when the plugin is running under a debugger.</summary>
         public static bool IsEnabled => Debugger.IsAttached;
@@ -46,14 +54,38 @@ namespace Kaeo.LlmProxy.VSExtension.Core
 
             var line = $"[{DateTime.Now:HH:mm:ss.fff}] [{level}] {message}";
 
+            long seq;
             lock (_gate)
             {
                 _lines.Enqueue(line);
                 while (_lines.Count > MaxLines)
                     _lines.Dequeue();
+                seq = ++_seq;
             }
 
-            LineWritten?.Invoke(line);
+            // Invoke each subscriber independently: a throwing subscriber (e.g. a debug window
+            // doing cross-thread UI work) must not propagate into the logging call site — many
+            // call sites are inside catch blocks, and McpServerManager.Observe relies on the
+            // invariant that DebugLog never throws. Subscribers must unsubscribe on window close
+            // (the static event otherwise roots them for the process lifetime).
+            var handlers = LineWritten;
+            if (handlers is not null)
+            {
+                foreach (Action<string> handler in handlers.GetInvocationList())
+                {
+                    try { handler(line); }
+                    catch { /* subscriber fault is isolated; never throw from a log call */ }
+                }
+            }
+            var seqHandlers = LineWrittenSequenced;
+            if (seqHandlers is not null)
+            {
+                foreach (Action<long, string> handler in seqHandlers.GetInvocationList())
+                {
+                    try { handler(seq, line); }
+                    catch { /* subscriber fault is isolated; never throw from a log call */ }
+                }
+            }
             Debug.WriteLine(line);
         }
 
@@ -62,6 +94,20 @@ namespace Kaeo.LlmProxy.VSExtension.Core
         {
             lock (_gate)
                 return string.Join(Environment.NewLine, _lines);
+        }
+
+        /// <summary>
+        /// Everything buffered so far (oldest first) plus the sequence number of the last buffered
+        /// line. A subscriber that registered before calling this can skip events whose sequence is
+        /// &lt;= <paramref name="lastSequence"/> because the snapshot already contains them.
+        /// </summary>
+        public static string Snapshot(out long lastSequence)
+        {
+            lock (_gate)
+            {
+                lastSequence = _seq;
+                return string.Join(Environment.NewLine, _lines);
+            }
         }
 
         /// <summary>Drops the buffered history (the debug window's own Clear action).</summary>

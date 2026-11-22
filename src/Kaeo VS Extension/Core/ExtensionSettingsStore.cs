@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
 using System.Security.Cryptography;
@@ -26,9 +27,12 @@ internal sealed class ExtensionSettingsStore
     /// Set when the last <see cref="LoadAsync"/> could not read the file and fell back to
     /// defaults. A subsequent <see cref="SaveAsync"/> must not overwrite the on-disk file in
     /// that case: saving a defaults-only object would wipe real settings that merely failed
-    /// to parse. Cleared by a successful load.
+    /// to parse. Cleared by a successful load. Static and keyed by path because the process
+    /// uses many store instances against one file (tool window, settings window, MCP manager,
+    /// per-call instruction stores) — an instance-local flag would let one instance's failed
+    /// load be ignored by another instance's save.
     /// </summary>
-    private bool _loadFailed;
+    private static readonly ConcurrentDictionary<string, bool> s_loadFailed = new(StringComparer.OrdinalIgnoreCase);
 
     public ExtensionSettingsStore(string? path = null)
     {
@@ -56,7 +60,7 @@ internal sealed class ExtensionSettingsStore
                 {
                     DecryptApiKeys(loaded);
                     Migrate(loaded);
-                    _loadFailed = false;
+                    s_loadFailed[_path] = false;
                     return loaded;
                 }
             }
@@ -72,7 +76,7 @@ internal sealed class ExtensionSettingsStore
 
             // The on-disk file exists but could not be read/parsed. Mark the load as failed
             // so a later save does not overwrite the (unreadable) real settings with defaults.
-            _loadFailed = true;
+            s_loadFailed[_path] = true;
             return new ExtensionSettings();
         }
     }
@@ -139,13 +143,23 @@ internal sealed class ExtensionSettingsStore
         // Deep copy via a JSON round-trip: all persisted shapes are plain POCOs (computed
         // helpers are [JsonIgnore]), so the copy is faithful and shares no references.
         var copy = JsonSerializer.Deserialize<ExtensionSettings>(JsonSerializer.Serialize(settings))!;
+        // A file entry's Content is only the transient editor buffer; the body lives on disk.
+        // Never persist it (bloat + stale duplicated content in the settings store).
+        if (copy.Instructions is not null)
+        {
+            foreach (var entry in copy.Instructions)
+            {
+                if (entry is not null && entry.IsFile)
+                    entry.Content = null;
+            }
+        }
         EncryptApiKeys(copy);
         var text = JsonSerializer.Serialize(copy, new JsonSerializerOptions { WriteIndented = true });
 
         // If the last load fell back to defaults, the in-memory object is not a faithful
         // representation of the on-disk file. Back it up before overwriting so real
         // settings are recoverable rather than silently wiped.
-        if (_loadFailed && File.Exists(_path))
+        if (s_loadFailed.TryGetValue(_path, out var loadFailed) && loadFailed && File.Exists(_path))
         {
             var backup = $"{_path}.bak-{DateTime.Now:yyyyMMddHHmmss}";
             try { File.Copy(_path, backup, overwrite: true); }
@@ -163,10 +177,13 @@ internal sealed class ExtensionSettingsStore
     }
 
     /// <summary>
-    /// Writes the file with a short retry/backoff loop. Sharing violations (0x80070020) are
-    /// transient: another VS instance holding the extension, a still-running debounced save,
-    /// or an antivirus/indexer scan. After the retries are exhausted the exception propagates
-    /// so the caller can surface it.
+    /// Writes the file atomically with a short retry/backoff loop. The content is written to a
+    /// sibling <c>.tmp</c> file first, then swapped into place via <see cref="File.Replace"/>
+    /// (atomic on NTFS, keeping a <c>.bak</c>) or <see cref="File.Move"/> when no destination
+    /// exists yet — a crash mid-write can never leave a truncated settings.jsonc. Sharing
+    /// violations (0x80070020) are transient: another VS instance holding the extension, a
+    /// still-running debounced save, or an antivirus/indexer scan. After the retries are
+    /// exhausted the exception propagates so the caller can surface it.
     /// </summary>
     private static async Task WriteWithRetryAsync(string path, string text)
     {
@@ -174,12 +191,13 @@ internal sealed class ExtensionSettingsStore
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
+        var tmp = path + ".tmp";
         const int maxAttempts = 8;
         for (var attempt = 1; ; attempt++)
         {
             try
             {
-                using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.Read))
                 using (var writer = new StreamWriter(stream, Encoding.UTF8))
                 {
                     // net48: StreamWriter has no WriteAsync for strings (only for chars).
@@ -187,6 +205,11 @@ internal sealed class ExtensionSettingsStore
                     writer.Write(text);
 #pragma warning restore VSTHRD103
                 }
+
+                if (File.Exists(path))
+                    File.Replace(tmp, path, path + ".bak", ignoreMetadataErrors: true);
+                else
+                    File.Move(tmp, path);
                 return;
             }
             catch (IOException) when (attempt < maxAttempts)
@@ -258,7 +281,7 @@ internal sealed class ExtensionSettingsStore
             {
                 var key = conn?.ApiKey;
                 if (!string.IsNullOrEmpty(key) && key.StartsWith(DpapiMarker, StringComparison.Ordinal))
-                    conn.ApiKey = UnprotectString(key.Substring(DpapiMarker.Length));
+                    conn.ApiKey = TryUnprotect(key, conn?.Name);
             }
         }
 
@@ -268,10 +291,29 @@ internal sealed class ExtensionSettingsStore
             {
                 var key = mcp?.ApiKey;
                 if (!string.IsNullOrEmpty(key) && key.StartsWith(DpapiMarker, StringComparison.Ordinal))
-                    mcp.ApiKey = UnprotectString(key.Substring(DpapiMarker.Length));
+                    mcp.ApiKey = TryUnprotect(key, mcp?.Name);
             }
         }
 #pragma warning restore CS8602
+    }
+
+    /// <summary>
+    /// Decrypts one DPAPI key, tolerating a corrupted or foreign-machine blob: a single bad
+    /// key must not fail the entire settings load (which would replace every connection,
+    /// server, and instruction with defaults in memory). On failure the key is blanked and a
+    /// warning logged; the rest of the settings load normally.
+    /// </summary>
+    private static string? TryUnprotect(string markedKey, string? ownerName)
+    {
+        try
+        {
+            return UnprotectString(markedKey.Substring(DpapiMarker.Length));
+        }
+        catch (Exception ex) when (ex is CryptographicException || ex is FormatException)
+        {
+            DebugLog.Warn($"Could not decrypt API key for '{ownerName ?? "(unnamed)"}'; clearing it. Re-enter the key in Settings. ({ex.Message})");
+            return null;
+        }
     }
 
     private static string ProtectString(string plaintext)
