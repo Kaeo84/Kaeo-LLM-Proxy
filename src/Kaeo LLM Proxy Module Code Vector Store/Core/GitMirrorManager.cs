@@ -241,11 +241,17 @@ internal sealed class GitMirrorManager
     }
 
     /// <summary>
-    /// M9: directories that never contain useful source code but can dominate a walk
-    /// (build output, dependencies, IDE caches). Skipped for both git and local mirrors.
+    /// M9: built-in default directories that never contain useful source code but can dominate
+    /// a walk (VCS internals, build output, dependencies, IDE/tool caches). Skipped for both git
+    /// and local mirrors, in addition to any .gitignore rules found in the indexed tree.
     /// </summary>
     private static readonly HashSet<string> IgnoredDirectories = new(StringComparer.OrdinalIgnoreCase)
-    { ".git", "bin", "obj", "node_modules", ".vs", "dist" };
+    {
+        ".git", ".hg", ".svn", ".vs", ".idea",
+        "bin", "obj", "node_modules", "bower_components", "dist", "build", "target", "vendor",
+        "__pycache__", ".venv", "venv", ".gradle", ".next", ".nuxt",
+        ".pytest_cache", ".mypy_cache", ".terraform", "TestResults", "coverage",
+    };
 
     private int IndexMirrorFilesAsync(MirrorRegistration mirror, string mirrorPath, CancellationToken ct)
     {
@@ -261,7 +267,7 @@ internal sealed class GitMirrorManager
         // working tree, so reading from disk would index stale content and never pick up
         // newly added files. Reading the blobs guarantees the index always matches the tip.
         var files = new List<(string Path, Blob Blob)>();
-        CollectFiles(tree, string.Empty, files);
+        CollectFiles(tree, string.Empty, files, new GitIgnoreMatcher());
 
         if (!string.IsNullOrWhiteSpace(mirror.PathPrefix))
         {
@@ -426,8 +432,22 @@ internal sealed class GitMirrorManager
     /// repository-relative with forward-slash separators, matching how files are keyed in
     /// the index.
     /// </summary>
-    private static void CollectFiles(Tree tree, string prefix, List<(string Path, Blob Blob)> files)
+    private static void CollectFiles(Tree tree, string prefix, List<(string Path, Blob Blob)> files, GitIgnoreMatcher ignores)
     {
+        // M9: load this directory's committed .gitignore first so its rules apply to every entry
+        // below it (tree enumeration order is not guaranteed to visit .gitignore first).
+        if (tree[".gitignore"] is { TargetType: TreeEntryTargetType.Blob, Target: Blob ignoreBlob } && ignoreBlob.Size <= 1_000_000)
+        {
+            try
+            {
+                ignores.AddScope(prefix, ignoreBlob.GetContentText());
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "CodeVector could not read .gitignore at '{Prefix}'", prefix);
+            }
+        }
+
         foreach (var entry in tree)
         {
             var path = string.IsNullOrEmpty(prefix) ? entry.Name : prefix + "/" + entry.Name;
@@ -435,36 +455,65 @@ internal sealed class GitMirrorManager
             {
                 case TreeEntryTargetType.Blob:
                     // M9: skip binary blobs up front instead of decoding and failing later.
-                    if (entry.Target is Blob blob && !blob.IsBinary) files.Add((path, blob));
+                    if (entry.Target is Blob blob && !blob.IsBinary && !ignores.IsIgnored(path, isDirectory: false))
+                        files.Add((path, blob));
                     break;
                 case TreeEntryTargetType.Tree:
                     if (IgnoredDirectories.Contains(entry.Name)) break;
+                    if (ignores.IsIgnored(path, isDirectory: true)) break;
                     if (entry.Target is Tree subtree)
-                        CollectFiles(subtree, path, files);
+                        CollectFiles(subtree, path, files, ignores);
                     break;
             }
         }
     }
 
     /// <summary>
-    /// M9: depth-first walk that prunes ignored directories (bin/obj/node_modules/...)
-    /// instead of EnumerateFiles(AllDirectories), which descends into everything. Per-directory
-    /// IO/permission failures are logged and skipped so one locked folder cannot abort the walk.
+    /// M9: depth-first walk that prunes built-in ignored directories (bin/obj/node_modules/...)
+    /// and applies the .gitignore files found along the way, instead of EnumerateFiles(AllDirectories),
+    /// which descends into everything. Per-directory IO/permission failures are logged and skipped
+    /// so one locked folder cannot abort the walk.
     /// </summary>
     private static List<string> EnumerateFilesSkippingIgnored(string root)
     {
         var result = new List<string>();
+        var ignores = new GitIgnoreMatcher();
         var pending = new Stack<string>();
         pending.Push(root);
         while (pending.Count > 0)
         {
             string dir = pending.Pop();
+            var relDir = Path.GetRelativePath(root, dir).Replace('\\', '/');
+            if (relDir == ".") relDir = string.Empty;
             try
             {
-                foreach (var file in Directory.EnumerateFiles(dir)) result.Add(file);
+                var gitignorePath = Path.Combine(dir, ".gitignore");
+                if (File.Exists(gitignorePath))
+                {
+                    try
+                    {
+                        ignores.AddScope(relDir, File.ReadAllText(gitignorePath));
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        Log.Warning("CodeVector could not read {GitIgnore}: {Message}", gitignorePath, ex.Message);
+                    }
+                }
+
+                foreach (var file in Directory.EnumerateFiles(dir))
+                {
+                    var name = Path.GetFileName(file);
+                    var rel = relDir.Length == 0 ? name : relDir + "/" + name;
+                    if (!ignores.IsIgnored(rel, isDirectory: false)) result.Add(file);
+                }
                 foreach (var sub in Directory.EnumerateDirectories(dir))
                 {
-                    if (!IgnoredDirectories.Contains(Path.GetFileName(sub))) pending.Push(sub);
+                    var name = Path.GetFileName(sub);
+                    if (IgnoredDirectories.Contains(name)) continue;
+                    var rel = relDir.Length == 0 ? name : relDir + "/" + name;
+                    // A directory is judged by its ancestors' rules; its own .gitignore is loaded
+                    // when it is popped, matching git's semantics.
+                    if (!ignores.IsIgnored(rel, isDirectory: true)) pending.Push(sub);
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
