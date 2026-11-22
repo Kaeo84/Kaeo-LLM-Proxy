@@ -158,7 +158,7 @@ internal sealed class GitMirrorManager
                         if (cred is not null) cloneOptions.FetchOptions.CredentialsProvider = (_, _, _) => new UsernamePasswordCredentials { Username = cred.Username ?? "git", Password = cred.Secret };
                     }
                     Repository.Clone(mirror.RemoteUrl, mirrorPath, cloneOptions);
-                    _activity?.Log("clone", mirror.CollectionName, $"Cloned {mirror.RemoteUrl}");
+                    _activity?.Log("clone", mirror.CollectionName, $"Cloned {UrlRedactor.Redact(mirror.RemoteUrl)}");
                 }
                 else
                 {
@@ -240,6 +240,13 @@ internal sealed class GitMirrorManager
         return queued;
     }
 
+    /// <summary>
+    /// M9: directories that never contain useful source code but can dominate a walk
+    /// (build output, dependencies, IDE caches). Skipped for both git and local mirrors.
+    /// </summary>
+    private static readonly HashSet<string> IgnoredDirectories = new(StringComparer.OrdinalIgnoreCase)
+    { ".git", "bin", "obj", "node_modules", ".vs", "dist" };
+
     private int IndexMirrorFilesAsync(MirrorRegistration mirror, string mirrorPath, CancellationToken ct)
     {
         using var repo = new Repository(mirrorPath);
@@ -267,6 +274,8 @@ internal sealed class GitMirrorManager
         foreach (var (relPath, blob) in files)
         {
             ct.ThrowIfCancellationRequested();
+            // M10: reject oversized blobs by metadata size BEFORE decoding them into memory.
+            if (blob.Size > _settings.MaxFileSizeKb * 1024) { _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", $"File too large ({blob.Size / 1024} KB)"); skipped++; continue; }
             string content;
             try
             {
@@ -283,7 +292,8 @@ internal sealed class GitMirrorManager
             // onlyIfChanged skips files whose content hash matches the stored hash, so a
             // sync cycle only queues what actually changed (and nothing at all when the
             // engine is stopped) instead of re-queueing every file each interval.
-            if (_indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror", onlyIfChanged: true))
+            // waitForCapacity: mirror walks block on a full queue instead of dropping files.
+            if (_indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror", onlyIfChanged: true, waitForCapacity: true))
                 queued++;
             else
                 skipped++;
@@ -310,7 +320,7 @@ internal sealed class GitMirrorManager
         List<string> fullPaths;
         try
         {
-            fullPaths = Directory.EnumerateFiles(rootFull, "*", SearchOption.AllDirectories).ToList();
+            fullPaths = EnumerateFilesSkippingIgnored(rootFull);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -340,7 +350,14 @@ internal sealed class GitMirrorManager
             try
             {
                 var content = await File.ReadAllTextAsync(fullPath, ct).ConfigureAwait(false);
-                if (_indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror", onlyIfChanged: true))
+                // M9: NUL byte in the first 8K chars ⇒ binary; never index it as text.
+                if (content.AsSpan(0, Math.Min(content.Length, 8192)).Contains('\0'))
+                {
+                    _activity?.Log("skip", $"{mirror.CollectionName}:{relPath}", "Binary file; skipped");
+                    skipped++;
+                    continue;
+                }
+                if (_indexer.EnqueueIndexFile(mirror.CollectionName, relPath, content, "mirror", onlyIfChanged: true, waitForCapacity: true))
                     queued++;
                 else
                     skipped++;
@@ -414,14 +431,45 @@ internal sealed class GitMirrorManager
             switch (entry.TargetType)
             {
                 case TreeEntryTargetType.Blob:
-                    if (entry.Target is Blob blob) files.Add((path, blob));
+                    // M9: skip binary blobs up front instead of decoding and failing later.
+                    if (entry.Target is Blob blob && !blob.IsBinary) files.Add((path, blob));
                     break;
                 case TreeEntryTargetType.Tree:
+                    if (IgnoredDirectories.Contains(entry.Name)) break;
                     if (entry.Target is Tree subtree)
                         CollectFiles(subtree, path, files);
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// M9: depth-first walk that prunes ignored directories (bin/obj/node_modules/...)
+    /// instead of EnumerateFiles(AllDirectories), which descends into everything. Per-directory
+    /// IO/permission failures are logged and skipped so one locked folder cannot abort the walk.
+    /// </summary>
+    private static List<string> EnumerateFilesSkippingIgnored(string root)
+    {
+        var result = new List<string>();
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            string dir = pending.Pop();
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(dir)) result.Add(file);
+                foreach (var sub in Directory.EnumerateDirectories(dir))
+                {
+                    if (!IgnoredDirectories.Contains(Path.GetFileName(sub))) pending.Push(sub);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Warning("CodeVector local mirror walk skipped {Dir}: {Message}", dir, ex.Message);
+            }
+        }
+        return result;
     }
 
     private async Task SyncAllMirrorsAsync()

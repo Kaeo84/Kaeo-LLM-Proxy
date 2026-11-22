@@ -15,7 +15,9 @@ internal sealed class IndexingEngine
     private readonly Channel<IndexJob> _queue;
     private readonly object _lifecycleLock = new();
     private CancellationTokenSource _cts = new();
-    private readonly ConcurrentQueue<QueueItemInfo> _pendingJobs = new();
+    private readonly ConcurrentDictionary<QueueItemInfo, byte> _pendingJobs = new();
+    // M14: dedup in-flight/queued IndexFile jobs so repeated syncs don't pile up duplicates.
+    private readonly ConcurrentDictionary<(string Collection, string Path), byte> _inFlightIndex = new();
     private Task[]? _workers;
     private SemaphoreSlim? _embedSemaphore;
     private volatile QueueItemInfo? _currentJob;
@@ -27,7 +29,13 @@ internal sealed class IndexingEngine
         _backend = backend;
         _settings = settings;
         _activity = activity;
-        _queue = Channel.CreateUnbounded<IndexJob>(new UnboundedChannelOptions { SingleReader = false });
+        // M10: bounded queue — each job holds full file content, so an unbounded channel
+        // could exhaust memory on a large mirror. Producers wait or drop explicitly.
+        _queue = Channel.CreateBounded<IndexJob>(new BoundedChannelOptions(256)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = false
+        });
     }
 
     public bool IsRunning => _workers is { Length: > 0 } && _workers.Any(w => !w.IsCompleted);
@@ -45,7 +53,7 @@ internal sealed class IndexingEngine
     /// <summary>Why the engine last stopped (e.g. "Stopped", "Worker faulted: ..."), or null while running.</summary>
     public string? StopReason => _stopReason;
 
-    public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => _pendingJobs.ToArray();
+    public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => _pendingJobs.Keys.ToArray();
 
     /// <summary>
     /// Starts (or restarts) the worker pool. Safe to call when already running (no-op) and after
@@ -103,8 +111,12 @@ internal sealed class IndexingEngine
     public void ClearQueue()
     {
         int drained = 0;
-        while (_queue.Reader.TryRead(out _)) drained++;
-        _pendingJobs.Clear();
+        while (_queue.Reader.TryRead(out var job))
+        {
+            drained++;
+            if (job.Info is not null) _pendingJobs.TryRemove(job.Info, out _);
+            if (job.Type == JobType.IndexFile) _inFlightIndex.TryRemove((job.Collection!, job.Path!), out _);
+        }
         _activity?.Log("queue_clear", "-", $"Cleared {drained} queued job(s)");
         Log.Information("CodeVector indexing queue cleared ({Drained} job(s))", drained);
     }
@@ -115,8 +127,12 @@ internal sealed class IndexingEngine
     /// growing unboundedly while the engine is down); it will be picked up on the next sync.</para>
     /// <para>When <paramref name="onlyIfChanged"/> is true the file is only queued if its content
     /// hash differs from the stored hash, so unchanged files are not re-queued on every mirror sync.</para>
+    /// <para>M10: agent pushes are non-blocking — when the bounded queue is full the file is
+    /// dropped with a warning (it can be re-pushed). Mirror walks pass <paramref name="waitForCapacity"/>
+    /// to block until space is available so no source file is silently lost; they run on their
+    /// own task, never on a queue worker.</para>
     /// </summary>
-    public bool EnqueueIndexFile(string collection, string path, string content, string source = "agent", bool onlyIfChanged = false)
+    public bool EnqueueIndexFile(string collection, string path, string content, string source = "agent", bool onlyIfChanged = false, bool waitForCapacity = false)
     {
         if (!IsRunning)
         {
@@ -133,9 +149,40 @@ internal sealed class IndexingEngine
                 return false;
             }
         }
+        // M14: one queued/in-flight index job per (collection, path).
+        if (!_inFlightIndex.TryAdd((collection, path), 0))
+        {
+            _activity?.Log("skip", $"{collection}:{path}", "Already queued");
+            return false;
+        }
         var info = new QueueItemInfo("Index", collection, path, source);
-        _pendingJobs.Enqueue(info);
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.IndexFile, Collection = collection, Path = path, Content = content, Source = source, Info = info });
+        _pendingJobs[info] = 0;
+        var job = new IndexJob { Type = JobType.IndexFile, Collection = collection, Path = path, Content = content, Source = source, Info = info };
+        bool written;
+        if (waitForCapacity)
+        {
+            try
+            {
+                _queue.Writer.WriteAsync(job, _cts.Token).AsTask().GetAwaiter().GetResult();
+                written = true;
+            }
+            catch (OperationCanceledException)
+            {
+                written = false;
+            }
+        }
+        else
+        {
+            written = _queue.Writer.TryWrite(job);
+        }
+        if (!written)
+        {
+            _pendingJobs.TryRemove(info, out _);
+            _inFlightIndex.TryRemove((collection, path), out _);
+            _activity?.Log("skip", $"{collection}:{path}", "Queue full; not queued");
+            Log.Warning("CodeVector queue full; dropped {Collection}/{Path}", collection, path);
+            return false;
+        }
         return true;
     }
 
@@ -152,30 +199,39 @@ internal sealed class IndexingEngine
             return false;
         }
         var info = new QueueItemInfo("DeleteFile", collection, path, "-");
-        _pendingJobs.Enqueue(info);
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeleteFile, Collection = collection, Path = path, Info = info });
-        return true;
+        return TryWriteControlJob(new IndexJob { Type = JobType.DeleteFile, Collection = collection, Path = path, Info = info }, info);
     }
 
     public void EnqueueDeletePath(string collection, string pathPrefix)
     {
         var info = new QueueItemInfo("DeletePath", collection, pathPrefix, "-");
-        _pendingJobs.Enqueue(info);
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix, Info = info });
+        TryWriteControlJob(new IndexJob { Type = JobType.DeletePath, Collection = collection, Path = pathPrefix, Info = info }, info);
     }
 
     public void EnqueueDeleteCollection(string collection)
     {
         var info = new QueueItemInfo("DeleteCollection", collection, "(all)", "-");
-        _pendingJobs.Enqueue(info);
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.DeleteCollection, Collection = collection, Info = info });
+        TryWriteControlJob(new IndexJob { Type = JobType.DeleteCollection, Collection = collection, Info = info }, info);
     }
 
     public void EnqueueReindex(string collection)
     {
         var info = new QueueItemInfo("Reindex", collection, "(all)", "-");
-        _pendingJobs.Enqueue(info);
-        _queue.Writer.TryWrite(new IndexJob { Type = JobType.Reindex, Collection = collection, Info = info });
+        TryWriteControlJob(new IndexJob { Type = JobType.Reindex, Collection = collection, Info = info }, info);
+    }
+
+    /// <summary>Non-blocking write for delete/reindex control jobs; drops with a warning when full.</summary>
+    private bool TryWriteControlJob(IndexJob job, QueueItemInfo info)
+    {
+        _pendingJobs[info] = 0;
+        if (!_queue.Writer.TryWrite(job))
+        {
+            _pendingJobs.TryRemove(info, out _);
+            _activity?.Log("skip", job.Collection ?? "", "Queue full; control job not queued");
+            Log.Warning("CodeVector queue full; dropped {Operation} for {Collection}", info.Operation, job.Collection);
+            return false;
+        }
+        return true;
     }
 
     private async Task ProcessQueueAsync(CancellationToken ct)
@@ -193,7 +249,25 @@ internal sealed class IndexingEngine
                         case JobType.DeleteFile: DeleteFileAsync(job.Collection!, job.Path!); break;
                         case JobType.DeletePath: _db.DeleteFilesByPathPrefix(job.Collection!, job.Path!); break;
                         case JobType.DeleteCollection: _db.DeleteCollection(job.Collection!); break;
-                        case JobType.Reindex: await ReindexCollectionAsync(job.Collection!, ct).ConfigureAwait(false); break;
+                        case JobType.Reindex:
+                            // M10: reindex produces jobs that can block on the full bounded queue.
+                            // Awaiting that on a worker would deadlock a single-worker pool, so
+                            // production runs on its own task with a full catch (background rule).
+                            string reindexCollection = job.Collection!;
+                            _ = Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    await ReindexCollectionAsync(reindexCollection, ct).ConfigureAwait(false);
+                                }
+                                catch (OperationCanceledException) { }
+                                catch (Exception ex)
+                                {
+                                    _activity?.Log("error", reindexCollection, $"Reindex failed: {ex.Message}");
+                                    Log.Warning("CodeVector reindex failed ({Collection}): {Message}", reindexCollection, ex.Message);
+                                }
+                            }, CancellationToken.None);
+                            break;
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -208,7 +282,8 @@ internal sealed class IndexingEngine
                 }
                 finally
                 {
-                    _pendingJobs.TryDequeue(out _);
+                    if (job.Info is not null) _pendingJobs.TryRemove(job.Info, out _);
+                    if (job.Type == JobType.IndexFile) _inFlightIndex.TryRemove((job.Collection!, job.Path!), out _);
                     _currentJob = null;
                 }
             }
@@ -244,34 +319,36 @@ internal sealed class IndexingEngine
         if (chunks.Count == 0) return;
 
         _activity?.Log("file_start", $"{collection}:{path}", $"Chunked into {chunks.Count} pieces, source={source}");
-        _db.GetOrCreateCollection(collection, _backend.ModelName, _backend.Dimension);
-        // Reserve the file row WITHOUT the new hash. If embedding fails below, the stored
-        // hash stays stale/empty so the next pass re-indexes the file instead of seeing a
-        // matching hash + zero chunks and skipping it forever.
-        var fileId = _db.UpsertFile(collection, path, existingHash ?? string.Empty, source, 0);
-        _db.DeleteFileChunks(fileId, collection);
 
+        // M12: embed FIRST, then create/verify the collection with the real vector dimension
+        // (backends may report Dimension = 0 until the first successful embedding call).
         const int batchSize = 16;
+        var allEmbeddings = new float[chunks.Count][];
         var batchTasks = new List<Func<Task>>();
         for (int i = 0; i < chunks.Count; i += batchSize)
         {
             ct.ThrowIfCancellationRequested();
-            var batch = chunks.Skip(i).Take(batchSize).ToList();
+            int offset = i;
+            var batch = chunks.GetRange(i, Math.Min(batchSize, chunks.Count - i));
             var texts = batch.Select(c => c.Text).ToList();
             int batchNum = i / batchSize + 1;
 
             batchTasks.Add(async () =>
             {
-                _activity?.Log("embed_batch", $"{collection}:{path}", $"Embedding batch {batchNum} ({batch.Count} chunks, offset {i})");
+                _activity?.Log("embed_batch", $"{collection}:{path}", $"Embedding batch {batchNum} ({batch.Count} chunks, offset {offset})");
                 await _embedSemaphore!.WaitAsync(ct);
                 try
                 {
                     float[][] embeddings = await _backend.EmbedBatchAsync(texts, ct);
+                    // M4: never pad missing vectors with empty arrays — that silently stores
+                    // unsearchable chunks. A short/empty result fails the whole file instead.
+                    if (embeddings is null || embeddings.Length != batch.Count)
+                        throw new InvalidOperationException($"Embedding backend returned {embeddings?.Length ?? 0} vectors for {batch.Count} chunks");
                     for (int j = 0; j < batch.Count; j++)
                     {
-                        var chunk = batch[j];
-                        var embedding = j < embeddings.Length ? embeddings[j] : [];
-                        _db.InsertChunk(fileId, collection, chunk.Index, chunk.StartLine, chunk.EndLine, chunk.Text, embedding);
+                        if (embeddings[j] is null || embeddings[j].Length == 0)
+                            throw new InvalidOperationException("Embedding backend returned an empty vector");
+                        allEmbeddings[offset + j] = embeddings[j];
                     }
                 }
                 finally
@@ -287,8 +364,17 @@ internal sealed class IndexingEngine
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _activity?.Log("error", $"{collection}:{path}", $"Embedding failed: {ex.Message}");
-            return; // hash not committed → file is retried on the next pass
+            return; // nothing written → file is retried on the next pass
         }
+
+        _db.GetOrCreateCollection(collection, _backend.ModelName, allEmbeddings[0].Length);
+        // Reserve the file row WITHOUT the new hash. If the insert below fails, the stored
+        // hash stays stale/empty so the next pass re-indexes the file instead of seeing a
+        // matching hash + zero chunks and skipping it forever.
+        var fileId = _db.UpsertFile(collection, path, existingHash ?? string.Empty, source, 0);
+        _db.DeleteFileChunks(fileId, collection);
+        // M3: one transaction + one vec-table lookup for the whole file instead of per chunk.
+        _db.InsertChunks(fileId, collection, chunks, allEmbeddings);
         // Every chunk embedded and inserted successfully: commit the new hash now so an
         // unchanged file is skipped next time.
         _db.UpsertFile(collection, path, hash, source, chunks.Count);

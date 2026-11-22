@@ -14,7 +14,13 @@ internal sealed class VectorSearchEngine
         {
             var collections = _db.ListCollections();
             var allResults = new List<SearchResult>();
-            foreach (var col in collections) allResults.AddRange(_db.Search(col.Name, queryEmbedding, topK, pathFilter));
+            foreach (var col in collections)
+            {
+                // M2: collections embedded with a different-sized model can never match this
+                // query vector; skip them instead of scanning every chunk for nothing.
+                if (col.Dimension > 0 && queryEmbedding.Length > 0 && col.Dimension != queryEmbedding.Length) continue;
+                allResults.AddRange(_db.Search(col.Name, queryEmbedding, topK, pathFilter));
+            }
             return allResults.OrderByDescending(r => r.Similarity).Take(topK).ToList();
         }
         return _db.Search(collection, queryEmbedding, topK, pathFilter);

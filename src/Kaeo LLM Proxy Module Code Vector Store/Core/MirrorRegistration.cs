@@ -24,8 +24,9 @@ internal sealed class MirrorRegistration
 
     public bool IsLocalDirectory => string.Equals(SourceKind, SourceKindDir, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Human-readable description of the mirror source, for status/log display.</summary>
+    /// <summary>Human-readable description of the mirror source, for status/log display.
+    /// M7: URLs are redacted so embedded credentials never surface in UI or activity text.</summary>
     public string DescribeSource => IsLocalDirectory
         ? $"local dir {SourcePath}"
-        : $"{RemoteUrl} [{Branch}]";
+        : $"{UrlRedactor.Redact(RemoteUrl)} [{Branch}]";
 }

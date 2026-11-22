@@ -36,6 +36,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.SearchEnabled) return "code_search is disabled in the Code Vector Store settings.";
             int effectiveTopK = topK is > 0 ? topK.Value : _module.Settings.DefaultTopK;
             var results = await _module.SearchEngine.SearchAsync(query, _module.EmbeddingBackend, collection, effectiveTopK, pathFilter, CancellationToken.None);
             if (results.Count == 0) return "No results found.";
@@ -71,6 +72,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.IndexEnabled) return "code_index is disabled in the Code Vector Store settings.";
             if (content.Length > _module.Settings.MaxFileSizeKb * 1024) return $"File too large (max {_module.Settings.MaxFileSizeKb} KB)";
             bool queued = _module.Indexer.EnqueueIndexFile(collection, path, content, "agent");
             return queued
@@ -99,6 +101,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.SyncRepoEnabled) return "code_sync_repo is disabled in the Code Vector Store settings.";
             if (!string.IsNullOrWhiteSpace(localDirectory))
             {
                 _ = await _module.MirrorManager.RegisterMirrorAsync(collection, localDirectory, branch, credentialName, CancellationToken.None, pathPrefix: pathPrefix, sourceKind: MirrorRegistration.SourceKindDir, sourcePath: localDirectory);
@@ -125,6 +128,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.StatusEnabled) return "code_list_collections is disabled in the Code Vector Store settings.";
             var collections = _module.VectorDb.ListCollections();
             if (collections.Count == 0) return "No collections are indexed yet. Register a mirror (git repo or local directory) to index code.";
             var sb = new StringBuilder();
@@ -150,6 +154,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.StatusEnabled) return "code_status is disabled in the Code Vector Store settings.";
             var collections = _module.VectorDb.ListCollections();
             var mirrors = _module.Repository.LoadMirrors();
             var sb = new StringBuilder();
@@ -191,6 +196,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.RemoveEnabled) return "code_remove is disabled in the Code Vector Store settings.";
             if (string.IsNullOrWhiteSpace(pathPrefix))
             {
                 _module.VectorDb.DeleteCollection(collection);
@@ -215,6 +221,7 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            if (!_module.Settings.ReindexEnabled) return "code_reindex is disabled in the Code Vector Store settings.";
             // H5: ensure the mirror manager exists so the engine's reindex-from-source
             // delegate is wired; otherwise the Reindex job can only clear the collection.
             _ = _module.MirrorManager;

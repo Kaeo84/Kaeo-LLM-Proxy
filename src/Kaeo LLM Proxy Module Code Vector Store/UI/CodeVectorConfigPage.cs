@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Module.CodeVector;
@@ -56,6 +57,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private ToolTip _statusTooltip = null!;
     private System.Windows.Forms.Timer? _refreshTimer;
     private long _lastRefreshedLogged = -1;
+    private string? _lastQueueSignature;
     private System.Windows.Forms.Timer? _saveDebounceTimer;
     private bool _suppressAutoSave;
     private Label _saveStatusLabel = null!;
@@ -204,7 +206,12 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
         _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
-        try { _credentialCombo.Items.AddRange(_module.Secrets.ListCredentialNames().ToArray()); } catch { }
+        try { _credentialCombo.Items.AddRange(_module.Secrets.ListCredentialNames().ToArray()); }
+        catch (Exception ex) when (ex is IOException or SqliteException or UnauthorizedAccessException)
+        {
+            // M15: shared-DB contention must degrade gracefully but never silently (project rule).
+            Log.Warning(ex, "CodeVector credential list unavailable; combo left empty");
+        }
         _credentialCombo.Text = _module.Settings.RemoteCredentialName;
         layout.Controls.Add(_credentialCombo, 1, row++);
 
@@ -433,35 +440,45 @@ internal sealed class CodeVectorConfigPage : TabPage
                {
                    try
                    {
-                       var engine = _module.Indexer;
-                       var running = engine.IsRunning;
+                       // M13: status polling must not lazily create/start the engine or open the
+                       // vector database; show "not started" until something else creates it.
+                       var engine = _module.IndexerOrNull;
+                       var running = engine?.IsRunning ?? false;
                        var stopReason = _module.EngineStopReason;
-                       _engineStatusLabel.Text = running ? "Engine: Running" : "Engine: Stopped";
+                       _engineStatusLabel.Text = running ? "Engine: Running" : (engine is null ? "Engine: Not started" : "Engine: Stopped");
                        _engineStatusLabel.ForeColor = running ? Color.Green : SystemColors.GrayText;
                        _statusTooltip.SetToolTip(_engineStatusLabel, running ? "Engine is running" : (stopReason is null ? "Engine is stopped" : $"Engine stopped: {stopReason}"));
-                       _queueStatusLabel.Text = $"Queue: {engine.QueueDepth}";
-                       _workersStatusLabel.Text = $"Workers: {engine.ActiveWorkerCount}";
-                       var current = engine.CurrentJob;
+                       int queueDepth = engine?.QueueDepth ?? 0;
+                       _queueStatusLabel.Text = $"Queue: {queueDepth}";
+                       _workersStatusLabel.Text = $"Workers: {engine?.ActiveWorkerCount ?? 0}";
+                       var current = engine?.CurrentJob;
                        _currentStatusLabel.Text = current is null ? "Current: —" : $"Current: {current.Path}";
 
                        _startEngineButton.Enabled = !running;
                        _stopEngineButton.Enabled = running;
-                       _clearQueueButton.Enabled = engine.QueueDepth > 0;
+                       _clearQueueButton.Enabled = queueDepth > 0;
 
                        var activity = _module.Activity;
                        _logSummaryLabel.Text = $"Logged: {activity.TotalLogged} | Errors: {activity.ErrorCount}";
 
-                       _queueListView.BeginUpdate();
-                       _queueListView.Items.Clear();
-                       foreach (var item in engine.GetQueueSnapshot())
+                       // M13: rebuild queue rows only when the snapshot actually changed.
+                       var snapshot = engine?.GetQueueSnapshot() ?? Array.Empty<IndexingEngine.QueueItemInfo>();
+                       string signature = string.Join('\n', snapshot.Select(i => $"{i.Operation}|{i.Collection}|{i.Path}|{i.Source}"));
+                       if (signature != _lastQueueSignature)
                        {
-                           var lvi = new ListViewItem(item.Operation);
-                           lvi.SubItems.Add(item.Collection);
-                           lvi.SubItems.Add(item.Path);
-                           lvi.SubItems.Add(item.Source);
-                           _queueListView.Items.Add(lvi);
+                           _lastQueueSignature = signature;
+                           _queueListView.BeginUpdate();
+                           _queueListView.Items.Clear();
+                           foreach (var item in snapshot)
+                           {
+                               var lvi = new ListViewItem(item.Operation);
+                               lvi.SubItems.Add(item.Collection);
+                               lvi.SubItems.Add(item.Path);
+                               lvi.SubItems.Add(item.Source);
+                               _queueListView.Items.Add(lvi);
+                           }
+                           _queueListView.EndUpdate();
                        }
-                       _queueListView.EndUpdate();
 
                        if (activity.TotalLogged != _lastRefreshedLogged)
                        {
@@ -511,7 +528,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                {
                    try
                    {
-                       _module.Indexer.ClearQueue();
+                       _module.IndexerOrNull?.ClearQueue();
                        RefreshStatus();
                    }
                    catch (Exception ex) { MessageBox.Show(ex.Message, "Clear Queue Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -526,7 +543,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        foreach (var m in _module.Repository.LoadMirrors())
                        {
                            var lvi = new ListViewItem(m.CollectionName);
-                           lvi.SubItems.Add(m.RemoteUrl);
+                           lvi.SubItems.Add(m.IsLocalDirectory ? (m.SourcePath ?? "") : UrlRedactor.Redact(m.RemoteUrl));
                            lvi.SubItems.Add(m.Branch);
                             lvi.SubItems.Add(m.MirrorPath ?? "default");
                            lvi.SubItems.Add(m.PathPrefix ?? "");
@@ -537,7 +554,15 @@ internal sealed class CodeVectorConfigPage : TabPage
                        }
                        _reposListView.EndUpdate();
                    }
-                   catch { }
+                   catch (Exception ex) when (ex is IOException or SqliteException or UnauthorizedAccessException)
+                   {
+                       // M15: another instance may hold the shared DB — warn and show a hint
+                       // instead of silently leaving the list empty.
+                       Log.Warning(ex, "CodeVector repo list unavailable (shared database busy?)");
+                       _reposListView.Items.Clear();
+                       _reposListView.Items.Add(new ListViewItem("(unavailable — database busy; see log)"));
+                       _reposListView.EndUpdate();
+                   }
                }
 
                private MirrorRegistration? GetSelectedRepo()
@@ -607,8 +632,17 @@ internal sealed class CodeVectorConfigPage : TabPage
                    if (m is null) { MessageBox.Show("Select a repo first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
                    if (MessageBox.Show($"Remove '{m.CollectionName}'?", "Confirm Remove", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                    {
-                       _module.Repository.DeleteMirror(m.CollectionName);
-                       RefreshRepos();
+                       try
+                       {
+                           _module.Repository.DeleteMirror(m.CollectionName);
+                           RefreshRepos();
+                       }
+                       catch (Exception ex)
+                       {
+                           // M15: a shared-DB failure must not crash the UI.
+                           Log.Warning(ex, "CodeVector remove mirror failed ({Collection})", m.CollectionName);
+                           MessageBox.Show(ex.Message, "Remove Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       }
                    }
                }
 

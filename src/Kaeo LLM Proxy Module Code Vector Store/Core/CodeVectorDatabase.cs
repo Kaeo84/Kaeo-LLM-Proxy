@@ -15,6 +15,10 @@ internal sealed class CodeVectorDatabase : IDisposable
     /// all vector operations fall back to the brute-force scan.</summary>
     private bool _vecAvailable;
 
+    /// <summary>M3: cached vec0 table metadata per collection, invalidated on delete/dimension
+    /// change, so chunk inserts/deletes do not re-query collections + sqlite_master every time.</summary>
+    private readonly Dictionary<string, VecTableInfo?> _vecTableCache = new(StringComparer.Ordinal);
+
     private const string VectorSchema = """
         CREATE TABLE IF NOT EXISTS codevector_collections (
             name TEXT PRIMARY KEY,
@@ -73,6 +77,20 @@ internal sealed class CodeVectorDatabase : IDisposable
         schema.CommandText = VectorSchema;
         schema.ExecuteNonQuery();
 
+        // M14 backstop: prevent duplicate (file_id, chunk_index) rows from concurrent indexers.
+        // Created separately because databases that already contain duplicates cannot build it;
+        // in that case the in-flight dedup in the engine still prevents new duplicates.
+        try
+        {
+            using var unique = _connection.CreateCommand();
+            unique.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_file_chunk ON codevector_chunks (file_id, chunk_index)";
+            unique.ExecuteNonQuery();
+        }
+        catch (SqliteException ex)
+        {
+            Log.Warning("CodeVector: could not create UNIQUE (file_id, chunk_index) index ({Message}); existing duplicate chunks may be present. Reindex affected collections to clean up.", ex.Message);
+        }
+
         // Load the sqlite-vec extension for native vector search. When the native library is
         // unavailable (e.g. not deployed next to the host) the store still works: search falls
         // back to the brute-force cosine scan and no vec0 tables are created.
@@ -96,13 +114,18 @@ internal sealed class CodeVectorDatabase : IDisposable
             long id;
             using (var cmd = _connection.CreateCommand())
             {
-                cmd.CommandText = "SELECT rowid, dimension FROM codevector_collections WHERE name = $name";
+                cmd.CommandText = "SELECT rowid, dimension, embedding_model FROM codevector_collections WHERE name = $name";
                 AddParam(cmd, "$name", name);
                 using var reader = cmd.ExecuteReader();
                 if (reader.Read())
                 {
                     id = reader.GetInt64(0);
                     int storedDim = reader.GetInt32(1);
+                    string storedModel = reader.GetString(2);
+                    // M12: refuse to mix incompatible vector dimensions in one collection.
+                    if (storedDim > 0 && dimension > 0 && storedDim != dimension)
+                        throw new InvalidOperationException(
+                            $"Collection '{name}' was indexed with {storedDim}-dimensional vectors (model '{storedModel}'), but the current backend produces {dimension}-dimensional vectors. Run code_reindex on '{name}' to rebuild it with the new model.");
                     // Self-heal legacy collections created before dimension tracking (stored as 0).
                     if (storedDim <= 0 && dimension > 0)
                     {
@@ -111,8 +134,11 @@ internal sealed class CodeVectorDatabase : IDisposable
                         AddParam(update, "$dim", dimension);
                         AddParam(update, "$id", id);
                         update.ExecuteNonQuery();
+                        _vecTableCache.Remove(name);
                         Log.Information("CodeVector: repaired stored dimension {Dim} for collection {Collection}", dimension, name);
                     }
+                    if (dimension > 0 && storedDim == dimension && !string.Equals(storedModel, model, StringComparison.Ordinal))
+                        Log.Warning("CodeVector: collection {Collection} was indexed with model {OldModel}; now using {NewModel} (same dimension). Run code_reindex to refresh embeddings.", name, storedModel, model);
                 }
                 else
                 {
@@ -168,18 +194,28 @@ internal sealed class CodeVectorDatabase : IDisposable
     {
         lock (_lock)
         {
-            var info = EnsureVecTable(collectionName);
-            if (info is not null)
+            var info = FindVecTable(collectionName);
+            using var tx = _connection.BeginTransaction();
+            try
             {
-                using var vcmd = _connection.CreateCommand();
-                vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT id FROM codevector_chunks WHERE file_id = $fid)";
-                AddParam(vcmd, "$fid", fileId);
-                vcmd.ExecuteNonQuery();
+                if (info is not null)
+                {
+                    using var vcmd = _connection.CreateCommand();
+                    vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT id FROM codevector_chunks WHERE file_id = $fid)";
+                    AddParam(vcmd, "$fid", fileId);
+                    vcmd.ExecuteNonQuery();
+                }
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id = $fid";
+                AddParam(cmd, "$fid", fileId);
+                cmd.ExecuteNonQuery();
+                tx.Commit();
             }
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id = $fid";
-            AddParam(cmd, "$fid", fileId);
-            cmd.ExecuteNonQuery();
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }
     }
 
@@ -188,21 +224,14 @@ internal sealed class CodeVectorDatabase : IDisposable
         lock (_lock)
         {
             using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "INSERT INTO codevector_chunks (file_id, chunk_index, start_line, end_line, text, embedding) VALUES ($fid, $idx, $sl, $el, $txt, $emb)";
+            cmd.CommandText = "INSERT INTO codevector_chunks (file_id, chunk_index, start_line, end_line, text, embedding) VALUES ($fid, $idx, $sl, $el, $txt, $emb) RETURNING id";
             AddParam(cmd, "$fid", fileId);
             AddParam(cmd, "$idx", chunkIndex);
             AddParam(cmd, "$sl", startLine);
             AddParam(cmd, "$el", endLine);
             AddParam(cmd, "$txt", text);
             AddParam(cmd, "$emb", EmbeddingToBlob(embedding));
-            cmd.ExecuteNonQuery();
-
-            long chunkId;
-            using (var idCmd = _connection.CreateCommand())
-            {
-                idCmd.CommandText = "SELECT last_insert_rowid()";
-                chunkId = Convert.ToInt64(idCmd.ExecuteScalar());
-            }
+            long chunkId = Convert.ToInt64(cmd.ExecuteScalar());
 
             var info = EnsureVecTable(collectionName);
             if (info is not null && embedding.Length == info.Dimension)
@@ -212,6 +241,77 @@ internal sealed class CodeVectorDatabase : IDisposable
                 AddParam(vcmd, "$id", chunkId);
                 AddParam(vcmd, "$emb", EmbeddingToBlob(Normalize(embedding)));
                 vcmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    /// <summary>
+    /// M3: inserts all chunks of one file in a single transaction with reused parameters,
+    /// instead of one lock acquisition + vec-table lookup + last_insert_rowid() per chunk.
+    /// Embeddings must already be computed; empty vectors are rejected (M4).
+    /// </summary>
+    public void InsertChunks(long fileId, string collectionName, IReadOnlyList<CodeChunk> chunks, IReadOnlyList<float[]> embeddings)
+    {
+        if (chunks.Count != embeddings.Count)
+            throw new ArgumentException($"Chunk/embedding count mismatch: {chunks.Count} chunks vs {embeddings.Count} embeddings.");
+        lock (_lock)
+        {
+            // Resolve/create the vec table BEFORE opening the transaction: creation may run
+            // its own backfill transaction, which cannot nest.
+            var info = EnsureVecTable(collectionName);
+            using var tx = _connection.BeginTransaction();
+            try
+            {
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "INSERT INTO codevector_chunks (file_id, chunk_index, start_line, end_line, text, embedding) VALUES ($fid, $idx, $sl, $el, $txt, $emb) RETURNING id";
+                var pFid = cmd.CreateParameter(); pFid.ParameterName = "$fid"; pFid.Value = fileId; cmd.Parameters.Add(pFid);
+                var pIdx = cmd.CreateParameter(); pIdx.ParameterName = "$idx"; cmd.Parameters.Add(pIdx);
+                var pSl = cmd.CreateParameter(); pSl.ParameterName = "$sl"; cmd.Parameters.Add(pSl);
+                var pEl = cmd.CreateParameter(); pEl.ParameterName = "$el"; cmd.Parameters.Add(pEl);
+                var pTxt = cmd.CreateParameter(); pTxt.ParameterName = "$txt"; cmd.Parameters.Add(pTxt);
+                var pEmb = cmd.CreateParameter(); pEmb.ParameterName = "$emb"; cmd.Parameters.Add(pEmb);
+
+                SqliteCommand? vcmd = null;
+                SqliteParameter? vpId = null, vpEmb = null;
+                if (info is not null)
+                {
+                    vcmd = _connection.CreateCommand();
+                    vcmd.CommandText = $"INSERT INTO {info.Table} (rowid, embedding) VALUES ($id, $emb)";
+                    vpId = vcmd.CreateParameter(); vpId.ParameterName = "$id"; vcmd.Parameters.Add(vpId);
+                    vpEmb = vcmd.CreateParameter(); vpEmb.ParameterName = "$emb"; vcmd.Parameters.Add(vpEmb);
+                }
+                try
+                {
+                    for (int i = 0; i < chunks.Count; i++)
+                    {
+                        var chunk = chunks[i];
+                        var embedding = embeddings[i];
+                        if (embedding.Length == 0)
+                            throw new InvalidOperationException($"Empty embedding for chunk {chunk.Index}; refusing to store a dead vector.");
+                        pIdx.Value = chunk.Index;
+                        pSl.Value = chunk.StartLine;
+                        pEl.Value = chunk.EndLine;
+                        pTxt.Value = chunk.Text;
+                        pEmb.Value = EmbeddingToBlob(embedding);
+                        long chunkId = Convert.ToInt64(cmd.ExecuteScalar());
+                        if (vcmd is not null && embedding.Length == info!.Dimension)
+                        {
+                            vpId!.Value = chunkId;
+                            vpEmb!.Value = EmbeddingToBlob(Normalize(embedding));
+                            vcmd.ExecuteNonQuery();
+                        }
+                    }
+                }
+                finally
+                {
+                    vcmd?.Dispose();
+                }
+                tx.Commit();
+            }
+            catch
+            {
+                tx.Rollback();
+                throw;
             }
         }
     }
@@ -239,49 +339,80 @@ internal sealed class CodeVectorDatabase : IDisposable
     /// <summary>
     /// Native sqlite-vec KNN search. Stored vectors are L2-normalized, so the returned L2
     /// distance converts exactly to cosine similarity via cos = 1 - d²/2.
+    /// M1: sqlite-vec cuts the global top-k BEFORE any path filter can apply, so with a
+    /// filter we over-fetch and post-filter by prefix, growing k until enough matches are
+    /// found or the index is exhausted. Without a filter a single k = topK query suffices.
     /// </summary>
     private IReadOnlyList<SearchResult> NativeSearch(string table, string collectionName, float[] queryEmbedding, int topK, string? pathFilter)
     {
-        using var cmd = _connection.CreateCommand();
-        string sql = $"SELECT c.id, c.text, c.start_line, c.end_line, f.path, v.distance FROM {ValidateVecTableName(table)} v " +
-            "JOIN codevector_chunks c ON c.id = v.rowid " +
-            "JOIN codevector_files f ON f.id = c.file_id " +
-            "WHERE v.embedding MATCH $q AND k = $k AND f.collection_name = $col";
-        if (!string.IsNullOrEmpty(pathFilter)) sql += " AND f.path LIKE $pf";
-        cmd.CommandText = sql;
-        AddParam(cmd, "$q", EmbeddingToBlob(Normalize(queryEmbedding)));
-        AddParam(cmd, "$k", topK);
-        AddParam(cmd, "$col", collectionName);
-        if (!string.IsNullOrEmpty(pathFilter)) AddParam(cmd, "$pf", "%" + pathFilter + "%");
-        var results = new List<SearchResult>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        bool hasFilter = !string.IsNullOrEmpty(pathFilter);
+        int k = hasFilter ? Math.Max(topK * 10, 100) : topK;
+        const int maxK = 100_000;
+        while (true)
         {
-            double dist = reader.GetDouble(5);
-            float sim = (float)Math.Clamp(1.0 - (dist * dist) / 2.0, -1.0, 1.0);
-            results.Add(new SearchResult { ChunkId = reader.GetInt64(0), Text = reader.GetString(1), StartLine = reader.GetInt32(2), EndLine = reader.GetInt32(3), FilePath = reader.GetString(4), Similarity = sim });
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = $"SELECT c.id, c.text, c.start_line, c.end_line, f.path, v.distance FROM {ValidateVecTableName(table)} v " +
+                "JOIN codevector_chunks c ON c.id = v.rowid " +
+                "JOIN codevector_files f ON f.id = c.file_id " +
+                "WHERE v.embedding MATCH $q AND k = $k AND f.collection_name = $col";
+            AddParam(cmd, "$q", EmbeddingToBlob(Normalize(queryEmbedding)));
+            AddParam(cmd, "$k", k);
+            AddParam(cmd, "$col", collectionName);
+            var results = new List<SearchResult>();
+            int rawCount = 0;
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    rawCount++;
+                    string path = reader.GetString(4);
+                    if (hasFilter && !path.StartsWith(pathFilter!, StringComparison.OrdinalIgnoreCase)) continue;
+                    double dist = reader.GetDouble(5);
+                    float sim = (float)Math.Clamp(1.0 - (dist * dist) / 2.0, -1.0, 1.0);
+                    results.Add(new SearchResult { ChunkId = reader.GetInt64(0), Text = reader.GetString(1), StartLine = reader.GetInt32(2), EndLine = reader.GetInt32(3), FilePath = path, Similarity = sim });
+                }
+            }
+            if (!hasFilter || results.Count >= topK || rawCount < k || k >= maxK)
+                return results.Count > topK ? results.Take(topK).ToList() : results;
+            k = Math.Min(k * 4, maxK);
         }
-        return results;
     }
 
+    /// <summary>
+    /// M2: streaming bounded top-k — only the current k winners (with their text) are kept,
+    /// instead of materializing every chunk of the collection before sorting.
+    /// M1: prefix semantics with escaped LIKE metacharacters, matching the native path.
+    /// </summary>
     private IReadOnlyList<SearchResult> BruteForceSearch(string collectionName, float[] queryEmbedding, int topK, string? pathFilter)
     {
-        var results = new List<SearchResult>();
+        var best = new List<SearchResult>(Math.Max(topK, 1));
+        if (topK <= 0) return best;
         using var cmd = _connection.CreateCommand();
         string sql = "SELECT c.id, c.text, c.start_line, c.end_line, c.embedding, f.path FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col";
-        if (!string.IsNullOrEmpty(pathFilter)) sql += " AND f.path LIKE $pf";
+        if (!string.IsNullOrEmpty(pathFilter)) sql += " AND f.path LIKE $pf ESCAPE '\\'";
         cmd.CommandText = sql;
         AddParam(cmd, "$col", collectionName);
-        if (!string.IsNullOrEmpty(pathFilter)) AddParam(cmd, "$pf", "%" + pathFilter + "%");
+        if (!string.IsNullOrEmpty(pathFilter)) AddParam(cmd, "$pf", EscapeLike(pathFilter) + "%");
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
-            var emb = BlobToEmbedding((byte[])reader.GetValue(4));
-            var sim = CosineSimilarity(queryEmbedding, emb);
-            results.Add(new SearchResult { ChunkId = reader.GetInt64(0), Text = reader.GetString(1), StartLine = reader.GetInt32(2), EndLine = reader.GetInt32(3), FilePath = reader.GetString(5), Similarity = sim });
+            var blob = (byte[])reader.GetValue(4);
+            // Skip dimension-mismatched chunks without allocating a float array for them.
+            if (blob.Length != queryEmbedding.Length * sizeof(float)) continue;
+            var sim = CosineSimilarity(queryEmbedding, BlobToEmbedding(blob));
+            if (best.Count >= topK && sim <= best[^1].Similarity) continue;
+            var item = new SearchResult { ChunkId = reader.GetInt64(0), Text = reader.GetString(1), StartLine = reader.GetInt32(2), EndLine = reader.GetInt32(3), FilePath = reader.GetString(5), Similarity = sim };
+            int pos = 0;
+            while (pos < best.Count && best[pos].Similarity >= sim) pos++;
+            best.Insert(pos, item);
+            if (best.Count > topK) best.RemoveAt(topK);
         }
-        return results.OrderByDescending(r => r.Similarity).Take(topK).ToList();
+        return best;
     }
+
+    /// <summary>Escapes LIKE metacharacters so user filters match literally (used with ESCAPE '\').</summary>
+    private static string EscapeLike(string value) =>
+        value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
     public IReadOnlyList<CollectionInfo> ListCollections()
     {
@@ -301,26 +432,38 @@ internal sealed class CodeVectorDatabase : IDisposable
     {
         lock (_lock)
         {
-            using (var idCmd = _connection.CreateCommand())
+            _vecTableCache.Remove(name);
+            // L13: all-or-nothing delete so a mid-way failure cannot orphan chunks/file rows.
+            using var tx = _connection.BeginTransaction();
+            try
             {
-                idCmd.CommandText = "SELECT rowid FROM codevector_collections WHERE name = $name";
-                AddParam(idCmd, "$name", name);
-                var idObj = idCmd.ExecuteScalar();
-                if (idObj is not null)
-                    DropVecTables(Convert.ToInt64(idObj));
+                using (var idCmd = _connection.CreateCommand())
+                {
+                    idCmd.CommandText = "SELECT rowid FROM codevector_collections WHERE name = $name";
+                    AddParam(idCmd, "$name", name);
+                    var idObj = idCmd.ExecuteScalar();
+                    if (idObj is not null)
+                        DropVecTables(Convert.ToInt64(idObj));
+                }
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "DELETE FROM codevector_collections WHERE name = $name";
+                AddParam(cmd, "$name", name);
+                cmd.ExecuteNonQuery();
+                using var cmd2 = _connection.CreateCommand();
+                cmd2.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $name)";
+                AddParam(cmd2, "$name", name);
+                cmd2.ExecuteNonQuery();
+                using var cmd3 = _connection.CreateCommand();
+                cmd3.CommandText = "DELETE FROM codevector_files WHERE collection_name = $name";
+                AddParam(cmd3, "$name", name);
+                cmd3.ExecuteNonQuery();
+                tx.Commit();
             }
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM codevector_collections WHERE name = $name";
-            AddParam(cmd, "$name", name);
-            cmd.ExecuteNonQuery();
-            using var cmd2 = _connection.CreateCommand();
-            cmd2.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $name)";
-            AddParam(cmd2, "$name", name);
-            cmd2.ExecuteNonQuery();
-            using var cmd3 = _connection.CreateCommand();
-            cmd3.CommandText = "DELETE FROM codevector_files WHERE collection_name = $name";
-            AddParam(cmd3, "$name", name);
-            cmd3.ExecuteNonQuery();
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }
     }
 
@@ -328,25 +471,37 @@ internal sealed class CodeVectorDatabase : IDisposable
     {
         lock (_lock)
         {
-            var info = EnsureVecTable(collectionName);
-            if (info is not null)
+            // Find (not Ensure): a delete must never create/backfill a vec table inside its transaction.
+            var info = FindVecTable(collectionName);
+            string like = EscapeLike(pathPrefix) + "%";
+            using var tx = _connection.BeginTransaction();
+            try
             {
-                using var vcmd = _connection.CreateCommand();
-                vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT c.id FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col AND f.path LIKE $pf)";
-                AddParam(vcmd, "$col", collectionName);
-                AddParam(vcmd, "$pf", pathPrefix + "%");
-                vcmd.ExecuteNonQuery();
+                if (info is not null)
+                {
+                    using var vcmd = _connection.CreateCommand();
+                    vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT c.id FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col AND f.path LIKE $pf ESCAPE '\\')";
+                    AddParam(vcmd, "$col", collectionName);
+                    AddParam(vcmd, "$pf", like);
+                    vcmd.ExecuteNonQuery();
+                }
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $col AND path LIKE $pf ESCAPE '\\')";
+                AddParam(cmd, "$col", collectionName);
+                AddParam(cmd, "$pf", like);
+                cmd.ExecuteNonQuery();
+                using var cmd2 = _connection.CreateCommand();
+                cmd2.CommandText = "DELETE FROM codevector_files WHERE collection_name = $col AND path LIKE $pf ESCAPE '\\'";
+                AddParam(cmd2, "$col", collectionName);
+                AddParam(cmd2, "$pf", like);
+                cmd2.ExecuteNonQuery();
+                tx.Commit();
             }
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $col AND path LIKE $pf)";
-            AddParam(cmd, "$col", collectionName);
-            AddParam(cmd, "$pf", pathPrefix + "%");
-            cmd.ExecuteNonQuery();
-            using var cmd2 = _connection.CreateCommand();
-            cmd2.CommandText = "DELETE FROM codevector_files WHERE collection_name = $col AND path LIKE $pf";
-            AddParam(cmd2, "$col", collectionName);
-            AddParam(cmd2, "$pf", pathPrefix + "%");
-            cmd2.ExecuteNonQuery();
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }
     }
 
@@ -354,25 +509,35 @@ internal sealed class CodeVectorDatabase : IDisposable
     {
         lock (_lock)
         {
-            var info = EnsureVecTable(collectionName);
-            if (info is not null)
+            var info = FindVecTable(collectionName);
+            using var tx = _connection.BeginTransaction();
+            try
             {
-                using var vcmd = _connection.CreateCommand();
-                vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT c.id FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col AND f.path = $path)";
-                AddParam(vcmd, "$col", collectionName);
-                AddParam(vcmd, "$path", path);
-                vcmd.ExecuteNonQuery();
+                if (info is not null)
+                {
+                    using var vcmd = _connection.CreateCommand();
+                    vcmd.CommandText = $"DELETE FROM {info.Table} WHERE rowid IN (SELECT c.id FROM codevector_chunks c JOIN codevector_files f ON c.file_id = f.id WHERE f.collection_name = $col AND f.path = $path)";
+                    AddParam(vcmd, "$col", collectionName);
+                    AddParam(vcmd, "$path", path);
+                    vcmd.ExecuteNonQuery();
+                }
+                using var cmd = _connection.CreateCommand();
+                cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $col AND path = $path)";
+                AddParam(cmd, "$col", collectionName);
+                AddParam(cmd, "$path", path);
+                cmd.ExecuteNonQuery();
+                using var cmd2 = _connection.CreateCommand();
+                cmd2.CommandText = "DELETE FROM codevector_files WHERE collection_name = $col AND path = $path";
+                AddParam(cmd2, "$col", collectionName);
+                AddParam(cmd2, "$path", path);
+                cmd2.ExecuteNonQuery();
+                tx.Commit();
             }
-            using var cmd = _connection.CreateCommand();
-            cmd.CommandText = "DELETE FROM codevector_chunks WHERE file_id IN (SELECT id FROM codevector_files WHERE collection_name = $col AND path = $path)";
-            AddParam(cmd, "$col", collectionName);
-            AddParam(cmd, "$path", path);
-            cmd.ExecuteNonQuery();
-            using var cmd2 = _connection.CreateCommand();
-            cmd2.CommandText = "DELETE FROM codevector_files WHERE collection_name = $col AND path = $path";
-            AddParam(cmd2, "$col", collectionName);
-            AddParam(cmd2, "$path", path);
-            cmd2.ExecuteNonQuery();
+            catch
+            {
+                tx.Rollback();
+                throw;
+            }
         }
     }
 
@@ -400,6 +565,46 @@ internal sealed class CodeVectorDatabase : IDisposable
     private VecTableInfo? EnsureVecTable(string collectionName)
     {
         if (!_vecAvailable) return null;
+        // M3: hot path (every chunk insert/delete) hits the cache instead of re-querying
+        // collection metadata + sqlite_master under the global lock.
+        if (_vecTableCache.TryGetValue(collectionName, out var cached)) return cached;
+        var info = EnsureVecTableCore(collectionName);
+        if (info is not null) _vecTableCache[collectionName] = info;
+        return info;
+    }
+
+    /// <summary>
+    /// Looks up an existing vec0 table without creating or backfilling one. Used by delete
+    /// paths so they can run inside a transaction (creation would nest a second transaction).
+    /// </summary>
+    private VecTableInfo? FindVecTable(string collectionName)
+    {
+        if (!_vecAvailable) return null;
+        if (_vecTableCache.TryGetValue(collectionName, out var cached)) return cached;
+        long colId;
+        int dimension;
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT rowid, dimension FROM codevector_collections WHERE name = $name";
+            AddParam(cmd, "$name", collectionName);
+            using var reader = cmd.ExecuteReader();
+            if (!reader.Read()) return null;
+            colId = reader.GetInt64(0);
+            dimension = reader.GetInt32(1);
+        }
+        if (dimension <= 0) return null;
+        string table = VecTableName(colId, dimension);
+        using var exists = _connection.CreateCommand();
+        exists.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = $table";
+        AddParam(exists, "$table", table);
+        if (exists.ExecuteScalar() is null) return null;
+        var info = new VecTableInfo(colId, dimension, table);
+        _vecTableCache[collectionName] = info;
+        return info;
+    }
+
+    private VecTableInfo? EnsureVecTableCore(string collectionName)
+    {
         using var cmd = _connection.CreateCommand();
         cmd.CommandText = "SELECT rowid, dimension FROM codevector_collections WHERE name = $name";
         AddParam(cmd, "$name", collectionName);

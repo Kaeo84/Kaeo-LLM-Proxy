@@ -35,6 +35,8 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	internal IEmbeddingBackend EmbeddingBackend =>
 		_embeddingBackend ?? throw new InvalidOperationException("Embedding backend not initialized.");
     internal IndexingEngine Indexer => EnsureIndexingEngine();
+    /// <summary>M13: read-only accessor for status polling — never creates or starts the engine.</summary>
+    internal IndexingEngine? IndexerOrNull => _indexingEngine;
     internal GitMirrorManager MirrorManager => EnsureMirrorManager();
     internal VectorSearchEngine SearchEngine => EnsureSearchEngine();
 	internal CodeVectorActivityLogger Activity =>

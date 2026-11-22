@@ -40,7 +40,7 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
     }
 
     public string ModelName => _modelName;
-    public int Dimension => _dimension;
+    public int Dimension => Volatile.Read(ref _dimension);
 
     public async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
     {
@@ -69,29 +69,36 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
         var responseJson = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(responseJson);
         var data = doc.RootElement.GetProperty("data");
-        var results = new float[data.GetArrayLength()][];
-        int idx = 0;
+        // M4: OpenAI-style responses may return items out of order; place each vector by its
+        // "index" and reject incomplete/empty results instead of misaligning text↔vector.
+        if (data.GetArrayLength() != texts.Count)
+            throw new InvalidOperationException($"Embedding endpoint returned {data.GetArrayLength()} vectors for {texts.Count} inputs");
+        var results = new float[texts.Count][];
+        int position = 0;
         foreach (var item in data.EnumerateArray())
         {
+            int index = item.TryGetProperty("index", out var idxProp) && idxProp.TryGetInt32(out var idx) ? idx : position;
+            position++;
+            if (index < 0 || index >= results.Length || results[index] is not null)
+                throw new InvalidOperationException($"Embedding endpoint returned an invalid or duplicate index ({index})");
             var embedding = item.GetProperty("embedding");
             var vec = new float[embedding.GetArrayLength()];
             int i = 0;
             foreach (var val in embedding.EnumerateArray()) vec[i++] = val.GetSingle();
-            results[idx++] = vec;
+            if (vec.Length == 0)
+                throw new InvalidOperationException("Embedding endpoint returned an empty vector");
+            results[index] = vec;
         }
-        if (_dimension == 0 && results.Length > 0) _dimension = results[0].Length;
+        // M12: publish the observed dimension atomically; concurrent batches must not race it.
+        Interlocked.CompareExchange(ref _dimension, results[0].Length, 0);
         return results;
     }
 
     public void Dispose() => _httpClient.Dispose();
 
     /// <summary>
-    /// Strips the query string so a URL carrying a key (e.g. <c>?api_key=…</c>) is never logged;
-    /// scheme, host, and path remain for diagnostics.
+    /// Strips userinfo and the query string so a URL carrying a key (e.g. <c>?api_key=…</c>
+    /// or <c>https://user:token@host</c>) is never logged; scheme, host, and path remain.
     /// </summary>
-    private static string RedactUrl(string url)
-    {
-        int queryStart = url.IndexOf('?');
-        return queryStart < 0 ? url : url[..queryStart] + "?…";
-    }
+    private static string RedactUrl(string url) => UrlRedactor.Redact(url);
 }

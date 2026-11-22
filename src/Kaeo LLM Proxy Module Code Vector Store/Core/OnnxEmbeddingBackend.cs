@@ -42,20 +42,25 @@ internal sealed class OnnxEmbeddingBackend : IEmbeddingBackend
     }
 
     public string ModelName => _modelName;
-    public int Dimension => _dimension;
+    public int Dimension => Volatile.Read(ref _dimension);
 
-    public Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
+    public async Task<float[]> EmbedAsync(string text, CancellationToken ct = default)
     {
-        var results = EmbedBatchAsync([text], ct);
-        return results.ContinueWith(t => t.Result.Length > 0 ? t.Result[0] : [], ct);
+        var results = await EmbedBatchAsync([text], ct).ConfigureAwait(false);
+        return results.Length > 0 ? results[0] : [];
     }
 
     public Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct = default)
     {
         if (_session is null || _tokenizer is null) throw new InvalidOperationException("ONNX backend not initialized.");
-        var results = new float[texts.Count][];
-        for (int i = 0; i < texts.Count; i++) { ct.ThrowIfCancellationRequested(); results[i] = EmbedSingle(texts[i]); }
-        return Task.FromResult(results);
+        // M5: inference is CPU-bound and synchronous; run it on the thread pool instead of
+        // blocking the caller (UI/MCP request thread) behind a fake Task.FromResult.
+        return Task.Run(() =>
+        {
+            var results = new float[texts.Count][];
+            for (int i = 0; i < texts.Count; i++) { ct.ThrowIfCancellationRequested(); results[i] = EmbedSingle(texts[i]); }
+            return results;
+        }, ct);
     }
 
     private float[] EmbedSingle(string text)
@@ -74,45 +79,55 @@ internal sealed class OnnxEmbeddingBackend : IEmbeddingBackend
 
         var inputMeta = _session!.InputMetadata;
         var inputs = new List<NamedOnnxValue>();
-        foreach (var kv in inputMeta)
-        {
-            string name = kv.Key;
-            long[] data = name switch { "input_ids" => inputIds, "attention_mask" => attentionMask, "token_type_ids" => tokenTypeIds, _ => attentionMask };
-            if (kv.Value.ElementType == typeof(int))
-                inputs.Add(NamedOnnxValue.CreateFromTensor(name, new DenseTensor<int>(data.Select(d => (int)d).ToArray(), [1, seqLen])));
-            else
-                inputs.Add(NamedOnnxValue.CreateFromTensor(name, new DenseTensor<long>(data, [1, seqLen])));
-        }
-        using var outputs = _session.Run(inputs);
-        var outputTensor = outputs.First().AsTensor<float>();
-        var shape = outputTensor.Dimensions;
         float[] embedding;
-        if (shape.Length == 3)
+        try
         {
-            int hidden = shape[2];
-            embedding = new float[hidden];
-            int count = 0;
-            for (int s = 0; s < seqLen; s++)
+            foreach (var kv in inputMeta)
             {
-                if (attentionMask[s] == 0) continue;
-                for (int h = 0; h < hidden; h++) embedding[h] += outputTensor[0, s, h];
-                count++;
+                string name = kv.Key;
+                long[] data = name switch { "input_ids" => inputIds, "attention_mask" => attentionMask, "token_type_ids" => tokenTypeIds, _ => attentionMask };
+                if (kv.Value.ElementType == typeof(int))
+                    inputs.Add(NamedOnnxValue.CreateFromTensor(name, new DenseTensor<int>(data.Select(d => (int)d).ToArray(), [1, seqLen])));
+                else
+                    inputs.Add(NamedOnnxValue.CreateFromTensor(name, new DenseTensor<long>(data, [1, seqLen])));
             }
-            if (count > 0) for (int h = 0; h < hidden; h++) embedding[h] /= count;
+            using var outputs = _session.Run(inputs);
+            var outputTensor = outputs.First().AsTensor<float>();
+            var shape = outputTensor.Dimensions;
+            if (shape.Length == 3)
+            {
+                int hidden = shape[2];
+                embedding = new float[hidden];
+                int count = 0;
+                for (int s = 0; s < seqLen; s++)
+                {
+                    if (attentionMask[s] == 0) continue;
+                    for (int h = 0; h < hidden; h++) embedding[h] += outputTensor[0, s, h];
+                    count++;
+                }
+                if (count > 0) for (int h = 0; h < hidden; h++) embedding[h] /= count;
+            }
+            else if (shape.Length == 2)
+            {
+                int hidden = shape[1];
+                embedding = new float[hidden];
+                for (int h = 0; h < hidden; h++) embedding[h] = outputTensor[0, h];
+            }
+            else { embedding = []; }
         }
-        else if (shape.Length == 2)
+        finally
         {
-            int hidden = shape[1];
-            embedding = new float[hidden];
-            for (int h = 0; h < hidden; h++) embedding[h] = outputTensor[0, h];
+            // M6: CreateFromTensor returns DisposableNamedOnnxValue instances that own
+            // pinned/native buffers; dispose every input, even on failure.
+            foreach (var input in inputs) (input as IDisposable)?.Dispose();
         }
-        else { embedding = []; }
 
         float norm = 0f;
         for (int i = 0; i < embedding.Length; i++) norm += embedding[i] * embedding[i];
         norm = MathF.Sqrt(norm);
         if (norm > 0) for (int i = 0; i < embedding.Length; i++) embedding[i] /= norm;
-        if (_dimension == 0) _dimension = embedding.Length;
+        // M12: concurrent batches publish the dimension atomically.
+        Interlocked.CompareExchange(ref _dimension, embedding.Length, 0);
         return embedding;
     }
 
