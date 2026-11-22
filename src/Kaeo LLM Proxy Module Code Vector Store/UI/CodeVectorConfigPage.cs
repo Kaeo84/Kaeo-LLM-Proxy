@@ -56,19 +56,33 @@ internal sealed class CodeVectorConfigPage : TabPage
     private ToolTip _statusTooltip = null!;
     private System.Windows.Forms.Timer? _refreshTimer;
     private long _lastRefreshedLogged = -1;
+    private System.Windows.Forms.Timer? _saveDebounceTimer;
+    private bool _suppressAutoSave;
+    private Label _saveStatusLabel = null!;
+    private Dictionary<string, string> _lastSavedSettings = new();
+    private FlowLayoutPanel _repoButtonPanel = null!;
+    private readonly CancellationTokenSource _repoCts = new();
 
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
         _module = module;
+        _lastSavedSettings = SettingsToValues(module.Settings);
         BuildUi();
         WireAutoSave();
         WireHelpTooltips();
         UpdateBackendVisibility();
         RefreshRepos();
+        _saveDebounceTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _saveDebounceTimer.Tick += (_, _) => { _saveDebounceTimer!.Stop(); SaveSettings(); };
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 2000 };
         _refreshTimer.Tick += (_, _) => RefreshStatus();
         _refreshTimer.Start();
-        Disposed += (_, _) => { _refreshTimer?.Dispose(); _refreshTimer = null; };
+        Disposed += (_, _) =>
+        {
+            _refreshTimer?.Dispose(); _refreshTimer = null;
+            _saveDebounceTimer?.Dispose(); _saveDebounceTimer = null;
+            _repoCts.Cancel(); _repoCts.Dispose();
+        };
         RefreshStatus();
     }
 
@@ -146,6 +160,16 @@ internal sealed class CodeVectorConfigPage : TabPage
         main.Controls.Add(_statusGroup, 0, 7);
 
         Controls.Add(main);
+        _saveStatusLabel = new Label
+        {
+            Text = "",
+            AutoSize = false,
+            Dock = DockStyle.Bottom,
+            Height = 22,
+            ForeColor = SystemColors.GrayText,
+            Padding = new Padding(14, 2, 14, 0),
+        };
+        Controls.Add(_saveStatusLabel);
     }
 
     // (BuildUi replaces the old InitializeComponent)
@@ -318,6 +342,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    var btnReindex = new Button { Text = "Reindex", AutoSize = true, Margin = new Padding(3) };
                    btnReindex.Click += ReindexRepoButton_Click;
                    btnPanel.Controls.AddRange([btnAdd, btnEdit, btnRemove, btnIndex, btnSync, btnStatus, btnReindex]);
+                   _repoButtonPanel = btnPanel;
                    layout.Controls.Add(btnPanel, 0, 1);
 
                    group.Controls.Add(layout);
@@ -524,41 +549,56 @@ internal sealed class CodeVectorConfigPage : TabPage
                        ? (MirrorRegistration.SourceKindDir, dlg.DirectoryPath!)
                        : (MirrorRegistration.SourceKindGit, dlg.RemoteUrl);
 
-               private void AddRepoButton_Click(object? sender, EventArgs e)
+               private async void AddRepoButton_Click(object? sender, EventArgs e)
                {
                    using var dlg = new RepoDialog(null);
-                   if (dlg.ShowDialog(this.FindForm()) == DialogResult.OK)
+                   if (dlg.ShowDialog(this.FindForm()) != DialogResult.OK) return;
+                   if (!_repoButtonPanel.Enabled) return;
+                   _repoButtonPanel.Enabled = false;
+                   try
                    {
-                       try
-                       {
-                            var (kind, source) = ResolveMirrorSource(dlg);
-                            _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
-                            RefreshRepos();
-                        }
-                        catch (Exception ex) { MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                       var (kind, source) = ResolveMirrorSource(dlg);
+                       // H3: await the full registration (including initial clone/sync) so failures
+                       // are observed here instead of becoming unobserved task exceptions.
+                       await _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, _repoCts.Token, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
+                       if (!IsDisposed) RefreshRepos();
                    }
+                   catch (OperationCanceledException) { }
+                   catch (Exception ex)
+                   {
+                       _module.Activity.Log("error", dlg.CollectionName, $"Add repo failed: {ex}");
+                       MessageBox.Show(ex.Message, "Add Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       if (!IsDisposed) RefreshRepos();
+                   }
+                   finally { if (!IsDisposed) _repoButtonPanel.Enabled = true; }
                }
 
-               private void EditRepoButton_Click(object? sender, EventArgs e)
+               private async void EditRepoButton_Click(object? sender, EventArgs e)
                {
                    var m = GetSelectedRepo();
                    if (m is null) { MessageBox.Show("Select a repo first.", "No Selection", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
                    using var dlg = new RepoDialog(m);
-                   if (dlg.ShowDialog(this.FindForm()) == DialogResult.OK)
+                   if (dlg.ShowDialog(this.FindForm()) != DialogResult.OK) return;
+                   if (!_repoButtonPanel.Enabled) return;
+                   _repoButtonPanel.Enabled = false;
+                   try
                    {
-                       try
-                       {
-                           var (kind, source) = ResolveMirrorSource(dlg);
+                       var (kind, source) = ResolveMirrorSource(dlg);
+                       await _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, _repoCts.Token, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
+                       // Upsert overwrites a same-name row; only delete the old row on rename, and
+                       // only after the new registration succeeded so a failure cannot lose the mirror.
+                       if (!string.Equals(m.CollectionName, dlg.CollectionName, StringComparison.Ordinal))
                            _module.Repository.DeleteMirror(m.CollectionName);
-                           _ = _module.MirrorManager.RegisterMirrorAsync(dlg.CollectionName, source, dlg.Branch, dlg.CredentialName, CancellationToken.None, dlg.MirrorPath, dlg.PathPrefix, kind, dlg.IsLocalDirectory ? dlg.DirectoryPath : null);
-                           RefreshRepos();
-                       }
-                       catch (Exception ex)
-                       {
-                           _module.Activity.Log("error", m.CollectionName, $"Edit repo failed: {ex}");
-                           MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                       }
+                       if (!IsDisposed) RefreshRepos();
                    }
+                   catch (OperationCanceledException) { }
+                   catch (Exception ex)
+                   {
+                       _module.Activity.Log("error", m.CollectionName, $"Edit repo failed: {ex}");
+                       MessageBox.Show(ex.Message, "Edit Repo Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                       if (!IsDisposed) RefreshRepos();
+                   }
+                   finally { if (!IsDisposed) _repoButtonPanel.Enabled = true; }
                }
 
                private void RemoveRepoButton_Click(object? sender, EventArgs e)
@@ -583,7 +623,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    try
                    {
-                           await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                           await _module.MirrorManager.IndexMirrorFilesAsync(m, _repoCts.Token);
                            _module.Activity.Log("ui_index", m.CollectionName, $"Re-indexed files for {m.CollectionName}");
                        }
                        catch (Exception ex)
@@ -598,8 +638,8 @@ internal sealed class CodeVectorConfigPage : TabPage
                    if (GetSelectedRepo() is not { } m) { RequireRepo(out _); return; }
                    try
                    {
-                           await _module.MirrorManager.SyncMirrorAsync(m, CancellationToken.None);
-                           RefreshRepos();
+                           await _module.MirrorManager.SyncMirrorAsync(m, _repoCts.Token);
+                           if (!IsDisposed) RefreshRepos();
                        }
                        catch (Exception ex)
                        {
@@ -631,7 +671,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                    {
                        // Reindex = clear the collection, then re-walk the mirror and re-enqueue all files.
                            _module.VectorDb.DeleteCollection(m.CollectionName);
-                           await _module.MirrorManager.IndexMirrorFilesAsync(m, CancellationToken.None);
+                           await _module.MirrorManager.IndexMirrorFilesAsync(m, _repoCts.Token);
                            _module.Activity.Log("ui_reindex", m.CollectionName, "Reindex: collection cleared + files re-queued");
                        }
                        catch (Exception ex)
@@ -710,7 +750,6 @@ internal sealed class CodeVectorConfigPage : TabPage
                 if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
                 {
                     string? currentSelection = _remoteModelCombo.Text;
-                    _remoteModelCombo.Items.Clear();
                     var modelIds = new List<string>();
 
                     foreach (var item in data.EnumerateArray())
@@ -719,12 +758,21 @@ internal sealed class CodeVectorConfigPage : TabPage
                             modelIds.Add(id);
                     }
 
-                    _remoteModelCombo.Items.AddRange(modelIds.ToArray());
+                    // H7: populating the combo fires TextChanged per item; suppress the autosave
+                    // storm and schedule a single save afterwards.
+                    _suppressAutoSave = true;
+                    try
+                    {
+                        _remoteModelCombo.Items.Clear();
+                        _remoteModelCombo.Items.AddRange(modelIds.ToArray());
 
-                    if (modelIds.Contains(currentSelection))
-                        _remoteModelCombo.Text = currentSelection;
-                    else if (modelIds.Count > 0)
-                        _remoteModelCombo.SelectedIndex = 0;
+                        if (modelIds.Contains(currentSelection))
+                            _remoteModelCombo.Text = currentSelection;
+                        else if (modelIds.Count > 0)
+                            _remoteModelCombo.SelectedIndex = 0;
+                    }
+                    finally { _suppressAutoSave = false; }
+                    ScheduleSave();
 
                     _fetchStatusLabel.ForeColor = Color.Green;
                     _fetchStatusLabel.Text = $"Found {modelIds.Count} model(s)";
@@ -944,28 +992,69 @@ internal sealed class CodeVectorConfigPage : TabPage
 
      private void WireAutoSave()
      {
-         _vectorDatabasePathBox.Validated += (_, _) => SaveSettings();
-         _backendCombo.SelectedIndexChanged += (_, _) => SaveSettings();
-         _remoteUrlBox.Validated += (_, _) => SaveSettings();
-         _remoteModelCombo.TextChanged += (_, _) => SaveSettings();
-         _credentialCombo.TextChanged += (_, _) => SaveSettings();
-         _timeoutBox.ValueChanged += (_, _) => SaveSettings();
-         _parallelismBox.ValueChanged += (_, _) => SaveSettings();
-         _onnxBox.Validated += (_, _) => SaveSettings();
-         _onnxMaxSeqBox.ValueChanged += (_, _) => SaveSettings();
-         _onnxThreadsBox.ValueChanged += (_, _) => SaveSettings();
-         _chunkLinesBox.ValueChanged += (_, _) => SaveSettings();
-         _overlapBox.ValueChanged += (_, _) => SaveSettings();
-         _maxSizeBox.ValueChanged += (_, _) => SaveSettings();
-         _topKBox.ValueChanged += (_, _) => SaveSettings();
-         _syncBox.ValueChanged += (_, _) => SaveSettings();
-         _logLevelCombo.SelectedIndexChanged += (_, _) => SaveSettings();
-         _chkSearch.CheckedChanged += (_, _) => SaveSettings();
-         _chkIndex.CheckedChanged += (_, _) => SaveSettings();
-         _chkSync.CheckedChanged += (_, _) => SaveSettings();
-         _chkStatus.CheckedChanged += (_, _) => SaveSettings();
-         _chkRemove.CheckedChanged += (_, _) => SaveSettings();
-         _chkReindex.CheckedChanged += (_, _) => SaveSettings();
+         _vectorDatabasePathBox.Validated += (_, _) => ScheduleSave();
+         _backendCombo.SelectedIndexChanged += (_, _) => ScheduleSave();
+         _remoteUrlBox.Validated += (_, _) => ScheduleSave();
+         _remoteModelCombo.TextChanged += (_, _) => ScheduleSave();
+         _credentialCombo.TextChanged += (_, _) => ScheduleSave();
+         _timeoutBox.ValueChanged += (_, _) => ScheduleSave();
+         _parallelismBox.ValueChanged += (_, _) => ScheduleSave();
+         _onnxBox.Validated += (_, _) => ScheduleSave();
+         _onnxMaxSeqBox.ValueChanged += (_, _) => ScheduleSave();
+         _onnxThreadsBox.ValueChanged += (_, _) => ScheduleSave();
+         _chunkLinesBox.ValueChanged += (_, _) => ScheduleSave();
+         _overlapBox.ValueChanged += (_, _) => ScheduleSave();
+         _maxSizeBox.ValueChanged += (_, _) => ScheduleSave();
+         _topKBox.ValueChanged += (_, _) => ScheduleSave();
+         _syncBox.ValueChanged += (_, _) => ScheduleSave();
+         _logLevelCombo.SelectedIndexChanged += (_, _) => ScheduleSave();
+         _chkSearch.CheckedChanged += (_, _) => ScheduleSave();
+         _chkIndex.CheckedChanged += (_, _) => ScheduleSave();
+         _chkSync.CheckedChanged += (_, _) => ScheduleSave();
+         _chkStatus.CheckedChanged += (_, _) => ScheduleSave();
+         _chkRemove.CheckedChanged += (_, _) => ScheduleSave();
+         _chkReindex.CheckedChanged += (_, _) => ScheduleSave();
+     }
+
+     private void ScheduleSave()
+     {
+         if (_suppressAutoSave) return;
+         // H7: debounce so a burst of keystrokes / spinner clicks produces a single save.
+         _saveDebounceTimer?.Stop();
+         _saveDebounceTimer?.Start();
+     }
+
+     private static Dictionary<string, string> SettingsToValues(CodeVectorSettings s) => new()
+     {
+         ["backend_type"] = s.BackendType.ToString(),
+         ["remote_url"] = s.RemoteUrl,
+         ["remote_model"] = s.RemoteModel,
+         ["remote_credential"] = s.RemoteCredentialName,
+         ["remote_timeout"] = s.RemoteTimeoutSeconds.ToString(),
+         ["remote_parallelism"] = s.RemoteParallelism.ToString(),
+         ["onnx_folder"] = s.OnnxModelFolder,
+         ["onnx_max_seq"] = s.OnnxMaxSequenceLength.ToString(),
+         ["onnx_threads"] = s.OnnxMaxThreads.ToString(),
+         ["chunk_lines"] = s.ChunkLines.ToString(),
+         ["chunk_overlap"] = s.ChunkOverlapLines.ToString(),
+         ["max_file_kb"] = s.MaxFileSizeKb.ToString(),
+         ["default_top_k"] = s.DefaultTopK.ToString(),
+         ["sync_interval"] = s.GitSyncIntervalMinutes.ToString(),
+         ["log_level"] = s.McpLogLevel.ToString(),
+         ["search_enabled"] = s.SearchEnabled ? "1" : "0",
+         ["index_enabled"] = s.IndexEnabled ? "1" : "0",
+         ["sync_enabled"] = s.SyncRepoEnabled ? "1" : "0",
+         ["status_enabled"] = s.StatusEnabled ? "1" : "0",
+         ["remove_enabled"] = s.RemoveEnabled ? "1" : "0",
+         ["reindex_enabled"] = s.ReindexEnabled ? "1" : "0",
+         ["vector_database_path"] = s.VectorDatabasePath,
+     };
+
+     private void ShowSaveError(string message)
+     {
+         if (IsDisposed) return;
+         _saveStatusLabel.ForeColor = SystemColors.ControlText;
+         _saveStatusLabel.Text = message;
      }
 
      private async void SaveSettings()
@@ -1005,29 +1094,16 @@ internal sealed class CodeVectorConfigPage : TabPage
         settings.ReindexEnabled = _chkReindex.Checked;
         settings.VectorDatabasePath = _vectorDatabasePathBox.Text.Trim();
 
+        // H7: write only the keys whose value actually changed since the last successful save.
         var repo = _module.Repository;
-        repo.SaveSetting("backend_type", settings.BackendType.ToString());
-        repo.SaveSetting("remote_url", settings.RemoteUrl);
-        repo.SaveSetting("remote_model", settings.RemoteModel);
-        repo.SaveSetting("remote_credential", settings.RemoteCredentialName);
-        repo.SaveSetting("remote_timeout", settings.RemoteTimeoutSeconds.ToString());
-        repo.SaveSetting("remote_parallelism", settings.RemoteParallelism.ToString());
-        repo.SaveSetting("onnx_folder", settings.OnnxModelFolder);
-        repo.SaveSetting("onnx_max_seq", settings.OnnxMaxSequenceLength.ToString());
-        repo.SaveSetting("onnx_threads", settings.OnnxMaxThreads.ToString());
-        repo.SaveSetting("chunk_lines", settings.ChunkLines.ToString());
-        repo.SaveSetting("chunk_overlap", settings.ChunkOverlapLines.ToString());
-        repo.SaveSetting("max_file_kb", settings.MaxFileSizeKb.ToString());
-        repo.SaveSetting("default_top_k", settings.DefaultTopK.ToString());
-        repo.SaveSetting("sync_interval", settings.GitSyncIntervalMinutes.ToString());
-        repo.SaveSetting("log_level", settings.McpLogLevel.ToString());
-        repo.SaveSetting("search_enabled", settings.SearchEnabled ? "1" : "0");
-        repo.SaveSetting("index_enabled", settings.IndexEnabled ? "1" : "0");
-        repo.SaveSetting("sync_enabled", settings.SyncRepoEnabled ? "1" : "0");
-        repo.SaveSetting("status_enabled", settings.StatusEnabled ? "1" : "0");
-        repo.SaveSetting("remove_enabled", settings.RemoveEnabled ? "1" : "0");
-        repo.SaveSetting("reindex_enabled", settings.ReindexEnabled ? "1" : "0");
-        repo.SaveSetting("vector_database_path", settings.VectorDatabasePath);
+        int savedCount = 0;
+        foreach (var (key, value) in SettingsToValues(settings))
+        {
+            if (_lastSavedSettings.TryGetValue(key, out var previous) && previous == value) continue;
+            repo.SaveSetting(key, value);
+            _lastSavedSettings[key] = value;
+            savedCount++;
+        }
 
         if (oldDbPath != settings.VectorDatabasePath)
             await _module.InvalidateVectorDatabaseAsync();
@@ -1036,18 +1112,26 @@ internal sealed class CodeVectorConfigPage : TabPage
             await _module.InvalidateEmbeddingBackendAsync();
 
         if (oldSyncInterval != settings.GitSyncIntervalMinutes)
-            _module.InvalidateMirrorManager();
+            await _module.InvalidateMirrorManagerAsync();
 
         if (oldParallelism != settings.RemoteParallelism)
-            await _module.InvalidateEmbeddingBackendAsync();
+            await _module.RestartEngineAsync("parallelism changed");
+
+        if (savedCount > 0 && !IsDisposed)
+        {
+            _saveStatusLabel.ForeColor = SystemColors.GrayText;
+            _saveStatusLabel.Text = "Settings saved.";
+        }
          }
          catch (Exception ex) when (ex is IOException or Microsoft.Data.Sqlite.SqliteException)
          {
              Log.Warning(ex, "CodeVector settings save failed (database busy); change not persisted.");
+             ShowSaveError("Save failed: database busy. Change not persisted.");
          }
          catch (Exception ex)
          {
              Log.Warning(ex, "CodeVector settings save failed.");
+             ShowSaveError($"Save failed: {ex.Message}");
          }
     }
 }

@@ -54,8 +54,13 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		// Stop the indexing engine BEFORE disposing the database it writes to, so no worker
 		// task is mid-write against a disposed connection (native access-violation risk).
 		await StopEngineAsync("vector database changed").ConfigureAwait(false);
+		// The mirror manager also holds the old database/indexer references; stop its cycle too.
+		var mirrorManager = _mirrorManager;
+		if (mirrorManager is not null)
+			await mirrorManager.StopTimerAsync().ConfigureAwait(false);
 		lock (_vectorDatabaseLock)
 		{
+			_mirrorManager = null;
 			_searchEngine = null;
 			_indexingEngine = null;
 			_vectorDb?.Dispose();
@@ -69,15 +74,21 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	/// </summary>
 	internal async Task InvalidateEmbeddingBackendAsync()
 	{
+		// H8: build the replacement FIRST so a bad model folder / endpoint throws before the
+		// working backend is disposed; the caller keeps a usable backend on failure.
+		var replacement = EmbeddingBackendFactory.Create(_settings, Secrets, Host);
 		await StopEngineAsync("embedding backend changed").ConfigureAwait(false);
+		var mirrorManager = _mirrorManager;
+		if (mirrorManager is not null)
+			await mirrorManager.StopTimerAsync().ConfigureAwait(false);
 		lock (_vectorDatabaseLock)
 		{
-			_mirrorManager?.StopTimer();
 			_mirrorManager = null;
 			_searchEngine = null;
 			_indexingEngine = null;
-			_embeddingBackend?.Dispose();
-			_embeddingBackend = EmbeddingBackendFactory.Create(_settings, Secrets, Host);
+			var old = _embeddingBackend;
+			_embeddingBackend = replacement;
+			old?.Dispose();
 		}
 	}
 
@@ -85,13 +96,31 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	/// Stops and disposes the cached mirror manager so the next access recreates it
 	/// with the updated sync interval.
 	/// </summary>
-	internal void InvalidateMirrorManager()
+	internal async Task InvalidateMirrorManagerAsync()
 	{
+		var mirrorManager = _mirrorManager;
+		if (mirrorManager is not null)
+			await mirrorManager.StopTimerAsync().ConfigureAwait(false);
 		lock (_vectorDatabaseLock)
 		{
-			_mirrorManager?.StopTimer();
 			_mirrorManager = null;
 		}
+	}
+
+	/// <summary>
+	/// Restarts only the indexing engine (stop, drop, recreate) so settings that affect the
+	/// worker pool — e.g. remote parallelism — take effect without disposing the embedding
+	/// backend or vector database (H7).
+	/// </summary>
+	internal async Task RestartEngineAsync(string reason)
+	{
+		await StopEngineAsync(reason).ConfigureAwait(false);
+		lock (_vectorDatabaseLock)
+		{
+			_indexingEngine = null;
+		}
+		if (_started)
+			EnsureIndexingEngine();
 	}
 
 	public void Initialize(ModuleContext context)
@@ -105,7 +134,17 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_dataDirectory = context.DataDirectory;
 		_moduleDataDir = Path.Combine(context.DataDirectory, "codevector");
 		_activity = new CodeVectorActivityLogger(context.ActivityLog, () => _settings.McpLogLevel);
-		_embeddingBackend = EmbeddingBackendFactory.Create(_settings, context.Secrets, context.Host);
+		try
+		{
+			_embeddingBackend = EmbeddingBackendFactory.Create(_settings, context.Secrets, context.Host);
+		}
+		catch (Exception ex)
+		{
+			// H8: a bad ONNX folder / remote config must not prevent the module (and host) from
+			// loading; leave the backend null and surface the error when it is first used.
+			Log.Warning(ex, "CodeVector embedding backend could not be created at startup; fix settings and save to retry.");
+			_embeddingBackend = null;
+		}
 
 		// Make the embedded LibGit2Sharp native library available before any git operation
 		// triggers its first native load (Repository.Clone/Fetch, etc.).
@@ -232,7 +271,9 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 	public async Task StopAsync()
 	{
 		_started = false;
-		_mirrorManager?.StopTimer();
+		var mirrorManager = _mirrorManager;
+		if (mirrorManager is not null)
+			await mirrorManager.StopTimerAsync().ConfigureAwait(false);
 		if (_indexingEngine is { IsRunning: true })
 			await _indexingEngine.StopAsync("module stopped").ConfigureAwait(false);
 		// Null the cached fields under the lock so a later StartAsync / Ensure* recreates
@@ -298,7 +339,13 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
         lock (_vectorDatabaseLock)
         {
             string moduleDataDir = _moduleDataDir ?? throw new InvalidOperationException("Module not initialized.");
-            _mirrorManager ??= new GitMirrorManager(moduleDataDir, Repository, EnsureVectorDatabase(), EnsureIndexingEngine(), _settings, _activity, Secrets);
+            if (_mirrorManager is null)
+            {
+                var indexer = EnsureIndexingEngine();
+                _mirrorManager = new GitMirrorManager(moduleDataDir, Repository, EnsureVectorDatabase(), indexer, _settings, _activity, Secrets);
+                // H5: let the Reindex job re-walk registered mirrors instead of only logging.
+                indexer.ReindexFromSource = _mirrorManager.ReindexCollectionAsync;
+            }
             if (_started)
                 _mirrorManager.StartTimer();
             return _mirrorManager;

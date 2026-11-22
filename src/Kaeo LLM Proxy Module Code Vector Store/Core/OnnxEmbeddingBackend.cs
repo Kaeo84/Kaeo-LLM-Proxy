@@ -14,14 +14,31 @@ internal sealed class OnnxEmbeddingBackend : IEmbeddingBackend
     public OnnxEmbeddingBackend(string modelFolder, int maxSeqLen, int maxThreads)
     {
         _maxSeqLen = Math.Max(32, maxSeqLen);
-        if (string.IsNullOrWhiteSpace(modelFolder) || !Directory.Exists(modelFolder)) return;
+        // H8: fail fast with a descriptive error instead of silently constructing a backend
+        // that throws "not initialized" on every embed call.
+        if (string.IsNullOrWhiteSpace(modelFolder))
+            throw new ArgumentException("ONNX model folder is not configured. Set it in the Code Vector Store settings.", nameof(modelFolder));
+        if (!Directory.Exists(modelFolder))
+            throw new DirectoryNotFoundException($"ONNX model folder not found: '{modelFolder}'.");
         var modelPath = Path.Combine(modelFolder, "model.onnx");
         var vocabPath = Path.Combine(modelFolder, "vocab.txt");
-        if (!File.Exists(modelPath) || !File.Exists(vocabPath)) return;
+        if (!File.Exists(modelPath))
+            throw new FileNotFoundException($"ONNX model file not found: '{modelPath}'.", modelPath);
+        if (!File.Exists(vocabPath))
+            throw new FileNotFoundException($"ONNX vocab file not found: '{vocabPath}'.", vocabPath);
         _modelName = Path.GetFileName(modelFolder);
-        var options = new SessionOptions { IntraOpNumThreads = Math.Max(1, maxThreads), GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
-        _session = new InferenceSession(modelPath, options);
-        _tokenizer = WordPieceTokenizer.LoadFromFile(vocabPath);
+        using var options = new SessionOptions { IntraOpNumThreads = Math.Max(1, maxThreads), GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL };
+        var session = new InferenceSession(modelPath, options);
+        try
+        {
+            _tokenizer = WordPieceTokenizer.LoadFromFile(vocabPath);
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
+        _session = session;
     }
 
     public string ModelName => _modelName;

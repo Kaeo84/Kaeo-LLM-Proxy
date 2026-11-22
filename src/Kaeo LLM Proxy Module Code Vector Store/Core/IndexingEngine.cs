@@ -35,6 +35,13 @@ internal sealed class IndexingEngine
     public int ActiveWorkerCount => _workers is null ? 0 : _workers.Count(w => !w.IsCompleted);
     public QueueItemInfo? CurrentJob => _currentJob;
 
+    /// <summary>
+    /// Optional callback wired by the module to re-walk a collection's registered mirror(s)
+    /// and re-enqueue every file. Used by the Reindex job (H5); null when no mirror manager
+    /// has been created yet.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<int>>? ReindexFromSource { get; set; }
+
     /// <summary>Why the engine last stopped (e.g. "Stopped", "Worker faulted: ..."), or null while running.</summary>
     public string? StopReason => _stopReason;
 
@@ -186,7 +193,7 @@ internal sealed class IndexingEngine
                         case JobType.DeleteFile: DeleteFileAsync(job.Collection!, job.Path!); break;
                         case JobType.DeletePath: _db.DeleteFilesByPathPrefix(job.Collection!, job.Path!); break;
                         case JobType.DeleteCollection: _db.DeleteCollection(job.Collection!); break;
-                        case JobType.Reindex: _activity?.Log("reindex", job.Collection!, "Reindex requested"); break;
+                        case JobType.Reindex: await ReindexCollectionAsync(job.Collection!, ct).ConfigureAwait(false); break;
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -275,7 +282,7 @@ internal sealed class IndexingEngine
         }
         try
         {
-            await Task.WhenAll(batchTasks.Select(f => f()));
+            await Task.WhenAll(batchTasks.Select(f => f())).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -292,6 +299,26 @@ internal sealed class IndexingEngine
     {
         _db.DeleteFile(collection, path);
         _activity?.Log("file_deleted", $"{collection}:{path}", "Removed stale file from index");
+    }
+
+    /// <summary>
+    /// Full re-embedding of a collection (H5): clears the stored collection (hashes + chunks)
+    /// then re-walks its registered mirror source(s) and re-enqueues every file. Mirrors the
+    /// UI Reindex button so the MCP code_reindex tool actually regenerates embeddings after a
+    /// model/chunking change instead of only logging.
+    /// </summary>
+    private async Task ReindexCollectionAsync(string collection, CancellationToken ct)
+    {
+        _db.DeleteCollection(collection);
+        _activity?.Log("reindex", collection, "Collection cleared; re-indexing from registered sources");
+        var reindex = ReindexFromSource;
+        if (reindex is null)
+        {
+            _activity?.Log("reindex", collection, "No mirror source registered; run code_sync_repo to re-index");
+            return;
+        }
+        int queued = await reindex(collection, ct).ConfigureAwait(false);
+        _activity?.Log("reindex", collection, $"Reindex queued {queued} file(s)");
     }
 
     private static string ComputeSha256(string content)

@@ -215,6 +215,9 @@ internal sealed class CodeVectorTools
     {
         try
         {
+            // H5: ensure the mirror manager exists so the engine's reindex-from-source
+            // delegate is wired; otherwise the Reindex job can only clear the collection.
+            _ = _module.MirrorManager;
             _module.Indexer.EnqueueReindex(collection);
             return $"Queued reindex for collection '{collection}'";
         }
