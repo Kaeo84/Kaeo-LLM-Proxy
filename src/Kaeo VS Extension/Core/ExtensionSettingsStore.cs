@@ -464,6 +464,9 @@ internal sealed class Defaults
     /// <summary>Allow spawning isolated sub-agents for noisy exploration tasks.</summary>
     public bool SubAgents { get; set; }
 
+    /// <summary>Maximum tool-call iterations for one sub-agent run (vs_delegate).</summary>
+    public int SubAgentBudget { get; set; } = 25;
+
     /// <summary>Edit engine: "line" (default), "ast", or "auto" (AST when available, line fallback).</summary>
     public string? EditMode { get; set; } = "line";
 }

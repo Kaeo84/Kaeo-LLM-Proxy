@@ -1181,6 +1181,35 @@ internal static class BuiltInVsTools
                     },
                     ["required"] = new JsonArray { "filePath", "edits" }
                 }
+            },
+            new()
+            {
+                Name = "vs_delegate",
+                Description = "Delegate a self-contained task to an isolated sub-agent with a fresh context window. The sub-agent runs its own budget-capped tool loop and returns only its final answer, keeping noisy exploration out of the main conversation. Requires Defaults.SubAgents=true; sub-agents cannot delegate further. Use for codebase exploration, log analysis, or other verbose side quests.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["task"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The self-contained job for the sub-agent (it cannot see this conversation)"
+                        },
+                        ["agent"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional named agent configuration to use (its system prompt and tool scope); omit for a generic focused sub-agent"
+                        },
+                        ["tools"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Optional tool names to restrict the sub-agent to; intersected with the parent's tool scope, and vs_delegate is never included"
+                        }
+                    },
+                    ["required"] = new JsonArray { "task" }
+                }
             }
         ];
     }
@@ -1274,6 +1303,7 @@ internal static class BuiltInVsTools
                 "vs_append_note" => await VsNotesTools.AppendNoteAsync(args, ct),
                 "vs_read_notes" => await VsNotesTools.ReadNotesAsync(args, ct),
                 "vs_notify" => await NotifyAsync(args, ct),
+                "vs_delegate" => await VsDelegateTools.DelegateAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }

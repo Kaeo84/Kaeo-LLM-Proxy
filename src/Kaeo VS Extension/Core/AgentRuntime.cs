@@ -123,7 +123,8 @@ internal sealed class AgentRuntime
         List<ChatMessage> history,
         string userPrompt,
         AgentEvents events,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        int? maxIterationsOverride = null)
     {
         if (client is null) throw new ArgumentNullException(nameof(client));
         if (agent is null) throw new ArgumentNullException(nameof(agent));
@@ -135,7 +136,11 @@ internal sealed class AgentRuntime
 
         history.Add(new ChatMessage(ChatRole.User, userPrompt));
         var defaults = (await _settings.LoadAsync()).Defaults ?? new Defaults();
-        var maxIterations = defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
+        // Sub-agent runs pass their own budget (Defaults.SubAgentBudget) so a delegated task
+        // cannot consume the main turn's iteration allowance.
+        var maxIterations = maxIterationsOverride is > 0
+            ? maxIterationsOverride.Value
+            : defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
         var toolCallsExecuted = 0;
         var autoPilotContinued = false;
         var autopilotBudget = defaults.AutoPilotBudget > 0 ? defaults.AutoPilotBudget : DefaultAutoPilotBudget;

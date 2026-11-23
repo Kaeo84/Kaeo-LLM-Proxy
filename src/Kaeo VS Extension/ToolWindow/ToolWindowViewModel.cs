@@ -982,6 +982,21 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             },
                     };
 
+        // Ambient context for vs_delegate: same client/model/mode, the parent's tool scope and
+        // permission handler, and the agent catalog for named sub-agent picks. AsyncLocal flows
+        // into the turn's tool executions without leaking back out to unrelated flows.
+        SubAgentContext.SetCurrent(new SubAgentContext
+        {
+            Client = client,
+            Model = modelName,
+            Mode = mode,
+            ParentTools = agent.Tools,
+            RequestPermission = events.RequestPermission,
+            Agents = [.. Agents],
+            Mcp = _mcp,
+            Settings = _settings,
+        });
+
         try
         {
             var result = await _engine.RunAsync(client, agent, modelName, mode, _history, prompt, events, _cts.Token);
@@ -1022,6 +1037,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             IsBusy = false;
             _cts?.Dispose();
             _cts = null;
+            SubAgentContext.SetCurrent(null);
         }
     }
 
