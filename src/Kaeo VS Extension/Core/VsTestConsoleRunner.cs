@@ -2,8 +2,6 @@ using System.IO;
 using System.Text;
 using EnvDTE;
 using EnvDTE80;
-using Process = System.Diagnostics.Process;
-using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
 
 // DTE/COM access happens on the UI thread (the caller guarantees it); the analyzer cannot
 // prove thread affinity through the indirect call chain from BuiltInVsTools.
@@ -239,57 +237,21 @@ internal static class VsTestConsoleRunner
         if (filterExpr is not null)
             args.Append("/TestCaseFilter:\"").Append(filterExpr).Append('"');
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = vsTestPath,
-            Arguments = args.ToString(),
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-
-        using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        var exitTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        process.Exited += (_, _) => exitTcs.TrySetResult(true);
+        ProcessRunResult run;
         try
         {
-            process.Start();
+            run = await ProcessRunner.RunAsync(vsTestPath, args.ToString(), null, RunTimeoutMs, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             return $"Could not start vstest.console: {ex.Message}";
         }
-        if (process.HasExited)
-            exitTcs.TrySetResult(true);
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(RunTimeoutMs);
-        using var registration = timeoutCts.Token.Register(() =>
-        {
-            // net48 has no Kill(entireProcessTree); testhost children exit when the runner pipe drops.
-            try { if (!process.HasExited) process.Kill(); }
-            catch { /* already exited or access denied */ }
-            exitTcs.TrySetCanceled();
-        });
-
-        var timedOut = false;
-        try
-        {
-            await exitTcs.Task.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            if (ct.IsCancellationRequested) throw;
-            timedOut = true;
-        }
-
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        var output = string.IsNullOrWhiteSpace(stderr) ? stdout : stdout + "\n" + stderr;
+        var output = string.IsNullOrWhiteSpace(run.StdErr) ? run.StdOut : run.StdOut + "\n" + run.StdErr;
 
         var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 15)));
@@ -304,10 +266,10 @@ internal static class VsTestConsoleRunner
             + (filterExpr is not null ? $"; filter: {filterExpr}" : string.Empty)
             + "; results do not appear in Test Explorer)";
 
-        if (timedOut)
+        if (run.TimedOut)
             return $"{header} did not finish within {RunTimeoutMs / 1000}s; partial output:\n{tail}";
         if (summary is null)
-            return $"{header} produced no run summary (exit code {process.ExitCode}):\n{tail}";
+            return $"{header} produced no run summary (exit code {run.ExitCode}):\n{tail}";
         return $"{header}:\n{tail}";
     }
 }

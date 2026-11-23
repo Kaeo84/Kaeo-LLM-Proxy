@@ -493,6 +493,153 @@ internal static class BuiltInVsTools
                     },
                     ["required"] = new JsonArray { "filePath" }
                 }
+            },
+            new()
+            {
+                Name = "vs_git_status",
+                Description = "Get git status for the repository containing the open solution: branch, staged/unstaged/untracked/conflict counts and file lists.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject()
+                }
+            },
+            new()
+            {
+                Name = "vs_git_diff",
+                Description = "Show git diff for the solution's repository (working tree vs index by default; staged=true for index vs HEAD). Output is truncated at 20000 chars with a --stat summary appended.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["paths"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Optional file paths (relative to the repo root) to limit the diff"
+                        },
+                        ["staged"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "Diff staged changes vs HEAD instead of working tree vs index (default false)"
+                        },
+                        ["contextLines"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Context lines around changes, 0-20 (default 3)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_git_log",
+                Description = "Show recent commits (one line each) for the solution's repository, optionally limited to one path.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["maxCount"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Number of commits, 1-100 (default 10)"
+                        },
+                        ["path"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional file path to show history for"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_git_revert",
+                Description = "Discard working-tree changes for specific tracked files (git checkout -- paths), restoring them from the index. Staged changes are kept. Refuses untracked files and paths outside the repo; reports a diffstat of what was discarded. Whole-repo reverts are not supported.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["paths"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Files to revert (relative to the repo root); must be tracked and locally modified"
+                        }
+                    },
+                    ["required"] = new JsonArray { "paths" }
+                }
+            },
+            new()
+            {
+                Name = "vs_edit_lines",
+                Description = "Edit a file by 1-based inclusive line range: replace (default), delete, insertBefore, or insertAfter. Preserves encoding/BOM and line endings. Use expectedFirstLine/expectedLastLine guards so stale line numbers are rejected instead of corrupting the file. Returns a numbered preview.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject { ["type"] = "string", ["description"] = "The file to edit" },
+                        ["startLine"] = new JsonObject { ["type"] = "integer", ["description"] = "First line of the range (1-based)" },
+                        ["endLine"] = new JsonObject { ["type"] = "integer", ["description"] = "Last line of the range, inclusive (defaults to startLine)" },
+                        ["mode"] = new JsonObject { ["type"] = "string", ["description"] = "replace | delete | insertBefore | insertAfter (default replace)" },
+                        ["newContent"] = new JsonObject { ["type"] = "string", ["description"] = "Replacement/inserted lines; trailing newline ignored; empty string contributes zero lines" },
+                        ["expectedFirstLine"] = new JsonObject { ["type"] = "string", ["description"] = "Optional guard: trimmed content the first anchor line must currently have" },
+                        ["expectedLastLine"] = new JsonObject { ["type"] = "string", ["description"] = "Optional guard: trimmed content the last anchor line must currently have" }
+                    },
+                    ["required"] = new JsonArray { "filePath", "startLine" }
+                }
+            },
+            new()
+            {
+                Name = "vs_append_file",
+                Description = "Append content to the end of an existing file, on its own line, preserving encoding/BOM and line endings. The file must already exist.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject { ["type"] = "string", ["description"] = "The existing file to append to" },
+                        ["content"] = new JsonObject { ["type"] = "string", ["description"] = "Content to append" }
+                    },
+                    ["required"] = new JsonArray { "filePath", "content" }
+                }
+            },
+            new()
+            {
+                Name = "vs_apply_edits",
+                Description = "Apply multiple line-range edits to one file atomically: all edits are validated against the ORIGINAL line numbers before any is applied; overlapping ranges or duplicate insert positions are rejected. Each edit: startLine, endLine, mode (replace|delete|insertBefore|insertAfter), newContent, optional expectedFirstLine/expectedLastLine guards.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject { ["type"] = "string", ["description"] = "The file to edit" },
+                        ["edits"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["description"] = "Edits in original-file line numbers; applied bottom-up automatically",
+                            ["items"] = new JsonObject
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new JsonObject
+                                {
+                                    ["startLine"] = new JsonObject { ["type"] = "integer" },
+                                    ["endLine"] = new JsonObject { ["type"] = "integer" },
+                                    ["mode"] = new JsonObject { ["type"] = "string" },
+                                    ["newContent"] = new JsonObject { ["type"] = "string" },
+                                    ["expectedFirstLine"] = new JsonObject { ["type"] = "string" },
+                                    ["expectedLastLine"] = new JsonObject { ["type"] = "string" }
+                                },
+                                ["required"] = new JsonArray { "startLine" }
+                            }
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "edits" }
+                }
             }
         };
     }
@@ -501,7 +648,7 @@ internal static class BuiltInVsTools
     /// Switches to the UI thread and returns the DTE automation object, or null when the
     /// service is unavailable. Callers that need an open solution use <see cref="GetOpenDteAsync"/>.
     /// </summary>
-    private static async Task<DTE2?> GetDteAsync(CancellationToken ct)
+    internal static async Task<DTE2?> GetDteAsync(CancellationToken ct)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
         return Package.GetGlobalService(typeof(DTE)) as DTE2;
@@ -512,7 +659,7 @@ internal static class BuiltInVsTools
     /// is open; null otherwise. Replaces the repeated
     /// <c>SwitchToMainThreadAsync + GetGlobalService + IsOpen</c> guard in every tool method.
     /// </summary>
-    private static async Task<DTE2?> GetOpenDteAsync(CancellationToken ct)
+    internal static async Task<DTE2?> GetOpenDteAsync(CancellationToken ct)
     {
         var dte = await GetDteAsync(ct);
         return dte?.Solution?.IsOpen == true ? dte : null;
@@ -552,6 +699,13 @@ internal static class BuiltInVsTools
                 "vs_list_instructions" => await ListInstructionsAsync(ct),
                 "vs_read_instruction" => await ReadInstructionAsync(args, ct),
                 "vs_update_instruction" => await UpdateInstructionAsync(args, ct),
+                "vs_git_status" => await GitTools.StatusAsync(args, ct),
+                "vs_git_diff" => await GitTools.DiffAsync(args, ct),
+                "vs_git_log" => await GitTools.LogAsync(args, ct),
+                "vs_git_revert" => await GitTools.RevertAsync(args, ct),
+                "vs_edit_lines" => await VsEditTools.EditLinesAsync(args, ct),
+                "vs_append_file" => await VsEditTools.AppendFileAsync(args, ct),
+                "vs_apply_edits" => await VsEditTools.ApplyEditsAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
@@ -573,7 +727,7 @@ internal static class BuiltInVsTools
     /// logged as a warning; after the budget the exception propagates to <see cref="ExecuteAsync"/>,
     /// which logs it and returns a graceful error rather than crashing (project sharing rule).
     /// </summary>
-    private static T FileIoWithRetry<T>(string path, Func<T> op)
+    internal static T FileIoWithRetry<T>(string path, Func<T> op)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -590,7 +744,7 @@ internal static class BuiltInVsTools
     }
 
     /// <summary>Void-returning overload of <see cref="FileIoWithRetry{T}"/> for writes/deletes.</summary>
-    private static void FileIoWithRetry(string path, Action op)
+    internal static void FileIoWithRetry(string path, Action op)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -669,7 +823,7 @@ internal static class BuiltInVsTools
     /// Resolves a tool-supplied path against the solution directory. Relative paths must not
     /// depend on devenv.exe's working directory (usually the VS install folder, not the repo).
     /// </summary>
-    private static string ResolveToolPath(string filePath)
+    internal static string ResolveToolPath(string filePath)
     {
         if (string.IsNullOrWhiteSpace(filePath) || Path.IsPathRooted(filePath))
             return filePath;
@@ -1357,29 +1511,17 @@ internal static class BuiltInVsTools
             return Task.FromResult($"File not found: {filePath}");
 
         // Read raw bytes so the original encoding and BOM can be preserved on rewrite.
-        byte[] bytes;
+        string content;
+        System.Text.Encoding encoding;
         try
         {
-            bytes = File.ReadAllBytes(filePath);
+            (content, encoding) = FileTextIo.Read(filePath);
         }
         catch (IOException ex)
         {
             DebugLog.Warn($"Could not read '{filePath}' for replace: {ex.Message}");
             return Task.FromResult($"Could not read file: {ex.Message}");
         }
-
-        System.Text.Encoding encoding;
-        int preamble;
-        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-        { encoding = new System.Text.UTF8Encoding(true); preamble = 3; }
-        else if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
-        { encoding = new System.Text.UnicodeEncoding(false, true); preamble = 2; }
-        else if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
-        { encoding = new System.Text.UnicodeEncoding(true, true); preamble = 2; }
-        else
-        { encoding = new System.Text.UTF8Encoding(false); preamble = 0; }
-
-        var content = encoding.GetString(bytes, preamble, bytes.Length - preamble);
 
         // The contract is a unique single-instance replace; count occurrences before editing.
         var count = 0;
@@ -1399,20 +1541,7 @@ internal static class BuiltInVsTools
 
         try
         {
-            var body = encoding.GetBytes(updated);
-            var bom = encoding.GetPreamble();
-            byte[] output;
-            if (bom.Length > 0)
-            {
-                output = new byte[bom.Length + body.Length];
-                Buffer.BlockCopy(bom, 0, output, 0, bom.Length);
-                Buffer.BlockCopy(body, 0, output, bom.Length, body.Length);
-            }
-            else
-            {
-                output = body;
-            }
-            File.WriteAllBytes(filePath, output);
+            FileTextIo.Write(filePath, updated, encoding);
         }
         catch (IOException ex)
         {
