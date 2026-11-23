@@ -448,6 +448,27 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         private set { _agentMessageForegroundHex = value; OnPropertyChanged(); }
     }
 
+    /// <summary>Better-than-Consolas default stack; falls back gracefully when Cascadia is absent.</summary>
+    internal const string DefaultChatFontFamily = "Cascadia Code, Cascadia Mono, Consolas, Courier New";
+    internal const double DefaultChatFontSize = 13;
+
+    private string? _chatFontFamily;
+    private double? _chatFontSize;
+
+    /// <summary>Font family for transcript message text (user override or the default stack).</summary>
+    public string TranscriptFontFamily
+    {
+        get => string.IsNullOrWhiteSpace(_chatFontFamily) ? DefaultChatFontFamily : _chatFontFamily!;
+        private set { _chatFontFamily = value; OnPropertyChanged(); }
+    }
+
+    /// <summary>Font size (px) for transcript message text.</summary>
+    public double TranscriptFontSize
+    {
+        get => _chatFontSize is > 0 ? _chatFontSize.Value : DefaultChatFontSize;
+        private set { _chatFontSize = value; OnPropertyChanged(); }
+    }
+
     /// <summary>Estimated tokens used by current conversation history.</summary>
     public int ContextTokensUsed
     {
@@ -590,6 +611,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         AgentMessageAlignment = string.Equals(reasoningDefaults.AgentMessageAlignment, "Right", StringComparison.OrdinalIgnoreCase) ? "Right" : "Left";
         AgentMessageBackgroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.AgentMessageBackground) ? null : reasoningDefaults.AgentMessageBackground;
         AgentMessageForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.AgentMessageForeground) ? null : reasoningDefaults.AgentMessageForeground;
+        TranscriptFontFamily = reasoningDefaults.ChatFontFamily ?? string.Empty;
+        TranscriptFontSize = reasoningDefaults.ChatFontSize is > 0 and <= 40 ? reasoningDefaults.ChatFontSize.Value : DefaultChatFontSize;
 
         // Connect to enabled MCP servers and pull their tool definitions (per-server
         // failures are swallowed inside; a dead server just contributes no tools).

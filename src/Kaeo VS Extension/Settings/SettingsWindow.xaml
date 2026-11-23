@@ -743,6 +743,18 @@
                                   ItemTemplate="{StaticResource ColorSwatchTemplate}" SelectedIndex="0" />
                     </StackPanel>
 
+                    <!-- Transcript Font -->
+                    <TextBlock Text="Transcript Font" FontWeight="SemiBold" Margin="0,12,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Font family:" Width="220" VerticalAlignment="Center"
+                                   ToolTip="Font used for chat message text. Default prefers Cascadia Code, then Consolas." />
+                        <ComboBox x:Name="ChatFontBox" Width="220" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <TextBlock Text="Font size:" Width="220" VerticalAlignment="Center" />
+                        <ComboBox x:Name="ChatSizeBox" Width="120" VerticalAlignment="Center" />
+                    </StackPanel>
+
                     <Button Content="Save" Click="SavePreferences_Click" MinWidth="80" Padding="10,2" HorizontalAlignment="Left" />
 
                                         <!-- Always-Allowed Tools -->

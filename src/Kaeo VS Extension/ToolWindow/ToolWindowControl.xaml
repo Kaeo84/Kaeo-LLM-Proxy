@@ -140,6 +140,7 @@
                                             Background="{Binding DataContext.ReasoningBackgroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}">
                                         <TextBlock Text="{Binding Reasoning}" TextWrapping="Wrap"
                                                    FontStyle="Italic" FontSize="12"
+                                                   FontFamily="{Binding DataContext.TranscriptFontFamily, RelativeSource={RelativeSource AncestorType=ListView}}"
                                                    Foreground="{Binding DataContext.ReasoningForegroundHex, RelativeSource={RelativeSource AncestorType=ListView}, Converter={StaticResource HexToBrush}}" />
                                     </Border>
                                 </Expander>
@@ -170,7 +171,8 @@
                                 CornerRadius="4" Padding="4,2">
                             <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Margin="0"
                                        Foreground="{Binding ForegroundHex, Converter={StaticResource HexToBrush}}"
-                                       FontFamily="Consolas" FontSize="13">
+                                       FontFamily="{Binding DataContext.TranscriptFontFamily, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                       FontSize="{Binding DataContext.TranscriptFontSize, RelativeSource={RelativeSource AncestorType=ListView}}">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Foreground" Value="{DynamicResource {x:Static shell:VsBrushes.ToolWindowTextKey}}" />

@@ -405,6 +405,12 @@ internal sealed class Defaults
 
     /// <summary>Optional #RRGGBB text color for agent messages. Null = follow the theme.</summary>
     public string? AgentMessageForeground { get; set; }
+
+    /// <summary>Optional font family for transcript message text. Null = built-in default stack.</summary>
+    public string? ChatFontFamily { get; set; }
+
+    /// <summary>Optional font size (px) for transcript message text. Null = 13.</summary>
+    public double? ChatFontSize { get; set; }
 }
 
 internal sealed class Connection

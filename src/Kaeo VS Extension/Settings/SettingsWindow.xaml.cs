@@ -242,6 +242,23 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 AgentBgBox.SelectedItem = ColorOption.FromHex(ColorOption.Presets, d.AgentMessageBackground);
                 AgentFgBox.SelectedItem = ColorOption.FromHex(ColorOption.TextPresets, d.AgentMessageForeground);
 
+                // Transcript font: default sentinel + installed families; size presets.
+                var fontItems = new List<string> { FontDefaultLabel };
+                fontItems.AddRange(System.Windows.Media.Fonts.SystemFontFamilies
+                    .Select(f => f.Source)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(d.ChatFontFamily) && !fontItems.Contains(d.ChatFontFamily!))
+                    fontItems.Add(d.ChatFontFamily!);
+                ChatFontBox.ItemsSource = fontItems;
+                ChatFontBox.SelectedItem = string.IsNullOrWhiteSpace(d.ChatFontFamily) ? FontDefaultLabel : d.ChatFontFamily;
+                var sizes = new List<double> { 10, 11, 12, 13, 14, 15, 16, 18, 20 };
+                var curSize = d.ChatFontSize is > 0 ? d.ChatFontSize.Value : 13;
+                if (!sizes.Contains(curSize)) sizes.Add(curSize);
+                sizes.Sort();
+                ChatSizeBox.ItemsSource = sizes;
+                ChatSizeBox.SelectedItem = curSize;
+
                 AlwaysAllowedList.Items.Clear();
                 if (d.AlwaysAllowedTools is not null)
                 {
@@ -922,6 +939,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         }
 
         /// <summary>Parses the Preferences controls into the shared Defaults and persists them.</summary>
+        private const string FontDefaultLabel = "Default (Cascadia / Consolas)";
+
         private void SavePreferences_Click(object sender, RoutedEventArgs e)
         {
             var d = _settings.Defaults ??= new Defaults();
@@ -945,6 +964,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             d.AgentMessageAlignment = (AgentAlignBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "Left";
             d.AgentMessageBackground = (AgentBgBox.SelectedItem as ColorOption)?.Hex;
             d.AgentMessageForeground = (AgentFgBox.SelectedItem as ColorOption)?.Hex;
+            d.ChatFontFamily = (ChatFontBox.SelectedItem as string) == FontDefaultLabel ? null : ChatFontBox.SelectedItem as string;
+            d.ChatFontSize = ChatSizeBox.SelectedItem is double fs ? fs : (double?)null;
             d.AlwaysAllowedTools = AlwaysAllowedList.Items.Cast<string>()
                 .Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
 
@@ -1021,6 +1042,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     d.AgentMessageAlignment = edited.AgentMessageAlignment;
                     d.AgentMessageBackground = edited.AgentMessageBackground;
                     d.AgentMessageForeground = edited.AgentMessageForeground;
+                    d.ChatFontFamily = edited.ChatFontFamily;
+                    d.ChatFontSize = edited.ChatFontSize;
                     // Model and Mode are owned by the tool window; keep the freshly-loaded values.
                 }
                 return Task.CompletedTask;
