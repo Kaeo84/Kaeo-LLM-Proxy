@@ -188,47 +188,45 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 
 			string nativeFileName = Path.GetFileName(resourceName);
 
-			using (Stream? stream = moduleAssembly.GetManifestResourceStream(resourceName))
-			{
-				if (stream is null)
-				{
-					Log.Warning("Embedded resource {Resource} not found at runtime.", resourceName);
-					return;
-				}
-				long size = stream.Length;
-				// L8: extract into a content-hash-named subdirectory so a different build with an
-				// identical file size can never be mistaken for the current native binary.
-				string hash = Convert.ToHexString(SHA256.HashData(stream))[..16].ToLowerInvariant();
-				stream.Position = 0;
-				string nativeDir = Path.Combine(moduleDataDir, "native", hash);
-				Directory.CreateDirectory(nativeDir);
-				string nativePath = Path.Combine(nativeDir, nativeFileName);
-				if (!File.Exists(nativePath) || new FileInfo(nativePath).Length != size)
-				{
-					using var file = File.Create(nativePath);
-					stream.CopyTo(file);
-					Log.Information("Extracted LibGit2Sharp native library to {Path}", nativePath);
-				}
+            using Stream? stream = moduleAssembly.GetManifestResourceStream(resourceName);
+            if (stream is null)
+            {
+                Log.Warning("Embedded resource {Resource} not found at runtime.", resourceName);
+                return;
+            }
+            long size = stream.Length;
+            // L8: extract into a content-hash-named subdirectory so a different build with an
+            // identical file size can never be mistaken for the current native binary.
+            string hash = Convert.ToHexString(SHA256.HashData(stream))[..16].ToLowerInvariant();
+            stream.Position = 0;
+            string nativeDir = Path.Combine(moduleDataDir, "native", hash);
+            Directory.CreateDirectory(nativeDir);
+            string nativePath = Path.Combine(nativeDir, nativeFileName);
+            if (!File.Exists(nativePath) || new FileInfo(nativePath).Length != size)
+            {
+                using var file = File.Create(nativePath);
+                stream.CopyTo(file);
+                Log.Information("Extracted LibGit2Sharp native library to {Path}", nativePath);
+            }
 
-				// Point LibGit2Sharp at the extracted directory via its built-in
-				// GlobalSettings.NativeLibraryPath (LibGit2Sharp appends the git2 file name
-				// itself). Must be set before the first native call. Do NOT register our own
-				// NativeLibrary.SetDllImportResolver here: LibGit2Sharp's NativeMethods type
-				// initializer registers its own resolver, and a pre-existing registration makes
-				// that initializer throw InvalidOperationException — the exact
-				// "type initializer for 'LibGit2Sharp.Core.NativeMethods' threw an exception"
-				// failure this method is meant to prevent.
-				try
-				{
-					LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
-					Log.Debug("Set LibGit2Sharp GlobalSettings.NativeLibraryPath = {Dir}", nativeDir);
-				}
-				catch (LibGit2Sharp.LibGit2SharpException ex)
-				{
-					Log.Warning(ex, "Could not set LibGit2Sharp NativeLibraryPath; relying on default resolution.");
-				}
-			}
-		}
+            // Point LibGit2Sharp at the extracted directory via its built-in
+            // GlobalSettings.NativeLibraryPath (LibGit2Sharp appends the git2 file name
+            // itself). Must be set before the first native call. Do NOT register our own
+            // NativeLibrary.SetDllImportResolver here: LibGit2Sharp's NativeMethods type
+            // initializer registers its own resolver, and a pre-existing registration makes
+            // that initializer throw InvalidOperationException — the exact
+            // "type initializer for 'LibGit2Sharp.Core.NativeMethods' threw an exception"
+            // failure this method is meant to prevent.
+            try
+            {
+                LibGit2Sharp.GlobalSettings.NativeLibraryPath = nativeDir;
+                Log.Debug("Set LibGit2Sharp GlobalSettings.NativeLibraryPath = {Dir}", nativeDir);
+            }
+            catch (LibGit2Sharp.LibGit2SharpException ex)
+            {
+                Log.Warning(ex, "Could not set LibGit2Sharp NativeLibraryPath; relying on default resolution.");
+            }
+        }
 		catch (Exception ex)
 		{
 			Log.Warning(ex, "Failed to prepare LibGit2Sharp native library; git mirrors may fail to load.");
@@ -268,10 +266,8 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		_started = true;
 		lock (_vectorDatabaseLock)
 		{
-			if (_indexingEngine is not null)
-				_indexingEngine.Start();
-			if (_mirrorManager is not null)
-				_mirrorManager.StartTimer();
+			_indexingEngine?.Start();
+			_mirrorManager?.StartTimer();
 		}
 		StatusChanged?.Invoke(this, "Running");
 		return Task.CompletedTask;

@@ -93,22 +93,21 @@ public class AppSettingsCloneTests
             EnableApiExplorer = true,
             SecurityPassphrase = "test-passphrase",
             RuntimePassphrase = "runtime-passphrase",
-        };
-
-        s.Logging = new LoggingSettings
-        {
-            MinimumLevel = "Debug",
-            HeartbeatMinimumLevel = "Verbose",
-            AppLogFileSizeLimitMb = 20,
-            AppLogRetainedFileCount = 14,
-            RequestLogFileSizeLimitMb = 100,
-            // Not a literal "C:\temp\..." — the value only has to round-trip through the clone, and
-            // a Windows-shaped literal breaks the suite on non-Windows runners.
-            ApplicationDatabasePath = Path.Combine(Path.GetTempPath(), "test.db"),
-            LogRetentionHours = 48,
-            MaxLogEntriesWithBodies = 25,
-            // Non-default so a Clone() that forgets LogDirectory cannot pass unnoticed.
-            LogDirectory = Path.Combine(Path.GetTempPath(), "kaeo-clone-test-logs"),
+            Logging = new LoggingSettings
+            {
+                MinimumLevel = "Debug",
+                HeartbeatMinimumLevel = "Verbose",
+                AppLogFileSizeLimitMb = 20,
+                AppLogRetainedFileCount = 14,
+                RequestLogFileSizeLimitMb = 100,
+                // Not a literal "C:\temp\..." — the value only has to round-trip through the clone, and
+                // a Windows-shaped literal breaks the suite on non-Windows runners.
+                ApplicationDatabasePath = Path.Combine(Path.GetTempPath(), "test.db"),
+                LogRetentionHours = 48,
+                MaxLogEntriesWithBodies = 25,
+                // Non-default so a Clone() that forgets LogDirectory cannot pass unnoticed.
+                LogDirectory = Path.Combine(Path.GetTempPath(), "kaeo-clone-test-logs"),
+            }
         };
 
         s.CollectNonProxiedCategories.Add(NonProxiedCategory.HealthProbes);

@@ -155,7 +155,7 @@ public class CompactionMessageRoleTests
         //
         // The conversation is padded so compaction genuinely reduces it: CompactAsync discards a
         // result that is not smaller than the original, so a tiny body would never be observable.
-        string padding = new string('x', 40_000);
+        string padding = new('x', 40_000);
         string body = BuildBody(
             ("system", "pinned instructions"),
             ("user", "old ask " + padding),

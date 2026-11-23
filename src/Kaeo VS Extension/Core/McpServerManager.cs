@@ -27,9 +27,9 @@ internal sealed class McpServerManager
     /// enumerate the (immutable-after-publish) snapshot. This avoids "Collection was modified"
     /// when a settings-change re-init races the heartbeat timer or a tool execution.
     /// </summary>
-    private Dictionary<string, McpServer> _servers = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _serversLock = new object();
-    private readonly SemaphoreSlim _initGate = new SemaphoreSlim(1, 1);
+    private Dictionary<string, McpServer> _servers = [with(StringComparer.OrdinalIgnoreCase)];
+    private readonly object _serversLock = new();
+    private readonly SemaphoreSlim _initGate = new(1, 1);
     private int _heartbeatRunning;
     private Timer? _heartbeatTimer;
     private TimeSpan _heartbeatInterval = TimeSpan.FromMinutes(5);
@@ -66,7 +66,7 @@ internal sealed class McpServerManager
             // Build a fresh map and swap it in atomically so a concurrent heartbeat/tool call
             // never observes a half-built collection.
             var map = new Dictionary<string, McpServer>(StringComparer.OrdinalIgnoreCase);
-            foreach (var server in all.McpServers ?? Array.Empty<McpServer>())
+            foreach (var server in all.McpServers ?? [])
             {
                 if (!server.Enabled || string.IsNullOrWhiteSpace(server.Name))
                     continue;
@@ -173,9 +173,7 @@ internal sealed class McpServerManager
     /// </summary>
     public IReadOnlyList<McpServer> GetUnhealthyServers()
     {
-        return ServersSnapshot.Values
-            .Where(s => s.Enabled && s.Stale)
-            .ToList();
+        return [.. ServersSnapshot.Values.Where(s => s.Enabled && s.Stale)];
     }
 
     /// <summary>
@@ -296,9 +294,9 @@ internal sealed class McpServerManager
         else if (string.Equals(server.Transport, "stdio", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(server.Command))
             pulled = await PullToolsStdioAsync(server, ct).ConfigureAwait(false);
         else
-            return server.Tools ?? Array.Empty<McpTool>();
+            return server.Tools ?? [];
 
-        server.Tools = MergeTools(server.Tools, pulled).ToArray();
+        server.Tools = [.. MergeTools(server.Tools, pulled)];
         server.Stale = false;
         server.LastSyncUtc = DateTime.UtcNow;
 
@@ -315,7 +313,7 @@ internal sealed class McpServerManager
     internal static IReadOnlyList<McpTool> MergeTools(McpTool[]? previous, IReadOnlyList<McpTool> pulled)
     {
         var enabledByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        foreach (var tool in previous ?? Array.Empty<McpTool>())
+        foreach (var tool in previous ?? [])
             if (!string.IsNullOrWhiteSpace(tool.Name))
                 enabledByName[tool.Name!] = tool.Enabled;
 
@@ -344,7 +342,7 @@ internal sealed class McpServerManager
 
         await _settings.UpdateAsync(current =>
         {
-            foreach (var server in current.McpServers ?? Array.Empty<McpServer>())
+            foreach (var server in current.McpServers ?? [])
             {
                 if (server.Name is null || !owned.TryGetValue(server.Name, out var live))
                     continue;
@@ -368,12 +366,12 @@ internal sealed class McpServerManager
         // Built-in VS tools: expose the shipped definitions, honoring the per-tool enable flags
         // persisted under the synthetic "builtin" server. When that entry has not been saved yet
         // (or the built-in server is absent) every built-in tool stays enabled, preserving prior behavior.
-        var builtinEntry = (_loadedSettings?.McpServers ?? Array.Empty<McpServer>())
+        var builtinEntry = (_loadedSettings?.McpServers ?? [])
             .FirstOrDefault(s => string.Equals(s.Transport, "builtin", StringComparison.OrdinalIgnoreCase));
         if (builtinEntry is null || builtinEntry.Enabled)
         {
             var builtinEnabledByName = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            foreach (var t in builtinEntry?.Tools ?? Array.Empty<McpTool>())
+            foreach (var t in builtinEntry?.Tools ?? [])
                 if (!string.IsNullOrWhiteSpace(t.Name))
                     builtinEnabledByName[t.Name!] = t.Enabled;
 
@@ -400,7 +398,7 @@ internal sealed class McpServerManager
         foreach (var server in ServersSnapshot.Values)
         {
             if (!server.Enabled) continue;
-            foreach (var tool in server.Tools ?? Array.Empty<McpTool>())
+            foreach (var tool in server.Tools ?? [])
             {
                 if (!tool.Enabled) continue;
                 var runtimeName = $"{server.Name}-{tool.Name}";
@@ -445,14 +443,14 @@ internal sealed class McpServerManager
                 continue;
 
             var actualToolName = toolName.Substring(prefix.Length);
-            if ((server.Tools ?? Array.Empty<McpTool>()).Any(t => t.Name == actualToolName))
+            if ((server.Tools ?? []).Any(t => t.Name == actualToolName))
                 return await ExecuteOnServerAsync(server, actualToolName, argumentsJson, ct).ConfigureAwait(false);
         }
 
         // Fallback: a bare tool name with no server prefix.
         foreach (var server in enabledServers)
         {
-            if ((server.Tools ?? Array.Empty<McpTool>()).Any(t => t.Name == toolName))
+            if ((server.Tools ?? []).Any(t => t.Name == toolName))
                 return await ExecuteOnServerAsync(server, toolName, argumentsJson, ct).ConfigureAwait(false);
         }
 
@@ -817,9 +815,9 @@ internal sealed class McpServerManager
         private static async Task<IReadOnlyList<McpTool>> PullToolsStdioAsync(McpServer server, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(server.Command))
-                return Array.Empty<McpTool>();
+                return [];
 
-            var args = server.Args ?? Array.Empty<string>();
+            var args = server.Args ?? [];
             // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
             var process = StartProcess(server.Command!, args);
             try
@@ -852,7 +850,7 @@ internal sealed class McpServerManager
             if (string.IsNullOrWhiteSpace(server.Command))
                 return "No command configured for this stdio server.";
 
-            var commandArgs = server.Args ?? Array.Empty<string>();
+            var commandArgs = server.Args ?? [];
             // net48: IsNullOrWhiteSpace has no nullable annotation, so assert non-null.
             var process = StartProcess(server.Command!, commandArgs);
             try
@@ -994,10 +992,8 @@ internal sealed class McpServerManager
                 // Release the pending delay timer promptly instead of letting it linger.
                 delayCts.Cancel();
 
-                var line = await readTask.ConfigureAwait(false);
-                if (line is null)
-                    throw new IOException("MCP stdio server closed its output stream before responding.");
-                if (string.IsNullOrWhiteSpace(line))
+            var line = await readTask.ConfigureAwait(false) ?? throw new IOException("MCP stdio server closed its output stream before responding.");
+            if (string.IsNullOrWhiteSpace(line))
                     continue;
 
                 JsonNode? node;

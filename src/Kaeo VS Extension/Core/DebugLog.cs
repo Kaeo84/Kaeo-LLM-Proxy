@@ -12,8 +12,8 @@ namespace Kaeo.LlmProxy.VSExtension.Core
     internal static class DebugLog
     {
         private const int MaxLines = 4000;
-        private static readonly object _gate = new object();
-        private static readonly Queue<string> _lines = new Queue<string>();
+        private static readonly object _gate = new();
+        private static readonly Queue<string> _lines = new();
         private static long _seq;
 
         /// <summary>Raised for every recorded line, possibly from a background thread.</summary>
@@ -71,7 +71,7 @@ namespace Kaeo.LlmProxy.VSExtension.Core
             var handlers = LineWritten;
             if (handlers is not null)
             {
-                foreach (Action<string> handler in handlers.GetInvocationList())
+                foreach (Action<string> handler in handlers.GetInvocationList().Cast<Action<string>>())
                 {
                     try { handler(line); }
                     catch { /* subscriber fault is isolated; never throw from a log call */ }
@@ -80,7 +80,7 @@ namespace Kaeo.LlmProxy.VSExtension.Core
             var seqHandlers = LineWrittenSequenced;
             if (seqHandlers is not null)
             {
-                foreach (Action<long, string> handler in seqHandlers.GetInvocationList())
+                foreach (Action<long, string> handler in seqHandlers.GetInvocationList().Cast<Action<long, string>>())
                 {
                     try { handler(seq, line); }
                     catch { /* subscriber fault is isolated; never throw from a log call */ }

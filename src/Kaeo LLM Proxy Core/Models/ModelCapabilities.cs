@@ -23,7 +23,7 @@ internal static class ModelCapabilities
     ];
 
     /// <summary>Just the wire tokens, in canonical output order.</summary>
-    public static readonly IReadOnlyList<string> Tokens = All.Select(c => c.Token).ToList();
+    public static readonly IReadOnlyList<string> Tokens = [.. All.Select(c => c.Token)];
 
     /// <summary>
     /// The default capability set applied by the "Set Defaults" action: a text chat model with
@@ -51,7 +51,7 @@ internal static class ModelCapabilities
 
         // Materialize once (the input may be a lazy sequence) and drop null/blank entries,
         // which would otherwise throw inside the case-insensitive set lookups.
-        List<string> input = tokens.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+        List<string> input = [.. tokens.Where(t => !string.IsNullOrWhiteSpace(t))];
 
         HashSet<string> known = new(StringComparer.OrdinalIgnoreCase);
         foreach (string t in Tokens)

@@ -30,11 +30,10 @@ internal sealed class ModuleSecretProvider(AppSettings settings) : ISecretProvid
             credential => string.Equals(credential.Name, credentialName, StringComparison.OrdinalIgnoreCase));
 
     public IReadOnlyList<string> ListCredentialNames() =>
-        SnapshotCredentials()
+        [.. SnapshotCredentials()
             .Select(credential => credential.Name)
             .Where(name => !string.IsNullOrWhiteSpace(name))
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)];
 
     public string? ResolveSecret(string credentialName)
     {

@@ -192,8 +192,11 @@ public class DebugNotesTests
     {
         // Global Copilot routing off so this exercises the per-mapping redirect; it would otherwise
         // win for any detected Copilot summarization and this note would never be produced.
-        AppSettings settings = new() { EnableCopilotCompactionRouting = false };
-        settings.DebugMode = true;
+        AppSettings settings = new()
+        {
+            EnableCopilotCompactionRouting = false,
+            DebugMode = true
+        };
 
         ModelMapping mainMapping = new()
         {
@@ -235,8 +238,10 @@ public class DebugNotesTests
     {
         // A Proxy-priority mapping that overrides the client's temperature and injects
         // reasoning effort must produce a debug summary when DebugMode is enabled.
-        AppSettings settings = new();
-        settings.DebugMode = true;
+        AppSettings settings = new()
+        {
+            DebugMode = true
+        };
         settings.ModelMappings.Add(new ModelMapping
         {
             ProxyName = "test-model",
@@ -268,8 +273,10 @@ public class DebugNotesTests
     [Fact]
     public void NormalizeRequestBodyDebugModeOffLeavesSummaryNull()
     {
-        AppSettings settings = new();
-        settings.DebugMode = false;
+        AppSettings settings = new()
+        {
+            DebugMode = false
+        };
         settings.ModelMappings.Add(new ModelMapping
         {
             ProxyName = "test-model",

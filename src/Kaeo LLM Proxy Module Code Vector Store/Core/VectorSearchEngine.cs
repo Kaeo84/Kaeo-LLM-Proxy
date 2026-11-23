@@ -21,7 +21,7 @@ internal sealed class VectorSearchEngine
                 if (col.Dimension > 0 && queryEmbedding.Length > 0 && col.Dimension != queryEmbedding.Length) continue;
                 allResults.AddRange(_db.Search(col.Name, queryEmbedding, topK, pathFilter));
             }
-            return allResults.OrderByDescending(r => r.Similarity).Take(topK).ToList();
+            return [.. allResults.OrderByDescending(r => r.Similarity).Take(topK)];
         }
         return _db.Search(collection, queryEmbedding, topK, pathFilter);
     }

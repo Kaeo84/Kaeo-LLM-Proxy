@@ -137,7 +137,7 @@ internal sealed class OpenAiSseFrameTranslation
     /// </summary>
     public IEnumerable<string> Flush()
     {
-        JsonObject template = _frameTemplate ?? new JsonObject();
+        JsonObject template = _frameTemplate ?? [];
         List<string> frames = [];
 
         foreach ((int index, ChoiceState state) in _states)
@@ -301,7 +301,7 @@ internal sealed class OpenAiSseFrameTranslation
                 _reasoningIntent = FieldIntent.Remove;
             else if (reasoning.Length > 0)
             {
-                _reasoning = _reasoning + reasoning;
+                _reasoning += reasoning;
                 _reasoningIntent = FieldIntent.Set;
             }
 

@@ -325,8 +325,7 @@ partial class OllamaProxyHandler
         if (genDebugNotes is not null && compactRedirected)
             genDebugNotes.AppendLine(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
         bool genMapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
-        if (genDebugNotes is not null)
-            genDebugNotes.AppendLine(DebugNotes.ModelResolution(effectiveModel, resolvedModel, genMapped));
+        genDebugNotes?.AppendLine(DebugNotes.ModelResolution(effectiveModel, resolvedModel, genMapped));
         if (_settings.CollectRequestDetails)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
         log.Streaming = ollamaReq.Stream;
@@ -467,8 +466,7 @@ partial class OllamaProxyHandler
         if (debugNotes is not null && compactRedirected)
             debugNotes.Append(DebugNotes.ContextSummarizeRedirect(ollamaReq.Model, effectiveModel));
         bool mapped = !string.Equals(effectiveModel, resolvedModel, StringComparison.OrdinalIgnoreCase);
-        if (debugNotes is not null)
-            debugNotes.Append(DebugNotes.ModelResolution(effectiveModel, resolvedModel, mapped));
+        debugNotes?.Append(DebugNotes.ModelResolution(effectiveModel, resolvedModel, mapped));
         // Capture the client (before) body when either the Collect flag or DebugMode is on.
         if (_settings.CollectRequestDetails || debug)
             log.RequestBody = RedactRequestBodyForLog(_settings, body, ollamaReq.Model);
@@ -490,8 +488,7 @@ partial class OllamaProxyHandler
         if (removedAssistantPrefill)
         {
             messages.RemoveAt(messages.Count - 1);
-            if (debugNotes is not null)
-                debugNotes.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
+            debugNotes?.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
         }
 
         // Compose the system prompt exactly once, on the same rule as the /v1/* passthrough and

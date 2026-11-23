@@ -13,7 +13,7 @@ internal sealed class CodeVectorDatabase : IDisposable
 
     /// <summary>True when the sqlite-vec native extension loaded successfully. When false,
     /// all vector operations fall back to the brute-force scan.</summary>
-    private bool _vecAvailable;
+    private readonly bool _vecAvailable;
 
     /// <summary>M3: cached vec0 table metadata per collection, invalidated on delete/dimension
     /// change, so chunk inserts/deletes do not re-query collections + sqlite_master every time.</summary>
@@ -373,7 +373,7 @@ internal sealed class CodeVectorDatabase : IDisposable
                 }
             }
             if (!hasFilter || results.Count >= topK || rawCount < k || k >= maxK)
-                return results.Count > topK ? results.Take(topK).ToList() : results;
+                return results.Count > topK ? [.. results.Take(topK)] : results;
             k = Math.Min(k * 4, maxK);
         }
     }

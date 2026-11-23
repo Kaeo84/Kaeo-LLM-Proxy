@@ -190,8 +190,7 @@ namespace Kaeo.LlmProxy.VSExtension.Core
                 ? IndentBefore(lastElement, "    ")
                 : IndentBefore(pg, "  ") + "  ";
 
-            var trailingText = pg.LastNode as XText;
-            if (lastElement != null && trailingText != null)
+            if (lastElement != null && pg.LastNode is XText trailingText)
             {
                 // Insert before the whitespace that precedes </PropertyGroup>.
                 trailingText.AddBeforeSelf(new XText(newline + childIndent), newElem);
@@ -216,8 +215,7 @@ namespace Kaeo.LlmProxy.VSExtension.Core
         {
             if (node == null)
                 return fallback;
-            var prev = node.PreviousNode as XText;
-            if (prev == null)
+            if (node.PreviousNode is not XText prev)
                 return fallback;
             var value = prev.Value;
             var nl = value.LastIndexOf('\n');

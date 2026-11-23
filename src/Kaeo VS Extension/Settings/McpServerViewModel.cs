@@ -193,7 +193,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         public bool IsStdio => !IsHttp && !IsBuiltin;
 
         /// <summary>Choices for the transport dropdown.</summary>
-        public IReadOnlyList<string> TransportOptions { get; } = new[] { "http", "stdio" };
+        public IReadOnlyList<string> TransportOptions { get; } = ["http", "stdio"];
 
         /// <summary>When tools were last pulled successfully, for the status line.</summary>
         public DateTime? LastSyncUtc
@@ -203,7 +203,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         }
 
         /// <summary>Tools reported by the server; the enable flags decide what the model may call.</summary>
-        public ObservableCollection<McpToolViewModel> Tools { get; } = new();
+        public ObservableCollection<McpToolViewModel> Tools { get; } = [];
 
         /// <summary>One-line status shown under the tool list.</summary>
         public string ToolSummary
@@ -239,7 +239,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     previous[t.Name!] = t;
 
             Tools.Clear();
-            foreach (var tool in tools ?? Enumerable.Empty<McpTool>())
+            foreach (var tool in tools ?? [])
             {
                 if (string.IsNullOrWhiteSpace(tool.Name))
                     continue;
@@ -250,7 +250,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     Description = tool.Description ?? string.Empty,
                     Schema = tool.Schema,
                     // A tool that was explicitly turned off stays off across a refresh; new tools default to on.
-                    Enabled = previous.TryGetValue(tool.Name!, out var old) ? old.Enabled : true,
+                    Enabled = !previous.TryGetValue(tool.Name!, out var old) || old.Enabled,
                 });
             }
         }
@@ -259,7 +259,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         internal static string[] SplitArguments(string? text)
         {
             if (string.IsNullOrWhiteSpace(text))
-                return Array.Empty<string>();
+                return [];
 
             var tokens = new List<string>();
             var current = new System.Text.StringBuilder();
@@ -285,12 +285,12 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (current.Length > 0)
                 tokens.Add(current.ToString());
 
-            return tokens.ToArray();
+            return [.. tokens];
         }
 
         /// <summary>Re-renders an argv array for the arguments box, quoting tokens that contain spaces.</summary>
         internal static string JoinArguments(IEnumerable<string>? args)
-            => string.Join(" ", (args ?? Array.Empty<string>()).Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+            => string.Join(" ", (args ?? []).Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
 
         public event PropertyChangedEventHandler? PropertyChanged;
 

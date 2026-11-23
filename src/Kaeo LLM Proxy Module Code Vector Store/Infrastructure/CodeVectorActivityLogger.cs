@@ -9,7 +9,7 @@ internal sealed class CodeVectorActivityLogger
     private readonly IMcpActivityLog _activityLog;
     private readonly Func<CodeVectorMcpLogLevel> _getLogLevel;
     private readonly object _bufferLock = new();
-    private readonly List<LogEntry> _buffer = new();
+    private readonly List<LogEntry> _buffer = [];
     private long _totalLogged;
     private long _errorCount;
 
@@ -52,7 +52,7 @@ internal sealed class CodeVectorActivityLogger
     public IReadOnlyList<LogEntry> GetRecentEntries()
     {
         lock (_bufferLock)
-            return _buffer.ToList();
+            return [.. _buffer];
     }
 
     public void ClearBuffer()

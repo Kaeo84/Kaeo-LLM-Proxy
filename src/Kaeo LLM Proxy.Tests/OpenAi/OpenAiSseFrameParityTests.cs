@@ -49,7 +49,7 @@ public class OpenAiSseFrameParityTests
 
     private static JsonObject Delta(string? content = null, string? reasoning = null)
     {
-        JsonObject delta = new();
+        JsonObject delta = [];
         if (content is not null)
             delta["content"] = content;
         if (reasoning is not null)
@@ -63,7 +63,7 @@ public class OpenAiSseFrameParityTests
 
     private static JsonObject NativeCall(int index, string? name, string? arguments, string? id = null)
     {
-        JsonObject function = new();
+        JsonObject function = [];
         if (name is not null)
             function["name"] = name;
         if (arguments is not null)

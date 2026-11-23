@@ -54,7 +54,7 @@ internal sealed class IndexingEngine
     /// <summary>Why the engine last stopped (e.g. "Stopped", "Worker faulted: ..."), or null while running.</summary>
     public string? StopReason => _stopReason;
 
-    public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => _pendingJobs.Keys.ToArray();
+    public IReadOnlyList<QueueItemInfo> GetQueueSnapshot() => [.. _pendingJobs.Keys];
 
     /// <summary>
     /// Starts (or restarts) the worker pool. Safe to call when already running (no-op) and after

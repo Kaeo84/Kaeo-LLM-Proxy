@@ -25,7 +25,7 @@ internal sealed class SystemLogSink : ILogEventSink, IDisposable
     public const int Capacity = 500;
 
     private readonly object _lock = new();
-    private readonly List<SystemLogEntry> _entries = new();
+    private readonly List<SystemLogEntry> _entries = [];
     private bool _disposed;
 
     public void Emit(LogEvent logEvent)
@@ -54,7 +54,7 @@ internal sealed class SystemLogSink : ILogEventSink, IDisposable
     {
         lock (_lock)
         {
-            return _entries.ToList();
+            return [.. _entries];
         }
     }
 

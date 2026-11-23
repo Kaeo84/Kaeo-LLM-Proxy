@@ -340,9 +340,7 @@ internal sealed class SshConnectionManager : IDisposable
             });
         }
 
-        return snapshot
-            .OrderBy(info => info.Key, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return [.. snapshot.OrderBy(info => info.Key, StringComparer.OrdinalIgnoreCase)];
     }
 
     public void Dispose()

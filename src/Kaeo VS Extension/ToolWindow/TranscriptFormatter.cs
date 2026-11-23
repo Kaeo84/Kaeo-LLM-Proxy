@@ -30,7 +30,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
         /// <summary>Renders the given lines in the requested format for file export.</summary>
         public static string Format(IEnumerable<ChatLine> lines, TranscriptFormat format)
         {
-            var conversation = (lines ?? Enumerable.Empty<ChatLine>()).Where(IsConversation).ToList();
+            var conversation = (lines ?? []).Where(IsConversation).ToList();
             if (conversation.Count == 0)
                 return "No messages to export.";
 
@@ -49,7 +49,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow
         public static string ToClipboardText(IEnumerable<ChatLine> lines)
         {
             var sb = new StringBuilder();
-            foreach (var line in (lines ?? Enumerable.Empty<ChatLine>()).Where(IsConversation))
+            foreach (var line in (lines ?? []).Where(IsConversation))
             {
                 if (string.IsNullOrEmpty(line.Text)) continue;
                 if (sb.Length > 0) sb.AppendLine().AppendLine();

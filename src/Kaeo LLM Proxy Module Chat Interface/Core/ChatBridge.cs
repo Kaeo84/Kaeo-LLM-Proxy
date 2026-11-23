@@ -386,7 +386,7 @@ internal sealed class ChatBridge
         List<ChatIncomingMessage> snapshot;
         lock (state.Sync)
         {
-            snapshot = state.Buffer.Where(m => m.TimestampUtc >= cutoff).TakeLast(count).ToList();
+            snapshot = [.. state.Buffer.Where(m => m.TimestampUtc >= cutoff).TakeLast(count)];
         }
 
         if (snapshot.Count == 0)

@@ -41,8 +41,8 @@ internal static class BuiltInVsTools
     /// </summary>
     public static IReadOnlyList<McpTool> GetToolDefinitions()
     {
-        return new List<McpTool>
-        {
+        return
+        [
             new()
             {
                 Name = "vs_file_search",
@@ -1032,7 +1032,7 @@ internal static class BuiltInVsTools
                     ["required"] = new JsonArray { "filePath", "edits" }
                 }
             }
-        };
+        ];
     }
 
     /// <summary>
@@ -1305,17 +1305,13 @@ internal static class BuiltInVsTools
             return "No solution is open.";
 
         // navigationType: 1 = Go To Definition, 2 = Find All References, 3 = Go To Implementation
-        switch (navigationType)
+        return navigationType switch
         {
-            case 1:
-                return await FindSymbolDefinitionAsync(dte, symbolName, filePath, ct);
-            case 2:
-                return await FindSymbolReferencesAsync(dte, symbolName, filePath, ct);
-            case 3:
-                return await FindSymbolImplementationsAsync(dte, symbolName, filePath, ct);
-            default:
-                return $"Unknown navigation type: {navigationType}. Use 1=Go To Definition, 2=Find All References, 3=Go To Implementation.";
-        }
+            1 => await FindSymbolDefinitionAsync(dte, symbolName, filePath, ct),
+            2 => await FindSymbolReferencesAsync(dte, symbolName, filePath, ct),
+            3 => await FindSymbolImplementationsAsync(dte, symbolName, filePath, ct),
+            _ => $"Unknown navigation type: {navigationType}. Use 1=Go To Definition, 2=Find All References, 3=Go To Implementation.",
+        };
     }
 
     /// <summary>Uses DTE's Find to iterate all references, collecting file/line/column from TextSelection.</summary>
@@ -1381,8 +1377,7 @@ internal static class BuiltInVsTools
                     break;
 
                 var activeDoc = dte.ActiveDocument;
-                var sel = activeDoc?.Selection as TextSelection;
-                if (sel is null)
+                if (activeDoc?.Selection is not TextSelection sel)
                     break;
 
                 var f = activeDoc?.FullName ?? "(unknown)";
@@ -1595,7 +1590,7 @@ internal static class BuiltInVsTools
             {
                 if (config.Name == solutionBuild.ActiveConfiguration?.Name)
                 {
-                    savedContexts = new List<(SolutionContext, bool)>();
+                    savedContexts = [];
                     foreach (SolutionContext context in config.SolutionContexts)
                     {
                         savedContexts.Add((context, context.ShouldBuild));
@@ -1742,7 +1737,7 @@ internal static class BuiltInVsTools
             }
 
             var finalText = lastText ?? "No test output captured.";
-            var lines = finalText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var lines = finalText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
             var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 10)));
 
             var summaryLine = lines.LastOrDefault(l =>
@@ -1810,7 +1805,7 @@ internal static class BuiltInVsTools
 
         if (filePath != null)
         {
-            items = items.Where(e => e.FileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true).ToList();
+            items = [.. items.Where(e => e.FileName?.Equals(filePath, StringComparison.OrdinalIgnoreCase) == true)];
         }
 
         if (severity != null)
@@ -1822,7 +1817,7 @@ internal static class BuiltInVsTools
                 "info" => vsBuildErrorLevel.vsBuildErrorLevelLow,
                 _ => throw new ArgumentException($"Unknown severity: {severity}")
             };
-            items = items.Where(e => e.ErrorLevel == severityLevel).ToList();
+            items = [.. items.Where(e => e.ErrorLevel == severityLevel)];
         }
 
         if (items.Count == 0)
@@ -2087,7 +2082,7 @@ internal static class BuiltInVsTools
             var lines = fullText.Split('\n');
             if (lines.Length > tailLines)
             {
-                lines = lines.Skip(lines.Length - tailLines).ToArray();
+                lines = [.. lines.Skip(lines.Length - tailLines)];
             }
             return string.Join("\n", lines);
         }
@@ -2097,7 +2092,7 @@ internal static class BuiltInVsTools
 
     /// <summary>Shared HttpClient for web fetches: one instance avoids socket exhaustion
     /// from per-call clients. The timeout bounds each fetch even without caller cancellation.</summary>
-    private static readonly System.Net.Http.HttpClient s_webClient = new System.Net.Http.HttpClient
+    private static readonly System.Net.Http.HttpClient s_webClient = new()
     {
         Timeout = TimeSpan.FromSeconds(30),
     };
@@ -2440,7 +2435,7 @@ internal static class BuiltInVsTools
         var settings = await store.LoadAsync();
         var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
             ? InstructionFileLoader.DefaultEntries()
-            : settings.Instructions.ToList();
+            : [.. settings.Instructions];
 
         var arr = new JsonArray();
         foreach (var e in entries.OrderBy(e => e.Order))
@@ -2468,7 +2463,7 @@ internal static class BuiltInVsTools
         var settings = await store.LoadAsync();
         var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
             ? InstructionFileLoader.DefaultEntries()
-            : settings.Instructions.ToList();
+            : [.. settings.Instructions];
 
         var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
         if (entry is null)
@@ -2506,7 +2501,7 @@ internal static class BuiltInVsTools
             {
                 var entries = (settings.Instructions is null || settings.Instructions.Length == 0)
                     ? InstructionFileLoader.DefaultEntries()
-                    : settings.Instructions.ToList();
+                    : [.. settings.Instructions];
 
                 var entry = entries.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase));
                 if (entry is null)
@@ -2538,7 +2533,7 @@ internal static class BuiltInVsTools
                     entry.Content = content;
                 }
 
-                settings.Instructions = entries.ToArray();
+                settings.Instructions = [.. entries];
                 return Task.CompletedTask;
             });
         }

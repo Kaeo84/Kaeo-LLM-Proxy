@@ -12,7 +12,7 @@ internal sealed class RemoteEmbeddingBackend : IEmbeddingBackend
     private readonly string _url;
     private readonly string _model;
     private int _dimension;
-    private string _modelName;
+    private readonly string _modelName;
 
     public RemoteEmbeddingBackend(CodeVectorSettings settings, ISecretProvider secrets, HostInfo host)
     {

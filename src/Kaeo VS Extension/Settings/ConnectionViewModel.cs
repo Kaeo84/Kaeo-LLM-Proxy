@@ -27,7 +27,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
         public ConnectionViewModel()
         {
-            Models = new ObservableCollection<ModelViewModel>();
+            Models = [];
         }
 
         public string Name

@@ -23,7 +23,7 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
 
     // Tool descriptors cached per target type. A ConditionalWeakTable keeps the cache from
     // rooting module types (and their collectible load contexts) after a module is unloaded.
-    private static readonly ConditionalWeakTable<Type, MethodInfo[]> _toolMethodCache = new();
+    private static readonly ConditionalWeakTable<Type, MethodInfo[]> _toolMethodCache = [];
 
     /// <summary>
     /// Builds options for the session described by <paramref name="session"/>, handing the
@@ -55,9 +55,7 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
             try
             {
                 methods = _toolMethodCache.GetValue(target.GetType(), static type =>
-                    type.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                        .Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)
-                        .ToArray());
+                    [.. type.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.GetCustomAttribute<McpServerToolAttribute>() is not null)]);
             }
             catch (Exception ex)
             {
@@ -83,7 +81,7 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                     }
 
                     McpServerPrimitiveCollection<McpServerTool> toolCollection =
-                        options.ToolCollection ??= new McpServerPrimitiveCollection<McpServerTool>();
+                        options.ToolCollection ??= [];
                     toolCollection.Add(McpServerTool.Create(method, target));
                 }
                 catch (Exception ex)

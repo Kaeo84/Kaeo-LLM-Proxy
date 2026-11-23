@@ -33,8 +33,8 @@ internal static class WindowCaptionTheme
 
         void Apply() => SetDarkMode(window, ThemeColors.IsDarkTheme);
 
-        EventHandler onSourceInitialized = (_, _) => Apply();
-        EventHandler onThemeChanged = (_, _) => Apply();
+        void onSourceInitialized(object _1, EventArgs _2) => Apply();
+        void onThemeChanged(object _1, EventArgs _2) => Apply();
 
         window.SourceInitialized += onSourceInitialized;
         ThemeColors.ThemeChanged += onThemeChanged;

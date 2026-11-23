@@ -22,10 +22,10 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     {
         private readonly ExtensionSettingsStore _store;
         private readonly McpServerManager _mcpManager;
-        private readonly ObservableCollection<ConnectionViewModel> _connections = new();
-        private readonly ObservableCollection<AgentViewModel> _agents = new();
-        private readonly ObservableCollection<McpServerViewModel> _mcpServers = new();
-        private readonly ObservableCollection<InstructionEntry> _instructions = new();
+        private readonly ObservableCollection<ConnectionViewModel> _connections = [];
+        private readonly ObservableCollection<AgentViewModel> _agents = [];
+        private readonly ObservableCollection<McpServerViewModel> _mcpServers = [];
+        private readonly ObservableCollection<InstructionEntry> _instructions = [];
         private AgentViewModel? _editingAgent;
         private bool _loadingEditor;
         private ExtensionSettings _settings = new();
@@ -91,7 +91,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             {
                 _settings = await _store.LoadAsync();
 
-                foreach (var c in _settings.Connections ?? Array.Empty<Connection>())
+                foreach (var c in _settings.Connections ?? [])
                 {
                     var vm = new ConnectionViewModel
                     {
@@ -102,7 +102,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         Upstream = string.IsNullOrWhiteSpace(c.Upstream) ? "Ollama" : c.Upstream!,
                         IsExpanded = true,
                     };
-                    foreach (var m in c.Models ?? Array.Empty<ModelEntry>())
+                    foreach (var m in c.Models ?? [])
                     {
                         vm.Models.Add(new ModelViewModel
                         {
@@ -119,7 +119,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                     _connections.Add(vm);
                 }
 
-                var savedAgents = _settings.Agents ?? Array.Empty<Agent>();
+                var savedAgents = _settings.Agents ?? [];
                 foreach (var b in BuiltinAgents.All)
                 {
                     var o = savedAgents.FirstOrDefault(a => a.Name == b.Name);
@@ -153,12 +153,11 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 if (!string.IsNullOrEmpty(defaultAgentName))
                 {
                     var def = _agents.FirstOrDefault(a => a.Name == defaultAgentName);
-                    if (def is not null)
-                        def.IsDefault = true;
+                    def?.IsDefault = true;
                 }
 
                 McpServer? persistedBuiltin = null;
-                foreach (var m in _settings.McpServers ?? Array.Empty<McpServer>())
+                foreach (var m in _settings.McpServers ?? [])
                 {
                     if (string.Equals(m.Transport, McpServerViewModel.BuiltinTransport, StringComparison.OrdinalIgnoreCase))
                     {
@@ -177,7 +176,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                         Enabled = m.Enabled,
                         LastSyncUtc = m.LastSyncUtc,
                     };
-                    foreach (var t in m.Tools ?? Array.Empty<McpTool>())
+                    foreach (var t in m.Tools ?? [])
                     {
                         vm.Tools.Add(new McpToolViewModel
                         {
@@ -198,7 +197,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
 
                 var instructionEntries = _settings.Instructions;
                 if (instructionEntries is null || instructionEntries.Length == 0)
-                    instructionEntries = InstructionFileLoader.DefaultEntries().ToArray();
+                    instructionEntries = [.. InstructionFileLoader.DefaultEntries()];
                 foreach (var i in instructionEntries)
                 {
                     // Migrate legacy path-only entries (no Kind recorded) to file kind.
@@ -455,7 +454,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         private void EnsureBuiltinVm(McpServer? persisted)
         {
             var enabledByName = new System.Collections.Generic.Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-            foreach (var t in persisted?.Tools ?? Array.Empty<McpTool>())
+            foreach (var t in persisted?.Tools ?? [])
                 if (!string.IsNullOrWhiteSpace(t.Name))
                     enabledByName[t.Name!] = t.Enabled;
 
@@ -680,13 +679,13 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 LastSyncUtc = s.LastSyncUtc,
                 // DeepClone: a JsonNode cannot be parented by both the live view model and the
                 // settings object being serialized.
-                Tools = s.Tools.Select(t => new McpTool
+                Tools = [.. s.Tools.Select(t => new McpTool
                 {
                     Name = t.Name,
                     Description = t.Description,
                     Schema = t.Schema?.DeepClone(),
                     Enabled = t.Enabled,
-                }).ToArray(),
+                })],
             };
         }
 
@@ -712,14 +711,13 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             if (!_loaded)
                 return;
 
-            _settings.Connections = _connections.Select(MapToConnection).ToArray();
-            _settings.McpServers = _mcpServers.Select(MapToMcpServer).ToArray();
-            _settings.Instructions = _instructions.Select(MapToInstructionEntry).ToArray();
+            _settings.Connections = [.. _connections.Select(MapToConnection)];
+            _settings.McpServers = [.. _mcpServers.Select(MapToMcpServer)];
+            _settings.Instructions = [.. _instructions.Select(MapToInstructionEntry)];
             // Keep the always-allowed list in sync on every save path: Remove/Clear only
             // schedule a debounced save, so without this their changes would never persist.
             _settings.Defaults ??= new Defaults();
-            _settings.Defaults.AlwaysAllowedTools = AlwaysAllowedList.Items.Cast<string>()
-                .Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
+            _settings.Defaults.AlwaysAllowedTools = [.. AlwaysAllowedList.Items.Cast<string>().Where(s => !string.IsNullOrWhiteSpace(s))];
             PersistSave();
         }
 
@@ -966,8 +964,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             d.AgentMessageForeground = (AgentFgBox.SelectedItem as ColorOption)?.Hex;
             d.ChatFontFamily = (ChatFontBox.SelectedItem as string) == FontDefaultLabel ? null : ChatFontBox.SelectedItem as string;
             d.ChatFontSize = ChatSizeBox.SelectedItem is double fs ? fs : (double?)null;
-            d.AlwaysAllowedTools = AlwaysAllowedList.Items.Cast<string>()
-                .Where(s => !string.IsNullOrWhiteSpace(s)).ToArray();
+            d.AlwaysAllowedTools = [.. AlwaysAllowedList.Items.Cast<string>().Where(s => !string.IsNullOrWhiteSpace(s))];
 
             _saveTimer?.Stop();
             SaveNow();
@@ -996,10 +993,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 return;
 
             // Built-ins are only persisted as an override when they differ from their defaults.
-            _settings.Agents = _agents
+            _settings.Agents = [.. _agents
                 .Where(a => !a.IsBuiltin || a.Description != a.DefaultDescription || a.SystemPrompt != a.DefaultSystemPrompt)
-                .Select(MapToAgent)
-                .ToArray();
+                .Select(MapToAgent)];
             PersistSave();
         }
 
@@ -1119,19 +1115,18 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
                 ApiKey = c.ApiKey,
                 Enabled = c.Enabled,
                 Upstream = c.Upstream,
-                Models = c.Models.Select(m => new ModelEntry
+                Models = [.. c.Models.Select(m => new ModelEntry
                 {
                     Name = m.Name,
-                    Capabilities = m.Capabilities
+                    Capabilities = [.. m.Capabilities
                         .Split(',')
                         .Select(s => s.Trim())
-                        .Where(s => s.Length > 0)
-                        .ToArray(),
+                        .Where(s => s.Length > 0)],
                     ContextSize = m.ContextSize,
                     Pinned = m.IsPinned,
                     Enabled = m.Enabled,
                     ReasoningSource = string.Equals(m.ReasoningSource, "Auto", StringComparison.Ordinal) ? null : m.ReasoningSource,
-                }).ToArray(),
+                })],
             };
         }
 

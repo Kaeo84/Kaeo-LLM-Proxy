@@ -22,7 +22,7 @@ internal static class VsEditTools
             ExpectedFirstLine = args?["expectedFirstLine"]?.GetValue<string>(),
             ExpectedLastLine = args?["expectedLastLine"]?.GetValue<string>(),
         };
-        return ApplyBatchAsync(filePath, new[] { edit }, ct);
+        return ApplyBatchAsync(filePath, [edit], ct);
     }
 
     public static Task<string> ApplyEditsAsync(JsonNode? args, CancellationToken ct)

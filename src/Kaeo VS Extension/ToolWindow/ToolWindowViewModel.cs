@@ -20,7 +20,7 @@ internal sealed class ChatLine : INotifyPropertyChanged
     private string _reasoning = string.Empty;
     private bool _isReasoningVisible;
     private bool _isAnswered;
-    private readonly System.Collections.ObjectModel.ObservableCollection<string> _processing = new();
+    private readonly System.Collections.ObjectModel.ObservableCollection<string> _processing = [];
 
     public ChatLine()
     {
@@ -191,7 +191,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     private readonly ChatEngine _engine;
     private readonly ExtensionSettingsStore _settings;
     private readonly McpServerManager _mcp;
-    private readonly List<ChatMessage> _history = new();
+    private readonly List<ChatMessage> _history = [];
     private CancellationTokenSource? _cts;
     private bool _isBusy;
     private readonly Queue<string> _redirects = new();
@@ -203,7 +203,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         private int _contextTokensUsed;
 
         /// <summary>Tool names permanently always-allowed (from settings).</summary>
-        private readonly HashSet<string> _alwaysAllowed = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _alwaysAllowed = [with(StringComparer.Ordinal)];
 
         /// <summary>Estimated tokens used by system prompt/instructions only.</summary>
         private int _contextTokensSystem;
@@ -223,7 +223,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// </summary>
     public sealed record ModelSelection(string Name, string ConnectionName, string BaseUrl, string? ApiKey, bool SupportsTools, UpstreamKind Kind, bool IsDefault, string? ReasoningSource, long ContextSize);
 
-    private readonly List<ModelSelection> _modelSelections = new();
+    private readonly List<ModelSelection> _modelSelections = [];
     private readonly SemaphoreSlim _loadGate = new(1, 1);
 
     /// <summary>
@@ -231,7 +231,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
     /// instead of newsing an HttpClient per turn - per-turn churn is a socket-exhaustion
     /// (TIME_WAIT) risk on net48.
     /// </summary>
-    private readonly Dictionary<string, OllamaChatClient> _clients = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, OllamaChatClient> _clients = [with(StringComparer.Ordinal)];
 
     private string _currentAgent = "Agent";
     private string _currentMode = "Interactive";
@@ -280,16 +280,16 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         return _mcp.GetUnhealthyServers();
     }
 
-    public ObservableCollection<ChatLine> Lines { get; } = new();
-    public ObservableCollection<AgentConfig> Agents { get; } = new();
-    public ObservableCollection<string> Modes { get; } = new();
-    public ObservableCollection<string> Models { get; } = new();
+    public ObservableCollection<ChatLine> Lines { get; } = [];
+    public ObservableCollection<AgentConfig> Agents { get; } = [];
+    public ObservableCollection<string> Modes { get; } = [];
+    public ObservableCollection<string> Models { get; } = [];
 
     // M6: the transcript ListView keeps virtualization off for smooth pixel scrolling, so every
     // live line holds a realized visual tree. Bound the live view; trimmed lines move to a plain
     // archive (data only, no visuals) so Copy All / Export still cover the whole conversation.
     private const int MaxLiveLines = 500;
-    private readonly List<ChatLine> _archivedLines = new();
+    private readonly List<ChatLine> _archivedLines = [];
     private ChatLine? _trimNotice;
 
     /// <summary>The whole conversation in order: archived lines followed by the live ones.</summary>
@@ -619,7 +619,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         await _mcp.InitializeAsync();
 
         // Agents: built-ins first (with any saved override applied), then user-defined ones.
-        var savedAgents = s.Agents ?? Array.Empty<Agent>();
+        var savedAgents = s.Agents ?? [];
         var overrides = new Dictionary<string, Agent>(StringComparer.Ordinal);
         foreach (var a in savedAgents)
             if (!string.IsNullOrWhiteSpace(a.Name))
@@ -677,7 +677,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         // bound collections are only mutated in one synchronous pass at the end. Connections
         // are fetched in parallel with a per-connection timeout so one dead endpoint cannot
         // stall the whole load (and the tool window) behind a long network timeout.
-        var connections = (s.Connections ?? Array.Empty<Connection>())
+        var connections = (s.Connections ?? [])
             .Where(c => c.Enabled && !string.IsNullOrWhiteSpace(c.BaseUrl))
             .ToList();
         var fetchResults = await Task.WhenAll(connections.Select(async conn =>
@@ -706,7 +706,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             if (fetched is null) continue;
 
             var pinned = new HashSet<string>(
-                (conn.Models ?? Array.Empty<ModelEntry>()).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
+                (conn.Models ?? []).Where(me => me.Pinned && me.Name is not null).Select(me => me.Name!),
                 StringComparer.Ordinal);
 
             foreach (var m in fetched)
@@ -715,7 +715,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
                 // Honor the per-model enable flag: a model the user switched off in
                 // Settings → Models is excluded even though the connection still serves it.
-                var entry = (conn.Models ?? Array.Empty<ModelEntry>())
+                var entry = (conn.Models ?? [])
                     .FirstOrDefault(me => string.Equals(me.Name, m.Name, StringComparison.Ordinal));
                 if (entry is { Enabled: false })
                     continue;
@@ -1016,7 +1016,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         lock (_redirects)
         {
             if (_redirects.Count == 0)
-                return Array.Empty<string>();
+                return [];
 
             var all = _redirects.ToArray();
             _redirects.Clear();
@@ -1232,7 +1232,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
             var compactionHistory = new List<ChatMessage>(_history)
             {
-                new ChatMessage(ChatRole.User, compactionPrompt)
+                new(ChatRole.User, compactionPrompt)
             };
 
             // Compaction must never execute tools: run a tool-less agent AND deny any
@@ -1245,7 +1245,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 DisplayName = "Compaction",
                 Description = "Summarizes the conversation to reduce context usage.",
                 SystemPrompt = "You summarize conversations concisely. You have no tools; respond with the summary text only.",
-                Tools = Array.Empty<string>(),
+                Tools = [],
                 IsBuiltin = true,
             };
 

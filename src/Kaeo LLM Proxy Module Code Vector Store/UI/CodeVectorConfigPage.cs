@@ -61,7 +61,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     private System.Windows.Forms.Timer? _saveDebounceTimer;
     private bool _suppressAutoSave;
     private Label _saveStatusLabel = null!;
-    private Dictionary<string, string> _lastSavedSettings = new();
+    private readonly Dictionary<string, string> _lastSavedSettings = [];
     private FlowLayoutPanel _repoButtonPanel = null!;
     private readonly CancellationTokenSource _repoCts = new();
     private HttpClient? _probeClient;
@@ -214,7 +214,7 @@ internal sealed class CodeVectorConfigPage : TabPage
 
         layout.Controls.Add(new Label { Text = "Credential:", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 6, 3) }, 0, row);
         _credentialCombo = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown, Margin = new Padding(3) };
-        try { _credentialCombo.Items.AddRange(_module.Secrets.ListCredentialNames().ToArray()); }
+        try { _credentialCombo.Items.AddRange([.. _module.Secrets.ListCredentialNames()]); }
         catch (Exception ex) when (ex is IOException or SqliteException or UnauthorizedAccessException)
         {
             // M15: shared-DB contention must degrade gracefully but never silently (project rule).
@@ -470,7 +470,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                        _logSummaryLabel.Text = $"Logged: {activity.TotalLogged} | Errors: {activity.ErrorCount}";
 
                        // M13: rebuild queue rows only when the snapshot actually changed.
-                       var snapshot = engine?.GetQueueSnapshot() ?? Array.Empty<IndexingEngine.QueueItemInfo>();
+                       var snapshot = engine?.GetQueueSnapshot() ?? [];
                        string signature = string.Join('\n', snapshot.Select(i => $"{i.Operation}|{i.Collection}|{i.Path}|{i.Source}"));
                        if (signature != _lastQueueSignature)
                        {
@@ -857,7 +857,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                     try
                     {
                         _remoteModelCombo.Items.Clear();
-                        _remoteModelCombo.Items.AddRange(modelIds.ToArray());
+                        _remoteModelCombo.Items.AddRange([.. modelIds]);
 
                         if (modelIds.Contains(currentSelection))
                             _remoteModelCombo.Text = currentSelection;
@@ -1022,7 +1022,7 @@ internal sealed class CodeVectorConfigPage : TabPage
                  }
                  catch
                  {
-                     _fetchStatusLabel.Text = $"OK — {body.Substring(0, Math.Min(100, body.Length))}";
+                     _fetchStatusLabel.Text = $"OK — {body[..Math.Min(100, body.Length)]}";
                  }
              }
              else

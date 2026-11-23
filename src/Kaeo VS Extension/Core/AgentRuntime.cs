@@ -146,7 +146,7 @@ internal sealed class AgentRuntime
         // mode's permission gate and raises the tool events the UI renders.
         List<AITool> tools = await BuildToolsAsync(agent);
 
-        string? finalText = null;
+        string? finalText;
 
         // AutoPilot continuations run as an outer loop rather than recursion so the budget
         // is tracked across the WHOLE run (recursing re-read the defaults and reset it,
@@ -377,7 +377,7 @@ internal sealed class AgentRuntime
             return false;
 
         var lastSentence = trimmed
-            .Split(new[] { '.', '!', '?', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Split(['.', '!', '?', '\n'], StringSplitOptions.RemoveEmptyEntries)
             .LastOrDefault()
             ?.Trim()
             .ToLowerInvariant();
@@ -401,7 +401,7 @@ internal sealed class AgentRuntime
             var settings = await _settings.LoadAsync().ConfigureAwait(false);
             var entries = settings.Instructions;
             if (entries is null || entries.Length == 0)
-                entries = InstructionFileLoader.DefaultEntries().ToArray();
+                entries = [.. InstructionFileLoader.DefaultEntries()];
             // Default files are seeded at package/settings init, not here: recreating them
             // per turn resurrected files the user deliberately deleted.
             var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);

@@ -40,8 +40,8 @@ public class PassthroughFailureReportingTests
             Method = "POST",
             OllamaPath = "/v1/chat/completions",
             Model = "QC Deepseek 4.1 Flash",
+            Exception = new InvalidOperationException("upstream mid-stream failure")
         };
-        log.Exception = new InvalidOperationException("upstream mid-stream failure");
 
         using AppDatabase database = OpenDatabase(path);
         database.Insert(log, log.Exception);

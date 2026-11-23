@@ -93,7 +93,7 @@ internal sealed class ThinkTagExtractor
                 if (hold > 0)
                     _pending = work[emitEnd..];
 
-                pos = work.Length;
+                _ = work.Length;
                 break;
             }
 

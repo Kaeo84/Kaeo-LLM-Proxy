@@ -250,7 +250,7 @@ internal sealed class ReasoningEffortStep : IRequestPayloadStep
 
         JsonObject wrapper = key is not null && context.Payload[key] is JsonObject existing
             ? existing
-            : new JsonObject();
+            : [];
 
         wrapper["enable_thinking"] = true;
         wrapper["reasoning_effort"] = effort;

@@ -345,8 +345,7 @@ partial class OllamaProxyHandler
             // falling back to Content?.Headers which is always null at this point.
             if (!upstreamReq.Headers.TryAddWithoutValidation(name, value))
             {
-                if (deferredContentHeaders is null)
-                    deferredContentHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                deferredContentHeaders ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 deferredContentHeaders[name] = value;
             }
         }
@@ -1017,8 +1016,7 @@ partial class OllamaProxyHandler
     {
         try
         {
-            JsonObject? root = JsonNode.Parse(json) as JsonObject;
-            if (root is null || root["choices"] is not JsonArray choices)
+            if (JsonNode.Parse(json) is not JsonObject root || root["choices"] is not JsonArray choices)
                 return json;
 
             bool strip = thinkingMode == ThinkingMode.StripFromOutput;
@@ -2054,7 +2052,7 @@ partial class OllamaProxyHandler
         /// </summary>
         public IEnumerable<string> Flush()
         {
-            JsonObject template = _frameTemplate ?? new JsonObject();
+            JsonObject template = _frameTemplate ?? [];
             List<string> frames = [];
 
             foreach ((int index, ChoiceState cs) in _state)

@@ -15,7 +15,7 @@ namespace Kaeo.LlmProxy.VSExtension.ToolWindow;
 public partial class ToolWindowControl : UserControl
 {
     private readonly ExtensionSettingsStore _settings = new();
-    private ToolWindowViewModel? _vm;
+    private readonly ToolWindowViewModel? _vm;
     // L4: keep the manager and the package-disposal registration so they can be released on Unloaded.
     private readonly McpServerManager _mcp;
     private System.Threading.CancellationTokenRegistration _disposalRegistration;
@@ -114,7 +114,7 @@ public partial class ToolWindowControl : UserControl
         // Must marshal to UI thread
         Dispatcher.InvokeAsync(() =>
         {
-            var unhealthy = _vm?.GetUnhealthyMcpServers() ?? Array.Empty<McpServer>();
+            var unhealthy = _vm?.GetUnhealthyMcpServers() ?? [];
 
             if (unhealthy.Count > 0)
             {
@@ -212,9 +212,10 @@ public partial class ToolWindowControl : UserControl
         var uiShell = (IVsUIShell)ServiceProvider.GlobalProvider.GetService(typeof(SVsUIShell));
         if (uiShell == null) return;
 
-        var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings);
-
-        wnd.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        var wnd = new Kaeo.LlmProxy.VSExtension.Settings.SettingsWindow(_settings)
+        {
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
         // Parent to Visual Studio's dialog-owner window so modality, centering, and
         // theming behave like a native VS dialog (WindowInteropHelper needs the raw HWND;
         // HwndSource.FromHwnd(...).RootVisual is null for the native VS shell window).
@@ -225,7 +226,7 @@ public partial class ToolWindowControl : UserControl
         // Debounced: rapid-fire ModelChanged events (e.g., agent/MCP/instruction saves also fire
         // it) are coalesced so the dropdowns only rebuild once instead of flickering on each edit.
         var debounceCts = new CancellationTokenSource();
-        Action? onModelsChanged = () =>
+        void onModelsChanged()
         {
             // L6: dispose the superseded CTS instead of leaking one per ModelsChanged event.
             var previous = debounceCts;
@@ -233,7 +234,7 @@ public partial class ToolWindowControl : UserControl
             previous.Cancel();
             previous.Dispose();
             _ = DebouncedReloadAsync(debounceCts.Token);
-        };
+        }
         wnd.ModelsChanged += onModelsChanged;
         try
         {
@@ -357,7 +358,7 @@ public partial class ToolWindowControl : UserControl
         => CopyToClipboard(TranscriptFormatter.ToClipboardText(MessageList.SelectedItems.Cast<ChatLine>()));
 
     private void CopyAll_Click(object sender, RoutedEventArgs e)
-        => CopyToClipboard(TranscriptFormatter.ToClipboardText(_vm?.FullTranscript ?? Enumerable.Empty<ChatLine>()));
+        => CopyToClipboard(TranscriptFormatter.ToClipboardText(_vm?.FullTranscript ?? []));
 
     private static void CopyToClipboard(string text)
     {

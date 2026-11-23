@@ -107,7 +107,7 @@ internal sealed class ModuleHost
         {
             lock (_modulesLock)
             {
-                return _loadedModules.ToArray();
+                return [.. _loadedModules];
             }
         }
     }
@@ -135,7 +135,7 @@ internal sealed class ModuleHost
         LoadedModule[] snapshot;
         lock (_modulesLock)
         {
-            snapshot = _loadedModules.ToArray();
+            snapshot = [.. _loadedModules];
         }
 
         foreach (LoadedModule loaded in snapshot)
@@ -450,7 +450,7 @@ internal sealed class ModuleHost
         LoadedModule[] snapshot;
         lock (_modulesLock)
         {
-            snapshot = _loadedModules.ToArray();
+            snapshot = [.. _loadedModules];
         }
 
         foreach (LoadedModule loaded in snapshot)

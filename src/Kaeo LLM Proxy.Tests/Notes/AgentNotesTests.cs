@@ -7,7 +7,7 @@ namespace Kaeo.LlmProxy.Tests;
 
 public class AgentNotesTests
 {
-    private static readonly DateTime Ts = new DateTime(2026, 3, 4, 15, 30, 0);
+    private static readonly DateTime Ts = new(2026, 3, 4, 15, 30, 0);
 
     [Fact]
     public void FormatEntry_WithTags_IncludesParenthesizedTags()

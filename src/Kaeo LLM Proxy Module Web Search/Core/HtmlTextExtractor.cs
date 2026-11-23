@@ -183,10 +183,9 @@ internal static partial class HtmlTextExtractor
 
     private static string? DecodeNumericEntity(string entity)
     {
-        int codePoint;
 
         if (entity.StartsWith("#x", StringComparison.OrdinalIgnoreCase)
-            && int.TryParse(entity.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out codePoint))
+            && int.TryParse(entity.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out int codePoint))
         {
         }
         else if (entity.StartsWith('#') && int.TryParse(entity.AsSpan(1), out codePoint))

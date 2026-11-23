@@ -87,7 +87,7 @@ public class OpenAiStreamTerminatorTests
 
         terminator.ObserveLine(DeltaFrame);
 
-        Assert.Equal(new[] { DoneFrame }, terminator.BuildTerminalFrames(promptTokens: 5, completionTokens: 5));
+        Assert.Equal([DoneFrame], terminator.BuildTerminalFrames(promptTokens: 5, completionTokens: 5));
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class OpenAiStreamTerminatorTests
         terminator.ObserveLine(UpstreamUsageFrame);
 
         Assert.True(terminator.UsageSeen);
-        Assert.Equal(new[] { DoneFrame }, terminator.BuildTerminalFrames(promptTokens: 3, completionTokens: 4));
+        Assert.Equal([DoneFrame], terminator.BuildTerminalFrames(promptTokens: 3, completionTokens: 4));
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public class OpenAiStreamTerminatorTests
         OpenAiStreamTerminator terminator = new("test-model", includeUsage: false);
 
         Assert.False(terminator.DoneSeen);
-        Assert.Equal(new[] { DoneFrame }, terminator.BuildTerminalFrames(promptTokens: 0, completionTokens: 0));
+        Assert.Equal([DoneFrame], terminator.BuildTerminalFrames(promptTokens: 0, completionTokens: 0));
     }
 
     [Fact]
@@ -148,7 +148,7 @@ public class OpenAiStreamTerminatorTests
         terminator.ObserveLine(string.Empty);
 
         Assert.False(terminator.DoneSeen);
-        Assert.Equal(new[] { DoneFrame }, terminator.BuildTerminalFrames(promptTokens: 0, completionTokens: 0));
+        Assert.Equal([DoneFrame], terminator.BuildTerminalFrames(promptTokens: 0, completionTokens: 0));
     }
 
     [Fact]

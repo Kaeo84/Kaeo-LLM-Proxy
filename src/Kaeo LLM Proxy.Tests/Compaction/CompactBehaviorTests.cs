@@ -171,7 +171,7 @@ public class CompactBehaviorTests
         using HttpClient http = new(stub);
         AutoCompactionService service = new(http);
 
-        string chunkFiller = new string('c', 20_000);
+        string chunkFiller = new('c', 20_000);
         string body = BuildBody(
             ("user", $"first {chunkFiller}"),
             ("assistant", $"answer {chunkFiller}"),
@@ -201,7 +201,7 @@ public class CompactBehaviorTests
         using HttpClient http = new(stub);
         AutoCompactionService service = new(http);
 
-        string chunkFiller = new string('c', 20_000);
+        string chunkFiller = new('c', 20_000);
         string body = BuildBody(
             ("user", $"first {chunkFiller}"),
             ("assistant", $"answer {chunkFiller}"),

@@ -32,7 +32,7 @@ public static class AgentNotes
 {
     public const int DefaultMaxEntries = 10;
 
-    private static readonly Regex EntryRegex = new Regex(
+    private static readonly Regex EntryRegex = new(
         @"^- \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\](?: \(([^)]*)\))?(?: (.*))?$",
         RegexOptions.Compiled);
 

@@ -9,7 +9,7 @@ internal sealed class OnnxEmbeddingBackend : IEmbeddingBackend
     private readonly WordPieceTokenizer? _tokenizer;
     private readonly int _maxSeqLen;
     private int _dimension;
-    private string _modelName = "onnx";
+    private readonly string _modelName = "onnx";
 
     public OnnxEmbeddingBackend(string modelFolder, int maxSeqLen, int maxThreads)
     {
@@ -66,7 +66,7 @@ internal sealed class OnnxEmbeddingBackend : IEmbeddingBackend
     private float[] EmbedSingle(string text)
     {
         var tokenIds = _tokenizer!.Tokenize(text).Select(t => (long)t.Id).ToArray();
-        if (tokenIds.Length > _maxSeqLen - 2) tokenIds = tokenIds.Take(_maxSeqLen - 2).ToArray();
+        if (tokenIds.Length > _maxSeqLen - 2) tokenIds = [.. tokenIds.Take(_maxSeqLen - 2)];
         int seqLen = tokenIds.Length + 2;
         var inputIds = new long[seqLen];
         var attentionMask = new long[seqLen];

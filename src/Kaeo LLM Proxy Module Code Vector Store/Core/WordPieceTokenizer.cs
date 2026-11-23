@@ -6,7 +6,7 @@ namespace Kaeo.LlmProxy.Module.CodeVector;
 internal sealed class WordPieceTokenizer
 {
     private readonly Dictionary<string, int> _vocab;
-    private readonly Dictionary<string, int> _specialTokens = new();
+    private readonly Dictionary<string, int> _specialTokens = [];
 
     private WordPieceTokenizer(Dictionary<string, int> vocab)
     {

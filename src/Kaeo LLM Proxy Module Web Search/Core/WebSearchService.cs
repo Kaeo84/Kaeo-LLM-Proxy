@@ -183,7 +183,7 @@ internal sealed class WebSearchService
                 // returning them, so web_search cannot surface links web_fetch would refuse (L7).
                 List<SearchResult> allowed = [.. results.Where(r => IsResultAllowed(r.Url, rules))];
                 if (allowed.Count > 0)
-                    return allowed.Take(capped).ToList();
+                    return [.. allowed.Take(capped)];
 
                 failures.Add(results.Count > 0
                     ? $"{config.Name}: all results blocked by the domain rules."

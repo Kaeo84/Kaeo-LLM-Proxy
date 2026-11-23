@@ -596,7 +596,7 @@ internal static class AnthropicFormatTranslator
                     _ => "stop",
                 };
                 state.FinishSent = true;
-                chunks.Add(ChunkWithDelta(state, new JsonObject(), finishReason));
+                chunks.Add(ChunkWithDelta(state, [], finishReason));
                 break;
 
             case "message_stop":
@@ -721,8 +721,7 @@ internal static class AnthropicFormatTranslator
                 string? name = GetString(tc["function"]?["name"]);
                 string? arguments = GetString(tc["function"]?["arguments"]);
 
-                int blockIndex;
-                if (id is not null || name is not null || !state.OpenAiToolIndexToBlock.TryGetValue(openAiIndex, out blockIndex))
+                if (id is not null || name is not null || !state.OpenAiToolIndexToBlock.TryGetValue(openAiIndex, out int blockIndex))
                 {
                     CloseOpenBlocks(events, state);
                     blockIndex = state.NextBlockIndex++;
@@ -766,7 +765,7 @@ internal static class AnthropicFormatTranslator
                 ["delta"] = new JsonObject { ["stop_reason"] = stopReason },
                 ["usage"] = new JsonObject { ["output_tokens"] = state.OutputTokens },
             }));
-            events.Add(Frame("message_stop", new JsonObject()));
+            events.Add(Frame("message_stop", []));
             state.Finished = true;
         }
 
@@ -835,7 +834,7 @@ internal static class AnthropicFormatTranslator
                 // Malformed arguments degrade to an empty input object.
             }
         }
-        return new JsonObject();
+        return [];
     }
 
     private static (string MediaType, string Data) ParseDataUrl(string url)
@@ -859,12 +858,11 @@ internal static class AnthropicFormatTranslator
     /// </summary>
     private static JsonNode? BuildOpenAiContentFromBlocks(JsonArray blocks, bool excludeToolResults)
     {
-        List<JsonObject> relevant = blocks
+        List<JsonObject> relevant = [.. blocks
             .OfType<JsonObject>()
-            .Where(b => GetString(b["type"]) is "text" or "image")
-            .ToList();
+            .Where(b => GetString(b["type"]) is "text" or "image")];
         if (excludeToolResults)
-            relevant = relevant.Where(b => GetString(b["type"]) != "tool_result").ToList();
+            relevant = [.. relevant.Where(b => GetString(b["type"]) != "tool_result")];
         if (relevant.Count == 0)
             return null;
 

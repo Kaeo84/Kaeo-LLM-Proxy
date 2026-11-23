@@ -77,7 +77,7 @@ public class OllamaIrParityTests
         var source = new List<OllamaMessage>
         {
             new("user", "go"),
-            new OllamaMessage("assistant", "working")
+            new("assistant", "working")
             {
                 ToolCalls =
                 [
@@ -85,8 +85,8 @@ public class OllamaIrParityTests
                     Call(null, "run", JsonSerializer.Deserialize<JsonElement>("{}")),
                 ],
             },
-            new OllamaMessage("tool", "r1"),
-            new OllamaMessage("tool", "r2"),
+            new("tool", "r1"),
+            new("tool", "r2"),
         };
 
         List<LlamaCppMessage> legacy = OllamaProxyHandler.MapMessagesWithToolCorrelation(source);

@@ -137,7 +137,7 @@ internal sealed class ModelMappingDialog : Form
     private string _upstreamUrl = string.Empty;
     private AppSettings? _settings;
     private StatisticsService? _stats;
-    private Dictionary<string, int> _compactModelNameToId = [];
+    private readonly Dictionary<string, int> _compactModelNameToId = [];
 
     // Set while ShowConfigureDialog populates controls so model-name change events do not
     // prefill reasoning effort values over the values being loaded.
@@ -1136,14 +1136,14 @@ internal sealed class ModelMappingDialog : Form
         _cmbAutoCompactPaths.Dock = DockStyle.Fill;
         _cmbAutoCompactPaths.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbAutoCompactPaths.Margin = new Padding(0, 4, 0, 4);
-        _cmbAutoCompactPaths.Items.AddRange(new object[]
-        {
+        _cmbAutoCompactPaths.Items.AddRange(
+        [
             new AutoCompactPathOption(AutoCompactPaths.None, "Disabled"),
             new AutoCompactPathOption(AutoCompactPaths.Ollama, "Ollama /api/chat"),
             new AutoCompactPathOption(AutoCompactPaths.OpenAI, "OpenAI /v1/chat/completions"),
             new AutoCompactPathOption(AutoCompactPaths.Both, "Both"),
             new AutoCompactPathOption(AutoCompactPaths.ProxyOnly, "Proxy only (all paths)")
-        });
+        ]);
         _cmbAutoCompactPaths.SelectedIndex = 0;
         _toolTip.SetToolTip(_cmbAutoCompactPaths,
             "Which API paths the proxy may automatically compact when the estimated request exceeds the\n"

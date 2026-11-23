@@ -2051,18 +2051,19 @@ internal sealed class AppDatabase : IDisposable
     /// </summary>
     private static ModelMapping ReadModelMapping(SqliteDataReader reader)
     {
-        ModelMapping mapping = new();
-
-        mapping.Id = reader.GetInt32(0);
-        mapping.IsEnabled = ReadBoolean(reader, 1);
-        mapping.Hidden = ReadBoolean(reader, 2);
-        mapping.ProxyName = reader.GetString(3);
-        mapping.ModelName = reader.GetString(4);
-        mapping.EnableThinkingCompatibility = ReadBoolean(reader, 5);
-        mapping.Capabilities = reader.IsDBNull(6)
-            ? []
-            : [.. reader.GetString(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
-        mapping.EnableSseKeepAlive = ReadBoolean(reader, 7);
+        ModelMapping mapping = new()
+        {
+            Id = reader.GetInt32(0),
+            IsEnabled = ReadBoolean(reader, 1),
+            Hidden = ReadBoolean(reader, 2),
+            ProxyName = reader.GetString(3),
+            ModelName = reader.GetString(4),
+            EnableThinkingCompatibility = ReadBoolean(reader, 5),
+            Capabilities = reader.IsDBNull(6)
+                ? []
+                : [.. reader.GetString(6).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+            EnableSseKeepAlive = ReadBoolean(reader, 7)
+        };
 
         int upstreamType = reader.GetInt32(8);
         mapping.UpstreamType = Enum.IsDefined(typeof(UpstreamType), upstreamType)

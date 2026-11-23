@@ -82,7 +82,7 @@ public class CompactionTargetResolutionTests
     [Fact]
     public void DoesNotRedirectWhenRedirectManualCompactionIsUnchecked()
     {
-        AppSettings settings = CreateSettings(out ModelMapping main, out ModelMapping target);
+        AppSettings settings = CreateSettings(out ModelMapping main, out _);
         main.RedirectManualCompaction = false;
 
         (ModelMapping resolved, bool redirected) =
@@ -181,7 +181,7 @@ public class CompactionTargetResolutionTests
     {
         // The grid commit clones every mapping, so a target name dropped here would be lost on
         // every save and the redirect would quietly stop working.
-        AppSettings settings = CreateSettings(out ModelMapping main, out ModelMapping target);
+        _ = CreateSettings(out ModelMapping main, out ModelMapping target);
 
         ModelMapping clone = main.Clone();
 

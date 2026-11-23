@@ -272,7 +272,7 @@ internal sealed class GitMirrorManager
         if (!string.IsNullOrWhiteSpace(mirror.PathPrefix))
         {
             var prefix = mirror.PathPrefix.TrimEnd('/');
-            files = files.Where(f => f.Path == prefix || f.Path.StartsWith(prefix + "/", StringComparison.Ordinal)).ToList();
+            files = [.. files.Where(f => f.Path == prefix || f.Path.StartsWith(prefix + "/", StringComparison.Ordinal))];
         }
 
         int queued = 0, skipped = 0;
@@ -341,7 +341,7 @@ internal sealed class GitMirrorManager
         if (!string.IsNullOrWhiteSpace(mirror.PathPrefix))
         {
             var prefix = mirror.PathPrefix.TrimEnd('/');
-            relPaths = relPaths.Where(p => p == prefix || p.StartsWith(prefix + "/", StringComparison.Ordinal)).ToList();
+            relPaths = [.. relPaths.Where(p => p == prefix || p.StartsWith(prefix + "/", StringComparison.Ordinal))];
         }
 
         int queued = 0, skipped = 0;

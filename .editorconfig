@@ -1,0 +1,14 @@
+root = true
+
+# Code-style diagnostic severities.
+# The repo intentionally keeps a flat namespace per assembly/module (Core/, Mcp/,
+# UI/ folders share one namespace), does not adopt primary constructors repo-wide,
+# keeps signature-mandated parameters even when unused, and treats the
+# System.Threading.Lock migration as optional. Silence those so the Error List
+# stays focused on actionable suggestions; the mechanical simplifications
+# (collection expressions, target-typed new, object initializers, etc.) remain on.
+[*.cs]
+dotnet_diagnostic.IDE0130.severity = none
+dotnet_diagnostic.IDE0290.severity = silent
+dotnet_diagnostic.IDE0060.severity = silent
+dotnet_diagnostic.IDE0330.severity = silent

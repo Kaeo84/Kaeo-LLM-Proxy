@@ -115,7 +115,7 @@ public class OpenAiSpecConformanceTests
             Frame(new JsonObject { ["role"] = "assistant" }),
             Frame(new JsonObject { ["content"] = "Hello" }),
             Frame(new JsonObject { ["content"] = " world" }),
-            Frame(new JsonObject(), finishReason: "stop"),
+            Frame([], finishReason: "stop"),
         ], mode);
 
         Assert.NotEmpty(emitted);
@@ -129,7 +129,7 @@ public class OpenAiSpecConformanceTests
         List<JsonObject> emitted = TranslateAll(
         [
             Frame(new JsonObject { ["content"] = "\u003cthink\u003eweighing it up\u003c/think\u003eThe answer." }),
-            Frame(new JsonObject(), finishReason: "stop"),
+            Frame([], finishReason: "stop"),
         ], ThinkingMode.MoveToReasoningContent);
 
         foreach (JsonObject frame in emitted)
@@ -151,7 +151,7 @@ public class OpenAiSpecConformanceTests
             {
                 ["content"] = "Checking. <tool_call><function=get_weather><parameter=city>NY</parameter></function></tool_call>",
             }),
-            Frame(new JsonObject(), finishReason: "stop"),
+            Frame([], finishReason: "stop"),
         ], ThinkingMode.LeaveInline, declared);
 
         foreach (JsonObject frame in emitted)
@@ -195,7 +195,7 @@ public class OpenAiSpecConformanceTests
                     ["function"] = new JsonObject { ["arguments"] = "ty\":\"NY\"}" },
                 }),
             }),
-            Frame(new JsonObject(), finishReason: "tool_calls"),
+            Frame([], finishReason: "tool_calls"),
         ], ThinkingMode.LeaveInline, declared);
 
         foreach (JsonObject frame in emitted)

@@ -16,7 +16,7 @@ internal enum UpstreamKind
 /// <summary>Parsing/display helpers for the persisted upstream name (<see cref="Connection.Upstream"/>).</summary>
 internal static class UpstreamKinds
 {
-    public static readonly IReadOnlyList<string> DisplayNames = new[] { "Ollama", "OpenAI", "Anthropic" };
+    public static readonly IReadOnlyList<string> DisplayNames = ["Ollama", "OpenAI", "Anthropic"];
 
     public static UpstreamKind Parse(string? value) => value switch
     {
@@ -43,7 +43,7 @@ internal static class ReasoningDisplayKinds
     public const string Expanded = "Expanded";
     public const string Hidden = "Hidden";
 
-    public static readonly IReadOnlyList<string> DisplayNames = new[] { Collapsed, Expanded, Hidden };
+    public static readonly IReadOnlyList<string> DisplayNames = [Collapsed, Expanded, Hidden];
 
     public static string Parse(string? value) => value switch
     {

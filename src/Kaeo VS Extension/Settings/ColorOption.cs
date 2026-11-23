@@ -26,7 +26,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         public string? DarkHex { get; init; }
 
         /// <summary>Hex values persisted by older builds that map onto this preset.</summary>
-        private string[] LegacyHexes { get; init; } = Array.Empty<string>();
+        private string[] LegacyHexes { get; init; } = [];
 
         /// <summary>The hex for the current VS theme; null = follow the theme brush.</summary>
         public string? Hex => ThemeColors.IsDarkTheme ? DarkHex : LightHex;
@@ -61,7 +61,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         }
 
         private static ColorOption Pair(string name, string lightHex, string darkHex, params string[] legacyHexes)
-            => new ColorOption { Name = name, LightHex = lightHex, DarkHex = darkHex, LegacyHexes = legacyHexes };
+            => new()
+            { Name = name, LightHex = lightHex, DarkHex = darkHex, LegacyHexes = legacyHexes };
 
         /// <summary>True when the hex matches either theme variant or a legacy preset value.</summary>
         public bool Matches(string? hex)
@@ -79,8 +80,8 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
         /// dark themes. Legacy fixed values (including pure White/Black) map onto the nearest
         /// theme-conditional pair instead of freezing the element to one scheme.
         /// </summary>
-        public static readonly IReadOnlyList<ColorOption> Presets = new[]
-        {
+        public static readonly IReadOnlyList<ColorOption> Presets =
+        [
             new ColorOption { Name = "Default (theme)" },
             Pair("Soft Gray", "#E0E0E0", "#3F3F46", "#FFFFFF", "#F0F0F0"),
             Pair("Strong Gray", "#404040", "#C8C8C8", "#000000"),
@@ -92,14 +93,14 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             Pair("Teal", "#C8E8E0", "#1E5C5C", "#2C7A7B"),
             Pair("Yellow", "#FFF8D6", "#6E5A1E", "#D69E2E"),
             Pair("Rose", "#F0D8E0", "#6E2E4A"),
-        };
+        ];
 
         /// <summary>
         /// Text-color presets: dark-enough inks for light themes, light-enough inks for dark
         /// themes. Pure Black/White are gone; legacy values map onto the Contrast/Gray pairs.
         /// </summary>
-        public static readonly IReadOnlyList<ColorOption> TextPresets = new[]
-        {
+        public static readonly IReadOnlyList<ColorOption> TextPresets =
+        [
             new ColorOption { Name = "Default (theme)" },
             Pair("Contrast", "#1E1E1E", "#F0F0F0", "#000000", "#FFFFFF"),
             Pair("Gray", "#6E6E6E", "#A8A8A8", "#888888"),
@@ -109,7 +110,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             Pair("Purple", "#6C2BD9", "#C4A5FF", "#5C2E8E"),
             Pair("Orange", "#C27803", "#FFC24B"),
             Pair("Teal", "#047481", "#6FE3E1", "#1E5C5C"),
-        };
+        ];
 
         /// <summary>Finds the preset that matches a hex value (either variant or legacy), or a custom entry.</summary>
         public static ColorOption FromHex(IReadOnlyList<ColorOption> presets, string? hex)

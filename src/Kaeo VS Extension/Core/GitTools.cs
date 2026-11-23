@@ -35,7 +35,7 @@ internal static class GitTools
         var unstaged = new List<string>();
         var untracked = new List<string>();
         var conflicts = new List<string>();
-        foreach (var line in run.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var line in run.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.StartsWith("## ", StringComparison.Ordinal))
             {
@@ -141,7 +141,7 @@ internal static class GitTools
             return $"git status failed (exit {status.ExitCode}): {Trim(status.StdErr)}";
 
         var changed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var line in status.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var line in status.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.Length < 4) continue;
             var xy = line.Substring(0, 2);

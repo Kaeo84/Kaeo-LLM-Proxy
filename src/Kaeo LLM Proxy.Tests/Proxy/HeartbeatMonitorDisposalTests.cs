@@ -77,11 +77,11 @@ public sealed class HeartbeatMonitorDisposalTests : IDisposable
     public async Task StoppingMonitorsWhileAProbeIsInFlight_DoesNotRaiseUnobservedTaskException()
     {
         ConcurrentBag<string> escaped = [];
-        EventHandler<UnobservedTaskExceptionEventArgs> observer = (_, e) =>
+        void observer(object? _, UnobservedTaskExceptionEventArgs e)
         {
             escaped.Add(e.Exception.GetType().Name + ": " + e.Exception.Message);
             e.SetObserved();
-        };
+        }
 
         TaskScheduler.UnobservedTaskException += observer;
         try

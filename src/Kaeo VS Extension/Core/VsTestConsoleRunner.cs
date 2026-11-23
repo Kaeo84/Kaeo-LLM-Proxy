@@ -78,7 +78,7 @@ internal static class VsTestConsoleRunner
             var built = testProjects.Where(p => File.Exists(p.AssemblyPath)).ToList();
             if (built.Count == 0)
                 return new(null, "no built test assemblies found; build the solution first");
-            assemblies = built.Select(p => p.AssemblyPath).ToList();
+            assemblies = [.. built.Select(p => p.AssemblyPath)];
             scope = $"full suite ({assemblies.Count} assembl{(assemblies.Count == 1 ? "y" : "ies")})";
         }
         else if (canonical is "Project" or "Assembly")
@@ -96,7 +96,7 @@ internal static class VsTestConsoleRunner
             if (missing.Count > 0)
                 return new($"Test assembly not built: {string.Join(", ", missing.Select(m => m.AssemblyPath))}. Build the solution first; nothing was run.", null);
 
-            assemblies = matches.Select(m => m.AssemblyPath).ToList();
+            assemblies = [.. matches.Select(m => m.AssemblyPath)];
             scope = string.Join(", ", matches.Select(m => m.Name));
         }
         else
@@ -105,7 +105,7 @@ internal static class VsTestConsoleRunner
             if (built.Count == 0)
                 return new($"No built test assemblies found ({string.Join("; ", testProjects.Select(p => p.AssemblyPath))}). Build the solution first; nothing was run.", null);
 
-            assemblies = built.Select(p => p.AssemblyPath).ToList();
+            assemblies = [.. built.Select(p => p.AssemblyPath)];
             var v = EscapeFilterValue(filterValue);
             filterExpr = canonical switch
             {
@@ -215,7 +215,7 @@ internal static class VsTestConsoleRunner
 
         var matched = string.IsNullOrWhiteSpace(nameContains)
             ? all
-            : all.Where(t => t.IndexOf(nameContains!, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            : [.. all.Where(t => t.IndexOf(nameContains!, StringComparison.OrdinalIgnoreCase) >= 0)];
         var returned = matched.Take(maxResults).ToList();
 
         var json = new JsonObject
@@ -235,17 +235,16 @@ internal static class VsTestConsoleRunner
 
     private static string[] ParseListTestsOutput(string stdout)
     {
-        var lines = stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
         var marker = Array.FindIndex(lines, l => l.IndexOf("The following Tests are available", StringComparison.OrdinalIgnoreCase) >= 0);
         if (marker < 0)
-            return Array.Empty<string>();
+            return [];
         // vstest indents test names; adapter diagnostics (e.g. "[xUnit.net ...] Discovering:")
         // start at column 0 and must not be mistaken for tests.
-        return lines.Skip(marker + 1)
+        return [.. lines.Skip(marker + 1)
             .Where(l => l.Length > 0 && char.IsWhiteSpace(l[0]))
             .Select(l => l.Trim())
-            .Where(l => l.Length > 0 && l[0] != '[')
-            .ToArray();
+            .Where(l => l.Length > 0 && l[0] != '[')];
     }
 
     private static bool MatchesAssembly(string assemblyPath, string filterValue)
@@ -327,13 +326,13 @@ internal static class VsTestConsoleRunner
     private static bool IsTestProjectContent(string content)
     {
         string[] markers =
-        {
+        [
             "Microsoft.NET.Test.Sdk",
             "<IsTestProject>true",
             "xunit.runner.visualstudio",
             "NUnit3TestAdapter",
             "MSTest.TestAdapter",
-        };
+        ];
         return markers.Any(m => content.IndexOf(m, StringComparison.OrdinalIgnoreCase) >= 0);
     }
 
@@ -405,7 +404,7 @@ internal static class VsTestConsoleRunner
 
             var output = string.IsNullOrWhiteSpace(run.StdErr) ? run.StdOut : run.StdOut + "\n" + run.StdErr;
 
-            var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var lines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
             var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 15)));
             var summary = lines.LastOrDefault(l =>
                 l.IndexOf("Passed!", StringComparison.OrdinalIgnoreCase) >= 0

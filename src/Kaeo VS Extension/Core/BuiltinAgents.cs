@@ -11,8 +11,8 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 internal static class BuiltinAgents
 {
     /// <summary>Read-only tools allowed for the Plan agent: inspect the codebase, ask questions, and write .md plan files.</summary>
-    public static readonly IReadOnlyList<string> PlanTools = new[]
-    {
+    public static readonly IReadOnlyList<string> PlanTools =
+    [
         "vs_file_search",
         "vs_get_file",
         "vs_find_symbol",
@@ -28,9 +28,9 @@ internal static class BuiltinAgents
         "vs_read_instruction",
         "vs_inquiry",
         "vs_create_plan_file",
-    };
+    ];
 
-    public static readonly AgentConfig Agent = new AgentConfig
+    public static readonly AgentConfig Agent = new()
     {
         Name = "Agent",
         DisplayName = "Agent",
@@ -38,16 +38,16 @@ internal static class BuiltinAgents
         IsBuiltin = true,
     };
 
-    public static readonly AgentConfig Ask = new AgentConfig
+    public static readonly AgentConfig Ask = new()
     {
         Name = "Ask",
         DisplayName = "Ask",
         SystemPrompt = "You answer questions concisely. Do not use tools. Provide direct, focused answers.",
-        Tools = Array.Empty<string>(),
+        Tools = [],
         IsBuiltin = true,
     };
 
-    public static readonly AgentConfig Plan = new AgentConfig
+    public static readonly AgentConfig Plan = new()
     {
         Name = "Plan",
         DisplayName = "Plan",
@@ -56,7 +56,7 @@ internal static class BuiltinAgents
         IsBuiltin = true,
     };
 
-    public static readonly AgentConfig Performance = new AgentConfig
+    public static readonly AgentConfig Performance = new()
     {
         Name = "Performance",
         DisplayName = "Performance",
@@ -64,5 +64,5 @@ internal static class BuiltinAgents
         IsBuiltin = true,
     };
 
-    public static readonly IReadOnlyList<AgentConfig> All = new[] { Agent, Ask, Plan, Performance };
+    public static readonly IReadOnlyList<AgentConfig> All = [Agent, Ask, Plan, Performance];
 }

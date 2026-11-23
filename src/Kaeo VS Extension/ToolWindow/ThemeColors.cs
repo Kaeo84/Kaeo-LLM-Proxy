@@ -141,7 +141,7 @@ internal static class ThemeColors
 
     private static double Luminance(Color c)
     {
-        double Channel(byte v)
+        static double Channel(byte v)
         {
             var s = v / 255.0;
             return s <= 0.03928 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);

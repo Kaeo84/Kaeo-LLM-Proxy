@@ -17,7 +17,7 @@ internal static class HttpHelpers
     /// base like <c>https://host/kaeo</c> silently became <c>https://host/path</c>.
     /// </summary>
     public static Uri BuildEndpointUri(string baseUrl, string endpointPath)
-        => new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), endpointPath.TrimStart('/'));
+        => new(new Uri(baseUrl.TrimEnd('/') + "/"), endpointPath.TrimStart('/'));
 
     /// <summary>
     /// Applies a Bearer authorization header to an <see cref="HttpClient"/> when a key is

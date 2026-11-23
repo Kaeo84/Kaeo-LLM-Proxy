@@ -32,7 +32,7 @@ public sealed class TrxSummary
 public sealed class TrxReport
 {
     public TrxSummary Summary { get; set; } = new TrxSummary();
-    public List<TrxTestResult> Results { get; set; } = new List<TrxTestResult>();
+    public List<TrxTestResult> Results { get; set; } = [];
 }
 
 /// <summary>

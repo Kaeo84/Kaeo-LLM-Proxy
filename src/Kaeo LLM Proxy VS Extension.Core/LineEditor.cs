@@ -83,7 +83,7 @@ public static class LineEditor
                 && !string.Equals(lines[lastAnchor].Trim(), edit.ExpectedLastLine.Trim(), StringComparison.Ordinal))
                 return LineEditResult.Fail($"Stale edit: line {lastAnchor + 1} is \"{lines[lastAnchor].Trim()}\" but expected \"{edit.ExpectedLastLine.Trim()}\". Re-read the file and retry.");
 
-            var content = mode == "delete" ? Array.Empty<string>() : SplitContent(edit.NewContent!);
+            var content = mode == "delete" ? [] : SplitContent(edit.NewContent!);
 
             // Footprint in "gap" coordinates (gap g sits between line g and line g+1): a range
             // replace/delete occupies gaps start-1..end-1 (inserts at its outer boundaries are
@@ -103,10 +103,10 @@ public static class LineEditor
         {
             for (var j = i + 1; j < normalized.Count; j++)
             {
-                var a = normalized[i];
+                var (Edit, Content, GapStart, GapEnd) = normalized[i];
                 var b = normalized[j];
-                if (a.GapStart <= b.GapEnd && b.GapStart <= a.GapEnd)
-                    return LineEditResult.Fail($"Edits {i + 1} ({a.Edit.StartLine}-{a.Edit.EndLine}) and {j + 1} ({b.Edit.StartLine}-{b.Edit.EndLine}) overlap or insert at the same position; combine them into one edit.");
+                if (GapStart <= b.GapEnd && b.GapStart <= GapEnd)
+                    return LineEditResult.Fail($"Edits {i + 1} ({Edit.StartLine}-{Edit.EndLine}) and {j + 1} ({b.Edit.StartLine}-{b.Edit.EndLine}) overlap or insert at the same position; combine them into one edit.");
             }
         }
 
@@ -174,10 +174,10 @@ public static class LineEditor
     private static string[] SplitContent(string content)
     {
         if (content.Length == 0)
-            return Array.Empty<string>();
+            return [];
         var normalized = content.Replace("\r\n", "\n");
         if (normalized.EndsWith("\n", StringComparison.Ordinal))
             normalized = normalized.Substring(0, normalized.Length - 1);
-        return normalized.Length == 0 ? Array.Empty<string>() : normalized.Split('\n');
+        return normalized.Length == 0 ? [] : normalized.Split('\n');
     }
 }

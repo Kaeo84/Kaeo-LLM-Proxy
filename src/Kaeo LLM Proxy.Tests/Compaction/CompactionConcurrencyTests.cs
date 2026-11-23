@@ -44,7 +44,7 @@ public class CompactionConcurrencyTests
 	/// </summary>
 	private static string BuildBody(string tag)
 	{
-		string padding = new string('x', 40_000);
+		string padding = new('x', 40_000);
 		var messages = new List<object>
 		{
 			new { role = "user", content = $"{tag} {padding}" },

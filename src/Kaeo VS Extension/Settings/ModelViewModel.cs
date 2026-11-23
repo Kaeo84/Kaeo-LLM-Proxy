@@ -11,7 +11,7 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     public sealed class ModelViewModel : INotifyPropertyChanged
     {
         /// <summary>Values offered by the grid's Reasoning source column (ModelEntry.ReasoningSource).</summary>
-        public static IReadOnlyList<string> ReasoningSourceOptions { get; } = new[] { "Auto", "ThinkingField", "InlineTags", "Disabled" };
+        public static IReadOnlyList<string> ReasoningSourceOptions { get; } = ["Auto", "ThinkingField", "InlineTags", "Disabled"];
 
         private string _name = string.Empty;
         private string _modelId = string.Empty;

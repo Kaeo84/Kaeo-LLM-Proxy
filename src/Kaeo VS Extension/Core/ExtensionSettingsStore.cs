@@ -21,7 +21,7 @@ internal sealed class ExtensionSettingsStore
     /// MCP manager all save through (possibly several) store instances against one file, and
     /// the debounced auto-save can overlap a previous save.
     /// </summary>
-    private static readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
+    private static readonly SemaphoreSlim _writeLock = new(1, 1);
 
     /// <summary>
     /// Set when the last <see cref="LoadAsync"/> could not read the file and fell back to
@@ -200,8 +200,10 @@ internal sealed class ExtensionSettingsStore
 
         var tmp = path + ".tmp";
         const int maxAttempts = 8;
-        for (var attempt = 1; ; attempt++)
+        var attempt = 0;
+        while (true)
         {
+            attempt++;
             try
             {
                 using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -343,10 +345,10 @@ internal sealed class ExtensionSettings
     /// <summary>L9: persisted schema version so one-time migrations run only once.</summary>
     public int SchemaVersion { get; set; }
     public Defaults? Defaults { get; set; } = new Defaults();
-    public Connection[]? Connections { get; set; } = Array.Empty<Connection>();
-    public Agent[]? Agents { get; set; } = Array.Empty<Agent>();
-    public McpServer[]? McpServers { get; set; } = Array.Empty<McpServer>();
-    public InstructionEntry[]? Instructions { get; set; } = Array.Empty<InstructionEntry>();
+    public Connection[]? Connections { get; set; } = [];
+    public Agent[]? Agents { get; set; } = [];
+    public McpServer[]? McpServers { get; set; } = [];
+    public InstructionEntry[]? Instructions { get; set; } = [];
     public Logging? Logging { get; set; } = new Logging();
 }
 
@@ -380,7 +382,7 @@ internal sealed class Defaults
     public string? ToolsDefault { get; set; } = "Collapsed";
 
     /// <summary>Tool names that have been permanently "always allowed" across sessions.</summary>
-    public string[]? AlwaysAllowedTools { get; set; } = Array.Empty<string>();
+    public string[]? AlwaysAllowedTools { get; set; } = [];
 
     /// <summary>Optional #RRGGBB overrides for reasoning text/background. Null = follow the theme.</summary>
     public string? ReasoningForeground { get; set; }
@@ -421,7 +423,7 @@ internal sealed class Connection
     public bool Enabled { get; set; } = true;
     /// <summary>Upstream API flavor: "Ollama" (default), "OpenAI", or "Anthropic".</summary>
     public string? Upstream { get; set; } = "Ollama";
-    public ModelEntry[]? Models { get; set; } = Array.Empty<ModelEntry>();
+    public ModelEntry[]? Models { get; set; } = [];
 }
 
 internal sealed class ModelEntry
@@ -457,7 +459,7 @@ internal sealed class McpServer
     public bool Stale { get; set; }
     public DateTime? LastSyncUtc { get; set; }
     public string? LastError { get; set; }
-    public McpTool[]? Tools { get; set; } = Array.Empty<McpTool>();
+    public McpTool[]? Tools { get; set; } = [];
 }
 
 internal sealed class McpTool

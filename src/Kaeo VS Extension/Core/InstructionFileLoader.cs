@@ -25,11 +25,11 @@ internal static class InstructionFileLoader
     /// The two instruction sources seeded into an empty list: an inline "User Preferences" text entry
     /// and a "Solution Instructions" file entry pointing at <see cref="SolutionInstructionFile"/>.
     /// </summary>
-    public static List<InstructionEntry> DefaultEntries() => new()
-    {
+    public static List<InstructionEntry> DefaultEntries() =>
+    [
         new InstructionEntry { Name = "User Preferences", Kind = InstructionKind.Text, Content = string.Empty, Enabled = true, Order = 0, IsDefault = true, Scope = InstructionScopeKind.Global },
         new InstructionEntry { Name = "Solution Instructions", Kind = InstructionKind.File, Path = SolutionInstructionFile, Enabled = true, Order = 1, IsDefault = true, Scope = InstructionScopeKind.Solution },
-    };
+    ];
 
     /// <summary>
     /// Resolves enabled settings entries (ordered) into instruction content. Text entries use their
@@ -39,7 +39,7 @@ internal static class InstructionFileLoader
     {
         var result = new List<InstructionFile>();
 
-        foreach (var entry in (entries ?? Array.Empty<InstructionEntry>()).Where(e => e.Enabled).OrderBy(e => e.Order))
+        foreach (var entry in (entries ?? []).Where(e => e.Enabled).OrderBy(e => e.Order))
         {
             if (string.Equals(entry.Kind, InstructionKind.File, StringComparison.OrdinalIgnoreCase))
             {

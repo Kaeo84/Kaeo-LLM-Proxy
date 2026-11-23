@@ -110,7 +110,6 @@ public static class MeaiAdapter
         ThinkTagStreamSplitter? splitter)
     {
         List<AIContent> contents = [];
-        bool hasThinkingField = false;
 
         if (root.TryGetProperty("message", out JsonElement message)
             && message.ValueKind == JsonValueKind.Object)
@@ -118,7 +117,7 @@ public static class MeaiAdapter
             string thinking = message.TryGetProperty("thinking", out JsonElement thinkingEl)
                 ? thinkingEl.GetString() ?? string.Empty
                 : string.Empty;
-            hasThinkingField = thinking.Length > 0;
+            bool hasThinkingField = thinking.Length > 0;
             if (hasThinkingField && source is ReasoningSource.Auto or ReasoningSource.ThinkingField)
                 contents.Add(new TextReasoningContent(thinking));
 
@@ -293,7 +292,7 @@ public static class MeaiAdapter
             }
         }
 
-        return new FunctionCallContent(id, name, arguments ?? new Dictionary<string, object?>());
+        return new FunctionCallContent(id, name, arguments ?? []);
     }
 
     private static Dictionary<string, object?>? ToArgumentsDictionary(JsonElement element)
@@ -301,7 +300,7 @@ public static class MeaiAdapter
         if (element.ValueKind != JsonValueKind.Object)
             return null;
 
-        Dictionary<string, object?> args = new(StringComparer.Ordinal);
+        Dictionary<string, object?> args = [with(StringComparer.Ordinal)];
         foreach (JsonProperty property in element.EnumerateObject())
             args[property.Name] = ToClrValue(property.Value);
         return args;
