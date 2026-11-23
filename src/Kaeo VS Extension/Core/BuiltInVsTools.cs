@@ -216,6 +216,136 @@ internal static class BuiltInVsTools
             },
             new()
             {
+                Name = "vs_debug_start",
+                Description = "Start debugging the solution's startup project (F5). Waits up to 60s for a breakpoint hit; reports whether the program paused, exited, or is still running. Requires design mode (not already debugging).",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_stop",
+                Description = "Stop the debugging session (Shift+F5). Reports honestly if not debugging.",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_break",
+                Description = "Break into the running program (Break All). Waits up to 15s for the debugger to pause and reports the current location.",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_continue",
+                Description = "Continue execution from a breakpoint (F5). Waits up to 30s for the next pause or program exit. Requires break mode.",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_step",
+                Description = "Step the debugger while paused: into (F11), over (F10), or out (Shift+F11). Reports the new location. Requires break mode.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["action"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Step action: into, over, or out (default over)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_debug_set_breakpoint",
+                Description = "Set a breakpoint at a file line (filePath + line) or on a function (functionName). Works in any debugger mode, including before starting.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Source file path (absolute or solution-relative)"
+                        },
+                        ["line"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "1-based line number for the breakpoint"
+                        },
+                        ["functionName"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Function name for a function breakpoint (alternative to filePath+line)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_debug_remove_breakpoint",
+                Description = "Remove breakpoints matching filePath+line or functionName, or all breakpoints with all=true. Reports how many were removed.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Source file path of the breakpoint to remove"
+                        },
+                        ["line"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "1-based line number of the breakpoint to remove"
+                        },
+                        ["functionName"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Function name substring of function breakpoints to remove"
+                        },
+                        ["all"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "Remove ALL breakpoints (default false)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_debug_list_breakpoints",
+                Description = "List all breakpoints with location, enabled state, and condition.",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_get_state",
+                Description = "Get debugger state: mode, process/thread, current location, top 10 stack frames, and up to 20 locals of the current frame (locals/stack only while paused).",
+                Schema = new JsonObject { ["type"] = "object", ["properties"] = new JsonObject() }
+            },
+            new()
+            {
+                Name = "vs_debug_evaluate",
+                Description = "Evaluate an expression in the current stack frame while paused (watch-window semantics). Returns value and type; reports honestly when evaluation fails or the debugger is not paused.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["expression"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Expression to evaluate in the current frame (e.g. 'myList.Count' or 'x + y')"
+                        }
+                    },
+                    ["required"] = new JsonArray { "expression" }
+                }
+            },
+            new()
+            {
                 Name = "vs_get_diagnostics",
                 Description = "Get compiler diagnostics (errors, warnings, info) for a file or project. Uses Roslyn background compilation.",
                 Schema = new JsonObject
@@ -734,6 +864,16 @@ internal static class BuiltInVsTools
                 "vs_edit_lines" => await VsEditTools.EditLinesAsync(args, ct),
                 "vs_append_file" => await VsEditTools.AppendFileAsync(args, ct),
                 "vs_apply_edits" => await VsEditTools.ApplyEditsAsync(args, ct),
+                "vs_debug_start" => await VsDebuggerTools.StartAsync(args, ct),
+                "vs_debug_stop" => await VsDebuggerTools.StopAsync(args, ct),
+                "vs_debug_break" => await VsDebuggerTools.BreakAsync(args, ct),
+                "vs_debug_continue" => await VsDebuggerTools.ContinueAsync(args, ct),
+                "vs_debug_step" => await VsDebuggerTools.StepAsync(args, ct),
+                "vs_debug_set_breakpoint" => await VsDebuggerTools.SetBreakpointAsync(args, ct),
+                "vs_debug_remove_breakpoint" => await VsDebuggerTools.RemoveBreakpointAsync(args, ct),
+                "vs_debug_list_breakpoints" => await VsDebuggerTools.ListBreakpointsAsync(args, ct),
+                "vs_debug_get_state" => await VsDebuggerTools.GetStateAsync(args, ct),
+                "vs_debug_evaluate" => await VsDebuggerTools.EvaluateAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
