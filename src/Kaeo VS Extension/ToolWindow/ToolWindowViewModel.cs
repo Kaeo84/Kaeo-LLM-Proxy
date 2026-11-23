@@ -792,15 +792,22 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         if (sel is null) return null;
         if (sel.Kind != UpstreamKind.Ollama)
             return (null, sel.Name, $"The {UpstreamKinds.Display(sel.Kind)} chat client is not implemented yet. Use an Ollama connection (the proxy) for agent turns.");
-        // Reuse one client per (connection, model, key, reasoning source) rather than
-        // newsing an HttpClient per turn.
+        return (GetOrCreateClient(sel), sel.Name, null);
+    }
+
+    /// <summary>
+    /// Reuse one client per (connection, model, key, reasoning source) rather than
+    /// newsing an HttpClient per turn.
+    /// </summary>
+    private OllamaChatClient GetOrCreateClient(ModelSelection sel)
+    {
         var cacheKey = $"{sel.BaseUrl}|{sel.Name}|{sel.ApiKey}|{sel.ReasoningSource}";
         if (!_clients.TryGetValue(cacheKey, out var client))
         {
             client = new OllamaChatClient(sel.BaseUrl, sel.Name, sel.ApiKey, reasoningSource: ReasoningSources.Parse(sel.ReasoningSource));
             _clients[cacheKey] = client;
         }
-        return (client, sel.Name, null);
+        return client;
     }
 
     /// <summary>Shown in the model dropdown when no connection has returned a model.</summary>
@@ -1291,6 +1298,20 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             if (resolved is null || resolved.Value.Client is null) return;
 
             var (client, modelName, _) = resolved.Value;
+
+            // Optional dedicated compaction model (Defaults.CompactionModel; empty = current).
+            // An unavailable configured model falls back to the current one with an honest notice.
+            var compactionDefaults = (await _settings.LoadAsync()).Defaults ?? new Defaults();
+            var pick = CompactionModelSelector.Select(compactionDefaults.CompactionModel, modelName,
+                _modelSelections.Where(m => m.Kind == UpstreamKind.Ollama).Select(m => m.Name).ToList());
+            if (pick.Notice is not null)
+                Lines.Add(new ChatLine { Kind = "status", Text = pick.Notice });
+            if (!string.Equals(pick.ModelName, modelName, StringComparison.Ordinal))
+            {
+                var compactionSel = _modelSelections.First(m => m.Kind == UpstreamKind.Ollama && m.Name == pick.ModelName);
+                client = GetOrCreateClient(compactionSel);
+                modelName = pick.ModelName;
+            }
 
             var compactionPrompt = "Please summarize the conversation so far concisely. "
                 + "Include all key facts, decisions, and actions. "
