@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -138,6 +140,24 @@ internal sealed class AgentRuntime
         var autoPilotContinued = false;
         var autopilotBudget = defaults.AutoPilotBudget > 0 ? defaults.AutoPilotBudget : DefaultAutoPilotBudget;
 
+        // Optional structured trajectory log (Defaults.TrajectoryLog, off by default): one JSONL
+        // record per model call and per tool invocation under .kaeo/traces at the solution root.
+        // Setup failures degrade to a warning; the turn runs unlogged.
+        TrajectoryLog? trajectory = null;
+        if (defaults.TrajectoryLog)
+        {
+            try
+            {
+                var traceRoot = await InstructionFileLoader.GetSolutionRootPathAsync();
+                if (!string.IsNullOrEmpty(traceRoot))
+                    trajectory = new TrajectoryLog(Path.Combine(traceRoot!, ".kaeo", "traces"), warn: DebugLog.Warn);
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Warn($"Trajectory log setup failed; continuing without it: {ex.Message}");
+            }
+        }
+
         // Instruction files + settings are read ONCE per turn, not per tool-loop iteration
         // (the old per-iteration load re-read/decrypted settings and probed the disk up to
         // 50× per turn and resurrected deliberately deleted default files).
@@ -194,6 +214,7 @@ internal sealed class AgentRuntime
                 var textParts = new List<string>();
                 var reasoningParts = new List<string>();
                 var functionCalls = new List<FunctionCallContent>();
+                var modelWatch = Stopwatch.StartNew();
 
                 try
                 {
@@ -220,18 +241,22 @@ internal sealed class AgentRuntime
                         }
                     }
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     // L8: keep whatever assistant text streamed before the failure so the history
                     // reflects the partial turn instead of silently dropping it, then rethrow.
                     var partialText = string.Concat(textParts);
                     if (partialText.Length > 0)
                         history.Add(new ChatMessage(ChatRole.Assistant, partialText + "\n\n[response truncated: stream failed]"));
+                    trajectory?.Append(TrajectoryRecord.ModelCall(model, mode.ToString(), iteration,
+                        modelWatch.ElapsedMilliseconds, partialText.Length, functionCalls.Count, ex.Message));
                     throw;
                 }
 
                 var fullText = string.Concat(textParts);
                 var fullReasoning = string.Concat(reasoningParts);
+                trajectory?.Append(TrajectoryRecord.ModelCall(model, mode.ToString(), iteration,
+                    modelWatch.ElapsedMilliseconds, fullText.Length + fullReasoning.Length, functionCalls.Count));
 
                 if (functionCalls.Count == 0)
                 {
@@ -275,13 +300,16 @@ internal sealed class AgentRuntime
                     ct.ThrowIfCancellationRequested();
 
                     string? toolResult;
+                    var toolWatch = new Stopwatch();
                     if (!approved)
                     {
                         toolResult = "Permission denied by user.";
                     }
                     else
                     {
+                        toolWatch.Start();
                         toolResult = await ExecuteToolAsync(tc, ct);
+                        toolWatch.Stop();
                         toolCallsExecuted++;
 
                         // Optional context guard: cap oversized tool results before they enter
@@ -296,6 +324,11 @@ internal sealed class AgentRuntime
                     }
 
                     events.ToolCallComplete?.Invoke(tc, approved, toolResult);
+
+                    trajectory?.Append(TrajectoryRecord.ToolCall(model, mode.ToString(), iteration, tc.Name,
+                        tc.Arguments?.ToJsonString(),
+                        approved ? (DoomLoopDetector.LooksLikeFailure(toolResult) ? "failed" : "ok") : "denied",
+                        toolResult?.Length ?? 0, toolWatch.ElapsedMilliseconds));
 
                     // Ollama expects tool output as a role:"tool" message correlated by tool_call_id.
                     history.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(tc.Id, toolResult ?? string.Empty)]));
