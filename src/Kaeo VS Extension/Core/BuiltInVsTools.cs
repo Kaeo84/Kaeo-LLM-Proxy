@@ -167,7 +167,7 @@ internal static class BuiltInVsTools
             new()
             {
                 Name = "vs_run_tests",
-                Description = "Run tests matching the specified filter. Filters are applied for real via vstest.console (results do not appear in Test Explorer). If filtering is unavailable, the FULL suite runs via Test Explorer and the response says so explicitly.",
+                Description = "Run tests matching the specified filter. Filters are applied for real via vstest.console (results do not appear in Test Explorer). If filtering is unavailable, the FULL suite runs via Test Explorer and the response says so explicitly. With structured=true the result is JSON (per-test outcomes, durations, failure messages/stack traces) parsed from TRX; an empty filterValue with structured=true runs the full suite via vstest.",
                 Schema = new JsonObject
                 {
                     ["type"] = "object",
@@ -181,10 +181,37 @@ internal static class BuiltInVsTools
                         ["filterValue"] = new JsonObject
                         {
                             ["type"] = "string",
-                            ["description"] = "Filter value to match"
+                            ["description"] = "Filter value to match (empty = full suite when structured=true)"
+                        },
+                        ["structured"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "Return structured JSON results (per-test outcome/duration/error details) instead of text (default false)"
                         }
                     },
                     ["required"] = new JsonArray { "filterType", "filterValue" }
+                }
+            },
+            new()
+            {
+                Name = "vs_list_tests",
+                Description = "List discovered tests from built test assemblies via vstest.console /ListTests (cached per assembly until it is rebuilt). Returns JSON with fully-qualified test names; use nameContains to narrow and maxResults to cap (truncation is reported).",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["nameContains"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional case-insensitive substring to filter test names"
+                        },
+                        ["maxResults"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Maximum test names to return, 1-2000 (default 500)"
+                        }
+                    }
                 }
             },
             new()
@@ -683,6 +710,7 @@ internal static class BuiltInVsTools
                 "vs_get_files_in_project" => await GetFilesInProjectAsync(args, ct),
                 "vs_build" => await BuildAsync(args, ct),
                 "vs_run_tests" => await RunTestsAsync(args, ct),
+                "vs_list_tests" => await ListTestsAsync(args, ct),
                 "vs_get_diagnostics" => await GetDiagnosticsAsync(args, ct),
                 "vs_get_errors" => await GetErrorsAsync(args, ct),
                 "vs_get_active_file" => await GetActiveFileAsync(ct),
@@ -1233,6 +1261,7 @@ internal static class BuiltInVsTools
     {
         var filterType = args?["filterType"]?.GetValue<string>() ?? "Project";
         var filterValue = args?["filterValue"]?.GetValue<string>() ?? string.Empty;
+        var structured = args?["structured"]?.GetValue<bool>() ?? false;
 
         var dte = await GetOpenDteAsync(ct);
         if (dte is null)
@@ -1240,11 +1269,12 @@ internal static class BuiltInVsTools
 
         // M11: honor the filter for real via vstest.console when possible. When filtering is
         // unavailable, fall back to Test Explorer's full-suite run and say so explicitly -
-        // a requested filter is never silently ignored.
+        // a requested filter is never silently ignored. Structured runs also go through
+        // vstest (TRX logger) so per-test results come back as JSON.
         string? fallbackReason = null;
-        if (!string.IsNullOrWhiteSpace(filterValue))
+        if (!string.IsNullOrWhiteSpace(filterValue) || structured)
         {
-            var filtered = await VsTestConsoleRunner.TryRunAsync(dte, filterType, filterValue, ct);
+            var filtered = await VsTestConsoleRunner.TryRunAsync(dte, filterType, filterValue, ct, structured);
             if (filtered.Result is not null)
                 return filtered.Result;
             fallbackReason = filtered.FallbackReason;
@@ -1254,6 +1284,8 @@ internal static class BuiltInVsTools
         var scopeNote = string.IsNullOrWhiteSpace(filterValue)
             ? string.Empty
             : $" (requested filter: {filterType}={filterValue} was NOT applied - {fallbackReason ?? "unknown reason"}; Test Explorer ran the FULL suite)";
+        if (structured)
+            scopeNote += " (structured JSON was requested but is unavailable on the Test Explorer fallback path; text output only)";
 
         // Snapshot the Test output pane before running so we can detect the tail.
         var outputWindow = dte.ToolWindows.OutputWindow;
@@ -1350,6 +1382,16 @@ internal static class BuiltInVsTools
         {
             return $"Test execution failed: {ex.Message}";
         }
+    }
+
+    private static async Task<string> ListTestsAsync(JsonNode? args, CancellationToken ct)
+    {
+        var dte = await GetOpenDteAsync(ct);
+        if (dte is null)
+            return "No solution is open.";
+        var nameContains = args?["nameContains"]?.GetValue<string>();
+        var maxResults = args?["maxResults"]?.GetValue<int>() ?? 500;
+        return await VsTestConsoleRunner.ListTestsAsync(dte, nameContains, maxResults, ct);
     }
 
     /// <summary>True once the Test pane shows a run-summary marker (passed/failed counts or timing).</summary>

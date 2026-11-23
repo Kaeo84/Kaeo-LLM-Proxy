@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.Text;
+using System.Text.Json.Nodes;
 using EnvDTE;
 using EnvDTE80;
 
@@ -25,34 +27,35 @@ internal sealed record FilteredTestRun(string? Result, string? FallbackReason);
 internal static class VsTestConsoleRunner
 {
     private const int RunTimeoutMs = 300_000; // 5 minute ceiling, same as the Test Explorer path
+    private const int ListTimeoutMs = 120_000;
     private const string SolutionFolderKind = "{66A26720-8FB5-11D2-AA7E-00C04F688DDE}";
 
     private sealed record TestProjectInfo(string Name, string AssemblyPath);
 
-    /// <summary>
-    /// Attempts a filtered run. Must be called on the UI thread (it enumerates DTE projects);
-    /// the test process itself runs and is awaited off the UI thread.
-    /// </summary>
-    public static async Task<FilteredTestRun> TryRunAsync(DTE2 dte, string filterType, string filterValue, CancellationToken ct)
-    {
-        var canonical = new[] { "Assembly", "Project", "FullyQualifiedName", "TypeName", "MethodName" }
-            .FirstOrDefault(k => k.Equals(filterType, StringComparison.OrdinalIgnoreCase));
-        if (canonical is null)
-            return new(null, $"unsupported filterType '{filterType}'");
+    // /ListTests output cached per assembly until a rebuild changes its timestamp.
+    private static readonly ConcurrentDictionary<string, (DateTime Stamp, string[] Tests)> ListCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
-        string vsTestPath;
-        try
+    /// <summary>
+    /// Attempts a filtered run (or a full-suite run when filterValue is empty). Must be called on
+    /// the UI thread (it enumerates DTE projects); the test process itself runs and is awaited off
+    /// the UI thread. With structured=true the result is JSON parsed from a TRX logger file.
+    /// </summary>
+    public static async Task<FilteredTestRun> TryRunAsync(DTE2 dte, string filterType, string filterValue, CancellationToken ct, bool structured = false)
+    {
+        var hasFilter = !string.IsNullOrWhiteSpace(filterValue);
+        string? canonical = null;
+        if (hasFilter)
         {
-            // dte.FullName is ...\Common7\IDE\devenv.exe; vstest.console ships beside it.
-            var ideDir = Path.GetDirectoryName(dte.FullName) ?? string.Empty;
-            vsTestPath = Path.Combine(ideDir, @"CommonExtensions\Microsoft\TestWindow\vstest.console.exe");
+            canonical = new[] { "Assembly", "Project", "FullyQualifiedName", "TypeName", "MethodName" }
+                .FirstOrDefault(k => k.Equals(filterType, StringComparison.OrdinalIgnoreCase));
+            if (canonical is null)
+                return new(null, $"unsupported filterType '{filterType}'");
         }
-        catch (Exception ex)
-        {
-            return new(null, $"could not locate the Visual Studio install: {ex.Message}");
-        }
-        if (!File.Exists(vsTestPath))
-            return new(null, $"vstest.console.exe not found at '{vsTestPath}'");
+
+        var (vsTestPath, locateError) = LocateVsTest(dte);
+        if (locateError is not null)
+            return new(null, locateError);
 
         List<TestProjectInfo> testProjects;
         try
@@ -70,7 +73,15 @@ internal static class VsTestConsoleRunner
         string? filterExpr = null;
         string scope;
 
-        if (canonical is "Project" or "Assembly")
+        if (!hasFilter)
+        {
+            var built = testProjects.Where(p => File.Exists(p.AssemblyPath)).ToList();
+            if (built.Count == 0)
+                return new(null, "no built test assemblies found; build the solution first");
+            assemblies = built.Select(p => p.AssemblyPath).ToList();
+            scope = $"full suite ({assemblies.Count} assembl{(assemblies.Count == 1 ? "y" : "ies")})";
+        }
+        else if (canonical is "Project" or "Assembly")
         {
             // Project/Assembly filters select whole assemblies - no TestCaseFilter needed.
             var matches = testProjects.Where(p => canonical == "Project"
@@ -109,8 +120,132 @@ internal static class VsTestConsoleRunner
         }
 
         ct.ThrowIfCancellationRequested();
-        var result = await RunVsTestAsync(vsTestPath, assemblies, filterExpr, canonical, filterValue, scope, ct).ConfigureAwait(false);
+        var result = await RunVsTestAsync(vsTestPath, assemblies, filterExpr, canonical ?? string.Empty, filterValue, scope, structured, ct).ConfigureAwait(false);
         return new(result, null);
+    }
+
+    private static (string Path, string? Error) LocateVsTest(DTE2 dte)
+    {
+        try
+        {
+            // dte.FullName is ...\Common7\IDE\devenv.exe; vstest.console ships beside it.
+            var ideDir = Path.GetDirectoryName(dte.FullName) ?? string.Empty;
+            var path = Path.Combine(ideDir, @"CommonExtensions\Microsoft\TestWindow\vstest.console.exe");
+            return File.Exists(path) ? (path, null) : (string.Empty, $"vstest.console.exe not found at '{path}'");
+        }
+        catch (Exception ex)
+        {
+            return (string.Empty, $"could not locate the Visual Studio install: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Lists discovered tests from built test assemblies via vstest.console /ListTests, cached
+    /// per assembly until its timestamp changes. Returns JSON; nameContains narrows the list and
+    /// maxResults caps it (truncation is reported, never silent). UI thread required (DTE walk).
+    /// </summary>
+    public static async Task<string> ListTestsAsync(DTE2 dte, string? nameContains, int maxResults, CancellationToken ct)
+    {
+        var (vsTestPath, locateError) = LocateVsTest(dte);
+        if (locateError is not null)
+            return $"Could not list tests: {locateError}";
+
+        List<TestProjectInfo> testProjects;
+        try
+        {
+            testProjects = CollectTestProjects(dte);
+        }
+        catch (Exception ex)
+        {
+            return $"Could not enumerate solution projects: {ex.Message}";
+        }
+
+        var built = testProjects.Where(p => File.Exists(p.AssemblyPath)).ToList();
+        if (built.Count == 0)
+            return "No built test assemblies found. Build the solution first; nothing was listed.";
+
+        maxResults = Math.Max(1, Math.Min(2000, maxResults));
+        var all = new List<string>();
+        var assemblyInfos = new JsonArray();
+        var problems = new List<string>();
+        foreach (var project in built)
+        {
+            ct.ThrowIfCancellationRequested();
+            string[] tests;
+            var stamp = File.GetLastWriteTimeUtc(project.AssemblyPath);
+            if (ListCache.TryGetValue(project.AssemblyPath, out var cached) && cached.Stamp == stamp)
+            {
+                tests = cached.Tests;
+            }
+            else
+            {
+                ProcessRunResult run;
+                try
+                {
+                    run = await ProcessRunner.RunAsync(vsTestPath, $"\"{project.AssemblyPath}\" /ListTests", null, ListTimeoutMs, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    problems.Add($"{project.Name}: could not start vstest.console ({ex.Message})");
+                    continue;
+                }
+                if (run.TimedOut)
+                {
+                    problems.Add($"{project.Name}: /ListTests did not finish within {ListTimeoutMs / 1000}s");
+                    continue;
+                }
+                tests = ParseListTestsOutput(run.StdOut);
+                if (run.ExitCode != 0 && tests.Length == 0)
+                {
+                    var err = run.StdErr.Trim();
+                    problems.Add($"{project.Name}: /ListTests failed (exit {run.ExitCode}): {(err.Length <= 200 ? err : err.Substring(0, 200))}");
+                    continue;
+                }
+                ListCache[project.AssemblyPath] = (stamp, tests);
+            }
+            all.AddRange(tests);
+            assemblyInfos.Add(new JsonObject
+            {
+                ["project"] = project.Name,
+                ["assembly"] = project.AssemblyPath,
+                ["testCount"] = tests.Length,
+            });
+        }
+
+        var matched = string.IsNullOrWhiteSpace(nameContains)
+            ? all
+            : all.Where(t => t.IndexOf(nameContains!, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+        var returned = matched.Take(maxResults).ToList();
+
+        var json = new JsonObject
+        {
+            ["totalDiscovered"] = all.Count,
+            ["totalMatching"] = matched.Count,
+            ["returned"] = returned.Count,
+            ["truncated"] = matched.Count > returned.Count,
+            ["nameContains"] = string.IsNullOrWhiteSpace(nameContains) ? null : nameContains,
+            ["assemblies"] = assemblyInfos,
+            ["tests"] = new JsonArray(returned.Select(t => (JsonNode)t).ToArray()),
+        };
+        if (problems.Count > 0)
+            json["problems"] = new JsonArray(problems.Select(p => (JsonNode)p).ToArray());
+        return json.ToJsonString();
+    }
+
+    private static string[] ParseListTestsOutput(string stdout)
+    {
+        var lines = stdout.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var marker = Array.FindIndex(lines, l => l.IndexOf("The following Tests are available", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (marker < 0)
+            return Array.Empty<string>();
+        // vstest indents test names; adapter diagnostics (e.g. "[xUnit.net ...] Discovering:")
+        // start at column 0 and must not be mistaken for tests.
+        return lines.Skip(marker + 1)
+            .Where(l => l.Length > 0 && char.IsWhiteSpace(l[0]))
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && l[0] != '[')
+            .ToArray();
     }
 
     private static bool MatchesAssembly(string assemblyPath, string filterValue)
@@ -229,47 +364,155 @@ internal static class VsTestConsoleRunner
 
     private static async Task<string> RunVsTestAsync(
         string vsTestPath, List<string> assemblies, string? filterExpr,
-        string filterType, string filterValue, string scope, CancellationToken ct)
+        string filterType, string filterValue, string scope, bool structured, CancellationToken ct)
     {
         var args = new StringBuilder();
         foreach (var assembly in assemblies)
             args.Append('"').Append(assembly).Append("\" ");
         if (filterExpr is not null)
-            args.Append("/TestCaseFilter:\"").Append(filterExpr).Append('"');
+            args.Append("/TestCaseFilter:\"").Append(filterExpr).Append("\" ");
 
-        ProcessRunResult run;
+        string? trxPath = null;
+        if (structured)
+        {
+            trxPath = Path.Combine(Path.GetTempPath(), "kaeo-tests-" + Guid.NewGuid().ToString("N") + ".trx");
+            args.Append("/logger:\"trx;LogFileName=").Append(trxPath).Append('"');
+        }
+
         try
         {
-            run = await ProcessRunner.RunAsync(vsTestPath, args.ToString(), null, RunTimeoutMs, ct).ConfigureAwait(false);
+            ProcessRunResult run;
+            try
+            {
+                run = await ProcessRunner.RunAsync(vsTestPath, args.ToString(), null, RunTimeoutMs, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                return $"Could not start vstest.console: {ex.Message}";
+            }
+
+            if (structured && !run.TimedOut)
+            {
+                var json = TryBuildStructuredResult(trxPath!, filterType, filterValue, filterExpr, scope, run);
+                if (json is not null)
+                    return json;
+                // TRX missing/unparseable: fall through to text output with an honesty note.
+            }
+
+            var output = string.IsNullOrWhiteSpace(run.StdErr) ? run.StdOut : run.StdOut + "\n" + run.StdErr;
+
+            var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 15)));
+            var summary = lines.LastOrDefault(l =>
+                l.IndexOf("Passed!", StringComparison.OrdinalIgnoreCase) >= 0
+                || l.IndexOf("Failed!", StringComparison.OrdinalIgnoreCase) >= 0
+                || l.IndexOf("Total tests:", StringComparison.OrdinalIgnoreCase) >= 0
+                || l.IndexOf("No test matches", StringComparison.OrdinalIgnoreCase) >= 0
+                || l.IndexOf("No test is available", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            var header = string.IsNullOrWhiteSpace(filterValue)
+                ? $"Full test run via vstest.console (scope: {scope}; results do not appear in Test Explorer)"
+                : $"Filtered test run via vstest.console ({filterType}={filterValue}; scope: {scope}"
+                    + (filterExpr is not null ? $"; filter: {filterExpr}" : string.Empty)
+                    + "; results do not appear in Test Explorer)";
+            if (structured)
+                header += " (structured JSON was requested but the TRX results were unavailable; text output only)";
+
+            if (run.TimedOut)
+                return $"{header} did not finish within {RunTimeoutMs / 1000}s; partial output:\n{tail}";
+            if (summary is null)
+                return $"{header} produced no run summary (exit code {run.ExitCode}):\n{tail}";
+            return $"{header}:\n{tail}";
         }
-        catch (OperationCanceledException)
+        finally
         {
-            throw;
+            if (trxPath is not null)
+            {
+                try { File.Delete(trxPath); }
+                catch (Exception ex) { DebugLog.Warn($"Could not delete temp TRX '{trxPath}': {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the structured JSON result from the TRX file. Non-passed tests are listed first so
+    /// failures are never hidden by the entry cap; truncation is flagged explicitly. Returns null
+    /// when the TRX is missing or unparseable (caller falls back to text with a note).
+    /// </summary>
+    private static string? TryBuildStructuredResult(
+        string trxPath, string filterType, string filterValue, string? filterExpr, string scope, ProcessRunResult run)
+    {
+        try
+        {
+            if (!File.Exists(trxPath))
+                return null;
+            var report = TrxParser.Parse(File.ReadAllText(trxPath));
+
+            const int maxEntries = 500;
+            var ordered = report.Results
+                .OrderByDescending(r => !string.Equals(r.Outcome, "Passed", StringComparison.OrdinalIgnoreCase))
+                .ThenBy(r => r.TestName, StringComparer.Ordinal)
+                .ToList();
+            var tests = new JsonArray();
+            foreach (var r in ordered.Take(maxEntries))
+            {
+                var obj = new JsonObject
+                {
+                    ["name"] = r.TestName,
+                    ["fullyQualifiedName"] = r.FullyQualifiedName,
+                    ["outcome"] = r.Outcome,
+                    ["duration"] = r.Duration,
+                };
+                if (!string.Equals(r.Outcome, "Passed", StringComparison.OrdinalIgnoreCase))
+                {
+                    obj["errorMessage"] = Cap(r.ErrorMessage, 4000);
+                    obj["stackTrace"] = Cap(r.StackTrace, 4000);
+                }
+                if (!string.IsNullOrEmpty(r.StdOut))
+                    obj["stdOut"] = Cap(r.StdOut, 1000);
+                tests.Add(obj);
+            }
+
+            var hasFilter = !string.IsNullOrWhiteSpace(filterValue);
+            var json = new JsonObject
+            {
+                ["mode"] = hasFilter ? "filtered-vstest" : "full-vstest",
+                ["filterType"] = hasFilter ? filterType : null,
+                ["filterValue"] = hasFilter ? filterValue : null,
+                ["filter"] = filterExpr,
+                ["scope"] = scope,
+                ["exitCode"] = run.ExitCode,
+                ["note"] = "Run via vstest.console; results do not appear in Test Explorer.",
+                ["summary"] = new JsonObject
+                {
+                    ["outcome"] = report.Summary.Outcome,
+                    ["total"] = report.Summary.Total,
+                    ["executed"] = report.Summary.Executed,
+                    ["passed"] = report.Summary.Passed,
+                    ["failed"] = report.Summary.Failed,
+                    ["notExecuted"] = report.Summary.NotExecuted,
+                    ["error"] = report.Summary.Error,
+                    ["timeout"] = report.Summary.Timeout,
+                    ["aborted"] = report.Summary.Aborted,
+                    ["inconclusive"] = report.Summary.Inconclusive,
+                },
+                ["testsReturned"] = tests.Count,
+                ["testsTruncated"] = ordered.Count > maxEntries,
+                ["tests"] = tests,
+            };
+            return json.ToJsonString();
         }
         catch (Exception ex)
         {
-            return $"Could not start vstest.console: {ex.Message}";
+            DebugLog.Warn($"Could not parse TRX results '{trxPath}': {ex.Message}");
+            return null;
         }
-
-        var output = string.IsNullOrWhiteSpace(run.StdErr) ? run.StdOut : run.StdOut + "\n" + run.StdErr;
-
-        var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-        var tail = string.Join("\n", lines.Skip(Math.Max(0, lines.Length - 15)));
-        var summary = lines.LastOrDefault(l =>
-            l.IndexOf("Passed!", StringComparison.OrdinalIgnoreCase) >= 0
-            || l.IndexOf("Failed!", StringComparison.OrdinalIgnoreCase) >= 0
-            || l.IndexOf("Total tests:", StringComparison.OrdinalIgnoreCase) >= 0
-            || l.IndexOf("No test matches", StringComparison.OrdinalIgnoreCase) >= 0
-            || l.IndexOf("No test is available", StringComparison.OrdinalIgnoreCase) >= 0);
-
-        var header = $"Filtered test run via vstest.console ({filterType}={filterValue}; scope: {scope}"
-            + (filterExpr is not null ? $"; filter: {filterExpr}" : string.Empty)
-            + "; results do not appear in Test Explorer)";
-
-        if (run.TimedOut)
-            return $"{header} did not finish within {RunTimeoutMs / 1000}s; partial output:\n{tail}";
-        if (summary is null)
-            return $"{header} produced no run summary (exit code {run.ExitCode}):\n{tail}";
-        return $"{header}:\n{tail}";
     }
+
+    private static string? Cap(string? value, int max)
+        => value is null || value.Length <= max ? value : value.Substring(0, max) + "…(truncated)";
 }
