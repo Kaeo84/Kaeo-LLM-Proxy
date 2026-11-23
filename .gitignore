@@ -36,3 +36,6 @@ _gsdata*/
 
 # MSBuild preprocess diagnostics
 preprocessed.xml
+
+# Copilot agent session artifacts
+session-state/
