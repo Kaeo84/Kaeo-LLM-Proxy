@@ -346,6 +346,159 @@ internal static class BuiltInVsTools
             },
             new()
             {
+                Name = "vs_add_package",
+                Description = "Add a NuGet package to an SDK-style project via 'dotnet add package'. Omit version for latest stable. Reports the resolved version, central-package-management note, and restore output. Classic projects are refused explicitly.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["project"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project name or path (csproj/vbproj/fsproj)"
+                        },
+                        ["packageId"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "NuGet package id (e.g. Newtonsoft.Json)"
+                        },
+                        ["version"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional package version; omit for latest stable"
+                        }
+                    },
+                    ["required"] = new JsonArray { "project", "packageId" }
+                }
+            },
+            new()
+            {
+                Name = "vs_remove_package",
+                Description = "Remove a NuGet package from an SDK-style project via 'dotnet remove package'. Classic projects are refused explicitly.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["project"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project name or path"
+                        },
+                        ["packageId"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "NuGet package id to remove"
+                        }
+                    },
+                    ["required"] = new JsonArray { "project", "packageId" }
+                }
+            },
+            new()
+            {
+                Name = "vs_add_project_reference",
+                Description = "Add a project-to-project reference via 'dotnet add reference'. Both projects resolve by name or path; SDK-style only.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["project"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project that gains the reference (name or path)"
+                        },
+                        ["referencedProject"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project to reference (name or path)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "project", "referencedProject" }
+                }
+            },
+            new()
+            {
+                Name = "vs_remove_project_reference",
+                Description = "Remove a project-to-project reference via 'dotnet remove reference'. SDK-style only.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["project"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project that loses the reference (name or path)"
+                        },
+                        ["referencedProject"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Referenced project to remove (name or path)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "project", "referencedProject" }
+                }
+            },
+            new()
+            {
+                Name = "vs_create_project",
+                Description = "Create a project from a dotnet template under the solution root and (by default) add it to the solution (.sln/.slnx). Reports honestly if the solution add fails. Refuses to overwrite an existing directory.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["template"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "dotnet new template short name (e.g. console, classlib, xunit, mstest, web)"
+                        },
+                        ["name"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project name (also the directory name under the solution root)"
+                        },
+                        ["framework"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional target framework (e.g. net10.0); template default if omitted"
+                        },
+                        ["addToSolution"] = new JsonObject
+                        {
+                            ["type"] = "boolean",
+                            ["description"] = "Add the new project to the solution (default true)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "template", "name" }
+                }
+            },
+            new()
+            {
+                Name = "vs_set_target_framework",
+                Description = "Set an SDK-style project's TargetFramework (single) or TargetFrameworks (';' separated multi-target) with a formatting-preserving edit, then restore. Preserves comments/indentation/newlines/BOM. Classic projects are refused explicitly.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["project"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Project name or path"
+                        },
+                        ["framework"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Target framework moniker (e.g. net10.0) or ';' separated list for multi-targeting"
+                        }
+                    },
+                    ["required"] = new JsonArray { "project", "framework" }
+                }
+            },
+            new()
+            {
                 Name = "vs_get_diagnostics",
                 Description = "Get compiler diagnostics (errors, warnings, info) for a file or project. Uses Roslyn background compilation.",
                 Schema = new JsonObject
@@ -874,6 +1027,12 @@ internal static class BuiltInVsTools
                 "vs_debug_list_breakpoints" => await VsDebuggerTools.ListBreakpointsAsync(args, ct),
                 "vs_debug_get_state" => await VsDebuggerTools.GetStateAsync(args, ct),
                 "vs_debug_evaluate" => await VsDebuggerTools.EvaluateAsync(args, ct),
+                "vs_add_package" => await VsProjectMutationTools.AddPackageAsync(args, ct),
+                "vs_remove_package" => await VsProjectMutationTools.RemovePackageAsync(args, ct),
+                "vs_add_project_reference" => await VsProjectMutationTools.AddProjectReferenceAsync(args, ct),
+                "vs_remove_project_reference" => await VsProjectMutationTools.RemoveProjectReferenceAsync(args, ct),
+                "vs_create_project" => await VsProjectMutationTools.CreateProjectAsync(args, ct),
+                "vs_set_target_framework" => await VsProjectMutationTools.SetTargetFrameworkAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
