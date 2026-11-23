@@ -41,4 +41,20 @@ internal sealed class SshSettings
 
     /// <summary>How much SSH activity is recorded into the host's MCP request log.</summary>
     public SshMcpLogLevel McpLogLevel { get; set; } = SshMcpLogLevel.Connectivity;
+
+    /// <summary>
+    /// Command guardrail for ssh_exec. Guarded (default) permits only allow-listed read-only
+    /// commands with no shell metacharacters; FullAccess is an explicit opt-in to unrestricted use.
+    /// </summary>
+    public SshCommandPolicy CommandPolicy { get; set; } = SshCommandPolicy.Guarded;
+
+    /// <summary>Newline/comma-separated read-only commands permitted in Guarded mode.</summary>
+    public string AllowedCommands { get; set; } = SshCommandGuard.DefaultAllowedCommands;
+
+    /// <summary>
+    /// When true (default), a central-store credential may only be sent to the stored host it is
+    /// bound to; ad-hoc host + credentialName is rejected unless a stored connection ties them
+    /// together. Prevents phishing secrets to an attacker-controlled host. Opt out for full access.
+    /// </summary>
+    public bool BindCredentialsToStoredHosts { get; set; } = true;
 }

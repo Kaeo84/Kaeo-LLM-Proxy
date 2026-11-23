@@ -57,7 +57,7 @@ internal sealed class SshTools(
         if (!settings.ConnectToolEnabled)
             return "The ssh_connect tool is disabled in the SSH module settings.";
 
-        if (!TryBuildRequest(name, host, port, username, credentialName, password, privateKey,
+        if (!TryBuildRequest(settings, name, host, port, username, credentialName, password, privateKey,
                 certificate, idleTimeoutSeconds, out SshConnectionRequest? request, out string? error))
         {
             return error!;
@@ -141,7 +141,13 @@ internal sealed class SshTools(
         }
         else if (!string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(host))
         {
-            if (!TryBuildRequest(name, host, port, username, credentialName, password, privateKey,
+            // Guardrail: ssh_exec must not open new connections when ssh_connect is disabled;
+            // otherwise turning connect off would not actually prevent new SSH sessions.
+            if (!settings.ConnectToolEnabled)
+                return "Opening new SSH connections is disabled (ssh_connect is off in the SSH module " +
+                    "settings). Enable ssh_connect, or run ssh_exec on an already-open connection.";
+
+            if (!TryBuildRequest(settings, name, host, port, username, credentialName, password, privateKey,
                     certificate, idleTimeoutSeconds, out SshConnectionRequest? request, out string? error))
             {
                 return error!;
@@ -196,6 +202,20 @@ internal sealed class SshTools(
         }
 
         string trimmedCommand = command.Trim();
+
+        // Guardrail: enforce the command policy server-side before anything runs remotely.
+        if (!SshCommandGuard.TryEvaluate(trimmedCommand, settings, out string? blockReason))
+        {
+            _activity.Write(new McpActivityEntry(SshActivityLogger.Source, "exec")
+            {
+                Target = key,
+                IsError = true,
+                ErrorMessage = blockReason,
+                RequestDetail = SummarizeCommand(trimmedCommand),
+            });
+            return blockReason!;
+        }
+
         Stopwatch stopwatch = Stopwatch.StartNew();
         try
         {
@@ -454,7 +474,7 @@ internal sealed class SshTools(
     /// information is missing.
     /// </summary>
     private bool TryBuildRequest(
-        string? name, string? host, int? port, string? username, string? credentialName,
+        SshSettings settings, string? name, string? host, int? port, string? username, string? credentialName,
         string? password, string? privateKey, string? certificate, int? idleTimeoutSeconds,
         out SshConnectionRequest? request, out string? error)
     {
@@ -490,6 +510,25 @@ internal sealed class SshTools(
         string? resolvedPassword = NullIfBlank(password);
         string? resolvedPrivateKey = NullIfBlank(privateKey);
         string? resolvedCertificate = NullIfBlank(certificate);
+
+        // Guardrail: a central credential may only be sent to a host it is bound to. An ad-hoc
+        // host + credentialName is rejected unless a stored connection ties that credential to
+        // this host:port, so a prompt-injected model cannot phish secrets to an attacker host.
+        if (settings.BindCredentialsToStoredHosts && stored is null && resolvedCredentialName is not null)
+        {
+            bool bound = _repository.LoadConnections().Any(c =>
+                string.Equals(c.CredentialName, resolvedCredentialName, StringComparison.Ordinal) &&
+                string.Equals(c.Host, resolvedHost, StringComparison.OrdinalIgnoreCase) &&
+                c.Port == resolvedPort);
+            if (!bound)
+            {
+                error = $"The credential '{resolvedCredentialName}' is not bound to host '{resolvedHost}:{resolvedPort}'. " +
+                    "Central credentials may only be used with the stored connection they belong to; use that " +
+                    "stored connection name, or disable 'Bind credentials to stored hosts' in the SSH module " +
+                    "settings to allow ad-hoc hosts.";
+                return false;
+            }
+        }
 
         // Central credential store fills anything the caller did not supply inline.
         if (resolvedCredentialName is not null)

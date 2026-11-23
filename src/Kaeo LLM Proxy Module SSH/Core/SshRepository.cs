@@ -27,6 +27,9 @@ internal sealed class SshRepository(IModuleDatabase database)
     private const string CommandTimeoutKey = "command_timeout_seconds";
     private const string MaxOutputCharsKey = "max_output_chars";
     private const string McpLogLevelKey = "mcp_log_level";
+    private const string CommandPolicyKey = "command_policy";
+    private const string AllowedCommandsKey = "allowed_commands";
+    private const string BindCredentialsKey = "bind_credentials_to_hosts";
 
     private readonly IModuleDatabase _database = database;
 
@@ -62,6 +65,9 @@ internal sealed class SshRepository(IModuleDatabase database)
             CommandTimeoutSeconds = Math.Clamp(ReadInt(values, CommandTimeoutKey, 60), 5, 3_600),
             MaxOutputChars = Math.Clamp(ReadInt(values, MaxOutputCharsKey, 20_000), 1_000, 200_000),
             McpLogLevel = ReadLogLevel(values, McpLogLevelKey, SshMcpLogLevel.Connectivity),
+            CommandPolicy = ReadEnum(values, CommandPolicyKey, SshCommandPolicy.Guarded),
+            AllowedCommands = ReadString(values, AllowedCommandsKey, SshCommandGuard.DefaultAllowedCommands),
+            BindCredentialsToStoredHosts = ReadBool(values, BindCredentialsKey, true),
         };
     }
 
@@ -79,6 +85,9 @@ internal sealed class SshRepository(IModuleDatabase database)
             (CommandTimeoutKey, settings.CommandTimeoutSeconds.ToString()),
             (MaxOutputCharsKey, settings.MaxOutputChars.ToString()),
             (McpLogLevelKey, settings.McpLogLevel.ToString()),
+            (CommandPolicyKey, settings.CommandPolicy.ToString()),
+            (AllowedCommandsKey, settings.AllowedCommands ?? SshCommandGuard.DefaultAllowedCommands),
+            (BindCredentialsKey, settings.BindCredentialsToStoredHosts ? "1" : "0"),
         ];
 
         // M11: apply every key in one transaction so a failure or a concurrent writer cannot
@@ -271,5 +280,14 @@ internal sealed class SshRepository(IModuleDatabase database)
     private static SshMcpLogLevel ReadLogLevel(Dictionary<string, string> values, string key, SshMcpLogLevel fallback) =>
         values.TryGetValue(key, out string? raw) && Enum.TryParse(raw, ignoreCase: true, out SshMcpLogLevel level)
             ? level
+            : fallback;
+
+    private static string ReadString(Dictionary<string, string> values, string key, string fallback) =>
+        values.TryGetValue(key, out string? raw) && !string.IsNullOrWhiteSpace(raw) ? raw : fallback;
+
+    private static TEnum ReadEnum<TEnum>(Dictionary<string, string> values, string key, TEnum fallback)
+        where TEnum : struct, Enum =>
+        values.TryGetValue(key, out string? raw) && Enum.TryParse(raw, ignoreCase: true, out TEnum parsed)
+            ? parsed
             : fallback;
 }

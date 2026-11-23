@@ -32,6 +32,11 @@
 		<IsModuleProject>true</IsModuleProject>
 	</PropertyGroup>
 
+	<ItemGroup>
+		<!-- The command guardrail is security-critical pure logic; let the test suite exercise it. -->
+		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
+	</ItemGroup>
+
 	<Import Project="..\ModuleBuild.targets" />
 
 </Project>

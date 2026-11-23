@@ -33,6 +33,11 @@ internal sealed class SshConfigPage : TabPage
     private NumericUpDown _nudMaxOutput = null!;
     private ComboBox _cmbLogLevel = null!;
 
+    // Command safety controls
+    private ComboBox _cmbCommandPolicy = null!;
+    private TextBox _txtAllowedCommands = null!;
+    private CheckBox _chkBindCredentials = null!;
+
     // Stored connections controls
     private ListView _lstConnections = null!;
     private Button _btnAddConnection = null!;
@@ -72,15 +77,16 @@ internal sealed class SshConfigPage : TabPage
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowOnly,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 5; i++)
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         layout.Controls.Add(BuildLimitsGroup(), 0, 0);
-        layout.Controls.Add(BuildStoredConnectionsGroup(), 0, 1);
-        layout.Controls.Add(BuildOpenConnectionsGroup(), 0, 2);
+        layout.Controls.Add(BuildSafetyGroup(), 0, 1);
+        layout.Controls.Add(BuildStoredConnectionsGroup(), 0, 2);
+        layout.Controls.Add(BuildOpenConnectionsGroup(), 0, 3);
 
         Label note = new()
         {
@@ -90,9 +96,58 @@ internal sealed class SshConfigPage : TabPage
             Text = "Settings save immediately. Connections close automatically after their idle timeout; " +
                 "0 means never. Prefer stored credentials over passing literal passwords to the tools.",
         };
-        layout.Controls.Add(note, 0, 3);
+        layout.Controls.Add(note, 0, 4);
 
         return layout;
+    }
+
+    private GroupBox BuildSafetyGroup()
+    {
+        GroupBox group = new() { Text = "Command Safety", AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(6) };
+
+        TableLayoutPanel inner = new() { AutoSize = true, ColumnCount = 2, RowCount = 3 };
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        for (int i = 0; i < 3; i++)
+            inner.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _cmbCommandPolicy = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Margin = new Padding(0, 2, 12, 2),
+            Width = 260,
+        };
+        _cmbCommandPolicy.Items.AddRange(["Guarded (read-only allowlist)", "Full access (unrestricted)"]);
+        _cmbCommandPolicy.SelectedIndexChanged += SshSetting_Changed;
+
+        _chkBindCredentials = new CheckBox
+        {
+            Text = "Bind central credentials to their stored hosts (block ad-hoc host + credential)",
+            AutoSize = true,
+            Margin = new Padding(0, 4, 0, 4),
+        };
+        _chkBindCredentials.CheckedChanged += SshSetting_Changed;
+
+        _txtAllowedCommands = new TextBox
+        {
+            Multiline = true,
+            Height = 90,
+            Dock = DockStyle.Fill,
+            ScrollBars = ScrollBars.Vertical,
+            Margin = new Padding(0, 2, 0, 2),
+        };
+        // Save on focus loss rather than per keystroke to avoid a DB write per character.
+        _txtAllowedCommands.Leave += SshSetting_Changed;
+
+        inner.Controls.Add(MakeCaption("Command policy:"), 0, 0);
+        inner.Controls.Add(_cmbCommandPolicy, 1, 0);
+        inner.Controls.Add(_chkBindCredentials, 0, 1);
+        inner.SetColumnSpan(_chkBindCredentials, 2);
+        inner.Controls.Add(MakeCaption("Allowed commands (Guarded):"), 0, 2);
+        inner.Controls.Add(_txtAllowedCommands, 1, 2);
+
+        group.Controls.Add(inner);
+        return group;
     }
 
     private GroupBox BuildLimitsGroup()
@@ -247,6 +302,9 @@ internal sealed class SshConfigPage : TabPage
             _nudCommandTimeout.Value = settings.CommandTimeoutSeconds;
             _nudMaxOutput.Value = settings.MaxOutputChars;
             _cmbLogLevel.SelectedIndex = settings.McpLogLevel == SshMcpLogLevel.Full ? 1 : 0;
+            _cmbCommandPolicy.SelectedIndex = settings.CommandPolicy == SshCommandPolicy.FullAccess ? 1 : 0;
+            _txtAllowedCommands.Text = settings.AllowedCommands;
+            _chkBindCredentials.Checked = settings.BindCredentialsToStoredHosts;
         }
         catch (Exception ex) when (ex is IOException or DbException)
         {
@@ -277,6 +335,9 @@ internal sealed class SshConfigPage : TabPage
                 CommandTimeoutSeconds = (int)_nudCommandTimeout.Value,
                 MaxOutputChars = (int)_nudMaxOutput.Value,
                 McpLogLevel = _cmbLogLevel.SelectedIndex == 1 ? SshMcpLogLevel.Full : SshMcpLogLevel.Connectivity,
+                CommandPolicy = _cmbCommandPolicy.SelectedIndex == 1 ? SshCommandPolicy.FullAccess : SshCommandPolicy.Guarded,
+                AllowedCommands = _txtAllowedCommands.Text,
+                BindCredentialsToStoredHosts = _chkBindCredentials.Checked,
             });
         }
         catch (Exception ex) when (ex is IOException or DbException)
