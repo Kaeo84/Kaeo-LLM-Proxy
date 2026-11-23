@@ -1345,35 +1345,61 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             var streamingText = new ThrottledText(streaming);
             string? compactionSummary = null;
 
+            // Replace history with just the system prompt (from original history) plus the
+            // compaction result, and show the summary in the streaming line.
+            void ApplySummary(string summary)
+            {
+                var systemMsg = _history.FirstOrDefault(m => m.Role == ChatRole.System);
+                _history.Clear();
+                if (systemMsg is not null)
+                    _history.Add(systemMsg);
+                _history.Add(new ChatMessage(ChatRole.User,
+                    "[Conversation compacted — previous summary:]"));
+                _history.Add(new ChatMessage(ChatRole.Assistant, summary));
+
+                streamingText.Stop();
+                streaming.Text = summary;
+                compactionSummary = summary;
+                UpdateContextBar();
+            }
+
             try
             {
-                await _engine.RunAsync(
-                    client, compactionAgent,
-                    modelName, AgentMode.Interactive, compactionHistory,
-                    compactionPrompt,
-                    new AgentEvents
-                    {
-                        TextDelta = delta => streamingText.Append(delta),
-                        RequestPermission = _ => Task.FromResult(false),
-                        TurnComplete = r =>
+                if (compactionDefaults.HierarchicalCompaction)
+                {
+                    // Map-reduce compaction: summarize ~8K-token segments independently, then
+                    // merge. Tool-less direct model calls (no agent loop, no permission gate
+                    // needed); uses the same compaction-model pick resolved above.
+                    var summary = await HierarchicalCompactor.CompactAsync(
+                        _history,
+                        async (prompt, token) =>
                         {
-                            // Replace history with just the system prompt (from original history)
-                            // plus the compaction result.
-                            var systemMsg = _history.FirstOrDefault(m => m.Role == ChatRole.System);
-                            _history.Clear();
-                            if (systemMsg is not null)
-                                _history.Add(systemMsg);
-                            _history.Add(new ChatMessage(ChatRole.User,
-                                "[Conversation compacted — previous summary:]"));
-                            _history.Add(new ChatMessage(ChatRole.Assistant, r.FinalText));
-
-                            streamingText.Stop();
-                            streaming.Text = r.FinalText;
-                            compactionSummary = r.FinalText;
-                            UpdateContextBar();
+                            var msgs = new List<ChatMessage>
+                            {
+                                new(ChatRole.System, "You summarize conversations concisely. You have no tools; respond with the summary text only."),
+                                new(ChatRole.User, prompt),
+                            };
+                            var response = await client!.GetResponseAsync(msgs, new ChatOptions { ModelId = modelName }, token);
+                            return response.Text ?? string.Empty;
                         },
-                    },
-                    ct);
+                        progress: p => Lines.Add(new ChatLine { Kind = "status", Text = p }),
+                        ct: ct);
+                    ApplySummary(summary);
+                }
+                else
+                {
+                    await _engine.RunAsync(
+                        client, compactionAgent,
+                        modelName, AgentMode.Interactive, compactionHistory,
+                        compactionPrompt,
+                        new AgentEvents
+                        {
+                            TextDelta = delta => streamingText.Append(delta),
+                            RequestPermission = _ => Task.FromResult(false),
+                            TurnComplete = r => ApplySummary(r.FinalText),
+                        },
+                        ct);
+                }
 
                 // Persist the summary as a task-memory note so context survives the history
                 // replacement (and future sessions). Tolerant of a locked/missing notes file.
