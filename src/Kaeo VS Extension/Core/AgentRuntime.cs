@@ -126,6 +126,9 @@ internal sealed class AgentRuntime
         if (history is null) throw new ArgumentNullException(nameof(history));
         if (events is null) throw new ArgumentNullException(nameof(events));
 
+        // Mode-aware built-in tools (e.g. vs_inquiry's AutoPilot-only timeout) read this.
+        BuiltInVsTools.CurrentMode = mode;
+
         history.Add(new ChatMessage(ChatRole.User, userPrompt));
         var defaults = (await _settings.LoadAsync()).Defaults ?? new Defaults();
         var maxIterations = defaults.MaxToolIterations > 0 ? defaults.MaxToolIterations : MaxToolIterations;
@@ -402,7 +405,15 @@ internal sealed class AgentRuntime
             // Default files are seeded at package/settings init, not here: recreating them
             // per turn resurrected files the user deliberately deleted.
             var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);
-            return InstructionFileLoader.CombineInstructions(instructions);
+            var combined = InstructionFileLoader.CombineInstructions(instructions);
+
+            // Task memory: surface recent agent notes so decisions survive compaction and new
+            // sessions. Read on this background thread; tolerant of a missing/locked notes file.
+            var notes = VsNotesTools.ReadRecentNotes(solutionRoot, 10);
+            if (!string.IsNullOrWhiteSpace(notes))
+                combined += "\n\n## Recent session notes (from .kaeo/notes.md, newest first)\n" + notes;
+
+            return combined;
         }
         catch (Exception ex)
         {

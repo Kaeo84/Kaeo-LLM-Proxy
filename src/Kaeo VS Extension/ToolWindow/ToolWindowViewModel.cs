@@ -253,6 +253,10 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         CurrentAgent = "Agent";
         CurrentMode = "Interactive";
 
+        // vs_notify posts a non-blocking status line here. The tool marshals to the UI thread
+        // before invoking this, so adding to the UI-affine transcript collection is safe.
+        BuiltInVsTools.StatusNotifier = text => Lines.Add(new ChatLine { Kind = "status", Text = text });
+
         // Re-evaluate color overrides whenever the VS scheme changes so they repaint (or
         // fall back to the theme brush) instead of freezing to one scheme.
         ThemeColors.ThemeChanged += OnVsThemeChanged;
@@ -1228,6 +1232,7 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             var streaming = CreateLine("assistant");
             Lines.Add(streaming);
             var streamingText = new ThrottledText(streaming);
+            string? compactionSummary = null;
 
             try
             {
@@ -1253,10 +1258,16 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
                             streamingText.Stop();
                             streaming.Text = r.FinalText;
+                            compactionSummary = r.FinalText;
                             UpdateContextBar();
                         },
                     },
                     ct);
+
+                // Persist the summary as a task-memory note so context survives the history
+                // replacement (and future sessions). Tolerant of a locked/missing notes file.
+                if (compactionSummary is not null)
+                    await VsNotesTools.AppendCompactionNoteAsync(compactionSummary);
 
                 // Show the compacted text folded under a status line
                 Lines.Add(new ChatLine

@@ -24,6 +24,19 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 internal static class BuiltInVsTools
 {
     /// <summary>
+    /// The mode of the turn currently executing, set by <see cref="AgentRuntime"/> at turn start.
+    /// Tools that behave differently per mode (e.g. vs_inquiry's AutoPilot-only timeout) read this.
+    /// Turns run sequentially per tool window, so a single static is sufficient.
+    /// </summary>
+    internal static AgentMode CurrentMode { get; set; } = AgentMode.Interactive;
+
+    /// <summary>
+    /// Posts a status line to the active transcript. Set by the tool-window view model; the
+    /// vs_notify tool marshals to the UI thread before invoking it. Null when no window is loaded.
+    /// </summary>
+    internal static Action<string>? StatusNotifier { get; set; }
+
+    /// <summary>
     /// Returns all built-in tool definitions.
     /// </summary>
     public static IReadOnlyList<McpTool> GetToolDefinitions()
@@ -499,6 +512,64 @@ internal static class BuiltInVsTools
             },
             new()
             {
+                Name = "vs_append_note",
+                Description = "Append a task-memory note to .kaeo/notes.md at the solution root (created on first use). Notes persist across sessions and compaction; the most recent entries are injected into the system prompt. Use for decisions, findings, and context worth remembering.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["text"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The note text (multi-line is collapsed to one line)"
+                        },
+                        ["tags"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Optional comma-separated tags, e.g. 'decision, api'"
+                        }
+                    },
+                    ["required"] = new JsonArray { "text" }
+                }
+            },
+            new()
+            {
+                Name = "vs_read_notes",
+                Description = "Read recent task-memory notes from .kaeo/notes.md, newest first.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["maxEntries"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "Maximum entries to return (default 10)"
+                        }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_notify",
+                Description = "Post a non-blocking status line to the chat transcript to inform the user of progress. Does not ask a question and does not wait for a response; use vs_inquiry when you need an answer.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["text"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The status message to show"
+                        }
+                    },
+                    ["required"] = new JsonArray { "text" }
+                }
+            },
+            new()
+            {
                 Name = "vs_get_diagnostics",
                 Description = "Get compiler diagnostics (errors, warnings, info) for a file or project. Uses Roslyn background compilation.",
                 Schema = new JsonObject
@@ -706,6 +777,16 @@ internal static class BuiltInVsTools
                             ["type"] = "array",
                             ["items"] = new JsonObject { ["type"] = "string" },
                             ["description"] = "Optional list of 5-10 suggestions shown as numbered list"
+                        },
+                        ["timeoutSeconds"] = new JsonObject
+                        {
+                            ["type"] = "integer",
+                            ["description"] = "AutoPilot only: seconds to wait before proceeding with defaultOption. Ignored in Interactive/Bypass (a human is assumed present)."
+                        },
+                        ["defaultOption"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "AutoPilot only: the answer to proceed with if timeoutSeconds elapses with no response. The result explicitly states the default was used."
                         }
                     },
                     ["required"] = new JsonArray { "question" }
@@ -1033,6 +1114,9 @@ internal static class BuiltInVsTools
                 "vs_remove_project_reference" => await VsProjectMutationTools.RemoveProjectReferenceAsync(args, ct),
                 "vs_create_project" => await VsProjectMutationTools.CreateProjectAsync(args, ct),
                 "vs_set_target_framework" => await VsProjectMutationTools.SetTargetFrameworkAsync(args, ct),
+                "vs_append_note" => await VsNotesTools.AppendNoteAsync(args, ct),
+                "vs_read_notes" => await VsNotesTools.ReadNotesAsync(args, ct),
+                "vs_notify" => await NotifyAsync(args, ct),
                 _ => $"Unknown built-in tool: {toolName}"
             };
         }
@@ -2134,8 +2218,18 @@ internal static class BuiltInVsTools
             .Cast<string>()
             .ToList();
 
+        // AutoPilot-only timeout: proceed with an explicit default if nobody answers in time.
+        // Interactive/Bypass keep the blocking behavior (a human is assumed present in Interactive;
+        // Bypass already auto-answers upstream), so the timeout is deliberately not applied there.
+        var timeoutSeconds = args?["timeoutSeconds"]?.GetValue<int?>();
+        var defaultOption = args?["defaultOption"]?.GetValue<string>();
+        var applyTimeout = CurrentMode == AgentMode.AutoPilot
+            && timeoutSeconds is > 0
+            && !string.IsNullOrEmpty(defaultOption);
+
         string? response = null;
         int? selectedIndex = null;
+        var timedOut = false;
 
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
 
@@ -2165,7 +2259,28 @@ internal static class BuiltInVsTools
         });
 #pragma warning restore VSSDK007
 
+        // AutoPilot deadline: a UI-thread DispatcherTimer closes the dialog when it elapses.
+        // ShowDialog pumps the dispatcher, so the tick fires inside the modal loop; timedOut is
+        // set and read on the same (UI) thread, so there is no race.
+        System.Windows.Threading.DispatcherTimer? timer = null;
+        if (applyTimeout)
+        {
+            timer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(timeoutSeconds!.Value)
+            };
+            timer.Tick += (_, _) =>
+            {
+                timedOut = true;
+                timer.Stop();
+                try { dialog.Close(); }
+                catch (InvalidOperationException) { /* already closed */ }
+            };
+            timer.Start();
+        }
+
         var result = dialog.ShowDialog();
+        timer?.Stop();
         if (result == true)
         {
             response = dialog.Response;
@@ -2173,7 +2288,19 @@ internal static class BuiltInVsTools
         }
 
         if (response == null)
+        {
+            if (timedOut)
+            {
+                // Explicit, never silent: the model is told the default was used and why.
+                return new JsonObject
+                {
+                    ["response"] = defaultOption,
+                    ["timedOut"] = true,
+                    ["note"] = $"(no answer within {timeoutSeconds}s; proceeded with default: {defaultOption})"
+                }.ToJsonString();
+            }
             return "[User cancelled inquiry]";
+        }
 
         var resultObj = new JsonObject
         {
@@ -2183,6 +2310,19 @@ internal static class BuiltInVsTools
             resultObj["selectedIndex"] = selectedIndex.Value;
 
         return resultObj.ToJsonString();
+    }
+
+    private static async Task<string> NotifyAsync(JsonNode? args, CancellationToken ct)
+    {
+        var text = args?["text"]?.GetValue<string>() ?? throw new ArgumentException("text is required");
+        var notifier = StatusNotifier;
+        if (notifier is null)
+            return "(no transcript is loaded; notification not shown)";
+
+        // The transcript collection is UI-affine; marshal before posting the status line.
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+        notifier(text);
+        return "notification posted to transcript";
     }
 
     private static async Task<string> DetectMemoriesAsync(JsonNode? args, CancellationToken ct)
