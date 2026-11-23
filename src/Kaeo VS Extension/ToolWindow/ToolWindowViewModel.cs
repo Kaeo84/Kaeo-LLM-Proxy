@@ -613,6 +613,8 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
         AgentMessageForegroundHex = string.IsNullOrWhiteSpace(reasoningDefaults.AgentMessageForeground) ? null : reasoningDefaults.AgentMessageForeground;
         TranscriptFontFamily = reasoningDefaults.ChatFontFamily ?? string.Empty;
         TranscriptFontSize = reasoningDefaults.ChatFontSize is > 0 and <= 40 ? reasoningDefaults.ChatFontSize.Value : DefaultChatFontSize;
+        _autoCompact = reasoningDefaults.AutoCompact;
+        _autoCompactThreshold = reasoningDefaults.AutoCompactThreshold is > 0 and <= 100 ? reasoningDefaults.AutoCompactThreshold : 85;
 
         // Connect to enabled MCP servers and pull their tool definitions (per-server
         // failures are swallowed inside; a dead server just contributes no tools).
@@ -1170,12 +1172,16 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             return line;
         }
 
-        /// <summary>
-        /// Updates the context bar from the current conversation history + model size.
-        /// Called after each turn completes and after model selection changes.
-        /// </summary>
-        private void UpdateContextBar()
-        {
+        private bool _autoCompact;
+        private int _autoCompactThreshold = 85;
+        private bool _autoCompactPending;
+
+            /// <summary>
+            /// Updates the context bar from the current conversation history + model size.
+            /// Called after each turn completes and after model selection changes.
+            /// </summary>
+            private void UpdateContextBar()
+            {
             var modelSelection = _modelSelections.FirstOrDefault(
                 m => $"{m.ConnectionName} / {m.Name}" == CurrentModel);
             ContextTokensMax = modelSelection?.ContextSize ?? 0;
@@ -1190,6 +1196,32 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
 
             ContextTokensUsed = EstimateTokenCount(_history);
             OnPropertyChanged(nameof(ContextTooltip));
+
+            // Optional auto-compaction when usage crosses the configured threshold. The
+            // pending flag prevents re-entry (UpdateContextBar also runs inside compaction).
+            if (_autoCompact && ContextTokensMax > 0 && !_isBusy && !_autoCompactPending
+                && ContextTokensUsed * 100.0 / ContextTokensMax >= _autoCompactThreshold)
+            {
+                _autoCompactPending = true;
+                Lines.Add(new ChatLine { Kind = "status", Text = $"[auto-compaction triggered: context at {ContextPercent:F0}% (threshold {_autoCompactThreshold}%)]" });
+                _ = RunAutoCompactAsync();
+            }
+        }
+
+        private async Task RunAutoCompactAsync()
+        {
+            try
+            {
+                await CompactAsync();
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Error("Auto-compaction failed.", ex);
+            }
+            finally
+            {
+                _autoCompactPending = false;
+            }
         }
 
         /// <summary>
@@ -1205,16 +1237,45 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
             return Math.Max(1, totalChars / 4);
         }
 
-        /// <summary>Character count of content items in a single message.</summary>
+        /// <summary>
+        /// Character count of content items in a single message. Tool calls (name + arguments)
+        /// and tool results count too — they occupy real context but are not TextContent,
+        /// so counting text alone badly under-reported usage on tool-heavy turns.
+        /// </summary>
         private static int MessageContentChars(ChatMessage msg)
         {
             var chars = 0;
             foreach (var content in msg.Contents)
             {
-                if (content is TextContent tc)
-                    chars += tc.Text?.Length ?? 0;
+                switch (content)
+                {
+                    case TextContent tc:
+                        chars += tc.Text?.Length ?? 0;
+                        break;
+                    case FunctionCallContent fc:
+                        chars += fc.Name?.Length ?? 0;
+                        chars += SerializedLength(fc.Arguments);
+                        break;
+                    case FunctionResultContent fr:
+                        chars += SerializedLength(fr.Result);
+                        break;
+                }
             }
             return chars;
+        }
+
+        private static int SerializedLength(object? value)
+        {
+            if (value is null) return 0;
+            if (value is string s) return s.Length;
+            try
+            {
+                return System.Text.Json.JsonSerializer.Serialize(value).Length;
+            }
+            catch
+            {
+                return value.ToString()?.Length ?? 0;
+            }
         }
 
         /// <summary>

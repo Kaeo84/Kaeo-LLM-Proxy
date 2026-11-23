@@ -206,6 +206,59 @@ internal static class InstructionFileLoader
     /// <summary>
     /// Combines all instruction content into a single string for model context.
     /// </summary>
+    /// <summary>Convention files auto-detected at the solution root when DetectConventionFiles is on.</summary>
+    public static readonly string[] ConventionFileNames =
+    {
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".cursorrules",
+        ".github/copilot-instructions.md",
+    };
+
+    /// <summary>
+    /// Reads well-known agent convention files from the solution root, skipping any already
+    /// loaded via the settings list. Each file is capped so one huge file cannot dominate the
+    /// prompt; read failures degrade to a warning (shared-file tolerance).
+    /// </summary>
+    public static List<InstructionFile> LoadConventionFiles(string? solutionRoot, IEnumerable<InstructionFile> alreadyLoaded)
+    {
+        var result = new List<InstructionFile>();
+        if (string.IsNullOrEmpty(solutionRoot) || !Directory.Exists(solutionRoot))
+            return result;
+
+        var loaded = new HashSet<string>(alreadyLoaded.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
+        foreach (var name in ConventionFileNames)
+        {
+            var path = Path.Combine(solutionRoot!, name.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(path) || loaded.Contains(path))
+                continue;
+            try
+            {
+                var content = File.ReadAllText(path);
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+                if (content.Length > 20_000)
+                    content = content.Substring(0, 20_000) + "\n…(convention file truncated at 20000 chars)";
+                result.Add(new InstructionFile
+                {
+                    Path = path,
+                    Content = content,
+                    Scope = InstructionScope.Solution,
+                    Name = name + " (auto-detected)",
+                });
+            }
+            catch (IOException ex)
+            {
+                DebugLog.Warn($"Convention file '{path}' is busy; skipping this turn: {ex.Message}");
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                DebugLog.Warn($"Convention file '{path}' is not readable; skipping: {ex.Message}");
+            }
+        }
+        return result;
+    }
+
     public static string CombineInstructions(List<InstructionFile> instructions)
     {
         if (instructions == null || instructions.Count == 0)

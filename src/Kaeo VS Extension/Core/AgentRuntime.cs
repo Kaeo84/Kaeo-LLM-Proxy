@@ -157,6 +157,8 @@ internal sealed class AgentRuntime
         }
 
         string? finalText;
+        var doomLoop = new DoomLoopDetector(defaults.DoomLoopThreshold);
+        var doomLoopTripped = false;
 
         // AutoPilot continuations run as an outer loop rather than recursion so the budget
         // is tracked across the WHOLE run (recursing re-read the defaults and reset it,
@@ -264,7 +266,7 @@ internal sealed class AgentRuntime
                     {
                         AgentMode.Bypass => true,
                         AgentMode.AutoPilot => true,
-                        AgentMode.Interactive => await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(false)),
+                        AgentMode.Interactive => await InteractiveApprovalAsync(tc, defaults, events),
                         _ => true
                     };
 
@@ -281,18 +283,42 @@ internal sealed class AgentRuntime
                     {
                         toolResult = await ExecuteToolAsync(tc, ct);
                         toolCallsExecuted++;
+
+                        // Optional context guard: cap oversized tool results before they enter
+                        // history (verbose build logs etc. can otherwise consume the window).
+                        if (defaults.CapToolResults && toolResult is not null)
+                        {
+                            var cap = defaults.ToolResultMaxChars > 0 ? defaults.ToolResultMaxChars : 30_000;
+                            if (toolResult.Length > cap)
+                                toolResult = toolResult.Substring(0, cap)
+                                    + $"\n…[result truncated at {cap} chars (CapToolResults); original {toolResult.Length} chars]";
+                        }
                     }
 
                     events.ToolCallComplete?.Invoke(tc, approved, toolResult);
 
                     // Ollama expects tool output as a role:"tool" message correlated by tool_call_id.
                     history.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(tc.Id, toolResult ?? string.Empty)]));
+
+                    // Doom-loop guard: identical call failing N times in a row stops the turn
+                    // with an honest notice instead of burning the iteration budget.
+                    if (defaults.DoomLoopGuard && approved
+                        && doomLoop.Record(tc.Name, tc.Arguments?.ToJsonString(), DoomLoopDetector.LooksLikeFailure(toolResult)))
+                    {
+                        var notice = $"[doom-loop guard: '{tc.Name}' failed {Math.Max(2, defaults.DoomLoopThreshold)} times in a row with identical arguments — turn stopped. Try a different approach or ask the user.]";
+                        history.Add(new ChatMessage(ChatRole.User, notice));
+                        finalText = notice;
+                        doomLoopTripped = true;
+                        break;
+                    }
                 }
+
+                if (doomLoopTripped) break;
             }
 
             // AutoPilot: if the model's final text signals "not done" and we have budget,
             // append a continuation prompt and run another pass against the shared budget.
-            if (mode == AgentMode.AutoPilot && finalText is not null && LooksIncomplete(finalText) && autopilotBudget > 0)
+            if (mode == AgentMode.AutoPilot && !doomLoopTripped && finalText is not null && LooksIncomplete(finalText) && autopilotBudget > 0)
             {
                 autopilotBudget--;
                 autoPilotContinued = true;
@@ -307,6 +333,18 @@ internal sealed class AgentRuntime
         var result = new AgentTurnResult(finalText ?? string.Empty, finalText is not null, toolCallsExecuted, autoPilotContinued);
         events.TurnComplete?.Invoke(result);
         return result;
+    }
+
+    /// <summary>
+    /// Interactive-mode approval: known read-only tools auto-approve when the user enabled
+    /// AutoApproveReadOnly; everything else goes through the permission card. A missing
+    /// handler is a wiring bug, not consent: deny rather than silently degrading to Bypass.
+    /// </summary>
+    private static async Task<bool> InteractiveApprovalAsync(ToolCallRequest tc, Defaults defaults, AgentEvents events)
+    {
+        if (defaults.AutoApproveReadOnly && ToolRisk.IsReadOnly(tc.Name))
+            return true;
+        return await (events.RequestPermission?.Invoke(tc) ?? Task.FromResult(false));
     }
 
     /// <summary>
@@ -414,7 +452,14 @@ internal sealed class AgentRuntime
                 entries = [.. InstructionFileLoader.DefaultEntries()];
             // Default files are seeded at package/settings init, not here: recreating them
             // per turn resurrected files the user deliberately deleted.
-            var instructions = await Task.Run(() => InstructionFileLoader.LoadFromSettings(entries, solutionRoot)).ConfigureAwait(false);
+            var detectConventions = settings.Defaults?.DetectConventionFiles ?? true;
+            var instructions = await Task.Run(() =>
+            {
+                var loaded = InstructionFileLoader.LoadFromSettings(entries, solutionRoot);
+                if (detectConventions)
+                    loaded.AddRange(InstructionFileLoader.LoadConventionFiles(solutionRoot, loaded));
+                return loaded;
+            }).ConfigureAwait(false);
             var combined = InstructionFileLoader.CombineInstructions(instructions);
 
             // Task memory: surface recent agent notes so decisions survive compaction and new
