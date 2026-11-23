@@ -468,6 +468,14 @@ internal sealed class AgentRuntime
             if (!string.IsNullOrWhiteSpace(notes))
                 combined += "\n\n## Recent session notes (from .kaeo/notes.md, newest first)\n" + notes;
 
+            // Config-driven edit-mode guidance (Defaults.EditMode). "line" (default) adds nothing;
+            // the AST tools remain available either way — this only steers the model's preference.
+            var editMode = settings.Defaults?.EditMode;
+            if (string.Equals(editMode, "ast", StringComparison.OrdinalIgnoreCase))
+                combined += "\n\n## Edit mode\nConfigured edit mode: ast. Prefer vs_ast_replace_method / vs_ast_replace_member / vs_ast_add_using for C# member edits — they validate syntax before writing and preserve comments and line endings. Fall back to line edits only when an AST tool refuses, and say so.";
+            else if (string.Equals(editMode, "auto", StringComparison.OrdinalIgnoreCase))
+                combined += "\n\n## Edit mode\nConfigured edit mode: auto. For C# method/property/field replacement prefer the vs_ast_* tools (syntax-validated); when they refuse or the file is not C#, use vs_edit_lines / vs_replace_in_file and note the fallback.";
+
             return combined;
         }
         catch (Exception ex)

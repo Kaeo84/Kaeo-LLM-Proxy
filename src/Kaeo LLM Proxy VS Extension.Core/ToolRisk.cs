@@ -5,7 +5,7 @@ namespace Kaeo.LlmProxy.VSExtension.Core;
 /// tier in Interactive mode. Only explicitly listed read-only tools auto-approve; everything
 /// else (including unknown/MCP tools) keeps the normal permission gate.
 /// </summary>
-internal static class ToolRisk
+public static class ToolRisk
 {
     private static readonly HashSet<string> ReadOnlyTools = new(StringComparer.Ordinal)
     {

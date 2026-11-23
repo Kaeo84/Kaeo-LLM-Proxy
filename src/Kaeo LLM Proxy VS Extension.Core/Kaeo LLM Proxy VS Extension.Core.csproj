@@ -24,6 +24,13 @@
 		<!-- netstandard2.0 lacks System.Text.Json; the extension already pins the same version
 				 into the VSIX payload, so keep the shared library on the identical pin. -->
 		<PackageReference Include="System.Text.Json" Version="10.0.8" />
+		<!-- Roslyn for AST-aware editing (AstEditor) and post-edit syntax checks (SyntaxCheck).
+				 5.12.0 matches the assembly version VS 2026 ships (5.12.0.0): devenv.exe.config
+				 redirects 0.0.0.0-5.12.0.0 to its own LanguageServices copy, so the VSIX must NOT
+				 bundle Roslyn (no ForceIncludeInVSIX in the extension) — same pattern as the BCL
+				 pins. Its netstandard2.0 BCL dependencies (Immutable/Metadata/CodePages) are also
+				 redirected to VS SharedAssemblies. Test consumers (net10) use the NuGet runtime. -->
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
 	</ItemGroup>
 
 </Project>

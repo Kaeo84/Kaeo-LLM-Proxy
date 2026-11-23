@@ -668,6 +668,101 @@ internal static class BuiltInVsTools
             },
             new()
             {
+                Name = "vs_ast_replace_method",
+                Description = "Replace a C# method by name using Roslyn AST parsing. The replacement is syntax-validated before writing; comments, indentation, and line endings are preserved. Refuses (file unchanged) when the type/method is not found, overloads are ambiguous (pass parameterTypes), or the new code does not parse. C# (.cs) files only.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The C# file path (relative to solution root or absolute)"
+                        },
+                        ["type"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Type name containing the method; namespace-qualify if ambiguous (e.g. 'MyNs.MyClass' or 'Outer.Inner')"
+                        },
+                        ["method"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Method name (without parentheses or parameters)"
+                        },
+                        ["newCode"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The full replacement method declaration, including signature and body"
+                        },
+                        ["parameterTypes"] = new JsonObject
+                        {
+                            ["type"] = "array",
+                            ["items"] = new JsonObject { ["type"] = "string" },
+                            ["description"] = "Optional parameter type texts to disambiguate overloads, e.g. ['string', 'int']"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "type", "method", "newCode" }
+                }
+            },
+            new()
+            {
+                Name = "vs_ast_replace_member",
+                Description = "Replace a C# property, field, or event by name using Roslyn AST parsing. Syntax-validated before writing; trivia preserved. Refuses (file unchanged) when the member is not found, shares a multi-variable declaration, or the new code does not parse. C# (.cs) files only.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The C# file path (relative to solution root or absolute)"
+                        },
+                        ["type"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Type name containing the member; namespace-qualify if ambiguous"
+                        },
+                        ["member"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Property, field, or event name"
+                        },
+                        ["newCode"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The full replacement declaration (property/field/event)"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "type", "member", "newCode" }
+                }
+            },
+            new()
+            {
+                Name = "vs_ast_add_using",
+                Description = "Add a using directive to a C# file if it is not already present (Roslyn AST, syntax-validated). Refuses without changing the file when the directive already exists or the namespace text is invalid. C# (.cs) files only.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["filePath"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "The C# file path (relative to solution root or absolute)"
+                        },
+                        ["namespace"] = new JsonObject
+                        {
+                            ["type"] = "string",
+                            ["description"] = "Namespace to import, e.g. 'System.Text.Json'"
+                        }
+                    },
+                    ["required"] = new JsonArray { "filePath", "namespace" }
+                }
+            },
+            new()
+            {
                 Name = "vs_run_command",
                 Description = "Run a command in PowerShell and return the output.",
                 Schema = new JsonObject
@@ -1157,6 +1252,9 @@ internal static class BuiltInVsTools
                 "vs_edit_lines" => await VsEditTools.EditLinesAsync(args, ct),
                 "vs_append_file" => await VsEditTools.AppendFileAsync(args, ct),
                 "vs_apply_edits" => await VsEditTools.ApplyEditsAsync(args, ct),
+                "vs_ast_replace_method" => await VsAstTools.ReplaceMethodAsync(args, ct),
+                "vs_ast_replace_member" => await VsAstTools.ReplaceMemberAsync(args, ct),
+                "vs_ast_add_using" => await VsAstTools.AddUsingAsync(args, ct),
                 "vs_debug_start" => await VsDebuggerTools.StartAsync(args, ct),
                 "vs_debug_stop" => await VsDebuggerTools.StopAsync(args, ct),
                 "vs_debug_break" => await VsDebuggerTools.BreakAsync(args, ct),
@@ -1943,7 +2041,7 @@ internal static class BuiltInVsTools
         return selectedText;
     }
 
-    private static Task<string> CreateFileAsync(JsonNode? args, CancellationToken ct)
+    private static async Task<string> CreateFileAsync(JsonNode? args, CancellationToken ct)
     {
         var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var content = args?["content"]?.GetValue<string>() ?? throw new ArgumentException("content is required");
@@ -1955,7 +2053,7 @@ internal static class BuiltInVsTools
         }
 
         FileIoWithRetry(filePath, () => File.WriteAllText(filePath, content));
-        return Task.FromResult($"File created: {filePath}");
+        return await VsEditTools.WithSyntaxCheckAsync(filePath, $"File created: {filePath}");
     }
 
     private static Task<string> CreatePlanFileAsync(JsonNode? args, CancellationToken ct)
@@ -2003,16 +2101,16 @@ internal static class BuiltInVsTools
         return $"Found {items.Count} error(s):\n" + string.Join("\n", items);
     }
 
-    private static Task<string> ReplaceInFileAsync(JsonNode? args, CancellationToken ct)
+    private static async Task<string> ReplaceInFileAsync(JsonNode? args, CancellationToken ct)
     {
         var filePath = ResolveToolPath(args?["filePath"]?.GetValue<string>() ?? throw new ArgumentException("filePath is required"));
         var oldString = args?["oldString"]?.GetValue<string>() ?? throw new ArgumentException("oldString is required");
         var newString = args?["newString"]?.GetValue<string>() ?? throw new ArgumentException("newString is required");
 
         if (oldString.Length == 0)
-            return Task.FromResult("oldString must not be empty.");
+            return "oldString must not be empty.";
         if (!File.Exists(filePath))
-            return Task.FromResult($"File not found: {filePath}");
+            return $"File not found: {filePath}";
 
         // Read raw bytes so the original encoding and BOM can be preserved on rewrite.
         string content;
@@ -2024,7 +2122,7 @@ internal static class BuiltInVsTools
         catch (IOException ex)
         {
             DebugLog.Warn($"Could not read '{filePath}' for replace: {ex.Message}");
-            return Task.FromResult($"Could not read file: {ex.Message}");
+            return $"Could not read file: {ex.Message}";
         }
 
         // The contract is a unique single-instance replace; count occurrences before editing.
@@ -2036,9 +2134,9 @@ internal static class BuiltInVsTools
             scan += oldString.Length;
         }
         if (count == 0)
-            return Task.FromResult($"String not found in file: {oldString}");
+            return $"String not found in file: {oldString}";
         if (count > 1)
-            return Task.FromResult($"oldString occurs {count} times in {filePath}; add surrounding context so it matches exactly one occurrence.");
+            return $"oldString occurs {count} times in {filePath}; add surrounding context so it matches exactly one occurrence.";
 
         var pos = content.IndexOf(oldString, StringComparison.Ordinal);
         var updated = content.Substring(0, pos) + newString + content.Substring(pos + oldString.Length);
@@ -2050,10 +2148,10 @@ internal static class BuiltInVsTools
         catch (IOException ex)
         {
             DebugLog.Warn($"Could not write '{filePath}' for replace: {ex.Message}");
-            return Task.FromResult($"Could not write file: {ex.Message}");
+            return $"Could not write file: {ex.Message}";
         }
 
-        return Task.FromResult($"Replaced in {filePath}");
+        return await VsEditTools.WithSyntaxCheckAsync(filePath, $"Replaced in {filePath}");
     }
 
     private static async Task<string> RunCommandAsync(JsonNode? args, CancellationToken ct)
