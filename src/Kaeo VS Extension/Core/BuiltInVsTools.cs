@@ -966,6 +966,61 @@ internal static class BuiltInVsTools
             },
             new()
             {
+                Name = "vs_checkpoint_create",
+                Description = "Snapshot the current worktree into a shadow-git checkpoint stored outside the repository (the real .git is never touched). Returns the checkpoint id; if nothing changed since the last snapshot, returns that existing id. Use before risky multi-file edits.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["label"] = new JsonObject { ["type"] = "string", ["description"] = "Optional short label describing the state being snapshotted" }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_checkpoint_list",
+                Description = "List shadow-git checkpoints for the open solution's repository, newest first (id, timestamp, label).",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["max"] = new JsonObject { ["type"] = "integer", ["description"] = "Maximum entries to return (default 20, max 100)" }
+                    }
+                }
+            },
+            new()
+            {
+                Name = "vs_checkpoint_diff",
+                Description = "Show a diffstat of the current worktree versus a checkpoint (what changed since that snapshot).",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["id"] = new JsonObject { ["type"] = "string", ["description"] = "Checkpoint id from vs_checkpoint_list" }
+                    },
+                    ["required"] = new JsonArray { "id" }
+                }
+            },
+            new()
+            {
+                Name = "vs_checkpoint_rollback",
+                Description = "Restore the worktree to a checkpoint: modified and deleted files are restored. Files created after the checkpoint are listed but KEPT unless deleteNewFiles=true. Reports a diffstat of what was discarded. The real .git history/index is never touched.",
+                Schema = new JsonObject
+                {
+                    ["type"] = "object",
+                    ["properties"] = new JsonObject
+                    {
+                        ["id"] = new JsonObject { ["type"] = "string", ["description"] = "Checkpoint id from vs_checkpoint_list" },
+                        ["deleteNewFiles"] = new JsonObject { ["type"] = "boolean", ["description"] = "Also delete files created after the checkpoint (default false: keep them)" }
+                    },
+                    ["required"] = new JsonArray { "id" }
+                }
+            },
+            new()
+            {
                 Name = "vs_edit_lines",
                 Description = "Edit a file by 1-based inclusive line range: replace (default), delete, insertBefore, or insertAfter. Preserves encoding/BOM and line endings. Use expectedFirstLine/expectedLastLine guards so stale line numbers are rejected instead of corrupting the file. Returns a numbered preview.",
                 Schema = new JsonObject
@@ -1095,6 +1150,10 @@ internal static class BuiltInVsTools
                 "vs_git_diff" => await GitTools.DiffAsync(args, ct),
                 "vs_git_log" => await GitTools.LogAsync(args, ct),
                 "vs_git_revert" => await GitTools.RevertAsync(args, ct),
+                "vs_checkpoint_create" => await VsCheckpointTools.CreateAsync(args, ct),
+                "vs_checkpoint_list" => await VsCheckpointTools.ListAsync(args, ct),
+                "vs_checkpoint_diff" => await VsCheckpointTools.DiffAsync(args, ct),
+                "vs_checkpoint_rollback" => await VsCheckpointTools.RollbackAsync(args, ct),
                 "vs_edit_lines" => await VsEditTools.EditLinesAsync(args, ct),
                 "vs_append_file" => await VsEditTools.AppendFileAsync(args, ct),
                 "vs_apply_edits" => await VsEditTools.ApplyEditsAsync(args, ct),

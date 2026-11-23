@@ -965,6 +965,12 @@ internal sealed class ToolWindowViewModel : INotifyPropertyChanged
                 return await tcs.Task;
             },
             TurnComplete = r => Lines.Add(new ChatLine { Kind = "status", Text = $"[turn complete: {r.ToolCallsExecuted} tool calls]" }),
+            CheckpointNotice = notice =>
+            {
+                Lines.Insert(permissionInsertAt, new ChatLine { Kind = "status", Text = "[checkpoint] " + notice });
+                permissionInsertAt++;
+                streamingIndex++;
+            },
                     };
 
         try

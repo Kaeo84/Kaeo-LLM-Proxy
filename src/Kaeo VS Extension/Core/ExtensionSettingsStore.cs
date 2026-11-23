@@ -413,6 +413,59 @@ internal sealed class Defaults
 
     /// <summary>Optional font size (px) for transcript message text. Null = 13.</summary>
     public double? ChatFontSize { get; set; }
+
+    // ── Harness behavior toggles (config-first; edit in settings.jsonc) ──
+
+    /// <summary>Create a shadow-git checkpoint at the start of each tool-enabled turn.</summary>
+    public bool AutoCheckpoint { get; set; } = true;
+
+    /// <summary>Maximum checkpoints kept per repository before the shadow history is pruned.</summary>
+    public int CheckpointRetention { get; set; } = 20;
+
+    /// <summary>Extra gitignore-style patterns excluded from checkpoints (on top of .git/.vs/bin/obj/node_modules/.kaeo).</summary>
+    public string[]? CheckpointExcludes { get; set; }
+
+    /// <summary>Automatically compact context when usage crosses AutoCompactThreshold percent.</summary>
+    public bool AutoCompact { get; set; }
+
+    /// <summary>Context-usage percent that triggers auto-compaction (when AutoCompact is on).</summary>
+    public int AutoCompactThreshold { get; set; } = 85;
+
+    /// <summary>Truncate tool results larger than ToolResultMaxChars before they enter context.</summary>
+    public bool CapToolResults { get; set; }
+
+    /// <summary>Maximum characters kept from a single tool result when CapToolResults is on.</summary>
+    public int ToolResultMaxChars { get; set; } = 30_000;
+
+    /// <summary>Auto-approve read-only tools in Interactive mode (mutating tools still prompt).</summary>
+    public bool AutoApproveReadOnly { get; set; }
+
+    /// <summary>Interrupt a turn when the same tool call with identical arguments fails repeatedly.</summary>
+    public bool DoomLoopGuard { get; set; } = true;
+
+    /// <summary>Number of identical consecutive failing calls that triggers the doom-loop guard.</summary>
+    public int DoomLoopThreshold { get; set; } = 3;
+
+    /// <summary>Run a syntax check after file edits and feed errors back before the turn ends.</summary>
+    public bool PostEditSyntaxCheck { get; set; }
+
+    /// <summary>Write a structured per-turn trajectory log (prompts, tool calls, timings).</summary>
+    public bool TrajectoryLog { get; set; }
+
+    /// <summary>Model used for compaction; empty = the current chat model.</summary>
+    public string? CompactionModel { get; set; }
+
+    /// <summary>Auto-detect and inject convention files (AGENTS.md, .cursorrules, CLAUDE.md).</summary>
+    public bool DetectConventionFiles { get; set; } = true;
+
+    /// <summary>Use hierarchical (map-reduce) summarization when compacting long histories.</summary>
+    public bool HierarchicalCompaction { get; set; }
+
+    /// <summary>Allow spawning isolated sub-agents for noisy exploration tasks.</summary>
+    public bool SubAgents { get; set; }
+
+    /// <summary>Edit engine: "line" (default), "ast", or "auto" (AST when available, line fallback).</summary>
+    public string? EditMode { get; set; } = "line";
 }
 
 internal sealed class Connection

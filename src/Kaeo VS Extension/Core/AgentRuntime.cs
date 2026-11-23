@@ -73,6 +73,8 @@ internal sealed class AgentEvents
     public Action<AgentTurnResult>? TurnComplete;
     /// <summary>An error occurred.</summary>
     public Action<Exception>? Error;
+    /// <summary>Checkpoint status notice (auto-checkpoint at turn start).</summary>
+    public Action<string>? CheckpointNotice;
 }
 
 /// <summary>
@@ -145,6 +147,14 @@ internal sealed class AgentRuntime
         // schemas; execution stays manual (not middleware-driven) so each call passes the
         // mode's permission gate and raises the tool events the UI renders.
         List<AITool> tools = await BuildToolsAsync(agent);
+
+        // Snapshot the worktree before a tool-enabled turn so bad edits can be rolled back
+        // (vs_checkpoint_rollback). Failures degrade to an honest notice; the turn proceeds.
+        if (defaults.AutoCheckpoint && tools.Count > 0)
+        {
+            var notice = await VsCheckpointTools.TryAutoCheckpointAsync(ct);
+            events.CheckpointNotice?.Invoke(notice);
+        }
 
         string? finalText;
 
