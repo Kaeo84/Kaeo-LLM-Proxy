@@ -1234,14 +1234,39 @@ internal static class BuiltInVsTools
     /// Resolves a tool-supplied path against the solution directory. Relative paths must not
     /// depend on devenv.exe's working directory (usually the VS install folder, not the repo).
     /// </summary>
-    internal static string ResolveToolPath(string filePath)
+    internal static string ResolveToolPath(string filePath, bool confineToWorkspace = true)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || Path.IsPathRooted(filePath))
+        if (string.IsNullOrWhiteSpace(filePath))
             return filePath;
+
         var root = InstructionFileLoader.GetSolutionRootPath();
-        return string.IsNullOrEmpty(root)
-            ? Path.GetFullPath(filePath)
-            : Path.GetFullPath(Path.Combine(root!, filePath));
+
+        string resolved;
+        if (Path.IsPathRooted(filePath))
+            resolved = Path.GetFullPath(filePath);
+        else if (string.IsNullOrEmpty(root))
+            resolved = Path.GetFullPath(filePath);
+        else
+            resolved = Path.GetFullPath(Path.Combine(root!, filePath));
+
+        // Guard rail: workspace file tools must not read/write outside the open solution
+        // (absolute paths elsewhere, or relative ".." traversal). Debugger source resolution
+        // opts out because stack frames can point at files outside the solution.
+        if (!confineToWorkspace || string.IsNullOrEmpty(root))
+            return resolved;
+
+        var rootFull = Path.GetFullPath(root!);
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
+        if (resolved.Equals(rootFull, comparison))
+            return resolved;
+        var prefix = rootFull.Length > 0 && rootFull[rootFull.Length - 1] == Path.DirectorySeparatorChar
+            ? rootFull
+            : rootFull + Path.DirectorySeparatorChar;
+        if (!resolved.StartsWith(prefix, comparison))
+            throw new ArgumentException(
+                $"Path '{resolved}' is outside the open solution workspace ('{rootFull}'). " +
+                "Built-in workspace file tools are confined to the solution directory.");
+        return resolved;
     }
 
     private static void SearchProjectItem(ProjectItem item, string query, List<string> results, int maxResults)

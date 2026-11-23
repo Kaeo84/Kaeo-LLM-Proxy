@@ -6,6 +6,7 @@ using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -509,7 +510,14 @@ internal sealed class McpServerManager
     /// optional Bearer auth.
     /// </summary>
     private static HttpClient GetSharedHttpClient(string url) =>
-        SharedHttpClients.GetOrAdd(url, _ => new HttpClient { BaseAddress = new Uri(url) });
+        SharedHttpClients.GetOrAdd(url, u =>
+        {
+            // net48: recycle pooled connections via the service-point lease so a
+            // process-lifetime client picks up DNS changes instead of pinning sockets.
+            ServicePointManager.FindServicePoint(new Uri(u)).ConnectionLeaseTimeout =
+                (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
+            return new HttpClient { BaseAddress = new Uri(u) };
+        });
 
     /// <summary>
     /// Initialized MCP sessions cached per endpoint so a tool call costs a single tools/call

@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -47,6 +49,10 @@ internal sealed class OllamaChatClient : IChatClient
         else
         {
             _http = new HttpClient();
+            // net48 has no SocketsHttpHandler; recycle pooled connections via the service-point
+            // lease so a long-lived client picks up DNS changes instead of pinning sockets.
+            ServicePointManager.FindServicePoint(new Uri(_baseUrl)).ConnectionLeaseTimeout =
+                (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
             _ownsHttpClient = true;
         }
 

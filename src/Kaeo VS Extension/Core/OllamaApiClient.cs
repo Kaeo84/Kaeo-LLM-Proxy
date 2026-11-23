@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -35,7 +37,14 @@ internal sealed class OllamaApiClient : IUpstreamClient
         }
         else
         {
-            _http = SharedClients.GetOrAdd(_baseUrl, _ => new HttpClient());
+            _http = SharedClients.GetOrAdd(_baseUrl, url =>
+            {
+                // net48: recycle pooled connections via the service-point lease so a
+                // process-lifetime client picks up DNS changes instead of pinning sockets.
+                ServicePointManager.FindServicePoint(new Uri(url)).ConnectionLeaseTimeout =
+                    (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
+                return new HttpClient();
+            });
         }
     }
 

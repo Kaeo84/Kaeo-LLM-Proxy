@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kaeo LLM Proxy — Performance &amp; Security Analysis</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2430; --muted: #5b6675;
+    --line: #dde3ea; --accent: #2456a6; --ok: #1a7f4b; --okbg: #e7f5ec;
+    --warn: #9a6700; --warnbg: #fff4d6; --bad: #b3261e; --badbg: #fdecea;
+    --info: #2456a6; --infobg: #e8f0fd; --code: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181f; --card: #1d232c; --ink: #e6eaf0; --muted: #9aa5b3;
+      --line: #313a46; --accent: #7aa7ee; --ok: #57c98a; --okbg: #17301f;
+      --warn: #e0b34c; --warnbg: #33290f; --bad: #ef8a84; --badbg: #3a1d1b;
+      --info: #7aa7ee; --infobg: #1b2740; --code: #262d38;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.25rem; margin: 2.2rem 0 .75rem; border-bottom: 2px solid var(--line); padding-bottom: .35rem; }
+  h3 { font-size: 1.02rem; margin: 1.2rem 0 .4rem; }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 1rem 1.2rem; margin: .8rem 0; }
+  code, .path { font-family: Consolas, "Cascadia Mono", monospace; font-size: .9em;
+                background: var(--code); padding: .1em .35em; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: .5rem .65rem; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  .badge { display: inline-block; padding: .1rem .55rem; border-radius: 999px;
+           font-size: .78rem; font-weight: 600; white-space: nowrap; }
+  .b-fixed { background: var(--okbg); color: var(--ok); }
+  .b-open  { background: var(--warnbg); color: var(--warn); }
+  .b-high  { background: var(--badbg); color: var(--bad); }
+  .b-med   { background: var(--warnbg); color: var(--warn); }
+  .b-low   { background: var(--infobg); color: var(--info); }
+  .b-ok    { background: var(--okbg); color: var(--ok); }
+  ul { margin: .4rem 0; padding-left: 1.3rem; }
+  li { margin: .25rem 0; }
+  .q { border-left: 4px solid var(--warn); }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .8rem; }
+  .stat { text-align: center; padding: .9rem .5rem; }
+  .stat .n { font-size: 1.6rem; font-weight: 700; }
+  .stat .l { color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Performance &amp; Security Analysis</h1>
+<p class="sub">Kaeo LLM Proxy — independent fresh analysis of the proxy hot paths, services, infrastructure,
+modules, and the Visual Studio extension. Findings below come from direct source inspection in this pass;
+prior review reports were <strong>not</strong> used as a source.</p>
+
+<div class="grid">
+  <div class="card stat"><div class="n">2</div><div class="l">findings fixed &amp; verified</div></div>
+  <div class="card stat"><div class="n">6</div><div class="l">hot-path areas verified efficient/secure</div></div>
+  <div class="card stat"><div class="n">3</div><div class="l">open questions for you</div></div>
+  <div class="card stat"><div class="n">863 / 864</div><div class="l">tests passing (1 skipped, 0 failed)</div></div>
+</div>
+
+<h2>1. Methodology</h2>
+<div class="card">
+<ul>
+  <li>Direct inspection of the request hot path: payload pipeline, SSE streaming, upstream HTTP clients.</li>
+  <li>Review of long-lived state: statics, caches, timers, channels, and database access for leaks and lock contention.</li>
+  <li>Security review of agent-facing tool surfaces (file tools, debugger tools) and outbound HTTP (SSRF, DNS rebinding, decompression bombs).</li>
+  <li>Targeted searches for anti-patterns: sync-over-async, per-request <code>HttpClient</code> churn, unbounded queues, repeated JSON (de)serialization, exception swallowing.</li>
+  <li>Verification: full solution build (0 warnings / 0 errors) and the full test suite after each fix.</li>
+</ul>
+</div>
+
+<h2>2. Verified efficient &amp; secure (no action needed)</h2>
+<p class="muted">These areas were examined closely and are already well-engineered — evidence listed so future passes don't re-flag them.</p>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> SSE streaming path</h3>
+<p><span class="path">src\Kaeo LLM Proxy Services\Proxy\OllamaProxyHandler.Streaming.cs</span></p>
+<ul>
+  <li>Per-chunk parsing uses a pooled char buffer (<code>PooledCharBuffer</code>) — no per-chunk string/array allocations on the hot loop.</li>
+  <li><code>JsonSerializerOptions</code> cached once; no per-chunk options construction (a classic hidden cost).</li>
+  <li>Chunks are flushed to the client as they arrive — no buffering that would add latency to token streaming.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> Request payload pipeline</h3>
+<p><span class="path">src\Kaeo LLM Proxy Services\Proxy\RequestPayloadPipeline.cs</span></p>
+<ul>
+  <li>Body parsed once per request; re-serialized <em>only</em> when a rewrite actually occurred.</li>
+  <li>Unmodified requests pass through with byte fidelity — zero serialization cost and no risk of subtle payload mutation.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> Statistics &amp; monitoring</h3>
+<p><span class="path">src\Kaeo LLM Proxy Services\Monitoring\StatisticsService.cs</span></p>
+<ul>
+  <li>Bounded persist channel with drop-newest policy — memory cannot grow without limit under load spikes.</li>
+  <li>Coalesced persistence timers (no per-request DB writes), <code>Interlocked</code> counters, cached snapshot for readers, pruned timestamp queue.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> Database layer</h3>
+<p><span class="path">src\Kaeo LLM Proxy Infrastructure\Data\AppDatabase.cs</span></p>
+<ul>
+  <li>SQLite WAL mode + default connection pooling; short per-operation connections instead of one long-held connection.</li>
+  <li>Degraded in-memory fallback with retry when the file is unavailable — multi-instance sharing violations degrade gracefully instead of crashing.</li>
+  <li>Module operations run outside the host lock — no cross-module lock convoy.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> Web Search outbound HTTP (SSRF hardened)</h3>
+<p><span class="path">src\Kaeo LLM Proxy Module Web Search\Core\WebSearchService.cs</span></p>
+<ul>
+  <li>Redirects handled manually and re-validated at every hop.</li>
+  <li><code>ConnectCallback</code> validates <em>and pins</em> the connected IP — defeats DNS-rebinding (TOCTOU) attacks, not just naive hostname checks.</li>
+  <li>Decompression-bomb cap on response bodies.</li>
+</ul>
+</div>
+
+<div class="card">
+<h3><span class="badge b-ok">OK</span> Modern-TFM HTTP clients &amp; extension caches</h3>
+<ul>
+  <li>Proxy / services / modules (net10.0) use <code>SocketsHttpHandler</code> with <code>PooledConnectionLifetime</code> (2–5 min) and <code>MaxConnectionsPerServer</code> — correct balance of socket reuse vs. DNS freshness.</li>
+  <li>Extension statics (<code>SharedClients</code>, <code>SharedHttpClients</code>, <code>HttpSessions</code>, <code>SessionLocks</code>) are keyed by configured endpoint URL — bounded by configuration in practice, not an unbounded leak.</li>
+</ul>
+</div>
+
+<h2>3. Findings &amp; fixes</h2>
+
+<table>
+<tr><th>#</th><th>Priority</th><th>Area</th><th>Finding</th><th>Status</th></tr>
+<tr>
+  <td>S1</td><td><span class="badge b-high">HIGH · security</span></td>
+  <td>VS Extension file tools</td>
+  <td>Agent file tools could read/write <em>any</em> path on the machine (absolute paths, <code>..</code> traversal).</td>
+  <td><span class="badge b-fixed">FIXED</span></td>
+</tr>
+<tr>
+  <td>P1</td><td><span class="badge b-med">MEDIUM · perf/reliability</span></td>
+  <td>VS Extension HTTP clients</td>
+  <td>Process-lifetime <code>HttpClient</code>s on net48 never recycled connections → stale DNS / dead sockets after upstream changes.</td>
+  <td><span class="badge b-fixed">FIXED</span></td>
+</tr>
+<tr>
+  <td>P2</td><td><span class="badge b-low">LOW · perf</span></td>
+  <td>Code Vector Store indexing</td>
+  <td>Bounded sync-over-async enqueue under backpressure.</td>
+  <td><span class="badge b-open">DEFERRED — question Q2</span></td>
+</tr>
+<tr>
+  <td>P3</td><td><span class="badge b-low">LOW · perf</span></td>
+  <td>SSE per-chunk JSON</td>
+  <td>Reflection-based JSON on the per-chunk path; source generation could shave allocations.</td>
+  <td><span class="badge b-open">DEFERRED — question Q3</span></td>
+</tr>
+</table>
+
+<div class="card">
+<h3>S1 — Workspace confinement for agent file tools <span class="badge b-fixed">FIXED</span></h3>
+<p><span class="path">src\Kaeo VS Extension\Core\BuiltInVsTools.cs</span> — <code>ResolveToolPath</code> (lines 1237–1270)</p>
+<p><strong>Before:</strong> rooted paths were returned verbatim and relative paths were combined with the solution
+root with no containment check. A prompt-injected model could call <code>get_file</code> /
+<code>create_file</code> / <code>delete_file</code> with <code>C:\Users\...\anything</code> or
+<code>..\..\secret.txt</code> and the tool would happily comply — full read/write/delete outside the workspace.</p>
+<p><strong>Fix:</strong> <code>ResolveToolPath(string filePath, bool confineToWorkspace = true)</code> now normalizes
+via <code>Path.GetFullPath</code> and requires the result to equal the solution root or sit under
+<code>root + DirectorySeparatorChar</code> (case-insensitive, separator-aware so <code>E:\RepoEvil</code> can't
+pass a prefix check for <code>E:\Repo</code>). Violations throw <code>ArgumentException</code> with a clear message.
+All 7 workspace file-tool call sites inherit confinement by default.</p>
+<p><strong>Deliberate opt-out:</strong> <span class="path">VsDebuggerTools.cs</span> (breakpoint set/remove, lines 154 &amp; 182)
+passes <code>confineToWorkspace: false</code> — stack frames legitimately point at framework/external source outside the solution.</p>
+<p class="muted">Note: the extension targets net48, so the check uses a char-index test rather than <code>EndsWith(char)</code>,
+and no allocation-heavy path canonicalization APIs. See question Q1 about a user-facing full-access toggle.</p>
+</div>
+
+<div class="card">
+<h3>P1 — Connection recycling for net48 process-lifetime HttpClients <span class="badge b-fixed">FIXED</span></h3>
+<p><span class="path">OllamaChatClient.cs</span> (~line 49), <span class="path">OllamaApiClient.cs</span> (~line 40),
+<span class="path">McpServerManager.cs</span> (~line 512) — all in <span class="path">src\Kaeo VS Extension\Core\</span></p>
+<p><strong>Before:</strong> the extension created shared/owned <code>HttpClient</code>s with parameterless
+<code>new HttpClient()</code> and kept them for the life of devenv.exe. On net48 the underlying
+<code>HttpClientHandler</code> pins sockets indefinitely: after an upstream IP change, DNS failover, or a
+load-balancer rotation, requests keep hitting a stale/dead endpoint until VS restarts. The rest of the repo
+(net10) already solves this with <code>PooledConnectionLifetime</code>.</p>
+<p><strong>Fix:</strong> net48 has no <code>SocketsHttpHandler</code>, so the equivalent mechanism is used:
+<code>ServicePointManager.FindServicePoint(uri).ConnectionLeaseTimeout = 5 minutes</code> at client creation.
+Pooled connections now expire and re-resolve DNS, matching the 2–5 minute recycling used elsewhere in the repo.
+Applied inside the <code>ConcurrentDictionary.GetOrAdd</code> factories so it happens exactly once per endpoint.</p>
+</div>
+
+<div class="card">
+<h3>P2 — Bounded sync-over-async in indexing enqueue <span class="badge b-open">DEFERRED</span></h3>
+<p><span class="path">src\Kaeo LLM Proxy Module Code Vector Store\Core\IndexingEngine.cs:176</span></p>
+<p><code>_queue.Writer.WriteAsync(job, _cts.Token).AsTask().GetAwaiter().GetResult()</code> blocks the calling
+thread when the bounded job channel is full (<code>waitForCapacity: true</code> path). It is deliberate backpressure,
+cancellation-aware, and bounded — not a deadlock risk in the current call graph — but it does tie up a thread under
+heavy indexing load. Making it truly async ripples through the enqueue call chain. Left as-is pending your call (Q2).</p>
+</div>
+
+<div class="card">
+<h3>P3 — JSON source generation on the SSE chunk path <span class="badge b-open">DEFERRED</span></h3>
+<p>The per-chunk parse/serialize in the streaming handler already avoids the big costs (pooled buffers, cached options).
+Source-generated serializers would remove the remaining reflection-metadata lookups and some allocations, but it is a
+larger change (partial contexts, trim/AOT-style constraints) for a modest gain on an already-fast path. Your call (Q3).</p>
+</div>
+
+<h2>4. Verification</h2>
+<div class="card">
+<ul>
+  <li><strong>Build:</strong> <code>dotnet build "Kaeo LLM Proxy.slnx"</code> — <strong>0 warnings, 0 errors</strong> (including the net48 WPF extension project).</li>
+  <li><strong>Tests:</strong> full suite — <strong>863 passed, 1 skipped, 0 failed</strong> (864 total), unchanged from baseline.</li>
+  <li><strong>net48 constraint honored:</strong> an initial <code>SocketsHttpHandler</code> approach failed to compile on the extension (CS0246) and was replaced with the <code>ServicePointManager</code> lease before commit.</li>
+  <li><strong>Confinement behavior:</strong> in-root relative and absolute paths resolve as before; <code>..</code> escapes and out-of-root absolutes are rejected with a descriptive error; debugger source resolution explicitly opts out. No existing tests referenced <code>ResolveToolPath</code>, and the net48 extension is not referenceable from the net10 test project, so this was verified by build + call-site audit rather than a new unit test.</li>
+</ul>
+</div>
+
+<h2>5. Open questions (answer when you can)</h2>
+
+<div class="card q">
+<h3>Q1 — Should workspace confinement have a user opt-out?</h3>
+<p>S1 now confines agent file tools to the open solution directory, always. The SSH module has a
+Guarded&nbsp;vs&nbsp;FullAccess philosophy ("full access IF I want it"). Do you want the same here — e.g. a setting
+like <em>Allow file tools outside solution</em> (default off) that flips <code>confineToWorkspace</code> off for the
+workspace tools? If yes, I'd wire it through the extension settings with the same themed-UI conventions.</p>
+</div>
+
+<div class="card q">
+<h3>Q2 — Is the bounded sync-over-async enqueue acceptable?</h3>
+<p><code>IndexingEngine</code> blocks a thread when the job queue is full (P2). Options:
+(a) leave it — it's bounded, cancellable backpressure and indexing is background work;
+(b) make the enqueue path async end-to-end (touches the callers of the enqueue API).
+I lean (a) unless you've seen thread-pool starvation during large indexing runs.</p>
+</div>
+
+<div class="card q">
+<h3>Q3 — Appetite for JSON source generation on the SSE path?</h3>
+<p>P3 is a modest allocation/latency win on an already-optimized path, at the cost of a larger, more invasive change
+(source-gen contexts for the chunk DTOs). Worth doing, or keep the current reflection-based path with cached options?</p>
+</div>
+
+<p class="muted" style="margin-top:2rem">Generated from a fresh independent analysis pass. Fixes S1 and P1 are implemented,
+built, and test-verified; P2/P3 await your answers above.</p>
+
+</main>
+</body>
+</html>

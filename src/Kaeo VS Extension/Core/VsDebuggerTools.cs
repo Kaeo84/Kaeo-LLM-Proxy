@@ -151,7 +151,7 @@ internal static class VsDebuggerTools
             if (string.IsNullOrWhiteSpace(filePath) || line < 1)
                 return "Provide either functionName, or filePath plus a 1-based line number.";
 
-            var resolved = BuiltInVsTools.ResolveToolPath(filePath!);
+            var resolved = BuiltInVsTools.ResolveToolPath(filePath!, confineToWorkspace: false);
             if (!File.Exists(resolved))
                 return $"File not found: {resolved}";
             var created = dte.Debugger.Breakpoints.Add(File: resolved, Line: line);
@@ -179,7 +179,7 @@ internal static class VsDebuggerTools
         string? resolved = null;
         if (!string.IsNullOrWhiteSpace(filePath))
         {
-            resolved = BuiltInVsTools.ResolveToolPath(filePath!);
+            resolved = BuiltInVsTools.ResolveToolPath(filePath!, confineToWorkspace: false);
             if (line < 1)
                 return "line must be a 1-based line number when filePath is given.";
         }
