@@ -71,6 +71,9 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
             }
 
             DataContext = this;
+            // The OS-drawn caption stays light in a dark VS theme unless we apply the DWM
+            // immersive dark-mode attribute; keep it in sync with the VS scheme.
+            ToolWindow.WindowCaptionTheme.FollowVsTheme(this);
             // L2: stop the debounce timer and flush any pending edit when the window closes, so
             // closing within the 500 ms debounce window does not silently lose the last change.
             Closed += (_, _) =>
