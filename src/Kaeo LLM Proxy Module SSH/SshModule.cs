@@ -11,7 +11,7 @@ namespace Kaeo.LlmProxy.Module.Ssh;
 /// MCP server, maintains the SSH connections they use (closing them after their idle timeout),
 /// and persists stored connections plus feature settings in the shared application database.
 /// </summary>
-public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IHelpModule
+public sealed partial class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule
 {
     public const string Version = "1.0.0";
 
@@ -67,8 +67,6 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
         _manager = new SshConnectionManager(repository, _activity);
     }
 
-    public System.Windows.Forms.TabPage CreateConfigPage() => new SshConfigPage(this);
-
     /// <summary>Tool targets for the host's MCP server; the session info carries the client address.</summary>
     public IReadOnlyList<object> CreateMcpToolTargets(McpSessionInfo session) =>
         [new SshTools(Manager, Repository, Secrets, session, Activity)];
@@ -101,27 +99,6 @@ public sealed class SshModule : IKaeoModule, IMcpToolModule, IRunnableModule, IH
 
         await _manager.StopAsync();
         StatusChanged?.Invoke(this, "Stopped");
-    }
-
-    // ── IHelpModule ─────────────────────────────────────────────────────────
-
-    /// <summary>Help page injected into the host Help tab.</summary>
-    public System.Windows.Forms.TabPage CreateHelpPage()
-    {
-        System.Windows.Forms.TabPage page = new() { Text = "SSH Command", Padding = new System.Windows.Forms.Padding(8) };
-        System.Windows.Forms.TextBox body = new()
-        {
-            Multiline = true,
-            ReadOnly = true,
-            WordWrap = true,
-            ScrollBars = System.Windows.Forms.ScrollBars.Vertical,
-            Dock = System.Windows.Forms.DockStyle.Fill,
-            BorderStyle = System.Windows.Forms.BorderStyle.None,
-            BackColor = System.Drawing.SystemColors.Window,
-            Text = HelpText,
-        };
-        page.Controls.Add(body);
-        return page;
     }
 
     internal const string HelpText =

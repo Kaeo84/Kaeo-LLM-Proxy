@@ -56,11 +56,16 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
         // IdleConnection only applies to keep-alive connections BETWEEN requests (long-running
         // requests are governed by the other timeouts), so a short value recycles idle client
         // sockets quickly instead of holding them for 30 minutes.
-        _listener.TimeoutManager.IdleConnection = TimeSpan.FromMinutes(2);
-        _listener.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
-        _listener.TimeoutManager.EntityBody = TimeSpan.FromMinutes(30);
-        _listener.TimeoutManager.DrainEntityBody = TimeSpan.FromMinutes(5);
-        _listener.TimeoutManager.RequestQueue = TimeSpan.FromMinutes(5);
+        // http.sys timeout tuning is Windows-only; the Unix managed listener does not expose it
+        // (accessing TimeoutManager throws PlatformNotSupportedException there).
+        if (OperatingSystem.IsWindows())
+        {
+            _listener.TimeoutManager.IdleConnection = TimeSpan.FromMinutes(2);
+            _listener.TimeoutManager.HeaderWait = TimeSpan.FromMinutes(5);
+            _listener.TimeoutManager.EntityBody = TimeSpan.FromMinutes(30);
+            _listener.TimeoutManager.DrainEntityBody = TimeSpan.FromMinutes(5);
+            _listener.TimeoutManager.RequestQueue = TimeSpan.FromMinutes(5);
+        }
 
         // Normalize the listen address
         string host = listenAddress.Trim();
@@ -81,7 +86,7 @@ internal sealed class ProxyServer(OllamaProxyHandler handler) : IDisposable
             _listener.Prefixes.Add(prefix);
             _listener.Start();
         }
-        catch (HttpListenerException ex) when (ex.ErrorCode == 5)
+        catch (HttpListenerException ex) when (OperatingSystem.IsWindows() && ex.ErrorCode == 5)
         {
             // ERROR_ACCESS_DENIED. Windows' http.sys only allows non-elevated processes to
             // reserve "localhost" bindings for free; binding to "+" (all interfaces), "0.0.0.0",

@@ -1,12 +1,14 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<TargetFrameworks>net10.0;net10.0-windows10.0.22000.0</TargetFrameworks>
 		<RootNamespace>Kaeo.LlmProxy.Module.CodeVector</RootNamespace>
 		<AssemblyName>Kaeo LLM Proxy Module Code Vector Store</AssemblyName>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
-		<UseWindowsForms>true</UseWindowsForms>
+		<!-- WinForms UI builds only for the Windows TFM; the portable net10.0 build is UI-free
+			 so the module loads in the headless host on Linux/macOS. -->
+		<UseWindowsForms Condition="'$(TargetFramework)' == 'net10.0-windows10.0.22000.0'">true</UseWindowsForms>
 		<!-- Module must ship neighbor runtime assemblies into its folder. -->
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
 	</PropertyGroup>
@@ -34,6 +36,11 @@
 	<PropertyGroup>
 		<IsModuleProject>true</IsModuleProject>
 	</PropertyGroup>
+
+	<!-- The WinForms configuration/help pages (UI/) compile only for the Windows TFM. -->
+	<ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.22000.0'">
+		<Compile Remove="UI\**\*.cs" />
+	</ItemGroup>
 
 	<Import Project="..\ModuleBuild.targets" />
 

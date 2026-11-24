@@ -113,8 +113,8 @@
 
 	<MakeDir Directories="$(ModulesOutputDir)" />
 
-	<!-- Collect all files from each module's build output. The build is RID-specific
-			 (Directory.Build.props sets RuntimeIdentifier), so each module's output lives under
+	<!-- Collect all files from each module's build output. When a RuntimeIdentifier is supplied
+			 (e.g. -r on publish) each module's output lives under
 			 bin\{Config}\{TFM}\{RID}\. Root the glob at that RID folder so %(RecursiveDir) is
 			 relative to it — otherwise the module's own RID folder gets duplicated into
 			 $(ModulesOutputDir) (e.g. Modules\win-x64\), which the host never probes. The host's
@@ -143,14 +143,15 @@
 
 	<!-- ═══════════════════════════════════════════════════════════════════
 		 Target for MODULE projects: copy this module's own build output into the
-		 host's Modules/ folder. Runs after every module build so the host's
-		 Modules/ directory always holds the latest module, even when only that
-		 module (not the host) is built. The host's CopyModulesToHostOutput target
-		 still runs on host builds to refresh all modules at once.
+		 WinForms tray host's Modules/ folder. Runs only for the Windows-TFM inner build:
+		 the tray host consumes the Windows module output, while the portable net10.0 inner
+		 build and the outer multi-target build skip this so no stray net10.0/outer output is
+		 copied. The host's CopyModulesToHostOutput target still refreshes all modules on host
+		 builds. (The headless cross-platform host wires its own module copy in a later phase.)
 		 ═══════════════════════════════════════════════════════════════════ -->
 	<Target Name="CopyModuleToHostOutput"
 			AfterTargets="Build"
-			Condition="'$(IsModuleProject)' == 'true'">
+			Condition="'$(IsModuleProject)' == 'true' AND '$(TargetFramework)' == 'net10.0-windows10.0.22000.0'">
 
 	<!-- The host project lives at src\Kaeo LLM Proxy (a sibling of this targets file). All
 		 projects share the same TFM/RID, so the host's Modules/ folder is at a predictable

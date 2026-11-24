@@ -1,12 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<TargetFrameworks>net10.0;net10.0-windows10.0.22000.0</TargetFrameworks>
 		<RootNamespace>Kaeo.LlmProxy.Module.ChatInterface</RootNamespace>
 		<AssemblyName>Kaeo LLM Proxy Module Chat Interface</AssemblyName>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
-		<UseWindowsForms>true</UseWindowsForms>
+		<!-- WinForms UI builds only for the Windows TFM; the portable net10.0 build is UI-free
+			 so the module loads in the headless host on Linux/macOS. -->
+		<UseWindowsForms Condition="'$(TargetFramework)' == 'net10.0-windows10.0.22000.0'">true</UseWindowsForms>
 		<!-- Class libraries do not copy NuGet runtime assemblies by default; keep the flag for
 			 parity with the other modules even though this module has no unique NuGet deps. -->
 		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
@@ -31,6 +33,11 @@
 	<ItemGroup>
 		<!-- Webhook URL handling and token redaction are security-relevant pure logic; let the test suite exercise them. -->
 		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
+	</ItemGroup>
+
+	<!-- The WinForms configuration/help pages (UI/) compile only for the Windows TFM. -->
+	<ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows10.0.22000.0'">
+		<Compile Remove="UI\**\*.cs" />
 	</ItemGroup>
 
 	<Import Project="..\ModuleBuild.targets" />

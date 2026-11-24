@@ -176,9 +176,12 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
         catch (HttpListenerException ex)
         {
+            string guidance = OperatingSystem.IsWindows()
+                ? "Non-localhost bindings may require elevation or a netsh urlacl rule."
+                : "Non-localhost bindings may require additional privileges; ports below 1024 need root or cap_net_bind_service.";
             throw new IOException(
                 $"Could not bind the MCP server to {prefix} ({ex.Message}, error code {ex.ErrorCode}). " +
-                "Non-localhost bindings may require elevation or a netsh urlacl rule.",
+                guidance,
                 ex);
         }
 

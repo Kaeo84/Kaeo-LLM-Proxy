@@ -5,7 +5,7 @@ using Serilog;
 
 namespace Kaeo.LlmProxy.Module.CodeVector;
 
-public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableModule, IHelpModule
+public sealed partial class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableModule
 {
 	public const string Version = "1.0.0";
 
@@ -173,10 +173,17 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 			if (moduleDataDir is null)
 				return;
 
+			// The native file name is platform-specific: git2-*.dll on Windows, libgit2-*.so on
+			// Linux, libgit2-*.dylib on macOS. Match only the current platform's asset; when it was
+			// not embedded (the usual framework-dependent build keeps natives on disk under
+			// runtimes/{rid}/native), fall back to the on-disk resolution below.
+			string nativePrefix = OperatingSystem.IsWindows() ? "git2-" : "libgit2-";
+			string nativeExtension = OperatingSystem.IsWindows() ? ".dll"
+				: OperatingSystem.IsMacOS() ? ".dylib" : ".so";
 			Assembly moduleAssembly = Assembly.GetExecutingAssembly();
 			string? resourceName = moduleAssembly.GetManifestResourceNames()
-				.FirstOrDefault(n => n.StartsWith("moduledep/git2-", StringComparison.OrdinalIgnoreCase)
-					&& n.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+				.FirstOrDefault(n => n.StartsWith("moduledep/" + nativePrefix, StringComparison.OrdinalIgnoreCase)
+					&& n.EndsWith(nativeExtension, StringComparison.OrdinalIgnoreCase));
 
 			if (resourceName is null)
 			{
@@ -233,7 +240,6 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 		}
 	}
 
-	public System.Windows.Forms.TabPage CreateConfigPage() => new CodeVectorConfigPage(this);
 	public IReadOnlyList<object> CreateMcpToolTargets(McpSessionInfo session) => [new CodeVectorTools(this, session)];
 	public bool IsRunning => _indexingEngine?.IsRunning == true;
 	public event EventHandler<string>? StatusChanged;
@@ -364,11 +370,8 @@ public sealed class CodeVectorModule : IKaeoModule, IMcpToolModule, IRunnableMod
 
         lock (_vectorDatabaseLock)
         {
-            _searchEngine ??= new VectorSearchEngine(EnsureVectorDatabase());
-            return _searchEngine;
-        }
-    }
-
-	public System.Windows.Forms.TabPage CreateHelpPage() => CodeVectorHelpPage.Create();
-
+			_searchEngine ??= new VectorSearchEngine(EnsureVectorDatabase());
+			return _searchEngine;
+		}
+	}
 }

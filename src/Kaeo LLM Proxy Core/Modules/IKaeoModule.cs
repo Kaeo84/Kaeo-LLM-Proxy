@@ -3,7 +3,8 @@ namespace Kaeo.LlmProxy.Core.Modules;
 /// <summary>
 /// Contract every Kaeo LLM Proxy module must implement. The host discovers implementations of
 /// this interface inside registered module assemblies and drives their lifecycle:
-/// construct (parameterless constructor) → <see cref="Initialize"/> → <see cref="CreateConfigPage"/>.
+/// construct (parameterless constructor) → <see cref="Initialize"/>. Modules that render a host
+/// UI additionally implement <see cref="IModuleUi"/>.
 /// Modules must reference only this contracts assembly, never the host application, so new
 /// modules can be added without any host code changes.
 /// </summary>
@@ -34,19 +35,4 @@ public interface IKaeoModule
     /// start any network services — see <see cref="IRunnableModule"/> for that.
     /// </summary>
     void Initialize(ModuleContext context);
-
-    /// <summary>
-    /// Builds the module's configuration tab page, injected into the dashboard by the host.
-    /// Called on the UI thread after <see cref="Initialize"/>. Return a fully built
-    /// <see cref="System.Windows.Forms.TabPage"/> (the host adds it to its tab control).
-    /// </summary>
-    /// <remarks>
-    /// The WinForms return type is a deliberate design decision, not an oversight: the host is a
-    /// WinForms application and modules render their configuration UI in-process inside the host's
-    /// tab control. A UI-framework-agnostic abstraction would force every module to build against
-    /// a second UI stack that the host then has to bridge, adding complexity with no second UI
-    /// technology to support. Modules therefore reference WinForms by design; the rest of this
-    /// contract stays UI-free.
-    /// </remarks>
-    System.Windows.Forms.TabPage CreateConfigPage();
 }

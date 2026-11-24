@@ -27,13 +27,20 @@ internal sealed class SecurityPassphraseConverter : JsonConverter<string?>
         if (string.IsNullOrEmpty(value) || !value.StartsWith(DpapiPrefix, StringComparison.Ordinal))
             return value; // Legacy "!pwh!" or raw form: use unchanged.
 
+        if (!OperatingSystem.IsWindows())
+        {
+            Log.Warning("A DPAPI-protected security passphrase cannot be read on this platform; " +
+                "the passphrase will be requested at startup.");
+            return null;
+        }
+
         try
         {
             byte[] hashBytes = ProtectedData.Unprotect(
                 Convert.FromBase64String(value[DpapiPrefix.Length..]), Entropy, DataProtectionScope.CurrentUser);
             return SecretProtector.HashPrefix + Convert.ToBase64String(hashBytes);
         }
-        catch (Exception ex) when (ex is CryptographicException or FormatException)
+        catch (Exception ex) when (ex is CryptographicException or FormatException or PlatformNotSupportedException)
         {
             Log.Warning(ex,
                 "Could not unprotect the stored security passphrase (different Windows user, roaming profile, " +
@@ -50,7 +57,7 @@ internal sealed class SecurityPassphraseConverter : JsonConverter<string?>
             return;
         }
 
-        if (SecretProtector.IsHashedPassphrase(value))
+        if (OperatingSystem.IsWindows() && SecretProtector.IsHashedPassphrase(value))
         {
             try
             {

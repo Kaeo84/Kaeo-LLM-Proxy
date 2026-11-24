@@ -8,7 +8,7 @@ namespace Kaeo.LlmProxy.Module.WebSearch;
 /// Contributes the web_search/web_fetch tools to the host's built-in MCP server and persists the
 /// provider catalog, domain rules, and feature settings in the shared application database.
 /// </summary>
-public sealed class WebSearchModule : IKaeoModule, IMcpToolModule, IHelpModule
+public sealed partial class WebSearchModule : IKaeoModule, IMcpToolModule
 {
     public const string Version = "1.0.0";
 
@@ -55,27 +55,6 @@ public sealed class WebSearchModule : IKaeoModule, IMcpToolModule, IHelpModule
         }
 
         _webSearchService = new WebSearchService(_repository, context.Secrets);
-    }
-
-    public System.Windows.Forms.TabPage CreateConfigPage() => new WebSearchConfigPage(this);
-
-    /// <summary>Help page injected into the host Help tab; same content as the safety dialog.</summary>
-    public System.Windows.Forms.TabPage CreateHelpPage()
-    {
-        System.Windows.Forms.TabPage page = new() { Text = "Web Search", Padding = new System.Windows.Forms.Padding(8) };
-        System.Windows.Forms.TextBox body = new()
-        {
-            Multiline = true,
-            ReadOnly = true,
-            WordWrap = true,
-            ScrollBars = System.Windows.Forms.ScrollBars.Vertical,
-            Dock = System.Windows.Forms.DockStyle.Fill,
-            BorderStyle = System.Windows.Forms.BorderStyle.None,
-            BackColor = System.Drawing.SystemColors.Window,
-            Text = WebSearchSafetyDialog.SafetyText,
-        };
-        page.Controls.Add(body);
-        return page;
     }
 
     /// <summary>

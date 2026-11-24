@@ -3369,10 +3369,13 @@ internal partial class MainForm : Form
             if (_moduleTabs.ContainsKey(moduleId))
                 continue;
 
+            if (loaded.Module is not IModuleUi ui)
+                continue;
+
             TabPage page;
             try
             {
-                page = loaded.Module.CreateConfigPage();
+                page = (TabPage)ui.CreateConfigPage();
             }
             catch (Exception ex)
             {
@@ -3597,7 +3600,7 @@ internal partial class MainForm : Form
         _helpTabs.TabPages.Add(modulesPage);
     }
 
-    /// <summary>Appends the help page of every loaded IHelpModule module that lacks one.</summary>
+    /// <summary>Appends the help page of every loaded module that provides one and lacks a tab.</summary>
     private void AddModuleHelpPages()
     {
         foreach (LoadedModule loaded in _moduleHost.LoadedModules)
@@ -3606,13 +3609,15 @@ internal partial class MainForm : Form
             if (_moduleHelpPages.ContainsKey(moduleId))
                 continue;
 
-            if (loaded.Module is not IHelpModule helpModule)
+            if (loaded.Module is not IModuleUi ui)
                 continue;
 
             TabPage page;
             try
             {
-                page = helpModule.CreateHelpPage();
+                if (ui.CreateHelpPage() is not TabPage helpPage)
+                    continue;
+                page = helpPage;
             }
             catch (Exception ex)
             {
