@@ -18,6 +18,13 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- Dashboard front end (Phase 4). Content, not None, so the files flow transitively into
+			 the output of every referencing host (headless, tray, tests); WebDashboardHost serves
+			 them from BaseDirectory/wwwroot. -->
+		<Content Include="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Services\Kaeo LLM Proxy Services.csproj" />

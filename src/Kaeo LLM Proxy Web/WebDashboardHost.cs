@@ -68,6 +68,7 @@ internal sealed class WebDashboardHost : IAsyncDisposable
             builder.WebHost.ConfigureKestrel(options => ConfigureListen(options, wd, port, https));
 
             WebApplication app = builder.Build();
+            app.UseDefaultFiles();
             app.UseStaticFiles();
             app.Use(async (context, next) =>
             {

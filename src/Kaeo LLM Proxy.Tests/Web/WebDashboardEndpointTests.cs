@@ -37,6 +37,37 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Root_ServesDashboardIndexHtml()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        HttpResponseMessage response = await b.Client.GetAsync("/");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+
+        string html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("js/app.js", html);
+        Assert.Contains("lib/jquery-3.7.1.min.js", html);
+    }
+
+    [Fact]
+    public async Task StaticAssets_AreServedFromWwwroot()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage js = await b.Client.GetAsync("/js/app.js");
+        Assert.Equal(HttpStatusCode.OK, js.StatusCode);
+        Assert.Equal("text/javascript", js.Content.Headers.ContentType?.MediaType);
+
+        HttpResponseMessage css = await b.Client.GetAsync("/css/app.css");
+        Assert.Equal(HttpStatusCode.OK, css.StatusCode);
+        Assert.Equal("text/css", css.Content.Headers.ContentType?.MediaType);
+
+        HttpResponseMessage jquery = await b.Client.GetAsync("/lib/jquery-3.7.1.min.js");
+        Assert.Equal(HttpStatusCode.OK, jquery.StatusCode);
+        Assert.Contains("jQuery", await jquery.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Logs_IncrementalPoll_ReturnsEntriesThenEmptyAfterCursor()
     {
         await using Bundle b = await CreateBundleAsync();
