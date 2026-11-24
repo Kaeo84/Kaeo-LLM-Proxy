@@ -1081,6 +1081,64 @@ internal sealed class LoggingSettings
     }
 }
 
+/// <summary>
+/// Configuration for the cross-platform web dashboard (ASP.NET Core / Kestrel host serving the
+/// jQuery/AJAX UI). Every value here is config-driven so the dashboard can be retargeted without a
+/// rebuild. HTTP is the default so HTTPS can be terminated at a load balancer; set <see cref="Scheme"/>
+/// to "Https" and supply a certificate to terminate TLS in-process instead.
+/// </summary>
+internal sealed class WebDashboardSettings
+{
+    /// <summary>Whether the web dashboard host starts with the engine. Default: true.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Port the dashboard listens on. 0 (the default) means "the proxy <c>ListenPort</c> + 1" so the
+    /// dashboard tracks the proxy port automatically; set an explicit port to pin it.
+    /// </summary>
+    public int Port { get; set; } = 0;
+
+    /// <summary>
+    /// Address the dashboard binds to. Default "localhost" keeps it local-only; use "0.0.0.0" to
+    /// expose it on the network (pair with <see cref="RequireApiKey"/> and/or HTTPS when you do).
+    /// </summary>
+    public string ListenAddress { get; set; } = "localhost";
+
+    /// <summary>
+    /// API key required on dashboard requests when <see cref="RequireApiKey"/> is true. This is a
+    /// separate key from any upstream/model credential. Null means no key is configured.
+    /// </summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>
+    /// When true, every dashboard API request must present <see cref="ApiKey"/> (via the
+    /// <c>X-Dashboard-Api-Key</c> header or <c>api_key</c> query string). Default: false (local-only
+    /// binding is the guard). Enable when binding beyond localhost.
+    /// </summary>
+    public bool RequireApiKey { get; set; } = false;
+
+    /// <summary>
+    /// URL scheme: "Http" (default) or "Https". HTTP is the default so TLS can be terminated at a
+    /// load balancer; choose "Https" to terminate TLS in Kestrel using the certificate below.
+    /// </summary>
+    public string Scheme { get; set; } = "Http";
+
+    /// <summary>
+    /// Path to a PFX/PKCS#12 certificate used when <see cref="Scheme"/> is "Https". Null/empty uses
+    /// the ASP.NET Core development certificate (development only).
+    /// </summary>
+    public string? CertificatePath { get; set; }
+
+    /// <summary>
+    /// Password for <see cref="CertificatePath"/>. Prefer referencing a stored credential rather than
+    /// writing a plaintext password here; null means an unprotected certificate.
+    /// </summary>
+    public string? CertificatePassword { get; set; }
+
+    /// <summary>Resolves the effective listen port, falling back to the proxy port + 1 when unset.</summary>
+    public int GetEffectivePort(int proxyListenPort) => Port > 0 ? Port : proxyListenPort + 1;
+}
+
 /// <summary>Persisted application settings.</summary>
 internal sealed class AppSettings
 {
@@ -1492,6 +1550,9 @@ internal sealed class AppSettings
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
 
+    /// <summary>Cross-platform web dashboard configuration.</summary>
+    public WebDashboardSettings WebDashboard { get; set; } = new();
+
     /// <summary>
     /// SHA-256 hash of the user's passphrase, prefixed with <c>!pwh!</c>.
     /// The hash itself — not the raw passphrase — is used as PBKDF2 input for
@@ -1791,6 +1852,17 @@ internal sealed class AppSettings
                 LogRetentionHours = Logging.LogRetentionHours,
                 MaxLogEntriesWithBodies = Logging.MaxLogEntriesWithBodies,
                 LogDirectory = Logging.LogDirectory,
+            },
+            WebDashboard = new WebDashboardSettings
+            {
+                Enabled = WebDashboard.Enabled,
+                Port = WebDashboard.Port,
+                ListenAddress = WebDashboard.ListenAddress,
+                ApiKey = WebDashboard.ApiKey,
+                RequireApiKey = WebDashboard.RequireApiKey,
+                Scheme = WebDashboard.Scheme,
+                CertificatePath = WebDashboard.CertificatePath,
+                CertificatePassword = WebDashboard.CertificatePassword,
             },
             SecurityPassphrase = SecurityPassphrase,
             RuntimePassphrase = RuntimePassphrase,

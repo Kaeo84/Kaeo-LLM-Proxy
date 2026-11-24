@@ -56,6 +56,21 @@ public class AppSettingsCloneTests
                 continue;
             }
 
+            // WebDashboardSettings is a reference type — must be deep-copied like LoggingSettings.
+            if (sourceValue is WebDashboardSettings sourceDashboard && cloneValue is WebDashboardSettings cloneDashboard)
+            {
+                Assert.NotSame(sourceValue, cloneValue);
+                foreach (PropertyInfo dashboardProp in typeof(WebDashboardSettings).GetProperties(
+                    BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (!dashboardProp.CanRead || !dashboardProp.CanWrite || dashboardProp.GetIndexParameters().Length > 0)
+                        continue;
+
+                    Assert.Equal(dashboardProp.GetValue(sourceDashboard), dashboardProp.GetValue(cloneDashboard));
+                }
+                continue;
+            }
+
             Assert.Equal(sourceValue, cloneValue);
         }
     }
@@ -107,6 +122,17 @@ public class AppSettingsCloneTests
                 MaxLogEntriesWithBodies = 25,
                 // Non-default so a Clone() that forgets LogDirectory cannot pass unnoticed.
                 LogDirectory = Path.Combine(Path.GetTempPath(), "kaeo-clone-test-logs"),
+            },
+            WebDashboard = new WebDashboardSettings
+            {
+                Enabled = false,
+                Port = 9090,
+                ListenAddress = "0.0.0.0",
+                ApiKey = "dashboard-key",
+                RequireApiKey = true,
+                Scheme = "Https",
+                CertificatePath = Path.Combine(Path.GetTempPath(), "dashboard.pfx"),
+                CertificatePassword = "cert-password",
             }
         };
 

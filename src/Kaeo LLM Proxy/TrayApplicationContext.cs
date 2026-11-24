@@ -18,22 +18,9 @@ namespace Kaeo.LlmProxy;
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly NotifyIcon _trayIcon;
+    private readonly ProxyHostController _controller;
     private readonly AppSettings _settings;
-    private readonly StatisticsService _stats;
-    private readonly StatisticsService _mcpStats;
-
-    /// <summary>
-    /// Store for requests the proxy answered without calling a model. Owned here alongside the
-    /// other two so every log source has exactly one lifetime and one persistence channel.
-    /// </summary>
-    private readonly StatisticsService _nonProxiedStats;
-    private readonly PerformanceService _perfService;
-    private readonly OllamaProxyHandler _handler;
-    private readonly ProxyServer _server;
     private readonly AppDatabase _database;
-    private readonly ModuleHost _moduleHost;
-    private readonly McpServerService _mcpServer;
-    private readonly StreamMonitor _streamMonitor;
     private readonly SynchronizationContext? _uiContext;
     private MainForm? _mainForm;
     private bool _disposed;
@@ -50,36 +37,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(moduleHost);
 
-        _settings = settings;
-        _database = database;
-        _moduleHost = moduleHost;
         _uiContext = SynchronizationContext.Current;
 
-        // Initialize Serilog first so all subsequent code can log.
-        AppLogger.Initialize(_settings.Logging);
-
-        _settings.InstructionSets = [.. _database.LoadInstructionSets()];
-
-        Log.Information("Kaeo LLM Proxy starting. ListenAddress={Address} ListenPort={Port} MappingsCount={Count}",
-            _settings.ListenAddress, _settings.ListenPort, _settings.ModelMappings.Count);
-
-        _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours,
-            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
-        _mcpStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.Mcp,
-            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
-        _nonProxiedStats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours, LogSource.NonProxied,
-            maxEntriesWithBodies: _settings.Logging.MaxLogEntriesWithBodies);
-
-        // Modules were initialized with a forwarding sink; point it at the real MCP log store
-        // so module activity (e.g. SSH connections) appears in the MCP logs.
-        _moduleHost.BindActivityLog(new McpActivityLogAdapter(_mcpStats));
-
-        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _mcpStats);
-        _perfService = new PerformanceService(_settings.EnablePerformanceSampling);
-        _streamMonitor = new StreamMonitor();
-        _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer, _nonProxiedStats, streamMonitor: _streamMonitor);
-        _handler.StartHeartbeatMonitors();
-        _server = new ProxyServer(_handler);
+        // The controller owns the service graph, logging init, and shutdown; the tray only adds
+        // the icon, menu, main form, and UI-thread feedback.
+        _controller = new ProxyHostController(settings, database, moduleHost);
+        _settings = _controller.Settings;
+        _database = _controller.Database;
 
         _trayIcon = new NotifyIcon
         {
@@ -90,60 +54,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
 
         _trayIcon.DoubleClick += OnTrayDoubleClick;
-        _server.StatusChanged += OnServerStatusChanged;
+        _controller.StatusChanged += OnServerStatusChanged;
+        _controller.ProxyStartFailed += OnProxyStartFailed;
 
         if (_settings.AutoStartProxy)
             StartProxy();
 
-        StartModules();
-        _ = StartMcpServerAsync();
+        _controller.StartModules();
+        _ = _controller.StartMcpServerAsync();
 
         if (_settings.StartWithDashboardOpen)
             ShowMainForm();
     }
 
-    /// <summary>
-    /// Starts the built-in MCP server after the modules. It gates itself on the persisted
-    /// enabled flag; a bind failure logs a warning and never blocks host startup.
-    /// </summary>
-    private async Task StartMcpServerAsync()
+    private void OnProxyStartFailed(object? sender, Exception ex)
     {
-        try
-        {
-            await _mcpServer.StartAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "MCP server failed to start");
-        }
-    }
-
-    /// <summary>
-    /// Starts every loaded runnable module after the proxy. Modules decide internally whether
-    /// to actually start based on their own persisted enabled state; a module that fails to
-    /// start (e.g. a port bind error) logs a warning and never blocks the host or other modules.
-    /// </summary>
-    private void StartModules()
-    {
-        foreach (LoadedModule loaded in _moduleHost.LoadedModules)
-        {
-            if (loaded.Module is not IRunnableModule runnable)
-                continue;
-
-            _ = StartModuleAsync(loaded.Entry.Name, runnable);
-        }
-    }
-
-    private static async Task StartModuleAsync(string? moduleName, IRunnableModule module)
-    {
-        try
-        {
-            await module.StartAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Module {ModuleName} failed to start", moduleName);
-        }
+        MessageBox.Show($"Failed to start proxy: {ex.Message}", "Kaeo LLM Proxy",
+            MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     private ContextMenuStrip BuildContextMenu()
@@ -159,22 +86,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return menu;
     }
 
-    private void StartProxy()
-    {
-        try
-        {
-            _server.Start(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
-            SetTrayText($"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}");
-            Log.Information("Proxy started on {Address}:{Port}", _settings.ListenAddress, _settings.ListenPort);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Failed to start proxy on {Address}:{Port}", _settings.ListenAddress, _settings.ListenPort);
-            SetTrayText("Kaeo LLM Proxy — Error");
-            MessageBox.Show($"Failed to start proxy: {ex.Message}", "Kaeo LLM Proxy",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
+    // Tray text and the error MessageBox are driven by the controller's StatusChanged /
+    // ProxyStartFailed events (see OnServerStatusChanged / OnProxyStartFailed).
+    private void StartProxy() => _controller.StartProxy();
 
     /// <summary>
     /// Sets the tray tooltip text, truncated to the NotifyIcon limit. Call only on the UI thread.
@@ -209,7 +123,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnStartProxy(object? sender, EventArgs e)
     {
-        if (!_server.IsRunning)
+        if (!_controller.Server.IsRunning)
             StartProxy();
     }
 
@@ -217,7 +131,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            await _server.StopAsync();
+            await _controller.Server.StopAsync();
         }
         catch (Exception ex)
         {
@@ -231,7 +145,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            await _server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
+            await _controller.Server.RestartAsync(_settings.ListenPort, _settings.ListenAddress, _settings.MaxConcurrentRequests);
             SetTrayText($"Kaeo LLM Proxy — Listening {_settings.ListenAddress}:{_settings.ListenPort}");
         }
         catch (Exception ex)
@@ -246,7 +160,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _stats, _server, _handler, _perfService, _database, _moduleHost, _mcpServer, _nonProxiedStats, _streamMonitor);
+            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.StreamMonitor);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }
@@ -355,27 +269,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Visible = false;
         try
         {
-            await _mcpServer.StopAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Error stopping MCP server during shutdown");
-        }
-        try
-        {
-            await _moduleHost.StopAllAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Error stopping modules during shutdown");
-        }
-        try
-        {
-            await _server.StopAsync();
-        }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Error stopping proxy during shutdown");
+            await _controller.StopAsync();
         }
         finally
         {
@@ -392,22 +286,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (disposing)
         {
-            _server.StatusChanged -= OnServerStatusChanged;
+            _controller.StatusChanged -= OnServerStatusChanged;
+            _controller.ProxyStartFailed -= OnProxyStartFailed;
             ContextMenuStrip? menu = _trayIcon.ContextMenuStrip;
             _trayIcon.Dispose();
             menu?.Dispose();
             // The tray/form icon is a shared cached instance owned by Program; do not dispose it.
             _mainForm?.Dispose();
             _mainForm = null;
-            _server.Dispose();
-            _handler.Dispose();
-            _stats.Dispose();
-            _mcpStats.Dispose();
-            _nonProxiedStats.Dispose();
-            _perfService.Dispose();
-            // The database is owned by Program.Main (created and disposed there); only one
-            // shared instance exists per process, so it must not be disposed here.
-            AppLogger.Shutdown();
+            // The controller disposes the service graph and shuts down logging; the database is
+            // owned by Program.Main and disposed there.
+            _controller.Dispose();
         }
         base.Dispose(disposing);
     }
