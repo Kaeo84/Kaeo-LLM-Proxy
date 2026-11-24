@@ -5,6 +5,7 @@ using Kaeo.LlmProxy.Core.Security;
 using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Services;
+using Kaeo.LlmProxy.Web;
 using Serilog;
 
 namespace Kaeo.LlmProxy.Headless;
@@ -66,10 +67,23 @@ internal static class Program
 
             await controller.StartAsync();
 
+            await using WebDashboardHost dashboard = new(settings, controller);
+            try
+            {
+                await dashboard.StartAsync();
+                if (dashboard.Url is not null)
+                    Console.WriteLine($"[dashboard] {dashboard.Url}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Web dashboard failed to start; continuing without it");
+            }
+
             Console.WriteLine($"Kaeo LLM Proxy (headless) running on {settings.ListenAddress}:{settings.ListenPort}. Press Ctrl+C to stop.");
             await WaitForShutdownAsync();
 
             Console.WriteLine("Kaeo LLM Proxy (headless) shutting down…");
+            await dashboard.StopAsync();
             await controller.StopAsync();
             return 0;
         }

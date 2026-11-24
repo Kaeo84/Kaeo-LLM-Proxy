@@ -5,6 +5,7 @@ using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Core.Modules;
+using Kaeo.LlmProxy.Web;
 using Serilog;
 
 namespace Kaeo.LlmProxy;
@@ -23,6 +24,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppDatabase _database;
     private readonly SynchronizationContext? _uiContext;
     private MainForm? _mainForm;
+    private WebDashboardHost? _dashboard;
     private bool _disposed;
     private bool _exiting;
 
@@ -62,9 +64,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _controller.StartModules();
         _ = _controller.StartMcpServerAsync();
+        _ = StartWebDashboardAsync();
 
         if (_settings.StartWithDashboardOpen)
             ShowMainForm();
+    }
+
+    private async Task StartWebDashboardAsync()
+    {
+        try
+        {
+            WebDashboardHost dashboard = new(_settings, _controller);
+            await dashboard.StartAsync();
+            if (_disposed)
+            {
+                await dashboard.StopAsync();
+                return;
+            }
+            _dashboard = dashboard;
+            if (dashboard.Url is not null)
+                Log.Information("Web dashboard available at {Url}", dashboard.Url);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Web dashboard failed to start; continuing without it");
+        }
     }
 
     private void OnProxyStartFailed(object? sender, Exception ex)
@@ -269,6 +293,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Visible = false;
         try
         {
+            if (_dashboard is not null)
+            {
+                try
+                {
+                    await _dashboard.StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Error stopping web dashboard");
+                }
+            }
             await _controller.StopAsync();
         }
         finally

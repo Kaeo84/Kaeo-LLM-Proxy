@@ -15,6 +15,7 @@
 		<ProjectReference Include="..\Kaeo LLM Proxy Core\Kaeo LLM Proxy Core.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Infrastructure\Kaeo LLM Proxy Infrastructure.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Services\Kaeo LLM Proxy Services.csproj" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Web\Kaeo LLM Proxy Web.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

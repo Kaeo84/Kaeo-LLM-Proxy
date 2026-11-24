@@ -22,6 +22,7 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="Kaeo LLM Proxy" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy Headless" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy Web" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
 	</ItemGroup>
 
