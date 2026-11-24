@@ -108,7 +108,8 @@ internal static class ChatHttp
 
     /// <summary>
     /// Strips the query string, fragment, and any userinfo from a URL so secret webhook tokens
-    /// (which live in the query) never appear in logs or error messages.
+    /// (which live in the query) never appear in logs or error messages. Discord webhook tokens
+    /// live in the path (/api/webhooks/{id}/{token}), so that segment is masked too.
     /// </summary>
     public static string RedactUrl(string url)
     {
@@ -116,11 +117,26 @@ internal static class ChatHttp
             return string.Empty;
 
         if (Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
-            return uri.GetLeftPart(UriPartial.Path);
+            return RedactWebhookToken(uri.GetLeftPart(UriPartial.Path));
 
         // Not a parseable absolute URL: cut at the first query/fragment marker defensively.
         int cut = url.IndexOfAny(['?', '#']);
-        return cut >= 0 ? url[..cut] : url;
+        return RedactWebhookToken(cut >= 0 ? url[..cut] : url);
+    }
+
+    /// <summary>Masks the token segment of a Discord webhook path, keeping the webhook id.</summary>
+    private static string RedactWebhookToken(string path)
+    {
+        const string marker = "/api/webhooks/";
+        int markerIndex = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex < 0)
+            return path;
+
+        int idStart = markerIndex + marker.Length;
+        int tokenStart = path.IndexOf('/', idStart);
+        return tokenStart >= 0 && tokenStart + 1 < path.Length
+            ? path[..(tokenStart + 1)] + "***"
+            : path;
     }
 
     /// <summary>Sets a per-request Bearer authorization header.</summary>

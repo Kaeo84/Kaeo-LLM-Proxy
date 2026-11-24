@@ -203,7 +203,7 @@ internal sealed class ChatChannelDialog : Form
         bool teams = type == "teams";
         bool zoom = type == "zoom";
         bool google = type == "googlechat";
-        bool webhook = teams || google;
+        bool webhook = teams || google || type == "discord";
 
         SetRowVisible(_lblTenantId, _txtTenantId, teams);
         SetRowVisible(_lblClientId, _txtClientId, teams);
@@ -215,8 +215,9 @@ internal sealed class ChatChannelDialog : Form
 
         _lblHint.Text = type switch
         {
-            "discord" => "Credential Secret = bot token. Target = channel id. The bot needs " +
-                "Send Messages and Read Message History in that channel.",
+            "discord" => "Webhook URL sends with no credential (send-only). To also receive " +
+                "replies, set Target = channel id and select a credential whose Secret is a bot " +
+                "token with Send Messages and Read Message History in that channel.",
             "teams" => "Webhook URL (Workflows incoming webhook) is used to send. For receiving, " +
                 "fill tenant/client/chat ids and select a credential holding the client secret.",
             "slack" => "Credential Secret = bot token (xoxb-...). Target = channel id. The bot " +
@@ -309,7 +310,8 @@ internal sealed class ChatChannelDialog : Form
             return Fail("Name is required.");
 
         bool webhookProvider = config.ProviderType is "teams" or "googlechat";
-        if (!webhookProvider && config.Target.Length == 0)
+        bool discordWebhook = config.ProviderType == "discord" && !string.IsNullOrWhiteSpace(config.WebhookUrl);
+        if (!webhookProvider && !discordWebhook && config.Target.Length == 0)
             return Fail("Target (channel id) is required for this provider.");
 
         if (webhookProvider && string.IsNullOrWhiteSpace(config.WebhookUrl))

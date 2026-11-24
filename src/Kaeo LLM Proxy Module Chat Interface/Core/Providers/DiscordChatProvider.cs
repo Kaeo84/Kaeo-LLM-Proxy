@@ -6,9 +6,11 @@ using System.Text.Json;
 namespace Kaeo.LlmProxy.Module.ChatInterface;
 
 /// <summary>
-/// Discord bot integration. The credential's secret is the bot token; the target is the
-/// channel id. Sends via POST /channels/{id}/messages and polls with the snowflake
-/// <c>after</c> parameter. Bot-authored messages are filtered out.
+/// Discord integration. Sending uses either an incoming webhook URL (no credential needed —
+/// the URL itself carries the secret token; send-only) or the bot API (credential secret =
+/// bot token, target = channel id) via POST /channels/{id}/messages. Receiving polls with the
+/// snowflake <c>after</c> parameter and requires the bot configuration; bot-authored messages
+/// are filtered out.
 /// </summary>
 internal sealed class DiscordChatProvider(ISecretProvider secrets) : IChatProvider
 {
@@ -27,6 +29,14 @@ internal sealed class DiscordChatProvider(ISecretProvider secrets) : IChatProvid
 
     public async Task<string> SendAsync(ChatChannelConfig channel, string text, CancellationToken cancellationToken)
     {
+        // Webhook sends need no credential: the URL itself carries the secret token.
+        if (!string.IsNullOrWhiteSpace(channel.WebhookUrl))
+            return await SendViaWebhookAsync(channel, text, cancellationToken).ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(channel.Target))
+            throw new InvalidOperationException(
+                $"Channel '{channel.Name}' has no webhook URL or target channel id configured.");
+
         string token = RequireBotToken(channel);
         string url = $"{ApiBase}/channels/{Uri.EscapeDataString(channel.Target.Trim())}/messages";
         string json = JsonSerializer.Serialize(new { content = text });
@@ -37,6 +47,39 @@ internal sealed class DiscordChatProvider(ISecretProvider secrets) : IChatProvid
 
         using JsonDocument document = JsonDocument.Parse(body);
         return ChatProviderSupport.GetStringOrNull(document.RootElement, "id") ?? string.Empty;
+    }
+
+    private static async Task<string> SendViaWebhookAsync(ChatChannelConfig channel, string text, CancellationToken cancellationToken)
+    {
+        string webhookUrl = channel.WebhookUrl!.Trim();
+        if (!Uri.TryCreate(webhookUrl, UriKind.Absolute, out Uri? uri) || uri.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidOperationException(
+                $"Channel '{channel.Name}' has an invalid Discord webhook URL (must be an absolute https URL).");
+
+        string json = JsonSerializer.Serialize(new { content = text });
+        string body = await ChatHttp.PostJsonAsync(BuildWebhookExecuteUrl(webhookUrl), json,
+            configure: null, cancellationToken).ConfigureAwait(false);
+
+        // wait=true makes Discord return the created message; tolerate an empty/non-JSON body.
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body);
+            return ChatProviderSupport.GetStringOrNull(document.RootElement, "id") ?? string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Appends wait=true to a webhook execute URL so Discord returns the created message
+    /// (with its id) instead of an empty 204. Preserves any existing query string.
+    /// </summary>
+    internal static string BuildWebhookExecuteUrl(string webhookUrl)
+    {
+        string trimmed = webhookUrl.Trim().TrimEnd('?', '&');
+        return trimmed.Contains('?') ? trimmed + "&wait=true" : trimmed + "?wait=true";
     }
 
     public async Task<IReadOnlyList<ChatIncomingMessage>> PollAsync(ChatChannelConfig channel, string? cursor, CancellationToken cancellationToken)

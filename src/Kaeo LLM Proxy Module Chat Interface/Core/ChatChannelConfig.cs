@@ -22,7 +22,7 @@ internal sealed class ChatChannelConfig
     /// <summary>Name of a credential in the host's central store supplying the bot token/secret.</summary>
     public string? CredentialName { get; set; }
 
-    /// <summary>Incoming-webhook URL for webhook-based sends (Teams, Google Chat). Contains a secret token.</summary>
+    /// <summary>Incoming-webhook URL for webhook-based sends (Discord, Teams, Google Chat). Contains a secret token.</summary>
     public string? WebhookUrl { get; set; }
 
     /// <summary>Provider-specific non-secret configuration as JSON (e.g. Teams tenantId/clientId/chatId, Zoom accountId).</summary>

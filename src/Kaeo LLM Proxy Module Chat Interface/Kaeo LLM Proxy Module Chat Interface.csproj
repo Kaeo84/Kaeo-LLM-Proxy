@@ -28,6 +28,11 @@
 		<IsModuleProject>true</IsModuleProject>
 	</PropertyGroup>
 
+	<ItemGroup>
+		<!-- Webhook URL handling and token redaction are security-relevant pure logic; let the test suite exercise them. -->
+		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
+	</ItemGroup>
+
 	<Import Project="..\ModuleBuild.targets" />
 
 </Project>
