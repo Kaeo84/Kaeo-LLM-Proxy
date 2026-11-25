@@ -1,9 +1,12 @@
+using System.Globalization;
+using System.Security.Claims;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Modules;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Services.Mcp;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Data.Sqlite;
 
 namespace Kaeo.LlmProxy.Web;
 
@@ -89,16 +92,43 @@ internal static partial class DashboardEndpoints
 
     private static void MapLogs(WebApplication app, ProxyHostController controller)
     {
-        // Incremental poll. `after` is a timestamp-ticks cursor; entries strictly newer than it are
-        // returned oldest-first. RequestLog has no numeric id, so ticks are the cursor (documented).
-        app.MapGet("/api/logs", (string? source, long? after, int? limit) =>
+        // Two modes sharing a timestamp-ticks cursor (RequestLog has no numeric id):
+        //  - `after` omitted: fresh load — the newest `limit` entries straight from the database
+        //    (the full retention window, not just the in-memory queue), newest first.
+        //  - `after` supplied: incremental poll of the in-memory window — strictly newer entries,
+        //    oldest first.
+        // Read Only sessions only ever see requests attributed to their own user (via API key).
+        app.MapGet("/api/logs", (HttpContext context, string? source, long? after, int? limit) =>
         {
-            StatisticsService stats = StatsForSource(controller, source);
-            int take = Math.Clamp(limit ?? 100, 1, 1000);
-            long cursor = after ?? 0;
+            string role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole;
+            int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
+                ? parsedId
+                : null;
+            if (role == DashboardAuth.ReadOnlyRole && callerId is null)
+                return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
+            int? filterUserId = role == DashboardAuth.ReadOnlyRole ? callerId : null;
 
+            int take = Math.Clamp(limit ?? 100, 1, 1000);
+
+            if (after is null)
+            {
+                try
+                {
+                    IReadOnlyList<RequestLog> recent = controller.Database.QueryRecent(take, LogSourceFor(source), filterUserId);
+                    long newest = recent.Count > 0 ? recent[0].Timestamp.Ticks : 0;
+                    return Results.Json(new { entries = recent, nextAfter = newest });
+                }
+                catch (Exception ex) when (ex is IOException or SqliteException)
+                {
+                    Serilog.Log.Warning(ex, "Log query failed");
+                    return Results.Json(new { error = "Log data is temporarily unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+            }
+
+            StatisticsService stats = StatsForSource(controller, source);
+            long cursor = after.Value;
             List<RequestLog> entries = stats.GetRecentLogs()
-                .Where(e => e.Timestamp.Ticks > cursor)
+                .Where(e => e.Timestamp.Ticks > cursor && (filterUserId is null || e.UserId == filterUserId))
                 .OrderBy(e => e.Timestamp.Ticks)
                 .ThenBy(e => e.RequestId, StringComparer.Ordinal)
                 .Take(take)
@@ -107,7 +137,42 @@ internal static partial class DashboardEndpoints
             long next = entries.Count > 0 ? entries[^1].Timestamp.Ticks : cursor;
             return Results.Json(new { entries, nextAfter = next });
         });
+
+        // Full bodies/headers for the detail view, loaded on demand from the store. Read Only
+        // callers get 404 for entries that are not theirs (no existence leak).
+        app.MapGet("/api/logs/detail", (HttpContext context, string? source, string? timestamp) =>
+        {
+            if (!DateTime.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime parsed))
+                return Results.Json(new { error = "timestamp must be an ISO 8601 date/time." }, statusCode: StatusCodes.Status400BadRequest);
+
+            string role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole;
+            int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
+                ? parsedId
+                : null;
+            if (role == DashboardAuth.ReadOnlyRole && callerId is null)
+                return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
+
+            try
+            {
+                RequestLog? full = controller.Database.LoadFullLogEntry(parsed.ToLocalTime(), LogSourceFor(source));
+                if (full is null || (role == DashboardAuth.ReadOnlyRole && full.UserId != callerId))
+                    return Results.Json(new { error = "Log entry not found." }, statusCode: StatusCodes.Status404NotFound);
+                return Results.Json(full);
+            }
+            catch (Exception ex) when (ex is IOException or SqliteException)
+            {
+                Serilog.Log.Warning(ex, "Log detail query failed");
+                return Results.Json(new { error = "Log data is temporarily unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        });
     }
+
+    private static LogSource LogSourceFor(string? source) => source?.ToLowerInvariant() switch
+    {
+        "mcp" => LogSource.Mcp,
+        "nonproxied" or "non-proxied" => LogSource.NonProxied,
+        _ => LogSource.Proxy,
+    };
 
     private static void MapStats(WebApplication app, ProxyHostController controller)
     {

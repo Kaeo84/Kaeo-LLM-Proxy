@@ -165,6 +165,7 @@
 
     function applyDashboardRole(role) {
         dashboardRole = role === 'readOnly' ? 'readOnly' : 'admin';
+        applyLogSourceRole();
         $('#tabs a').show();
         $('#topbar').removeClass('read-only');
         if (dashboardRole !== 'readOnly') return;
@@ -265,6 +266,20 @@
 
     function currentSource() { return $('#log-source').val(); }
 
+    // Read Only sessions only see their own proxy requests; MCP/non-proxied traffic is not
+    // attributed to API-key users, so those sources are admin-only.
+    function applyLogSourceRole() {
+        var $source = $('#log-source');
+        var keep = $source.val() || 'proxy';
+        $source.empty();
+        [['proxy', 'Proxy'], ['mcp', 'MCP'], ['nonproxied', 'Non-proxied']].forEach(function (s) {
+            if (dashboardRole === 'readOnly' && s[0] !== 'proxy') return;
+            $source.append($('<option>').val(s[0]).text(s[1]));
+        });
+        $source.val(keep);
+        if (!$source.val()) $source.val('proxy');
+    }
+
     function resetLogsView() {
         logCursors[currentSource()] = 0;
         $('#log-table tbody').empty();
@@ -280,13 +295,22 @@
         if (logBusy) return;
         logBusy = true;
         var source = currentSource();
-        var url = '/api/logs?source=' + encodeURIComponent(source) + '&after=' + logCursors[source] + '&limit=' + (initial ? 1000 : 200);
+        // Fresh load omits `after`: the server answers newest-first from the database (the full
+        // retention window, even when the in-memory queue has rolled). Polls send the cursor.
+        var url = '/api/logs?source=' + encodeURIComponent(source) + '&limit=' + (initial ? MAX_LOG_ROWS : 200);
+        if (!initial) url += '&after=' + logCursors[source];
         api('GET', url, undefined, { silent: true })
             .then(function (data) {
                 logCursors[source] = data.nextAfter || logCursors[source];
                 var $tbody = $('#log-table tbody');
-                (data.entries || []).forEach(function (entry) { $tbody.append(logRow(entry)); });
-                while ($tbody.children().length > MAX_LOG_ROWS) $tbody.children().first().remove();
+                var entries = data.entries || [];
+                if (initial) {
+                    entries.forEach(function (entry) { $tbody.append(logRow(entry)); });
+                } else {
+                    // Incremental batches arrive oldest-first; prepend reversed so newest stays on top.
+                    for (var i = entries.length - 1; i >= 0; i--) $tbody.prepend(logRow(entries[i]));
+                }
+                while ($tbody.children().length > MAX_LOG_ROWS) $tbody.children().last().remove();
                 updateLogCount();
             })
             .catch(function () { /* transient poll failure — next tick retries */ })
@@ -312,6 +336,15 @@
     }
 
     function logDetail(e) {
+        // List rows are summaries; bodies/headers live in the store and load on demand.
+        openModal('Request detail', $('<p class="muted">').text('Loading full entry\u2026'), [{ label: 'Close' }], true);
+        var url = '/api/logs/detail?source=' + encodeURIComponent(currentSource()) + '&timestamp=' + encodeURIComponent(e.timestamp);
+        api('GET', url, undefined, { silent: true })
+            .then(function (full) { renderLogDetail(full && full.requestId ? full : e); })
+            .catch(function () { renderLogDetail(e); });
+    }
+
+    function renderLogDetail(e) {
         var $body = $('<div>');
         var $grid = $('<div class="field-grid">');
         [
@@ -345,7 +378,7 @@
             $body.append($details);
         });
 
-        openModal('Request detail', $body, [{ label: 'Close' }], true);
+        $('#modal-body').empty().append($body);
     }
 
     loaders.requests = function () { resetLogsView(); };

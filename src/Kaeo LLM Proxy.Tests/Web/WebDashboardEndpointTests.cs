@@ -83,7 +83,7 @@ public sealed class WebDashboardEndpointTests
             StatusCode = 200,
         });
 
-        using JsonDocument first = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy"));
+        using JsonDocument first = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&after=0"));
         JsonElement entries = first.RootElement.GetProperty("entries");
         Assert.True(entries.GetArrayLength() >= 1);
         long next = first.RootElement.GetProperty("nextAfter").GetInt64();
@@ -91,6 +91,130 @@ public sealed class WebDashboardEndpointTests
 
         using JsonDocument second = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
         Assert.Equal(0, second.RootElement.GetProperty("entries").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Logs_FreshLoad_ReturnsNewestFirstFromDatabase()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        DateTime start = DateTime.Today.AddHours(9);
+        for (int i = 0; i < 3; i++)
+        {
+            b.Database.Insert(new RequestLog
+            {
+                Timestamp = start.AddMinutes(i),
+                Method = "POST",
+                OllamaPath = "/api/chat",
+                Model = $"m{i}",
+                StatusCode = 200,
+                Status = RequestStatus.Success,
+            });
+        }
+
+        // No `after`: the answer comes from the database (the in-memory queue is empty here),
+        // newest first, so a fresh view never starts at the oldest rows.
+        using JsonDocument fresh = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&limit=10"));
+        JsonElement[] entries = fresh.RootElement.GetProperty("entries").EnumerateArray().ToArray();
+        Assert.Equal(["m2", "m1", "m0"], entries.Select(e => e.GetProperty("model").GetString()));
+        long next = fresh.RootElement.GetProperty("nextAfter").GetInt64();
+        Assert.Equal(start.AddMinutes(2).Ticks, next);
+
+        using JsonDocument poll = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
+        Assert.Equal(0, poll.RootElement.GetProperty("entries").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Logs_ReadOnly_SeesOnlyOwnRequests()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "logs owner password";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Request Owner",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "requests.owner",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int ownerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+        ProxyUser admin = b.Database.LoadProxyUsers().Single(u => u.DashboardUsername == DashboardTestSession.AdminUsername);
+
+        DateTime start = DateTime.Today.AddHours(9);
+        b.Database.Insert(new RequestLog { Timestamp = start, Method = "POST", OllamaPath = "/api/chat", Model = "mine", StatusCode = 200, Status = RequestStatus.Success, UserId = ownerId });
+        b.Database.Insert(new RequestLog { Timestamp = start.AddMinutes(1), Method = "POST", OllamaPath = "/api/chat", Model = "theirs", StatusCode = 200, Status = RequestStatus.Success, UserId = admin.Id });
+        b.Database.Insert(new RequestLog { Timestamp = start.AddMinutes(2), Method = "POST", OllamaPath = "/api/chat", Model = "unattributed", StatusCode = 200, Status = RequestStatus.Success });
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "requests.owner", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage fresh = new(HttpMethod.Get, "/api/logs?source=proxy");
+        fresh.Headers.Add("Cookie", cookie);
+        using JsonDocument freshDoc = JsonDocument.Parse(await (await b.Anonymous.SendAsync(fresh)).Content.ReadAsStringAsync());
+        JsonElement mine = Assert.Single(freshDoc.RootElement.GetProperty("entries").EnumerateArray());
+        Assert.Equal("mine", mine.GetProperty("model").GetString());
+
+        // Incremental polls are scoped too: only the caller's attributed entries come through.
+        b.Controller.Stats.AddLog(new RequestLog { Timestamp = DateTime.Now, Method = "POST", OllamaPath = "/api/chat", Model = "mine-live", StatusCode = 200, Status = RequestStatus.Success, UserId = ownerId });
+        b.Controller.Stats.AddLog(new RequestLog { Timestamp = DateTime.Now.AddSeconds(1), Method = "POST", OllamaPath = "/api/chat", Model = "theirs-live", StatusCode = 200, Status = RequestStatus.Success, UserId = admin.Id });
+        b.Controller.Stats.AddLog(new RequestLog { Timestamp = DateTime.Now.AddSeconds(2), Method = "POST", OllamaPath = "/api/chat", Model = "open-live", StatusCode = 200, Status = RequestStatus.Success });
+
+        using HttpRequestMessage poll = new(HttpMethod.Get, "/api/logs?source=proxy&after=0");
+        poll.Headers.Add("Cookie", cookie);
+        using JsonDocument pollDoc = JsonDocument.Parse(await (await b.Anonymous.SendAsync(poll)).Content.ReadAsStringAsync());
+        JsonElement live = Assert.Single(pollDoc.RootElement.GetProperty("entries").EnumerateArray());
+        Assert.Equal("mine-live", live.GetProperty("model").GetString());
+
+        // Admin still sees everything.
+        using JsonDocument adminDoc = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&after=0"));
+        Assert.Equal(3, adminDoc.RootElement.GetProperty("entries").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Logs_Detail_LoadsBodies_AndReadOnlyCannotReadOthers()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "detail owner password";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Detail Owner",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "detail.owner",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int ownerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+
+        DateTime mineAt = DateTime.Today.AddHours(9);
+        DateTime theirsAt = mineAt.AddMinutes(5);
+        b.Database.Insert(new RequestLog { Timestamp = mineAt, Method = "POST", OllamaPath = "/api/chat", Model = "mine", StatusCode = 200, Status = RequestStatus.Success, UserId = ownerId, RequestBody = "{\"mine\":true}", ResponseBody = "{\"answer\":42}" });
+        b.Database.Insert(new RequestLog { Timestamp = theirsAt, Method = "POST", OllamaPath = "/api/chat", Model = "theirs", StatusCode = 200, Status = RequestStatus.Success, RequestBody = "{\"secret\":true}" });
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "detail.owner", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage own = new(HttpMethod.Get, $"/api/logs/detail?source=proxy&timestamp={Uri.EscapeDataString(mineAt.ToString("O"))}");
+        own.Headers.Add("Cookie", cookie);
+        HttpResponseMessage ownResponse = await b.Anonymous.SendAsync(own);
+        Assert.Equal(HttpStatusCode.OK, ownResponse.StatusCode);
+        using JsonDocument ownDoc = JsonDocument.Parse(await ownResponse.Content.ReadAsStringAsync());
+        Assert.Equal("{\"answer\":42}", ownDoc.RootElement.GetProperty("responseBody").GetString());
+
+        using HttpRequestMessage other = new(HttpMethod.Get, $"/api/logs/detail?source=proxy&timestamp={Uri.EscapeDataString(theirsAt.ToString("O"))}");
+        other.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.NotFound, (await b.Anonymous.SendAsync(other)).StatusCode);
+
+        // Admin can open any entry; a bad timestamp is a 400.
+        HttpResponseMessage adminDetail = await b.Client.GetAsync($"/api/logs/detail?source=proxy&timestamp={Uri.EscapeDataString(theirsAt.ToString("O"))}");
+        Assert.Equal(HttpStatusCode.OK, adminDetail.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/logs/detail?source=proxy&timestamp=yesterday")).StatusCode);
     }
 
     [Fact]

@@ -908,16 +908,17 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Returns the most recent <paramref name="count"/> log entries from the active database,
     /// newest first. Summary columns only — bodies and headers are loaded on demand via
-    /// <see cref="LoadFullLogEntry"/>.
+    /// <see cref="LoadFullLogEntry"/>. <paramref name="userId"/> narrows to one user's attributed
+    /// requests (unattributed rows are excluded); null returns everyone's.
     /// </summary>
-    public IReadOnlyList<RequestLog> QueryRecent(int count)
+    public IReadOnlyList<RequestLog> QueryRecent(int count, LogSource source = LogSource.Proxy, int? userId = null)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -940,12 +941,15 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_tokens,
                     draft_n,
                     draft_n_accepted,
-                    original_model
-                FROM requests
-                ORDER BY timestamp_utc DESC
+                    original_model,
+                    user_id
+                FROM {{RequestTable(source)}}
+                WHERE ($userId IS NULL OR user_id = $userId)
+                ORDER BY timestamp_utc DESC, id DESC
                 LIMIT $count;
                 """;
             command.Parameters.AddWithValue("$count", count);
+            command.Parameters.AddWithValue("$userId", userId.HasValue ? userId.Value : DBNull.Value);
 
             using SqliteDataReader reader = command.ExecuteReader();
             List<RequestLog> entries = [];
@@ -1056,7 +1060,8 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_tokens,
                     draft_n,
                     draft_n_accepted,
-                    original_model
+                    original_model,
+                    user_id
                 FROM {{RequestTable(source)}}
                 ORDER BY timestamp_utc DESC, id DESC
                 LIMIT $count;
@@ -1122,7 +1127,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address,
                     user_agent,
                     request_headers,
-                    response_headers
+                    response_headers,
+                    user_id
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc BETWEEN $timestampLo AND $timestampHi
                 ORDER BY id DESC
@@ -2322,6 +2328,7 @@ internal sealed class AppDatabase : IDisposable
         UserAgent = reader.IsDBNull(29) ? null : reader.GetString(29),
         RequestHeaders = reader.IsDBNull(30) ? null : reader.GetString(30),
         ResponseHeaders = reader.IsDBNull(31) ? null : reader.GetString(31),
+        UserId = reader.IsDBNull(32) ? null : reader.GetInt32(32),
     };
 
     /// <summary>
@@ -2357,6 +2364,7 @@ internal sealed class AppDatabase : IDisposable
         DraftN = reader.GetInt32(19),
         DraftNAccepted = reader.GetInt32(20),
         OriginalModel = reader.IsDBNull(21) ? string.Empty : reader.GetString(21),
+        UserId = reader.IsDBNull(22) ? null : reader.GetInt32(22),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()

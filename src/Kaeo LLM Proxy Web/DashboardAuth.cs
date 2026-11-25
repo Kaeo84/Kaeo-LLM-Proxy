@@ -97,6 +97,7 @@ internal static class DashboardAuth
         => (HttpMethods.IsGet(request.Method)
                 && (request.Path.Equals("/api/auth/me", StringComparison.OrdinalIgnoreCase)
                     || request.Path.Equals("/api/logs", StringComparison.OrdinalIgnoreCase)
+                    || request.Path.Equals("/api/logs/detail", StringComparison.OrdinalIgnoreCase)
                     || request.Path.Equals("/api/usage", StringComparison.OrdinalIgnoreCase)))
             || (HttpMethods.IsPost(request.Method)
                 && request.Path.Equals("/api/auth/logout", StringComparison.OrdinalIgnoreCase));
