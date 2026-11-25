@@ -72,12 +72,22 @@ internal sealed class WebDashboardHost : IAsyncDisposable
             app.UseStaticFiles();
             app.Use(async (context, next) =>
             {
-                if (context.Request.Path.StartsWithSegments("/api") &&
-                    !DashboardAuth.IsAuthorized(context, wd, out string? error))
+                if (context.Request.Path.StartsWithSegments("/api"))
                 {
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    await context.Response.WriteAsJsonAsync(new { error });
-                    return;
+                    if (!DashboardAuth.TryAuthorize(context, wd, out string? error))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        await context.Response.WriteAsJsonAsync(new { error });
+                        return;
+                    }
+
+                    if (Equals(context.Items[DashboardAuth.RoleItemKey], DashboardAuth.ReadOnlyRole)
+                        && !DashboardAuth.IsReadOnlyRequestAllowed(context.Request))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        await context.Response.WriteAsJsonAsync(new { error = "Read-only dashboard credentials can access logs only." });
+                        return;
+                    }
                 }
                 await next();
             });

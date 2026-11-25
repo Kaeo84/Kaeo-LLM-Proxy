@@ -20,6 +20,8 @@ internal static partial class DashboardEndpoints
 
     public static void MapAll(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
+        app.MapGet("/api/auth/me", (HttpContext context) =>
+            Results.Json(new { role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole }));
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
         MapLogs(app, controller);

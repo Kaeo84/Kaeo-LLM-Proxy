@@ -43,7 +43,7 @@ internal sealed class SettingsUpdate
     public ProxySecurityUpdate? ProxySecurity { get; set; }
 }
 
-/// <summary>Partial web-dashboard settings update. ApiKey/CertificatePassword are write-only.</summary>
+/// <summary>Partial web-dashboard settings update. API keys/certificate password are write-only.</summary>
 internal sealed class WebDashboardUpdate
 {
     public bool? Enabled { get; set; }
@@ -53,6 +53,8 @@ internal sealed class WebDashboardUpdate
     public string? Scheme { get; set; }
     public string? CertificatePath { get; set; }
     public string? ApiKey { get; set; }
+    public string? ReadOnlyApiKey { get; set; }
+    public bool? ClearReadOnlyApiKey { get; set; }
     public string? CertificatePassword { get; set; }
 }
 

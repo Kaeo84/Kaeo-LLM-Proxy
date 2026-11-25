@@ -1111,9 +1111,15 @@ internal sealed class WebDashboardSettings
     public string? ApiKey { get; set; }
 
     /// <summary>
-    /// When true, every dashboard API request must present <see cref="ApiKey"/> (via the
-    /// <c>X-Dashboard-Api-Key</c> header or <c>api_key</c> query string). Default: false (local-only
-    /// binding is the guard). Enable when binding beyond localhost.
+    /// Optional dashboard key restricted to log viewing. When configured, dashboard authentication
+    /// is required even on loopback; <see cref="ApiKey"/> remains the full-access administrator key.
+    /// </summary>
+    public string? ReadOnlyApiKey { get; set; }
+
+    /// <summary>
+    /// When true, every dashboard API request must present <see cref="ApiKey"/> or
+    /// <see cref="ReadOnlyApiKey"/> (via the <c>X-Dashboard-Api-Key</c> header or Bearer token).
+    /// Default: false (local-only binding is the guard). Enable when binding beyond localhost.
     /// </summary>
     public bool RequireApiKey { get; set; } = false;
 
@@ -1893,6 +1899,7 @@ internal sealed class AppSettings
                 Port = WebDashboard.Port,
                 ListenAddress = WebDashboard.ListenAddress,
                 ApiKey = WebDashboard.ApiKey,
+                ReadOnlyApiKey = WebDashboard.ReadOnlyApiKey,
                 RequireApiKey = WebDashboard.RequireApiKey,
                 Scheme = WebDashboard.Scheme,
                 CertificatePath = WebDashboard.CertificatePath,

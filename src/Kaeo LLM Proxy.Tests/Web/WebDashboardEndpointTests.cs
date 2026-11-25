@@ -161,6 +161,77 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Auth_ReadOnlyKey_CanReadLogs_ButCannotAccessOtherApiEndpoints()
+    {
+        await using Bundle b = await CreateBundleAsync(wd =>
+        {
+            wd.ApiKey = "admin-key";
+            wd.ReadOnlyApiKey = "viewer-key";
+            wd.RequireApiKey = true;
+        });
+
+        using HttpRequestMessage identityRequest = new(HttpMethod.Get, "/api/auth/me");
+        identityRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
+        HttpResponseMessage identity = await b.Client.SendAsync(identityRequest);
+        Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
+        using JsonDocument identityDoc = JsonDocument.Parse(await identity.Content.ReadAsStringAsync());
+        Assert.Equal("readOnly", identityDoc.RootElement.GetProperty("role").GetString());
+
+        using HttpRequestMessage logsRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=10");
+        logsRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
+        HttpResponseMessage logs = await b.Client.SendAsync(logsRequest);
+        Assert.Equal(HttpStatusCode.OK, logs.StatusCode);
+
+        using HttpRequestMessage settingsRequest = new(HttpMethod.Get, "/api/settings");
+        settingsRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
+        HttpResponseMessage settings = await b.Client.SendAsync(settingsRequest);
+        Assert.Equal(HttpStatusCode.Forbidden, settings.StatusCode);
+
+        using HttpRequestMessage mutationRequest = new(HttpMethod.Post, "/api/credentials")
+        {
+            Content = JsonContent.Create(new { name = "blocked", secret = "secret" }),
+        };
+        mutationRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
+        HttpResponseMessage mutation = await b.Client.SendAsync(mutationRequest);
+        Assert.Equal(HttpStatusCode.Forbidden, mutation.StatusCode);
+
+        using HttpRequestMessage adminRequest = new(HttpMethod.Get, "/api/settings");
+        adminRequest.Headers.Add("X-Dashboard-Api-Key", "admin-key");
+        HttpResponseMessage admin = await b.Client.SendAsync(adminRequest);
+        Assert.Equal(HttpStatusCode.OK, admin.StatusCode);
+        string settingsJson = await admin.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("viewer-key", settingsJson);
+        using JsonDocument settingsDoc = JsonDocument.Parse(settingsJson);
+        Assert.True(settingsDoc.RootElement.GetProperty("webDashboard").GetProperty("hasReadOnlyApiKey").GetBoolean());
+
+        using HttpRequestMessage clearRequest = new(HttpMethod.Put, "/api/settings")
+        {
+            Content = JsonContent.Create(new { webDashboard = new { clearReadOnlyApiKey = true } }),
+        };
+        clearRequest.Headers.Add("X-Dashboard-Api-Key", "admin-key");
+        HttpResponseMessage clear = await b.Client.SendAsync(clearRequest);
+        Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
+
+        using HttpRequestMessage revokedRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
+        revokedRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Client.SendAsync(revokedRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Auth_ReadOnlyKey_RequiresDistinctAdministratorKey()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage withoutAdmin = await b.Client.PutAsJsonAsync("/api/settings",
+            new { webDashboard = new { readOnlyApiKey = "viewer-key" } });
+        Assert.Equal(HttpStatusCode.BadRequest, withoutAdmin.StatusCode);
+
+        HttpResponseMessage sameKey = await b.Client.PutAsJsonAsync("/api/settings",
+            new { webDashboard = new { apiKey = "same-key", readOnlyApiKey = "same-key" } });
+        Assert.Equal(HttpStatusCode.BadRequest, sameKey.StatusCode);
+    }
+
+    [Fact]
     public async Task Auth_RequireApiKey_OnLoopback_EnforcesBearerToken()
     {
         await using Bundle b = await CreateBundleAsync(wd =>

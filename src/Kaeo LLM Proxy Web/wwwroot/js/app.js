@@ -107,7 +107,7 @@
         keyPromptQueue = [{ ok: onOk, cancel: onCancel }];
 
         var $body = $('<div>')
-            .append($('<p class="muted">').text('This dashboard requires an API key. Enter the key configured in WebDashboard.ApiKey.'))
+            .append($('<p class="muted">').text('This dashboard requires a key. Enter the administrator key for full access or the read-only key for logs only.'))
             .append($('<div class="field">').append($('<label>').text('API key'))
                 .append($('<input type="password" id="key-input" autocomplete="off">').val(getKey())));
 
@@ -199,9 +199,23 @@
 
     // ------------------------------------------------------------------ tabs
     var activeTab = 'dashboard';
+    var dashboardRole = 'admin';
     var loaders = {};
 
+    function applyDashboardRole(role) {
+        dashboardRole = role === 'readOnly' ? 'readOnly' : 'admin';
+        if (dashboardRole !== 'readOnly') return;
+
+        $('#tabs a').not('[data-tab="requests"]').hide();
+        $('#btn-key').hide();
+        $('#topbar').addClass('read-only');
+        $('#tabs a[data-tab="requests"]').show();
+        if (location.hash !== '#requests') location.hash = '#requests';
+        activateTab('requests');
+    }
+
     function activateTab(name) {
+        if (dashboardRole === 'readOnly' && name !== 'requests') name = 'requests';
         if (!loaders[name]) name = 'dashboard';
         activeTab = name;
         $('#tabs a').removeClass('active').filter('[data-tab="' + name + '"]').addClass('active');
@@ -862,7 +876,9 @@
                 { path: 'webDashboard.requireApiKey', label: 'Require API key even on loopback', type: 'bool' },
                 { path: 'webDashboard.scheme', label: 'Scheme', type: 'select', options: ['Http', 'Https'] },
                 { path: 'webDashboard.certificatePath', label: 'HTTPS certificate path (PFX)', type: 'text' },
-                { path: 'webDashboard.apiKey', label: 'API key', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasApiKey' },
+                { path: 'webDashboard.apiKey', label: 'Administrator API key (full access)', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasApiKey' },
+                { path: 'webDashboard.readOnlyApiKey', label: 'Read-only API key (logs only)', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasReadOnlyApiKey', hint: 'When configured, dashboard authentication is required even on localhost. This key can only read request logs.' },
+                { path: 'webDashboard.clearReadOnlyApiKey', label: 'Revoke the current read-only key', type: 'bool', hint: 'Immediately invalidates this key. If localhost has no other key configured, the dashboard returns to open local access.' }
                 { path: 'webDashboard.certificatePassword', label: 'Certificate password', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasCertificatePassword' }
             ]
         }
@@ -1051,6 +1067,12 @@
         $('#settings-form').on('submit', function (e) { e.preventDefault(); saveSettings(); });
         $('#btn-refresh-mcp').on('click', loadMcp);
 
-        activateTab(location.hash.replace('#', '') || 'dashboard');
+        api('GET', '/api/auth/me', undefined, { silent: true })
+            .then(function (identity) {
+                applyDashboardRole(identity.role);
+                if (dashboardRole !== 'readOnly')
+                    activateTab(location.hash.replace('#', '') || 'dashboard');
+            })
+            .catch(function (err) { setConn(err.status === 401 ? 'key' : 'err'); });
     });
 })(jQuery);

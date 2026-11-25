@@ -144,6 +144,7 @@ public class AppSettingsCloneTests
                 Port = 9090,
                 ListenAddress = "0.0.0.0",
                 ApiKey = "dashboard-key",
+                ReadOnlyApiKey = "dashboard-read-only-key",
                 RequireApiKey = true,
                 Scheme = "Https",
                 CertificatePath = Path.Combine(Path.GetTempPath(), "dashboard.pfx"),

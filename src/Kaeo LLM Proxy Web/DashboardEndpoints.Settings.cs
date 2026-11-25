@@ -12,7 +12,7 @@ internal static partial class DashboardEndpoints
 
         app.MapPut("/api/settings", (SettingsUpdate update) =>
         {
-            string? error = ValidateSettings(update);
+            string? error = ValidateSettings(settings, update);
             if (error is not null)
                 return Results.BadRequest(new { error });
 
@@ -60,6 +60,8 @@ internal static partial class DashboardEndpoints
                 scheme = wd.Scheme,
                 certificatePath = wd.CertificatePath,
                 hasApiKey = !string.IsNullOrEmpty(wd.ApiKey),
+                hasReadOnlyApiKey = !string.IsNullOrEmpty(wd.ReadOnlyApiKey),
+                clearReadOnlyApiKey = false,
                 hasCertificatePassword = !string.IsNullOrEmpty(wd.CertificatePassword),
             },
             proxySecurity = new
@@ -69,7 +71,7 @@ internal static partial class DashboardEndpoints
         };
     }
 
-    private static string? ValidateSettings(SettingsUpdate u)
+    private static string? ValidateSettings(AppSettings settings, SettingsUpdate u)
     {
         if (u.ListenPort is < 1 or > 65535)
             return "ListenPort must be between 1 and 65535.";
@@ -90,6 +92,15 @@ internal static partial class DashboardEndpoints
             if (wd.Scheme is not null && !wd.Scheme.Equals("Http", StringComparison.OrdinalIgnoreCase)
                 && !wd.Scheme.Equals("Https", StringComparison.OrdinalIgnoreCase))
                 return "WebDashboard.Scheme must be 'Http' or 'Https'.";
+
+            string? adminKey = wd.ApiKey ?? settings.WebDashboard.ApiKey;
+            string? readOnlyKey = wd.ClearReadOnlyApiKey is true
+                ? null
+                : wd.ReadOnlyApiKey ?? settings.WebDashboard.ReadOnlyApiKey;
+            if (!string.IsNullOrWhiteSpace(readOnlyKey) && string.IsNullOrWhiteSpace(adminKey))
+                return "Configure the administrator API key before configuring a read-only key.";
+            if (!string.IsNullOrWhiteSpace(adminKey) && string.Equals(adminKey, readOnlyKey, StringComparison.Ordinal))
+                return "The administrator and read-only API keys must be different.";
         }
         return null;
     }
@@ -123,6 +134,8 @@ internal static partial class DashboardEndpoints
             if (wd.Scheme is { } sch) target.Scheme = sch;
             if (wd.CertificatePath is { } cp) target.CertificatePath = cp;
             if (wd.ApiKey is { } ak) target.ApiKey = ak;
+            if (wd.ReadOnlyApiKey is { } rok) target.ReadOnlyApiKey = rok;
+            if (wd.ClearReadOnlyApiKey is true) target.ReadOnlyApiKey = null;
             if (wd.CertificatePassword is { } cpw) target.CertificatePassword = cpw;
         }
 

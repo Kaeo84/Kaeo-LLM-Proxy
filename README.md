@@ -111,6 +111,17 @@ To allow connections from other machines on your network:
    ```
    Replace `DOMAIN\username` with your Windows account name.
 
+## Web Dashboard Access
+
+The web dashboard uses the configured `WebDashboard.ApiKey` as the **administrator key**. An
+optional `WebDashboard.ReadOnlyApiKey` grants **log access only**: it can read `/api/logs` but
+cannot view settings, credentials, models, users, modules, or control the proxy. Setting the
+read-only key also enables dashboard authentication on loopback. To require the administrator key
+on loopback without a read-only key, enable `WebDashboard.RequireApiKey`; non-loopback bindings
+always require authentication. Configure both keys before
+sharing the dashboard. Keys are sent using `X-Dashboard-Api-Key` or Bearer authorization. Do not
+send dashboard keys over untrusted HTTP networks; use HTTPS or terminate TLS at a trusted proxy.
+
 ## Usage
 
 1. Run `Kaeo LLM Proxy.exe` — it starts minimised to the system tray
