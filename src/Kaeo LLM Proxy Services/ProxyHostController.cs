@@ -36,6 +36,7 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
     public ProxyServer Server { get; }
     public McpServerService McpServer { get; }
     public StreamMonitor StreamMonitor { get; }
+    public ProxyAccessService Access { get; }
 
     /// <summary>
     /// Proxy status text (forwarded from <see cref="ProxyServer.StatusChanged"/>, plus "Listening …"
@@ -82,7 +83,8 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         McpServer = new McpServerService(Database, Settings, ModuleHost, McpStats);
         PerfService = new PerformanceService(Settings.EnablePerformanceSampling);
         StreamMonitor = new StreamMonitor();
-        Handler = new OllamaProxyHandler(Settings, Stats, ModuleHost, McpServer, NonProxiedStats, streamMonitor: StreamMonitor);
+        Access = new ProxyAccessService(Database);
+        Handler = new OllamaProxyHandler(Settings, Stats, ModuleHost, McpServer, NonProxiedStats, streamMonitor: StreamMonitor, access: Access);
         Handler.StartHeartbeatMonitors();
         Server = new ProxyServer(Handler);
 

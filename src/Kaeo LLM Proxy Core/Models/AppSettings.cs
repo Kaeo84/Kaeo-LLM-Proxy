@@ -1139,6 +1139,22 @@ internal sealed class WebDashboardSettings
     public int GetEffectivePort(int proxyListenPort) => Port > 0 ? Port : proxyListenPort + 1;
 }
 
+/// <summary>
+/// Proxy access security. Users and their API keys live in the application database (dashboard
+/// Users tab); this section only controls enforcement. With <see cref="RequireApiKey"/> off the
+/// proxy stays open (today's behavior), but a request that presents a known key still gets that
+/// key's per-model restrictions applied.
+/// </summary>
+internal sealed class ProxySecuritySettings
+{
+    /// <summary>
+    /// When true, every proxy request (except the "/" health probe, /api/version, and CORS
+    /// preflight) must present a valid, enabled user's API key via <c>Authorization: Bearer</c>
+    /// or <c>x-api-key</c>. Default: false.
+    /// </summary>
+    public bool RequireApiKey { get; set; } = false;
+}
+
 /// <summary>Persisted application settings.</summary>
 internal sealed class AppSettings
 {
@@ -1553,6 +1569,9 @@ internal sealed class AppSettings
     /// <summary>Cross-platform web dashboard configuration.</summary>
     public WebDashboardSettings WebDashboard { get; set; } = new();
 
+    /// <summary>Proxy access security (per-user API keys; enforcement toggle).</summary>
+    public ProxySecuritySettings ProxySecurity { get; set; } = new();
+
     /// <summary>
     /// Module signature enforcement: AllowUnsigned (default), Warn, or RequireSigned. Every
     /// module load routes through one verification seam, so changing this is config-only.
@@ -1878,6 +1897,10 @@ internal sealed class AppSettings
                 Scheme = WebDashboard.Scheme,
                 CertificatePath = WebDashboard.CertificatePath,
                 CertificatePassword = WebDashboard.CertificatePassword,
+            },
+            ProxySecurity = new ProxySecuritySettings
+            {
+                RequireApiKey = ProxySecurity.RequireApiKey,
             },
             SecurityPassphrase = SecurityPassphrase,
             RuntimePassphrase = RuntimePassphrase,

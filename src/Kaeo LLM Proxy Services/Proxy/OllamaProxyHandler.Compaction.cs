@@ -856,6 +856,7 @@ partial class OllamaProxyHandler
             return;
         }
 
+        EnsureClientModelAccess(originalModel);
         log.Model = originalModel;
         Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes",
             originalModel, log.RequestBytes);
@@ -909,6 +910,7 @@ partial class OllamaProxyHandler
             return;
         }
 
+        EnsureClientModelAccess(originalModel);
         log.Model = originalModel;
         Log.Debug("Compact request received for model {OriginalModel}, request size: {RequestBytes} bytes",
             originalModel, log.RequestBytes);

@@ -40,6 +40,7 @@ internal sealed class SettingsUpdate
     public bool? EnablePerformanceSampling { get; set; }
     public bool? EnableApiExplorer { get; set; }
     public WebDashboardUpdate? WebDashboard { get; set; }
+    public ProxySecurityUpdate? ProxySecurity { get; set; }
 }
 
 /// <summary>Partial web-dashboard settings update. ApiKey/CertificatePassword are write-only.</summary>
@@ -53,4 +54,29 @@ internal sealed class WebDashboardUpdate
     public string? CertificatePath { get; set; }
     public string? ApiKey { get; set; }
     public string? CertificatePassword { get; set; }
+}
+
+/// <summary>Partial proxy-security settings update.</summary>
+internal sealed class ProxySecurityUpdate
+{
+    public bool? RequireApiKey { get; set; }
+}
+
+/// <summary>Proxy user create/update payload. Null fields on update are left untouched.</summary>
+internal sealed class UserWrite
+{
+    public string? Name { get; set; }
+    public string? Email { get; set; }
+    public bool? IsEnabled { get; set; }
+}
+
+/// <summary>
+/// API key create/update payload. On create the server generates the key material; on update
+/// only label and allowed-model list are mutable. Empty/absent AllowedModels on create means
+/// "all models"; on update null leaves the list untouched.
+/// </summary>
+internal sealed class KeyWrite
+{
+    public string? Label { get; set; }
+    public List<string>? AllowedModels { get; set; }
 }

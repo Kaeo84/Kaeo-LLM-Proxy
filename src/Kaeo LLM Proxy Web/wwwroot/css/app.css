@@ -169,6 +169,14 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .card .kv .v { font-weight: 600; text-align: right; word-break: break-all; }
 .card .actions { margin-top: 10px; display: flex; gap: 8px; }
 
+/* ---- users tab ---- */
+.user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.user-keys .key-row { align-items: center; flex-wrap: wrap; }
+.user-keys .key-row .v { font-weight: 400; color: var(--fg-muted); }
+.user-keys .key-row .actions { margin-top: 0; }
+.model-checks { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.model-checks .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -195,7 +203,7 @@ fieldset.group legend { font-weight: 700; padding: 0 6px; }
 .field.bool { flex-direction: row; align-items: center; gap: 8px; }
 .field.bool > label { font-size: 13px; color: var(--fg); }
 .field .hint { font-size: 11px; color: var(--fg-muted); }
-.field input[type="text"], .field input[type="number"], .field input[type="password"], .field select { width: 100%; }
+.field input[type="text"], .field input[type="number"], .field input[type="password"], .field input[type="email"], .field select { width: 100%; }
 
 /* ---- banners / toasts ---- */
 .banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; }

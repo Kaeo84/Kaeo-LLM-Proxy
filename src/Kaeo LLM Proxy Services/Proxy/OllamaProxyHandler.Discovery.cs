@@ -29,6 +29,7 @@ partial class OllamaProxyHandler
         {
             Models = [.. _settings.ModelMappings
                 .Where(m => m.IsEnabled && !m.Hidden && !string.IsNullOrWhiteSpace(m.ProxyName))
+                .Where(m => ProxyAccessService.IsModelAllowed(_currentPrincipal.Value, m.ProxyName))
                 .OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase)
                 .Select(CreateOllamaModelEntry)],
         };
@@ -54,6 +55,7 @@ partial class OllamaProxyHandler
         {
             Data = [.. _settings.ModelMappings
                 .Where(m => m.IsEnabled && !m.Hidden && !string.IsNullOrWhiteSpace(m.ProxyName))
+                .Where(m => ProxyAccessService.IsModelAllowed(_currentPrincipal.Value, m.ProxyName))
                 .OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase)
                 .Select(m =>
                 {
@@ -111,6 +113,9 @@ partial class OllamaProxyHandler
             }, ct);
             return;
         }
+
+        // A restricted key must not be able to probe models outside its allow-list either.
+        EnsureClientModelAccess(requestedModel);
 
         string name = string.IsNullOrWhiteSpace(mapping.ProxyName) ? mapping.ModelName : mapping.ProxyName;
         var model = new LlamaCppModel

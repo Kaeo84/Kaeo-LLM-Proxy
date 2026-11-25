@@ -29,6 +29,7 @@ internal static partial class DashboardEndpoints
         MapMappings(app, controller);
         MapCredentials(app, controller);
         MapModules(app, controller);
+        MapUsers(app, controller);
     }
 
     private static void MapStatus(WebApplication app, AppSettings settings, ProxyHostController controller)

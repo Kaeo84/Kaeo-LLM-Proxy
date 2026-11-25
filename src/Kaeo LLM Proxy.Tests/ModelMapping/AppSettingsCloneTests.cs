@@ -71,6 +71,21 @@ public class AppSettingsCloneTests
                 continue;
             }
 
+            // ProxySecuritySettings is a reference type — must be deep-copied like WebDashboardSettings.
+            if (sourceValue is ProxySecuritySettings sourceSecurity && cloneValue is ProxySecuritySettings cloneSecurity)
+            {
+                Assert.NotSame(sourceValue, cloneValue);
+                foreach (PropertyInfo securityProp in typeof(ProxySecuritySettings).GetProperties(
+                    BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (!securityProp.CanRead || !securityProp.CanWrite || securityProp.GetIndexParameters().Length > 0)
+                        continue;
+
+                    Assert.Equal(securityProp.GetValue(sourceSecurity), securityProp.GetValue(cloneSecurity));
+                }
+                continue;
+            }
+
             Assert.Equal(sourceValue, cloneValue);
         }
     }
@@ -133,7 +148,9 @@ public class AppSettingsCloneTests
                 Scheme = "Https",
                 CertificatePath = Path.Combine(Path.GetTempPath(), "dashboard.pfx"),
                 CertificatePassword = "cert-password",
-            }
+            },
+            // Non-default so a Clone() that forgets ProxySecurity cannot pass unnoticed.
+            ProxySecurity = new ProxySecuritySettings { RequireApiKey = true },
         };
 
         s.CollectNonProxiedCategories.Add(NonProxiedCategory.HealthProbes);

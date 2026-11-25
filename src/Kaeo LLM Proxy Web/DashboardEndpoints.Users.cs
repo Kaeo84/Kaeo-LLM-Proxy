@@ -1,0 +1,228 @@
+using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Services;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+
+namespace Kaeo.LlmProxy.Web;
+
+/// <summary>
+/// Users tab API: proxy users (name/email contact records) and their API keys. Key material is
+/// write-only — the plaintext is returned exactly once, by the create-key response; every other
+/// surface exposes only the non-secret prefix. Hashes never leave the database layer.
+/// </summary>
+internal static partial class DashboardEndpoints
+{
+    private static void MapUsers(WebApplication app, ProxyHostController controller)
+    {
+        app.MapGet("/api/users", () =>
+        {
+            try
+            {
+                List<ProxyUser> users = [.. controller.Database.LoadProxyUsers()];
+                List<ProxyApiKey> keys = [.. controller.Database.LoadProxyApiKeys()];
+                return Results.Json(users.Select(u => UserView(u, keys.Where(k => k.UserId == u.Id))).ToList());
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        app.MapPost("/api/users", (UserWrite write) =>
+        {
+            if (string.IsNullOrWhiteSpace(write.Name))
+                return Results.BadRequest(new { error = "User name is required." });
+            if (!string.IsNullOrWhiteSpace(write.Email) && !write.Email.Contains('@'))
+                return Results.BadRequest(new { error = "Email address looks invalid." });
+
+            try
+            {
+                ProxyUser user = new()
+                {
+                    Name = write.Name.Trim(),
+                    Email = write.Email?.Trim() ?? string.Empty,
+                    CreatedUtc = DateTime.UtcNow,
+                    IsEnabled = write.IsEnabled ?? true,
+                };
+
+                lock (Sync)
+                {
+                    controller.Database.InsertProxyUser(user);
+                    controller.Access.InvalidateCache();
+                }
+
+                return Results.Json(UserView(user, []));
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        app.MapPut("/api/users/{id:int}", (int id, UserWrite write) =>
+        {
+            if (write.Name is not null && string.IsNullOrWhiteSpace(write.Name))
+                return Results.BadRequest(new { error = "User name cannot be empty." });
+            if (!string.IsNullOrWhiteSpace(write.Email) && !write.Email.Contains('@'))
+                return Results.BadRequest(new { error = "Email address looks invalid." });
+
+            try
+            {
+                lock (Sync)
+                {
+                    ProxyUser? user = controller.Database.FindProxyUser(id);
+                    if (user is null)
+                        return Results.NotFound(new { error = $"User {id} not found." });
+
+                    if (write.Name is not null) user.Name = write.Name.Trim();
+                    if (write.Email is not null) user.Email = write.Email.Trim();
+                    if (write.IsEnabled is { } enabled) user.IsEnabled = enabled;
+
+                    controller.Database.UpdateProxyUser(user);
+                    controller.Access.InvalidateCache();
+                    return Results.Json(UserView(user, controller.Database.LoadProxyApiKeys().Where(k => k.UserId == id)));
+                }
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        app.MapDelete("/api/users/{id:int}", (int id) =>
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    if (controller.Database.FindProxyUser(id) is null)
+                        return Results.NotFound(new { error = $"User {id} not found." });
+
+                    controller.Database.DeleteProxyUser(id);
+                    controller.Access.InvalidateCache();
+                }
+                return Results.Ok();
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        // Creates a key and returns the plaintext ONCE. There is no endpoint that can reveal it
+        // again — a lost key is deleted and replaced.
+        app.MapPost("/api/users/{id:int}/keys", (int id, KeyWrite write) =>
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    if (controller.Database.FindProxyUser(id) is null)
+                        return Results.NotFound(new { error = $"User {id} not found." });
+
+                    (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
+                    ProxyApiKey key = new()
+                    {
+                        UserId = id,
+                        Label = write.Label?.Trim() ?? string.Empty,
+                        KeyHash = hash,
+                        KeyPrefix = prefix,
+                        CreatedUtc = DateTime.UtcNow,
+                        AllowedModels = NormalizeModelList(write.AllowedModels),
+                    };
+
+                    controller.Database.InsertProxyApiKey(key);
+                    controller.Access.InvalidateCache();
+
+                    return Results.Json(new
+                    {
+                        key = KeyView(key),
+                        plainText,
+                    });
+                }
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        app.MapPut("/api/keys/{id:int}", (int id, KeyWrite write) =>
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    ProxyApiKey? key = controller.Database.LoadProxyApiKeys().FirstOrDefault(k => k.Id == id);
+                    if (key is null)
+                        return Results.NotFound(new { error = $"Key {id} not found." });
+
+                    string label = write.Label?.Trim() ?? key.Label;
+                    List<string> models = write.AllowedModels is not null ? NormalizeModelList(write.AllowedModels) : key.AllowedModels;
+
+                    controller.Database.UpdateProxyApiKeyAccess(id, label, models);
+                    controller.Access.InvalidateCache();
+
+                    key.Label = label;
+                    key.AllowedModels = models;
+                    return Results.Json(KeyView(key));
+                }
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        app.MapDelete("/api/keys/{id:int}", (int id) =>
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    if (!controller.Database.LoadProxyApiKeys().Any(k => k.Id == id))
+                        return Results.NotFound(new { error = $"Key {id} not found." });
+
+                    controller.Database.DeleteProxyApiKey(id);
+                    controller.Access.InvalidateCache();
+                }
+                return Results.Ok();
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+    }
+
+    private static object UserView(ProxyUser user, IEnumerable<ProxyApiKey> keys) => new
+    {
+        id = user.Id,
+        name = user.Name,
+        email = user.Email,
+        createdUtc = user.CreatedUtc,
+        isEnabled = user.IsEnabled,
+        keys = keys.Select(KeyView).ToList(),
+    };
+
+    // Metadata only: prefix is a short non-secret fragment; hash and plaintext never appear.
+    private static object KeyView(ProxyApiKey key) => new
+    {
+        id = key.Id,
+        userId = key.UserId,
+        label = key.Label,
+        keyPrefix = key.KeyPrefix,
+        createdUtc = key.CreatedUtc,
+        lastUsedUtc = key.LastUsedUtc,
+        allowedModels = key.AllowedModels,
+    };
+
+    private static List<string> NormalizeModelList(List<string>? models) =>
+        models is null
+            ? []
+            : [.. models.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).Distinct(StringComparer.OrdinalIgnoreCase)];
+
+    private static IResult DatabaseUnavailable(Exception ex) =>
+        Results.Json(new { error = $"The application database is unavailable: {ex.Message}" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+}

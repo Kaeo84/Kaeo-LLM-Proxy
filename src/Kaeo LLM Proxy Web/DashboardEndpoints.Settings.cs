@@ -62,6 +62,10 @@ internal static partial class DashboardEndpoints
                 hasApiKey = !string.IsNullOrEmpty(wd.ApiKey),
                 hasCertificatePassword = !string.IsNullOrEmpty(wd.CertificatePassword),
             },
+            proxySecurity = new
+            {
+                requireApiKey = s.ProxySecurity.RequireApiKey,
+            },
         };
     }
 
@@ -121,5 +125,8 @@ internal static partial class DashboardEndpoints
             if (wd.ApiKey is { } ak) target.ApiKey = ak;
             if (wd.CertificatePassword is { } cpw) target.CertificatePassword = cpw;
         }
+
+        if (u.ProxySecurity is { } ps && ps.RequireApiKey is { } prak)
+            s.ProxySecurity.RequireApiKey = prak;
     }
 }

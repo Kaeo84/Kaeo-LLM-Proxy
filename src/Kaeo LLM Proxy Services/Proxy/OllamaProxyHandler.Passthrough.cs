@@ -74,6 +74,12 @@ partial class OllamaProxyHandler
             // cancellation and closes the response; there is no client left to notify.
             throw;
         }
+        catch (ModelAccessDeniedException)
+        {
+            // A policy denial, not an upstream failure: the access check runs before any response
+            // byte is written, so let HandleCoreAsync emit the structured 403 instead of a 502.
+            throw;
+        }
         catch (Exception ex) when (state.HeadersCommitted)
         {
             // The status line is already on the wire as 200, so the only way to tell the client
@@ -412,6 +418,11 @@ partial class OllamaProxyHandler
                 AppendTranslationCoding(log, "passthrough request", _settings.UseIrTranslation);
 
                 originalModel = log.Model; // set by the normalization path
+
+                // Check the CLIENT's model, not a compaction-redirect target the normalizer may
+                // have substituted (log.OriginalModel preserves the name the client sent).
+                EnsureClientModelAccess(string.IsNullOrEmpty(log.OriginalModel) ? originalModel : log.OriginalModel);
+
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
                 // side-by-side in the request log. Debug mode captures bodies independently of
@@ -539,6 +550,10 @@ partial class OllamaProxyHandler
         // Token totals for a synthesized usage chunk, read only after the usage sniffer has flushed so
         // any counts the upstream did report are included.
         (int PromptTokens, int CompletionTokens) tokenCounts() => (log.PromptTokens, log.CompletionTokens);
+
+        // Body-less passthrough requests never ran the check above; a restricted key must not
+        // fall through to the default mapping either.
+        EnsureClientModelAccess(string.IsNullOrEmpty(log.OriginalModel) ? originalModel : log.OriginalModel);
 
         ModelMapping upstreamMapping = ResolveMapping(originalModel);
         var (baseUrl, timeout, apiKey) = ResolveUpstream(upstreamMapping);

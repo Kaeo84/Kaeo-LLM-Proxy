@@ -644,6 +644,175 @@
 
     loaders.modules = loadModules;
 
+    // ------------------------------------------------------------------ users tab
+    function loadUsers() {
+        api('GET', '/api/users').then(function (list) {
+            var $cards = $('#user-cards').empty();
+            if (!list.length) {
+                $cards.append($('<p class="muted">').text('No users yet. Add a user, then create an API key for them.'));
+                return;
+            }
+            list.forEach(function (u) {
+                var $card = $('<div class="card">')
+                    .append($('<h3>').text(u.name + ' ')
+                        .append($('<span class="pill">').addClass(u.isEnabled ? 'ok' : '').text(u.isEnabled ? 'enabled' : 'disabled')));
+                $card.append(kv('Email', u.email || '—'))
+                    .append(kv('Created', u.createdUtc ? new Date(u.createdUtc).toLocaleString() : '—'));
+
+                var $keys = $('<div class="user-keys">');
+                if (!(u.keys || []).length) {
+                    $keys.append($('<p class="muted">').text('No API keys.'));
+                } else {
+                    u.keys.forEach(function (k) {
+                        var $row = $('<div class="kv key-row">');
+                        var scope = (k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'all models';
+                        $row.append($('<span class="k">').text((k.label || '(unlabeled)') + ' · ' + k.keyPrefix + '…'));
+                        $row.append($('<span class="v">').text(scope
+                            + ' · last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
+                        var $keyActions = $('<span class="actions">');
+                        $('<button type="button" class="ghost">').text('Edit').on('click', function () {
+                            keyDialog(u, k);
+                        }).appendTo($keyActions);
+                        $('<button type="button" class="ghost danger">').text('Delete').on('click', function () {
+                            confirmDialog('Delete API key', 'Delete key "' + (k.label || k.keyPrefix) + '" for ' + u.name + '? Clients using it lose access immediately.', function () {
+                                api('DELETE', '/api/keys/' + k.id).then(function () { toast('Key deleted.'); loadUsers(); });
+                            });
+                        }).appendTo($keyActions);
+                        $row.append($keyActions);
+                        $keys.append($row);
+                    });
+                }
+                $card.append($keys);
+
+                var $actions = $('<div class="actions">');
+                $('<button type="button" class="primary">').text('Create key').on('click', function () { keyDialog(u, null); }).appendTo($actions);
+                $('<button type="button">').text('Edit').on('click', function () { userDialog(u); }).appendTo($actions);
+                $('<button type="button">').text(u.isEnabled ? 'Disable' : 'Enable').on('click', function () {
+                    api('PUT', '/api/users/' + u.id, { isEnabled: !u.isEnabled })
+                        .then(function () { toast('User ' + (u.isEnabled ? 'disabled' : 'enabled') + '.'); loadUsers(); });
+                }).appendTo($actions);
+                $('<button type="button" class="danger">').text('Delete').on('click', function () {
+                    confirmDialog('Delete user', 'Delete user "' + u.name + '" and all of their API keys? This cannot be undone.', function () {
+                        api('DELETE', '/api/users/' + u.id).then(function () { toast('User deleted.'); loadUsers(); });
+                    });
+                }).appendTo($actions);
+                $card.append($actions);
+                $cards.append($card);
+            });
+        });
+    }
+
+    function userDialog(existing) {
+        var $body = $('<div>');
+        function field(label, $input, hint) {
+            var $f = $('<div class="field">').append($('<label>').text(label)).append($input);
+            if (hint) $f.append($('<span class="hint">').text(hint));
+            $body.append($f);
+            return $input;
+        }
+        var $name = field('Name', $('<input type="text">').val(existing ? existing.name : ''), 'Required — who this account belongs to.');
+        var $email = field('Email', $('<input type="email">').val(existing ? existing.email : ''), 'Contact address (optional).');
+
+        function save() {
+            var name = $name.val().trim();
+            if (!name) { modalError('User name is required.'); return; }
+            var payload = { name: name, email: $email.val().trim() };
+            var request = existing
+                ? api('PUT', '/api/users/' + existing.id, payload)
+                : api('POST', '/api/users', payload);
+            request.then(function () {
+                closeModal();
+                toast(existing ? 'User updated.' : 'User added.');
+                loadUsers();
+            }).catch(function (err) { modalError(err.message); });
+        }
+
+        openModal(existing ? 'Edit user' : 'Add user', $body, [
+            { label: 'Cancel' },
+            { label: 'Save', cls: 'primary', onClick: save }
+        ]);
+    }
+
+    function keyDialog(user, existing) {
+        api('GET', '/api/mappings', undefined, { silent: true }).then(function (mappings) {
+            var models = (mappings || [])
+                .map(function (m) { return m.OllamaName; })
+                .filter(function (n) { return !!n; })
+                .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+            var allowed = existing ? (existing.allowedModels || []) : [];
+
+            var $body = $('<div>');
+            var $label = $('<input type="text">').val(existing ? existing.label : '');
+            $body.append($('<div class="field">').append($('<label>').text('Label')).append($label)
+                .append($('<span class="hint">').text('What this key is for, e.g. "laptop" or "CI pipeline".')));
+
+            $body.append($('<div class="field">').append($('<label>').text('Model access'))
+                .append($('<span class="hint">').text('Check the models this key may call. Leave everything unchecked for access to all models.')));
+            var $models = $('<div class="model-checks">');
+            if (!models.length) {
+                $models.append($('<p class="muted">').text('No models configured — the key will allow all models.'));
+            }
+            models.forEach(function (name) {
+                var checked = allowed.some(function (a) { return a.toLowerCase() === name.toLowerCase(); });
+                var $cb = $('<input type="checkbox">').val(name).prop('checked', checked);
+                $models.append($('<label class="check">').append($cb).append($('<span>').text(name)));
+            });
+            $body.append($models);
+
+            function selectedModels() {
+                return $models.find('input:checked').map(function () { return $(this).val(); }).get();
+            }
+
+            function save() {
+                var payload = { label: $label.val().trim(), allowedModels: selectedModels() };
+                if (existing) {
+                    api('PUT', '/api/keys/' + existing.id, payload).then(function () {
+                        closeModal();
+                        toast('Key updated.');
+                        loadUsers();
+                    }).catch(function (err) { modalError(err.message); });
+                } else {
+                    api('POST', '/api/users/' + user.id + '/keys', payload).then(function (result) {
+                        closeModal();
+                        loadUsers();
+                        showNewKeyDialog(user, result.plainText);
+                    }).catch(function (err) { modalError(err.message); });
+                }
+            }
+
+            openModal(existing ? 'Edit key' : 'Create API key for ' + user.name, $body, [
+                { label: 'Cancel' },
+                { label: existing ? 'Save' : 'Create', cls: 'primary', onClick: save }
+            ]);
+        }).catch(function (err) { toast(err.message, true); });
+    }
+
+    function showNewKeyDialog(user, plainText) {
+        var $input = $('<input type="text" readonly>').val(plainText).on('focus', function () { this.select(); });
+        var $body = $('<div>')
+            .append($('<p>').text('Copy this key now — it is stored hashed and cannot be shown again. Send it as "Authorization: Bearer <key>" or "x-api-key".'))
+            .append($('<div class="field">').append($('<label>').text('API key for ' + user.name)).append($input));
+        openModal('New API key', $body, [
+            {
+                label: 'Copy', cls: 'primary', onClick: function () {
+                    function fallback() {
+                        $input.trigger('focus').trigger('select');
+                        try { document.execCommand('copy'); toast('Key copied to clipboard.'); }
+                        catch (e) { toast('Copy failed — select the text and copy manually.', true); }
+                    }
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(plainText).then(function () { toast('Key copied to clipboard.'); }, fallback);
+                    } else {
+                        fallback();
+                    }
+                }
+            },
+            { label: 'Done' }
+        ]);
+    }
+
+    loaders.users = loadUsers;
+
     // ------------------------------------------------------------------ settings tab
     var SETTINGS_SCHEMA = [
         {
@@ -678,6 +847,11 @@
             title: 'Diagnostics', fields: [
                 { path: 'enablePerformanceSampling', label: 'Performance sampling', type: 'bool' },
                 { path: 'enableApiExplorer', label: 'API explorer', type: 'bool' }
+            ]
+        },
+        {
+            title: 'Proxy access security', fields: [
+                { path: 'proxySecurity.requireApiKey', label: 'Require API key on proxy requests', type: 'bool', hint: 'Every model request must present a valid user API key (Users tab). Health and version probes stay public.' }
             ]
         },
         {
@@ -870,6 +1044,8 @@
             this.value = '';
             if (file) uploadModulePackage(file);
         });
+        $('#btn-add-user').on('click', function () { userDialog(null); });
+        $('#btn-refresh-users').on('click', loadUsers);
         $('#btn-save-settings').on('click', saveSettings);
         $('#btn-reload-settings').on('click', loadSettings);
         $('#settings-form').on('submit', function (e) { e.preventDefault(); saveSettings(); });

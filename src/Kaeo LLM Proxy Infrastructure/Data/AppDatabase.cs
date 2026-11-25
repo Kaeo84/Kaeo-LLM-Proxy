@@ -1472,6 +1472,27 @@ internal sealed class AppDatabase : IDisposable
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS proxy_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    email TEXT NOT NULL DEFAULT '',
+                    created_utc TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS proxy_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL DEFAULT '',
+                    created_utc TEXT NOT NULL,
+                    last_used_utc TEXT NULL,
+                    allowed_models TEXT NOT NULL DEFAULT '[]'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_proxy_api_keys_user_id ON proxy_api_keys(user_id);
                 """ + SystemLogSchema.CreateSql;
             command.ExecuteNonQuery();
             transaction.Commit();
@@ -1743,6 +1764,19 @@ internal sealed class AppDatabase : IDisposable
                                 ("module_registry", "signer_key_id", "TEXT NULL"),
 
                                 ("mcp_server_settings", "value", "TEXT NOT NULL DEFAULT ''"),
+
+                                // ── proxy access security ────────────────────────────────────
+                                ("proxy_users", "name", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "email", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "created_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                                ("proxy_api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_prefix", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "created_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "last_used_utc", "TEXT NULL"),
+                                ("proxy_api_keys", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
                             ];
 
                     // Read the existing shape once — table names from sqlite_master, then each
@@ -2514,6 +2548,294 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText = "DELETE FROM module_registry WHERE id = $id;";
             command.Parameters.AddWithValue("$id", id);
             command.ExecuteNonQuery();
+        }
+    }
+
+    // ── Proxy access security: users + API keys ─────────────────────────────
+
+    /// <summary>Loads all proxy users ordered by name.</summary>
+    public IReadOnlyList<ProxyUser> LoadProxyUsers()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, name, email, created_utc, is_enabled
+                FROM proxy_users
+                ORDER BY name COLLATE NOCASE, id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ProxyUser> users = [];
+            while (reader.Read())
+            {
+                users.Add(new ProxyUser
+                {
+                    Id = reader.GetInt32(0),
+                    Name = reader.GetString(1),
+                    Email = reader.GetString(2),
+                    CreatedUtc = ReadUtc(reader, 3),
+                    IsEnabled = ReadBoolean(reader, 4),
+                });
+            }
+
+            return users;
+        }
+    }
+
+    /// <summary>Creates a proxy user. The generated row id is written back to <paramref name="user"/>.</summary>
+    public void InsertProxyUser(ProxyUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO proxy_users (name, email, created_utc, is_enabled)
+                VALUES ($name, $email, $createdUtc, $isEnabled);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$name", user.Name);
+            command.Parameters.AddWithValue("$email", user.Email);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(user.CreatedUtc));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+
+            object? scalar = command.ExecuteScalar();
+            user.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates a proxy user's contact info and enabled state.</summary>
+    public void UpdateProxyUser(ProxyUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_users
+                SET name = $name, email = $email, is_enabled = $isEnabled
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", user.Id);
+            command.Parameters.AddWithValue("$name", user.Name);
+            command.Parameters.AddWithValue("$email", user.Email);
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Deletes a proxy user and every API key belonging to it.</summary>
+    public void DeleteProxyUser(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+            using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM proxy_api_keys WHERE user_id = $id;";
+                command.Parameters.AddWithValue("$id", id);
+                command.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM proxy_users WHERE id = $id;";
+                command.Parameters.AddWithValue("$id", id);
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>Loads all proxy API keys (hashes included — never expose these through an API).</summary>
+    public IReadOnlyList<ProxyApiKey> LoadProxyApiKeys()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models
+                FROM proxy_api_keys
+                ORDER BY id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ProxyApiKey> keys = [];
+            while (reader.Read())
+                keys.Add(ReadProxyApiKey(reader));
+
+            return keys;
+        }
+    }
+
+    /// <summary>Finds an API key by its SHA-256 hash, or null when no key matches.</summary>
+    public ProxyApiKey? FindProxyApiKeyByHash(string keyHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyHash);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models
+                FROM proxy_api_keys
+                WHERE key_hash = $keyHash;
+                """;
+            command.Parameters.AddWithValue("$keyHash", keyHash);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadProxyApiKey(reader) : null;
+        }
+    }
+
+    /// <summary>Finds a proxy user by row id, or null when it does not exist.</summary>
+    public ProxyUser? FindProxyUser(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, name, email, created_utc, is_enabled
+                FROM proxy_users
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return null;
+
+            return new ProxyUser
+            {
+                Id = reader.GetInt32(0),
+                Name = reader.GetString(1),
+                Email = reader.GetString(2),
+                CreatedUtc = ReadUtc(reader, 3),
+                IsEnabled = ReadBoolean(reader, 4),
+            };
+        }
+    }
+
+    /// <summary>Creates an API key. The generated row id is written back to <paramref name="key"/>.</summary>
+    public void InsertProxyApiKey(ProxyApiKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models)
+                VALUES ($userId, $label, $keyHash, $keyPrefix, $createdUtc, $lastUsedUtc, $allowedModels);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$userId", key.UserId);
+            command.Parameters.AddWithValue("$label", key.Label);
+            command.Parameters.AddWithValue("$keyHash", key.KeyHash);
+            command.Parameters.AddWithValue("$keyPrefix", key.KeyPrefix);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(key.CreatedUtc));
+            command.Parameters.AddWithValue("$lastUsedUtc", key.LastUsedUtc is { } used ? ToUtcText(used) : DBNull.Value);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(key.AllowedModels, _jsonOptions));
+
+            object? scalar = command.ExecuteScalar();
+            key.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates an API key's label and allowed-model list.</summary>
+    public void UpdateProxyApiKeyAccess(int id, string label, IReadOnlyList<string> allowedModels)
+    {
+        ArgumentNullException.ThrowIfNull(allowedModels);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_api_keys
+                SET label = $label, allowed_models = $allowedModels
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$label", label);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(allowedModels, _jsonOptions));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Records the last time an API key authenticated a request.</summary>
+    public void UpdateProxyApiKeyLastUsed(int id, DateTime lastUsedUtc)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE proxy_api_keys SET last_used_utc = $lastUsedUtc WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$lastUsedUtc", ToUtcText(lastUsedUtc));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Deletes an API key.</summary>
+    public void DeleteProxyApiKey(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM proxy_api_keys WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static ProxyApiKey ReadProxyApiKey(SqliteDataReader reader) => new()
+    {
+        Id = reader.GetInt32(0),
+        UserId = reader.GetInt32(1),
+        Label = reader.GetString(2),
+        KeyHash = reader.GetString(3),
+        KeyPrefix = reader.GetString(4),
+        CreatedUtc = ReadUtc(reader, 5),
+        LastUsedUtc = reader.IsDBNull(6) ? null : ReadUtc(reader, 6),
+        AllowedModels = DeserializeAllowedModels(reader.IsDBNull(7) ? null : reader.GetString(7)),
+    };
+
+    private static List<string> DeserializeAllowedModels(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json, _jsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 

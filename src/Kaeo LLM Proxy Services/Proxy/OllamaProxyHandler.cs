@@ -19,7 +19,7 @@ namespace Kaeo.LlmProxy.Services;
 /// Handles translation between Ollama API requests and llama.cpp OpenAI-compatible API requests.
 /// Supports streaming, non-streaming, tool calls, JSON format mode, and batch embeddings.
 /// </summary>
-internal sealed partial class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null, StreamMonitor? streamMonitor = null) : IDisposable
+internal sealed partial class OllamaProxyHandler(AppSettings settings, StatisticsService stats, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService? nonProxiedStats = null, StreamMonitor? streamMonitor = null, ProxyAccessService? access = null) : IDisposable
 {
     internal const string RedactedBodyText = "[REDACTED BY MODEL LOG REDACTION SETTINGS]";
     private const string RedactedValueText = "[REDACTED]";
@@ -57,6 +57,19 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 private readonly StreamMonitor? _streamMonitor = streamMonitor;
             private readonly ModuleHost _moduleHost = moduleHost;
     private readonly McpServerService _mcpServer = mcpServer;
+
+    /// <summary>
+    /// Proxy access security (per-user API keys). Null in hosts/tests that do not wire it, in
+    /// which case the proxy behaves exactly as before: open, with no per-key restrictions.
+    /// </summary>
+    private readonly ProxyAccessService? _access = access;
+
+    /// <summary>
+    /// The authenticated principal for the request currently being handled on this async flow.
+    /// Set once at the access gate in HandleCoreAsync; read by the per-model access checks and
+    /// discovery filtering. AsyncLocal keeps concurrent requests isolated.
+    /// </summary>
+    private static readonly AsyncLocal<ProxyAccessPrincipal?> _currentPrincipal = new();
     private readonly ConcurrentDictionary<string, PeriodicHeartbeatState> _periodicHeartbeats = new(StringComparer.OrdinalIgnoreCase);
     private readonly AutoCompactionService _autoCompactionService = CreateAutoCompactionService(settings);
 
@@ -351,6 +364,46 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
     /// fault: surfacing it as 500 made retry-on-5xx clients hammer the proxy over a typo.
     /// </summary>
     private sealed class ModelResolutionException(string message) : Exception(message);
+
+    /// <summary>
+    /// The authenticated API key is not allowed to call the requested model. Answered with 403
+    /// <c>model_access_denied</c> — distinct from 404 <c>model_not_found</c> so the client can tell
+    /// "exists but not for you" from "does not exist".
+    /// </summary>
+    private sealed class ModelAccessDeniedException(string message) : Exception(message);
+
+    /// <summary>
+    /// Enforces the current principal's per-key model allow-list at a client-model extraction
+    /// point. Deliberately NOT inside <see cref="ResolveMapping"/>: internal compaction calls
+    /// resolve their own target mapping within a client request and must not inherit the client
+    /// key's restrictions.
+    /// </summary>
+    private static void EnsureClientModelAccess(string? modelName)
+    {
+        ProxyAccessPrincipal? principal = _currentPrincipal.Value;
+        if (ProxyAccessService.IsModelAllowed(principal, modelName))
+            return;
+
+        throw new ModelAccessDeniedException(
+            $"API key '{principal!.Key.Label}' is not allowed to access model '{modelName}'.");
+    }
+
+    /// <summary>
+    /// Reads the client's proxy API key from <c>Authorization: Bearer</c> or <c>x-api-key</c>.
+    /// Returns null when neither header carries a token.
+    /// </summary>
+    private static string? ExtractClientApiKey(HttpListenerRequest req)
+    {
+        string? authorization = req.Headers["Authorization"];
+        if (!string.IsNullOrWhiteSpace(authorization)
+            && authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            return authorization["Bearer ".Length..].Trim();
+        }
+
+        string? apiKey = req.Headers["x-api-key"];
+        return string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
+    }
 
     private (string BaseUrl, int TimeoutSeconds, string? ApiKey) ResolveUpstream(ModelMapping mapping)
     {
@@ -1461,6 +1514,11 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(mapping);
 
+        // A Kaeo proxy API key is a credential for THIS proxy only — it must never be relayed to
+        // an upstream, regardless of mapping flags. Recognized by its distinctive "kaeo-" prefix
+        // so a mapping's own credential (already applied by ApplyApiKey) is never touched.
+        StripKaeoClientCredentials(request);
+
         // A mapping with its own credential (apiKey non-null) has already had its Authorization
         // header set by ApplyApiKey above. Removing it here would defeat the configured credential
         // and force every mapping with a key to also check ForwardClientAuthorization â€” a checkbox
@@ -1472,6 +1530,31 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             return;
 
         request.Headers.Remove(HttpHeaderNames.Authorization);
+    }
+
+    /// <summary>Removes any header whose value is a Kaeo proxy API key ("kaeo-…" token).</summary>
+    private static void StripKaeoClientCredentials(HttpRequestMessage request)
+    {
+        if (request.Headers.TryGetValues(HttpHeaderNames.Authorization, out IEnumerable<string>? authValues))
+        {
+            foreach (string value in authValues)
+            {
+                string token = value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                    ? value["Bearer ".Length..].Trim()
+                    : value.Trim();
+                if (token.StartsWith(ProxyAccessService.KeyPrefixMarker, StringComparison.Ordinal))
+                {
+                    request.Headers.Remove(HttpHeaderNames.Authorization);
+                    break;
+                }
+            }
+        }
+
+        if (request.Headers.TryGetValues("x-api-key", out IEnumerable<string>? keyValues)
+            && keyValues.Any(v => v.Trim().StartsWith(ProxyAccessService.KeyPrefixMarker, StringComparison.Ordinal)))
+        {
+            request.Headers.Remove("x-api-key");
+        }
     }
 
     private static HttpClient BuildHttpClient() =>
@@ -1798,6 +1881,31 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
                 }
             }
 
+            // Proxy access gate. Health ("/"), /api/version, CORS preflight and the API explorer
+            // above stay public so probes and docs keep working; everything below is model
+            // surface. With RequireApiKey off the proxy stays open, but a request that presents
+            // a KNOWN key still gets that key's per-model restrictions applied.
+            _currentPrincipal.Value = null;
+            if (_access is not null)
+            {
+                ProxyAccessPrincipal? principal = _access.Authenticate(ExtractClientApiKey(req));
+                _currentPrincipal.Value = principal;
+
+                if (_settings.ProxySecurity.RequireApiKey && principal is null)
+                {
+                    RecordResponseStatus(resp, log, 401);
+                    log.ErrorMessage = "Missing or invalid proxy API key.";
+                    resp.AddHeader("WWW-Authenticate", "Bearer");
+                    const string unauthorizedJson = "{\"error\":\"A valid proxy API key is required. Send it as 'Authorization: Bearer <key>' or 'x-api-key'.\"}";
+                    await CaptureRejectedBodyAsync(req, log, unauthorizedJson, ct);
+                    await WriteJsonAsync(resp, new
+                    {
+                        error = "A valid proxy API key is required. Send it as 'Authorization: Bearer <key>' or 'x-api-key'.",
+                    }, ct);
+                    return;
+                }
+            }
+
             if (method == "GET" && path == "/api/tags")
             {
                 log.UpstreamPath = "/v1/models";
@@ -1989,6 +2097,33 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             }, CancellationToken.None))
             {
                 RecordUndeliverableError(log, 404);
+                CloseResponseQuietly(resp);
+            }
+
+            sw.Stop();
+            log.DurationMs = sw.Elapsed.TotalMilliseconds;
+            return;
+        }
+        catch (ModelAccessDeniedException ex)
+        {
+            // The key is valid but its allow-list does not include the requested model. 403, not
+            // 404: the model exists, this caller just may not use it.
+            log.ErrorMessage = ex.Message;
+            Log.Warning("Model access denied on {Method} {Path}: {Message}", method, path, ex.Message);
+
+            if (!await TryWriteErrorResponseAsync(resp, log, 403, new
+            {
+                error = new
+                {
+                    message = ex.Message,
+                    type = "invalid_request_error",
+                    param = "model",
+                    code = "model_access_denied",
+                },
+                requestId,
+            }, CancellationToken.None))
+            {
+                RecordUndeliverableError(log, 403);
                 CloseResponseQuietly(resp);
             }
 
