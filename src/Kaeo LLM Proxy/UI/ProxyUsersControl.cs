@@ -225,7 +225,6 @@ internal sealed class ProxyUsersControl : UserControl
             ProxyUser updated = dialog.User;
             updated.Id = selected.Id;
             updated.CreatedUtc = selected.CreatedUtc;
-            updated.IsEnabled = selected.IsEnabled;
             _database.UpdateProxyUser(updated);
             _access.InvalidateCache();
             RefreshUsers();
@@ -265,6 +264,15 @@ internal sealed class ProxyUsersControl : UserControl
         {
             ShowSelectUser();
             return;
+        }
+
+        if (user.IsEnabled && user.DashboardLoginEnabled)
+        {
+            DialogResult confirm = MessageBox.Show(this,
+                "This user can sign in to the Web GUI. Disabling the account will also lock them out of dashboard login. Continue?",
+                "Disable user", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes)
+                return;
         }
 
         try
@@ -428,6 +436,7 @@ internal sealed class UserEditorDialog : Form
     private readonly ProxyUser _original;
     private readonly TextBox _name = new() { Dock = DockStyle.Fill };
     private readonly TextBox _email = new() { Dock = DockStyle.Fill };
+    private readonly CheckBox _enabled = new() { AutoSize = true, Text = "Account enabled" };
     private readonly CheckBox _loginEnabled = new() { AutoSize = true, Text = "Enable dashboard login (Web GUI)" };
     private readonly TextBox _loginUsername = new() { Dock = DockStyle.Fill };
     private readonly TextBox _loginPassword = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
@@ -437,6 +446,7 @@ internal sealed class UserEditorDialog : Form
     {
         Name = _name.Text.Trim(),
         Email = _email.Text.Trim(),
+        IsEnabled = _enabled.Checked,
         DashboardLoginEnabled = _loginEnabled.Checked,
         DashboardUsername = _loginUsername.Text.Trim(),
         DashboardRole = ((RoleChoice)_loginRole.SelectedItem!).Value,
@@ -454,10 +464,11 @@ internal sealed class UserEditorDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(460, 330);
+        ClientSize = new Size(460, 360);
 
         _name.Text = user.Name;
         _email.Text = user.Email;
+        _enabled.Checked = user.IsEnabled;
         _loginEnabled.Checked = user.DashboardLoginEnabled;
         _loginUsername.Text = user.DashboardUsername;
         _loginRole.Items.Add(new RoleChoice("Admin (full dashboard)", "admin"));
@@ -466,28 +477,30 @@ internal sealed class UserEditorDialog : Form
         _loginEnabled.CheckedChanged += (_, _) => UpdateLoginFieldState();
         UpdateLoginFieldState();
 
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 8 };
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 9 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
         layout.Controls.Add(_name, 1, 0);
         layout.Controls.Add(new Label { AutoSize = true, Text = "Email", Anchor = AnchorStyles.Left }, 0, 1);
         layout.Controls.Add(_email, 1, 1);
-        layout.Controls.Add(_loginEnabled, 0, 2);
+        layout.Controls.Add(_enabled, 0, 2);
+        layout.SetColumnSpan(_enabled, 2);
+        layout.Controls.Add(_loginEnabled, 0, 3);
         layout.SetColumnSpan(_loginEnabled, 2);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "Username", Anchor = AnchorStyles.Left }, 0, 3);
-        layout.Controls.Add(_loginUsername, 1, 3);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "Password", Anchor = AnchorStyles.Left }, 0, 4);
-        layout.Controls.Add(_loginPassword, 1, 4);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "Role", Anchor = AnchorStyles.Left }, 0, 5);
-        layout.Controls.Add(_loginRole, 1, 5);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Username", Anchor = AnchorStyles.Left }, 0, 4);
+        layout.Controls.Add(_loginUsername, 1, 4);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Password", Anchor = AnchorStyles.Left }, 0, 5);
+        layout.Controls.Add(_loginPassword, 1, 5);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Role", Anchor = AnchorStyles.Left }, 0, 6);
+        layout.Controls.Add(_loginRole, 1, 6);
         Label hint = new()
         {
             AutoSize = true,
             Anchor = AnchorStyles.Left,
             Text = "Passwords need 12+ characters. Leave blank to keep the current password.\nDashboard logins sign in to the Web GUI; API keys stay model-only.",
         };
-        layout.Controls.Add(hint, 0, 6);
+        layout.Controls.Add(hint, 0, 7);
         layout.SetColumnSpan(hint, 2);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         Button save = new() { AutoSize = true, Text = "Save" };
@@ -534,7 +547,7 @@ internal sealed class UserEditorDialog : Form
         };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 7);
+        layout.Controls.Add(buttons, 0, 8);
         layout.SetColumnSpan(buttons, 2);
         Controls.Add(layout);
         AcceptButton = save;

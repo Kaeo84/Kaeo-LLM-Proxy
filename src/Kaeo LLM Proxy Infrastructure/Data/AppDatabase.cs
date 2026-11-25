@@ -2877,6 +2877,11 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
+    /// <summary>
+    /// Finds a proxy user by dashboard username without filtering on the enabled flags, so the
+    /// login flow can distinguish a wrong password (401) from an account that is disabled or has
+    /// dashboard sign-in turned off (403 with a specific message).
+    /// </summary>
     public ProxyUser? FindProxyUserByDashboardUsername(string username)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
@@ -2886,7 +2891,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role FROM proxy_users WHERE dashboard_login_enabled = 1 AND dashboard_username = $username COLLATE NOCASE LIMIT 1;";
+                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
             command.Parameters.AddWithValue("$username", username.Trim());
 
             using SqliteDataReader reader = command.ExecuteReader();

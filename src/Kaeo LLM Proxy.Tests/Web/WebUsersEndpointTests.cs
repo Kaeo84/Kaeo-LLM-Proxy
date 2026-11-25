@@ -71,6 +71,45 @@ public sealed class WebUsersEndpointTests
     }
 
     [Fact]
+    public async Task DashboardLogin_ReportsDisabledAccounts_OnlyAfterCorrectPassword()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "correct horse battery";
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Disabled Person",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "person",
+            dashboardPassword = password,
+            dashboardRole = "admin",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        ProxyUser user = b.Database.LoadProxyUsers().Single(u => u.DashboardUsername == "person");
+        user.IsEnabled = false;
+        b.Database.UpdateProxyUser(user);
+
+        // A disabled account with a wrong password must stay indistinguishable from a bad username.
+        HttpResponseMessage wrongPasswordWhileDisabled = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "person", password = "incorrect password" });
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongPasswordWhileDisabled.StatusCode);
+
+        HttpResponseMessage disabledLogin = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "person", password });
+        Assert.Equal(HttpStatusCode.Forbidden, disabledLogin.StatusCode);
+        Assert.Contains("disabled", await disabledLogin.Content.ReadAsStringAsync());
+
+        user.IsEnabled = true;
+        user.DashboardLoginEnabled = false;
+        b.Database.UpdateProxyUser(user);
+        HttpResponseMessage loginDisabledLogin = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "person", password });
+        Assert.Equal(HttpStatusCode.Forbidden, loginDisabledLogin.StatusCode);
+        Assert.Contains("not enabled", await loginDisabledLogin.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task DashboardLogin_RequiresStrongPasswordAndUniqueUsername()
     {
         await using Bundle b = await CreateBundleAsync();

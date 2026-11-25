@@ -127,7 +127,9 @@ when a request is unattributed.
 
 Passwords are stored as hashes; signing in issues a protected browser session cookie. Disabling
 a user, turning off their dashboard login, or changing their password revokes live sessions
-immediately. Sign-in attempts are rate-limited.
+immediately. Sign-in attempts are rate-limited. A disabled account (or one with dashboard login
+turned off) cannot sign in even with the correct password; the sign-in page reports the specific
+reason, and the Windows app's Users tab has an **Account enabled** checkbox to re-enable it.
 
 **First run:** when no dashboard login exists yet, opening the dashboard from the local machine
 shows a *Create administrator account* setup page that creates the first Admin login. Remote

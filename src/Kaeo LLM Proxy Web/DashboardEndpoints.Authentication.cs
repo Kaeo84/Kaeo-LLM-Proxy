@@ -95,9 +95,12 @@ internal static partial class DashboardEndpoints
             try
             {
                 ProxyUser? user = controller.Database.FindProxyUserByDashboardUsername(request.Username);
-                if (user is null || !user.IsEnabled || !user.DashboardLoginEnabled
-                    || !DashboardPasswords.Verify(user, request.Password))
+                if (user is null || !DashboardPasswords.Verify(user, request.Password))
                     return Results.Json(new { error = "The username or password is not valid." }, statusCode: StatusCodes.Status401Unauthorized);
+                if (!user.IsEnabled)
+                    return Results.Json(new { error = "This account is disabled. Enable it from the proxy's Users tab." }, statusCode: StatusCodes.Status403Forbidden);
+                if (!user.DashboardLoginEnabled)
+                    return Results.Json(new { error = "Dashboard sign-in is not enabled for this account. Enable it from the proxy's Users tab." }, statusCode: StatusCodes.Status403Forbidden);
 
                 string? role = DashboardAuth.NormalizeRole(user.DashboardRole);
                 if (role is null)
