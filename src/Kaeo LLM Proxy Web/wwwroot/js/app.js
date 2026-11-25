@@ -321,6 +321,7 @@
         var statusName = STATUS_NAMES[e.status] || String(e.status);
         var $row = $('<tr>')
             .append($('<td>').text(new Date(e.timestamp).toLocaleTimeString()))
+            .append($('<td>').text(e.requestor || ''))
             .append($('<td>').text(e.method))
             .append($('<td>').text(e.ollamaPath))
             .append($('<td>').text(e.model || '—'))

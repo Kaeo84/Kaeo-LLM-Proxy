@@ -218,6 +218,32 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Logs_RequestorShowsEmailLocalPart_OrBlankWhenUnknown()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Chad Smith",
+            email = "chad@example.com",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int ownerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+
+        DateTime start = DateTime.Today.AddHours(9);
+        b.Database.Insert(new RequestLog { Timestamp = start, Method = "POST", OllamaPath = "/api/chat", Model = "attributed", StatusCode = 200, Status = RequestStatus.Success, UserId = ownerId });
+        b.Database.Insert(new RequestLog { Timestamp = start.AddMinutes(1), Method = "POST", OllamaPath = "/api/chat", Model = "unknown", StatusCode = 200, Status = RequestStatus.Success });
+
+        // Newest first, so the unattributed row comes before the attributed one.
+        using JsonDocument doc = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&limit=10"));
+        JsonElement[] entries = doc.RootElement.GetProperty("entries").EnumerateArray().ToArray();
+        Assert.Equal("unknown", entries[0].GetProperty("model").GetString());
+        Assert.True(!entries[0].TryGetProperty("requestor", out JsonElement unknownRequestor) || unknownRequestor.ValueKind == JsonValueKind.Null);
+        Assert.Equal("attributed", entries[1].GetProperty("model").GetString());
+        Assert.Equal("chad", entries[1].GetProperty("requestor").GetString());
+    }
+
+    [Fact]
     public async Task Mappings_CrudRoundTrip_PersistsToDatabase()
     {
         await using Bundle b = await CreateBundleAsync();

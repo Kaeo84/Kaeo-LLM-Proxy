@@ -115,6 +115,9 @@ internal static partial class DashboardEndpoints
                 try
                 {
                     IReadOnlyList<RequestLog> recent = controller.Database.QueryRecent(take, LogSourceFor(source), filterUserId);
+                    Dictionary<int, string> aliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
+                    foreach (RequestLog entry in recent)
+                        AttachRequestor(entry, aliases);
                     long newest = recent.Count > 0 ? recent[0].Timestamp.Ticks : 0;
                     return Results.Json(new { entries = recent, nextAfter = newest });
                 }
@@ -133,6 +136,10 @@ internal static partial class DashboardEndpoints
                 .ThenBy(e => e.RequestId, StringComparer.Ordinal)
                 .Take(take)
                 .ToList();
+
+            Dictionary<int, string> requestorAliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
+            foreach (RequestLog entry in entries)
+                AttachRequestor(entry, requestorAliases);
 
             long next = entries.Count > 0 ? entries[^1].Timestamp.Ticks : cursor;
             return Results.Json(new { entries, nextAfter = next });
@@ -157,6 +164,7 @@ internal static partial class DashboardEndpoints
                 RequestLog? full = controller.Database.LoadFullLogEntry(parsed.ToLocalTime(), LogSourceFor(source));
                 if (full is null || (role == DashboardAuth.ReadOnlyRole && full.UserId != callerId))
                     return Results.Json(new { error = "Log entry not found." }, statusCode: StatusCodes.Status404NotFound);
+                AttachRequestor(full, BuildRequestorAliases(controller.Database.LoadProxyUsers()));
                 return Results.Json(full);
             }
             catch (Exception ex) when (ex is IOException or SqliteException)
@@ -173,6 +181,35 @@ internal static partial class DashboardEndpoints
         "nonproxied" or "non-proxied" => LogSource.NonProxied,
         _ => LogSource.Proxy,
     };
+
+    /// <summary>User id → the local part of their email address (the reference shown in the
+    /// Requests view). Users without an email are omitted, so their entries show blank.</summary>
+    private static Dictionary<int, string> BuildRequestorAliases(IEnumerable<ProxyUser> users)
+    {
+        Dictionary<int, string> aliases = [];
+        foreach (ProxyUser user in users)
+        {
+            string? alias = EmailLocalPart(user.Email);
+            if (alias is not null)
+                aliases[user.Id] = alias;
+        }
+        return aliases;
+    }
+
+    private static string? EmailLocalPart(string? email)
+    {
+        string value = email?.Trim() ?? string.Empty;
+        int at = value.IndexOf('@');
+        string local = at >= 0 ? value[..at] : value;
+        return local.Length == 0 ? null : local;
+    }
+
+    private static void AttachRequestor(RequestLog entry, IReadOnlyDictionary<int, string> aliases)
+    {
+        entry.Requestor = entry.UserId is int userId && aliases.TryGetValue(userId, out string? alias)
+            ? alias
+            : null;
+    }
 
     private static void MapStats(WebApplication app, ProxyHostController controller)
     {

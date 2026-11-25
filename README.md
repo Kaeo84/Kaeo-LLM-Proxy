@@ -121,7 +121,9 @@ with a username, password, and role:
 - **Read Only** — their own request logs (attributed by API key) and their own token usage.
 
 The **Requests** view loads newest-first from the full logged history in the database (not just
-the small in-memory window), then polls for new entries at the top.
+the small in-memory window), then polls for new entries at the top. A **Requestor** column shows
+who made each request — the local part of the user's email address (before `@`) — and is blank
+when a request is unattributed.
 
 Passwords are stored as hashes; signing in issues a protected browser session cookie. Disabling
 a user, turning off their dashboard login, or changing their password revokes live sessions

@@ -193,8 +193,17 @@ internal sealed class RequestLog
     /// </summary>
     public int? UserId { get; set; }
 
-    /// <summary>
-    /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
+        /// <summary>
+        /// Display name for the request's owner in dashboard columns: the local part of the owner's
+        /// email address (the text before '<c>@</c>'), or null when the request is unattributed or the
+        /// owner has no email. Not persisted — resolved from <see cref="UserId"/> when entries are
+        /// serialized for the dashboard, so rename/email changes reflect immediately without a
+        /// backfill rewrite.
+        /// </summary>
+        public string? Requestor { get; set; }
+
+        /// <summary>
+        /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
     /// every log source. This is what makes an otherwise opaque request — an unknown app hitting the
     /// proxy, a probe with no body — diagnosable, since it names the client library, content type,
     /// and any tracing/correlation headers.
