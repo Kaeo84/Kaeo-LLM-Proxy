@@ -238,9 +238,7 @@ partial class MainForm
         _txtWebDashboardCertPath = new TextBox();
         _lblWebDashboardCertPassword = new Label();
         _txtWebDashboardCertPassword = new TextBox();
-        _chkWebDashboardRequireApiKey = new CheckBox();
-        _lblWebDashboardApiKey = new Label();
-        _txtWebDashboardApiKey = new TextBox();
+        _lblWebDashboardLoginNote = new Label();
         _btnSaveWebDashboard = new Button();
         _lblWebDashboardUrl = new Label();
         _flpMappingButtons = new FlowLayoutPanel();
@@ -1710,7 +1708,7 @@ partial class MainForm
         _tlpWebDashboard.Dock = DockStyle.Fill;
         _tlpWebDashboard.Margin = new Padding(4);
         _tlpWebDashboard.Name = "_tlpWebDashboard";
-        _tlpWebDashboard.RowCount = 10;
+        _tlpWebDashboard.RowCount = 9;
         _tlpWebDashboard.SetColumnSpan(_chkWebDashboardEnabled, 2);
         _tlpWebDashboard.Controls.Add(_chkWebDashboardEnabled, 0, 0);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardPort, 0, 1);
@@ -1723,14 +1721,12 @@ partial class MainForm
         _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPath, 1, 4);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPassword, 0, 5);
         _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPassword, 1, 5);
-        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardRequireApiKey, 2);
-        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireApiKey, 0, 6);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardApiKey, 0, 7);
-        _tlpWebDashboard.Controls.Add(_txtWebDashboardApiKey, 1, 7);
+        _tlpWebDashboard.SetColumnSpan(_lblWebDashboardLoginNote, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 6);
         _tlpWebDashboard.SetColumnSpan(_btnSaveWebDashboard, 2);
-        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 8);
+        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 7);
         _tlpWebDashboard.SetColumnSpan(_lblWebDashboardUrl, 2);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 9);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 8);
 
         _chkWebDashboardEnabled.AutoSize = true;
         _chkWebDashboardEnabled.Margin = new Padding(4, 8, 4, 4);
@@ -1790,21 +1786,10 @@ partial class MainForm
         _txtWebDashboardCertPassword.Name = "_txtWebDashboardCertPassword";
         _txtWebDashboardCertPassword.UseSystemPasswordChar = true;
 
-        _chkWebDashboardRequireApiKey.AutoSize = true;
-        _chkWebDashboardRequireApiKey.Margin = new Padding(4, 8, 4, 4);
-        _chkWebDashboardRequireApiKey.Name = "_chkWebDashboardRequireApiKey";
-        _chkWebDashboardRequireApiKey.Text = "Require API key on dashboard requests (recommended beyond localhost)";
-
-        _lblWebDashboardApiKey.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblWebDashboardApiKey.AutoSize = true;
-        _lblWebDashboardApiKey.Margin = new Padding(4, 8, 8, 4);
-        _lblWebDashboardApiKey.Name = "_lblWebDashboardApiKey";
-        _lblWebDashboardApiKey.Text = "API Key:";
-
-        _txtWebDashboardApiKey.Dock = DockStyle.Fill;
-        _txtWebDashboardApiKey.Margin = new Padding(4, 6, 4, 4);
-        _txtWebDashboardApiKey.Name = "_txtWebDashboardApiKey";
-        _txtWebDashboardApiKey.UseSystemPasswordChar = true;
+        _lblWebDashboardLoginNote.AutoSize = true;
+        _lblWebDashboardLoginNote.Margin = new Padding(4, 8, 4, 4);
+        _lblWebDashboardLoginNote.Name = "_lblWebDashboardLoginNote";
+        _lblWebDashboardLoginNote.Text = "The dashboard is login-only. Manage dashboard logins in the Users tab; API keys grant model access only.";
 
         _btnSaveWebDashboard.Anchor = AnchorStyles.Right;
         _btnSaveWebDashboard.AutoSize = true;
@@ -3053,9 +3038,7 @@ partial class MainForm
     private TextBox _txtWebDashboardCertPath;
     private Label _lblWebDashboardCertPassword;
     private TextBox _txtWebDashboardCertPassword;
-    private CheckBox _chkWebDashboardRequireApiKey;
-    private Label _lblWebDashboardApiKey;
-    private TextBox _txtWebDashboardApiKey;
+    private Label _lblWebDashboardLoginNote;
     private Button _btnSaveWebDashboard;
     private Label _lblWebDashboardUrl;
     private CheckBox _chkAutoStart;

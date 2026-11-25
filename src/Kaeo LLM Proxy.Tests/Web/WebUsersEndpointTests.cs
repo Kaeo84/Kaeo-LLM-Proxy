@@ -42,22 +42,22 @@ public sealed class WebUsersEndpointTests
         Assert.True(userDoc.RootElement.GetProperty("hasDashboardPassword").GetBoolean());
         Assert.Equal("admin", userDoc.RootElement.GetProperty("dashboardRole").GetString());
 
-        using JsonDocument status = JsonDocument.Parse(await (await b.Client.GetAsync("/api/auth/status")).Content.ReadAsStringAsync());
+        using JsonDocument status = JsonDocument.Parse(await (await b.Anonymous.GetAsync("/api/auth/status")).Content.ReadAsStringAsync());
         Assert.True(status.RootElement.GetProperty("loginEnabled").GetBoolean());
-        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Client.GetAsync("/api/settings")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.GetAsync("/api/settings")).StatusCode);
 
-        HttpResponseMessage wrongPassword = await b.Client.PostAsJsonAsync("/api/auth/login",
+        HttpResponseMessage wrongPassword = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
             new { username = "admin.person", password = "incorrect password" });
         Assert.Equal(HttpStatusCode.Unauthorized, wrongPassword.StatusCode);
 
-        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
             new { username = "ADMIN.PERSON", password });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
         string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
 
         using HttpRequestMessage identityRequest = new(HttpMethod.Get, "/api/auth/me");
         identityRequest.Headers.Add("Cookie", cookie);
-        HttpResponseMessage identity = await b.Client.SendAsync(identityRequest);
+        HttpResponseMessage identity = await b.Anonymous.SendAsync(identityRequest);
         Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
         using JsonDocument identityDoc = JsonDocument.Parse(await identity.Content.ReadAsStringAsync());
         Assert.Equal("admin", identityDoc.RootElement.GetProperty("role").GetString());
@@ -65,7 +65,7 @@ public sealed class WebUsersEndpointTests
 
         using HttpRequestMessage logoutRequest = new(HttpMethod.Post, "/api/auth/logout");
         logoutRequest.Headers.Add("Cookie", cookie);
-        HttpResponseMessage logout = await b.Client.SendAsync(logoutRequest);
+        HttpResponseMessage logout = await b.Anonymous.SendAsync(logoutRequest);
         Assert.Equal(HttpStatusCode.OK, logout.StatusCode);
         Assert.Contains(logout.Headers.GetValues("Set-Cookie"), value => value.Contains("expires=", StringComparison.OrdinalIgnoreCase));
     }
@@ -95,7 +95,7 @@ public sealed class WebUsersEndpointTests
         });
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
 
-        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
             new { username = "unique-user", password = "long enough password" });
         string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
         using HttpRequestMessage duplicateRequest = new(HttpMethod.Post, "/api/users")
@@ -110,7 +110,7 @@ public sealed class WebUsersEndpointTests
             }),
         };
         duplicateRequest.Headers.Add("Cookie", cookie);
-        HttpResponseMessage duplicate = await b.Client.SendAsync(duplicateRequest);
+        HttpResponseMessage duplicate = await b.Anonymous.SendAsync(duplicateRequest);
         Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
     }
 
@@ -129,18 +129,18 @@ public sealed class WebUsersEndpointTests
         });
         Assert.Equal(HttpStatusCode.OK, created.StatusCode);
 
-        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
             new { username = "logs", password });
         Assert.Equal(HttpStatusCode.OK, login.StatusCode);
         string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
 
         using HttpRequestMessage logsRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
         logsRequest.Headers.Add("Cookie", cookie);
-        Assert.Equal(HttpStatusCode.OK, (await b.Client.SendAsync(logsRequest)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await b.Anonymous.SendAsync(logsRequest)).StatusCode);
 
         using HttpRequestMessage settingsRequest = new(HttpMethod.Get, "/api/settings");
         settingsRequest.Headers.Add("Cookie", cookie);
-        Assert.Equal(HttpStatusCode.Forbidden, (await b.Client.SendAsync(settingsRequest)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await b.Anonymous.SendAsync(settingsRequest)).StatusCode);
     }
 
     [Fact]
@@ -159,7 +159,8 @@ public sealed class WebUsersEndpointTests
 
         HttpResponseMessage list = await b.Client.GetAsync("/api/users");
         using JsonDocument listDoc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
-        Assert.Equal(1, listDoc.RootElement.GetArrayLength());
+        // The bundle's seeded dashboard administrator plus Alice.
+        Assert.Equal(2, listDoc.RootElement.GetArrayLength());
 
         HttpResponseMessage updated = await b.Client.PutAsJsonAsync($"/api/users/{id}",
             new { name = "Alicia", isEnabled = false });
@@ -172,7 +173,7 @@ public sealed class WebUsersEndpointTests
         HttpResponseMessage deleted = await b.Client.DeleteAsync($"/api/users/{id}");
         Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
         using JsonDocument afterDoc = JsonDocument.Parse(await (await b.Client.GetAsync("/api/users")).Content.ReadAsStringAsync());
-        Assert.Equal(0, afterDoc.RootElement.GetArrayLength());
+        Assert.Equal(1, afterDoc.RootElement.GetArrayLength());
     }
 
     [Fact]
@@ -314,6 +315,7 @@ public sealed class WebUsersEndpointTests
         settings.Logging.ApplicationDatabasePath = dbPath;
 
         var database = new AppDatabase(settings.Logging);
+        DashboardTestSession.SeedAdmin(database);
         var moduleHost = new ModuleHost(database, settings);
         var controller = new ProxyHostController(settings, database, moduleHost);
 
@@ -324,13 +326,17 @@ public sealed class WebUsersEndpointTests
         var host = new WebDashboardHost(settings, controller);
         await host.StartAsync();
 
+        HttpClient client = DashboardTestSession.CreateClient(host.Url!, useCookies: true);
+        await DashboardTestSession.SignInAdminAsync(client);
+
         return new Bundle
         {
             Host = host,
             Controller = controller,
             Database = database,
             Settings = settings,
-            Client = new HttpClient { BaseAddress = new Uri(host.Url!), Timeout = TimeSpan.FromSeconds(10) },
+            Client = client,
+            Anonymous = DashboardTestSession.CreateClient(host.Url!, useCookies: false),
             DbPath = dbPath,
         };
     }
@@ -351,11 +357,13 @@ public sealed class WebUsersEndpointTests
         public required AppDatabase Database { get; init; }
         public required AppSettings Settings { get; init; }
         public required HttpClient Client { get; init; }
+        public required HttpClient Anonymous { get; init; }
         public required string DbPath { get; init; }
 
         public async ValueTask DisposeAsync()
         {
             Client.Dispose();
+            Anonymous.Dispose();
             await Host.DisposeAsync();
             await Controller.DisposeAsync();
             Database.Dispose();

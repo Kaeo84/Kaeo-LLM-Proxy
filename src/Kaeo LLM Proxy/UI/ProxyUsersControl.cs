@@ -4,6 +4,8 @@ using System.Threading;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Services;
+using Kaeo.LlmProxy.Web;
+using Microsoft.Data.Sqlite;
 
 namespace Kaeo.LlmProxy;
 
@@ -30,6 +32,7 @@ internal sealed class ProxyUsersControl : UserControl
         _users.Columns.Add("Name", 155);
         _users.Columns.Add("Email", 190);
         _users.Columns.Add("Status", 75);
+        _users.Columns.Add("Dashboard", 150);
         _keys.Columns.Add("Label", 115);
         _keys.Columns.Add("Prefix", 105);
         _keys.Columns.Add("Models", 210);
@@ -56,7 +59,7 @@ internal sealed class ProxyUsersControl : UserControl
         right.Controls.Add(_keys);
         right.Controls.Add(keyActions);
 
-        SplitContainer split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 350, FixedPanel = FixedPanel.Panel1 };
+        SplitContainer split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 480, FixedPanel = FixedPanel.Panel1 };
         split.Panel1.Controls.Add(left);
         split.Panel2.Controls.Add(right);
 
@@ -65,7 +68,7 @@ internal sealed class ProxyUsersControl : UserControl
             AutoSize = true,
             Dock = DockStyle.Top,
             Padding = new Padding(0, 6, 0, 8),
-            Text = "Create users and keys, and restrict each key to selected proxy models. No selected models means all models.",
+            Text = "Create users and keys, and restrict each key to selected proxy models. No selected models means all models. Dashboard logins control Web GUI access; API keys only grant model access.",
         };
         FlowLayoutPanel security = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
         security.Controls.Add(_requireApiKey);
@@ -125,6 +128,9 @@ internal sealed class ProxyUsersControl : UserControl
                 ListViewItem item = new(user.Name) { Tag = user };
                 item.SubItems.Add(user.Email);
                 item.SubItems.Add(user.IsEnabled ? "Enabled" : "Disabled");
+                item.SubItems.Add(user.DashboardLoginEnabled
+                    ? $"{(user.DashboardRole == "admin" ? "Admin" : "Read only")} ({user.DashboardUsername})"
+                    : "None");
                 _users.Items.Add(item);
                 if (user.Id == selectedId)
                     item.Selected = true;
@@ -171,7 +177,11 @@ internal sealed class ProxyUsersControl : UserControl
 
     private void AddUser()
     {
-        using UserEditorDialog dialog = new("Add user", new ProxyUser());
+        Func<string, bool>? usernameTaken = TryBuildUsernameCheck(null);
+        if (usernameTaken is null)
+            return;
+
+        using UserEditorDialog dialog = new("Add user", new ProxyUser(), usernameTaken);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -182,6 +192,10 @@ internal sealed class ProxyUsersControl : UserControl
             _database.InsertProxyUser(user);
             _access.InvalidateCache();
             RefreshUsers();
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            MessageBox.Show(this, "That dashboard username is already in use.", "Users", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (Exception ex) when (ex is IOException or DbException)
         {
@@ -198,7 +212,11 @@ internal sealed class ProxyUsersControl : UserControl
             return;
         }
 
-        using UserEditorDialog dialog = new("Edit user", selected);
+        Func<string, bool>? usernameTaken = TryBuildUsernameCheck(selected.Id);
+        if (usernameTaken is null)
+            return;
+
+        using UserEditorDialog dialog = new("Edit user", selected, usernameTaken);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -212,9 +230,31 @@ internal sealed class ProxyUsersControl : UserControl
             _access.InvalidateCache();
             RefreshUsers();
         }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            MessageBox.Show(this, "That dashboard username is already in use.", "Users", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
         catch (Exception ex) when (ex is IOException or DbException)
         {
             ShowDatabaseError(ex);
+        }
+    }
+
+    private Func<string, bool>? TryBuildUsernameCheck(int? excludeUserId)
+    {
+        try
+        {
+            HashSet<string> taken = new(
+                _database.LoadProxyUsers()
+                    .Where(u => u.Id != excludeUserId && u.DashboardLoginEnabled && u.DashboardUsername.Length > 0)
+                    .Select(u => u.DashboardUsername),
+                StringComparer.OrdinalIgnoreCase);
+            return username => taken.Contains(username);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+            return null;
         }
     }
 
@@ -385,30 +425,70 @@ internal sealed class ProxyUsersControl : UserControl
 
 internal sealed class UserEditorDialog : Form
 {
+    private readonly ProxyUser _original;
     private readonly TextBox _name = new() { Dock = DockStyle.Fill };
     private readonly TextBox _email = new() { Dock = DockStyle.Fill };
+    private readonly CheckBox _loginEnabled = new() { AutoSize = true, Text = "Enable dashboard login (Web GUI)" };
+    private readonly TextBox _loginUsername = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _loginPassword = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
+    private readonly ComboBox _loginRole = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
 
-    public ProxyUser User => new() { Name = _name.Text.Trim(), Email = _email.Text.Trim() };
-
-    public UserEditorDialog(string title, ProxyUser user)
+    public ProxyUser User => new()
     {
+        Name = _name.Text.Trim(),
+        Email = _email.Text.Trim(),
+        DashboardLoginEnabled = _loginEnabled.Checked,
+        DashboardUsername = _loginUsername.Text.Trim(),
+        DashboardRole = ((RoleChoice)_loginRole.SelectedItem!).Value,
+        DashboardPasswordHash = _loginPassword.Text.Length > 0
+            ? DashboardPasswords.Hash(_original, _loginPassword.Text)
+            : _original.DashboardPasswordHash,
+    };
+
+    public UserEditorDialog(string title, ProxyUser user, Func<string, bool> usernameTaken)
+    {
+        _original = user;
         Text = title;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(420, 145);
+        ClientSize = new Size(460, 330);
 
         _name.Text = user.Name;
         _email.Text = user.Email;
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 3 };
+        _loginEnabled.Checked = user.DashboardLoginEnabled;
+        _loginUsername.Text = user.DashboardUsername;
+        _loginRole.Items.Add(new RoleChoice("Admin (full dashboard)", "admin"));
+        _loginRole.Items.Add(new RoleChoice("Read only (logs only)", "readOnly"));
+        _loginRole.SelectedIndex = user.DashboardRole == "admin" ? 0 : 1;
+        _loginEnabled.CheckedChanged += (_, _) => UpdateLoginFieldState();
+        UpdateLoginFieldState();
+
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 8 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
         layout.Controls.Add(_name, 1, 0);
         layout.Controls.Add(new Label { AutoSize = true, Text = "Email", Anchor = AnchorStyles.Left }, 0, 1);
         layout.Controls.Add(_email, 1, 1);
+        layout.Controls.Add(_loginEnabled, 0, 2);
+        layout.SetColumnSpan(_loginEnabled, 2);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Username", Anchor = AnchorStyles.Left }, 0, 3);
+        layout.Controls.Add(_loginUsername, 1, 3);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Password", Anchor = AnchorStyles.Left }, 0, 4);
+        layout.Controls.Add(_loginPassword, 1, 4);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Role", Anchor = AnchorStyles.Left }, 0, 5);
+        layout.Controls.Add(_loginRole, 1, 5);
+        Label hint = new()
+        {
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Text = "Passwords need 12+ characters. Leave blank to keep the current password.\nDashboard logins sign in to the Web GUI; API keys stay model-only.",
+        };
+        layout.Controls.Add(hint, 0, 6);
+        layout.SetColumnSpan(hint, 2);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         Button save = new() { AutoSize = true, Text = "Save" };
         Button cancel = new() { AutoSize = true, Text = "Cancel", DialogResult = DialogResult.Cancel };
@@ -424,17 +504,53 @@ internal sealed class UserEditorDialog : Form
                 MessageBox.Show(this, "Enter a valid email address or leave it blank.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            if (_loginEnabled.Checked)
+            {
+                string username = _loginUsername.Text.Trim();
+                if (username.Length is < 3 or > 128)
+                {
+                    MessageBox.Show(this, "Dashboard usernames must be 3-128 characters.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (usernameTaken(username))
+                {
+                    MessageBox.Show(this, "That dashboard username is already in use.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (_loginPassword.Text.Length == 0 && _original.DashboardPasswordHash.Length == 0)
+                {
+                    MessageBox.Show(this, "A password is required to enable dashboard login.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+            if (_loginPassword.Text.Length > 0 && _loginPassword.Text.Length is < 12 or > 1024)
+            {
+                MessageBox.Show(this, "Dashboard passwords must be 12-1024 characters.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
             DialogResult = DialogResult.OK;
             Close();
         };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 2);
+        layout.Controls.Add(buttons, 0, 7);
         layout.SetColumnSpan(buttons, 2);
         Controls.Add(layout);
         AcceptButton = save;
         CancelButton = cancel;
+    }
+
+    private void UpdateLoginFieldState()
+    {
+        _loginUsername.Enabled = _loginEnabled.Checked;
+        _loginPassword.Enabled = _loginEnabled.Checked;
+        _loginRole.Enabled = _loginEnabled.Checked;
+    }
+
+    private sealed record RoleChoice(string Label, string Value)
+    {
+        public override string ToString() => Label;
     }
 }
 

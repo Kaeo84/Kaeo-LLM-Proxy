@@ -43,18 +43,14 @@ internal sealed class SettingsUpdate
     public ProxySecurityUpdate? ProxySecurity { get; set; }
 }
 
-/// <summary>Partial web-dashboard settings update. API keys/certificate password are write-only.</summary>
+/// <summary>Partial web-dashboard settings update. The certificate password is write-only.</summary>
 internal sealed class WebDashboardUpdate
 {
     public bool? Enabled { get; set; }
     public int? Port { get; set; }
     public string? ListenAddress { get; set; }
-    public bool? RequireApiKey { get; set; }
     public string? Scheme { get; set; }
     public string? CertificatePath { get; set; }
-    public string? ApiKey { get; set; }
-    public string? ReadOnlyApiKey { get; set; }
-    public bool? ClearReadOnlyApiKey { get; set; }
     public string? CertificatePassword { get; set; }
 }
 
@@ -78,6 +74,14 @@ internal sealed class UserWrite
 
 internal sealed class DashboardLoginWrite
 {
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+}
+
+/// <summary>First-run setup payload: creates the initial administrator dashboard account.</summary>
+internal sealed class DashboardSetupWrite
+{
+    public string Name { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
 }

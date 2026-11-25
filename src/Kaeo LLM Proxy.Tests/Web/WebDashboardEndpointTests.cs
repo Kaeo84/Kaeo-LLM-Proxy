@@ -24,7 +24,7 @@ namespace Kaeo.LlmProxy.Tests.Web;
 public sealed class WebDashboardEndpointTests
 {
     [Fact]
-    public async Task Status_OnLoopback_IsOpen_AndReturnsShape()
+    public async Task Status_WhenSignedIn_ReturnsShape_AndLoginAuthMode()
     {
         await using Bundle b = await CreateBundleAsync();
         HttpResponseMessage response = await b.Client.GetAsync("/api/status");
@@ -33,7 +33,7 @@ public sealed class WebDashboardEndpointTests
         using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.True(doc.RootElement.TryGetProperty("proxy", out _));
         Assert.True(doc.RootElement.TryGetProperty("dashboard", out JsonElement dash));
-        Assert.Equal("open", dash.GetProperty("authMode").GetString());
+        Assert.Equal("login", dash.GetProperty("authMode").GetString());
     }
 
     [Fact]
@@ -150,121 +150,163 @@ public sealed class WebDashboardEndpointTests
         await using Bundle b = await CreateBundleAsync(configureSettings: s =>
         {
             s.SecurityPassphrase = "hash:should-not-leak";
-            s.WebDashboard.ApiKey = "dashboard-key-should-not-leak";
         });
 
         string body = await b.Client.GetStringAsync("/api/settings");
         Assert.DoesNotContain("should-not-leak", body);
         using JsonDocument doc = JsonDocument.Parse(body);
         Assert.False(doc.RootElement.TryGetProperty("securityPassphrase", out _));
-        Assert.True(doc.RootElement.GetProperty("webDashboard").GetProperty("hasApiKey").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("webDashboard").TryGetProperty("apiKey", out _));
+        Assert.False(doc.RootElement.GetProperty("webDashboard").TryGetProperty("hasApiKey", out _));
     }
 
     [Fact]
-    public async Task Auth_ReadOnlyKey_CanReadLogs_ButCannotAccessOtherApiEndpoints()
+    public async Task Auth_Anonymous_ApiIs401_AndPagesRedirectToLogin()
     {
-        await using Bundle b = await CreateBundleAsync(wd =>
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage api = await b.Anonymous.GetAsync("/api/status");
+        Assert.Equal(HttpStatusCode.Unauthorized, api.StatusCode);
+        Assert.Contains("Sign in", await api.Content.ReadAsStringAsync());
+
+        using HttpClient noRedirect = DashboardTestSession.CreateClient(b.Host.Url!, useCookies: false, allowAutoRedirect: false);
+        HttpResponseMessage root = await noRedirect.GetAsync("/");
+        Assert.Equal(HttpStatusCode.Redirect, root.StatusCode);
+        Assert.Equal("/login.html", root.Headers.Location?.ToString());
+
+        HttpResponseMessage appJs = await noRedirect.GetAsync("/js/app.js");
+        Assert.Equal(HttpStatusCode.Redirect, appJs.StatusCode);
+    }
+
+    [Fact]
+    public async Task Auth_PublicLoginAssets_AreReachableWithoutSession()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage loginPage = await b.Anonymous.GetAsync("/login.html");
+        Assert.Equal(HttpStatusCode.OK, loginPage.StatusCode);
+        Assert.Contains("js/login.js", await loginPage.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, (await b.Anonymous.GetAsync("/js/login.js")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await b.Anonymous.GetAsync("/css/app.css")).StatusCode);
+
+        using JsonDocument status = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/auth/status"));
+        Assert.True(status.RootElement.GetProperty("loginEnabled").GetBoolean());
+        Assert.False(status.RootElement.GetProperty("setupRequired").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Auth_ProxyApiKey_NeverGrantsDashboardAccess()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage userResponse = await b.Client.PostAsJsonAsync("/api/users", new { name = "Model User" });
+        Assert.Equal(HttpStatusCode.OK, userResponse.StatusCode);
+        using JsonDocument userDoc = JsonDocument.Parse(await userResponse.Content.ReadAsStringAsync());
+        int userId = userDoc.RootElement.GetProperty("id").GetInt32();
+
+        HttpResponseMessage keyResponse = await b.Client.PostAsJsonAsync($"/api/users/{userId}/keys", new { label = "laptop" });
+        Assert.Equal(HttpStatusCode.OK, keyResponse.StatusCode);
+        using JsonDocument keyDoc = JsonDocument.Parse(await keyResponse.Content.ReadAsStringAsync());
+        string plainText = keyDoc.RootElement.GetProperty("plainText").GetString()!;
+        // The key is valid on the proxy/model plane...
+        Assert.NotNull(b.Controller.Access.Authenticate(plainText));
+
+        // ...but never on the dashboard plane, regardless of how it is presented.
+        using HttpRequestMessage bearer = new(HttpMethod.Get, "/api/status");
+        bearer.Headers.Authorization = new AuthenticationHeaderValue("Bearer", plainText);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.SendAsync(bearer)).StatusCode);
+
+        using HttpRequestMessage header = new(HttpMethod.Get, "/api/status");
+        header.Headers.Add("X-Dashboard-Api-Key", plainText);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.SendAsync(header)).StatusCode);
+
+        using HttpClient noRedirect = DashboardTestSession.CreateClient(b.Host.Url!, useCookies: false, allowAutoRedirect: false);
+        using HttpRequestMessage page = new(HttpMethod.Get, "/");
+        page.Headers.Authorization = new AuthenticationHeaderValue("Bearer", plainText);
+        HttpResponseMessage pageResponse = await noRedirect.SendAsync(page);
+        Assert.Equal(HttpStatusCode.Redirect, pageResponse.StatusCode);
+        Assert.Equal("/login.html", pageResponse.Headers.Location?.ToString());
+    }
+
+    [Fact]
+    public async Task Auth_FirstRunSetup_CreatesAdmin_ThenLocksOutFurtherSetup()
+    {
+        await using Bundle b = await CreateBundleAsync(seedAdmin: false);
+
+        using JsonDocument before = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/auth/status"));
+        Assert.False(before.RootElement.GetProperty("loginEnabled").GetBoolean());
+        Assert.True(before.RootElement.GetProperty("setupRequired").GetBoolean());
+
+        HttpResponseMessage weak = await b.Anonymous.PostAsJsonAsync("/api/auth/setup",
+            new { name = "Admin", username = "admin", password = "short" });
+        Assert.Equal(HttpStatusCode.BadRequest, weak.StatusCode);
+
+        HttpResponseMessage setup = await b.Client.PostAsJsonAsync("/api/auth/setup",
+            new { name = "First Admin", username = "first.admin", password = "first admin password" });
+        Assert.Equal(HttpStatusCode.OK, setup.StatusCode);
+        using JsonDocument setupDoc = JsonDocument.Parse(await setup.Content.ReadAsStringAsync());
+        Assert.Equal("admin", setupDoc.RootElement.GetProperty("role").GetString());
+
+        // The setup response signs the browser in; the session cookie unlocks the dashboard.
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/status")).StatusCode);
+
+        HttpResponseMessage again = await b.Anonymous.PostAsJsonAsync("/api/auth/setup",
+            new { name = "Second", username = "second.admin", password = "second admin password" });
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+
+        using JsonDocument after = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/auth/status"));
+        Assert.True(after.RootElement.GetProperty("loginEnabled").GetBoolean());
+        Assert.False(after.RootElement.GetProperty("setupRequired").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Auth_ReadOnlyLogin_CanReadLogsOnly_AndDisablingRevokesSession()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "read only password";
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
         {
-            wd.ApiKey = "admin-key";
-            wd.ReadOnlyApiKey = "viewer-key";
-            wd.RequireApiKey = true;
+            name = "Log Reader",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "logs.reader",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
         });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int id = createdDoc.RootElement.GetProperty("id").GetInt32();
 
-        using HttpRequestMessage identityRequest = new(HttpMethod.Get, "/api/auth/me");
-        identityRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
-        HttpResponseMessage identity = await b.Client.SendAsync(identityRequest);
-        Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
-        using JsonDocument identityDoc = JsonDocument.Parse(await identity.Content.ReadAsStringAsync());
-        Assert.Equal("readOnly", identityDoc.RootElement.GetProperty("role").GetString());
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "logs.reader", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
 
-        using HttpRequestMessage logsRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=10");
-        logsRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
-        HttpResponseMessage logs = await b.Client.SendAsync(logsRequest);
-        Assert.Equal(HttpStatusCode.OK, logs.StatusCode);
+        using HttpRequestMessage logsRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
+        logsRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.OK, (await b.Anonymous.SendAsync(logsRequest)).StatusCode);
 
         using HttpRequestMessage settingsRequest = new(HttpMethod.Get, "/api/settings");
-        settingsRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
-        HttpResponseMessage settings = await b.Client.SendAsync(settingsRequest);
-        Assert.Equal(HttpStatusCode.Forbidden, settings.StatusCode);
+        settingsRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.Forbidden, (await b.Anonymous.SendAsync(settingsRequest)).StatusCode);
 
         using HttpRequestMessage mutationRequest = new(HttpMethod.Post, "/api/credentials")
         {
             Content = JsonContent.Create(new { name = "blocked", secret = "secret" }),
         };
-        mutationRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
-        HttpResponseMessage mutation = await b.Client.SendAsync(mutationRequest);
-        Assert.Equal(HttpStatusCode.Forbidden, mutation.StatusCode);
+        mutationRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.Forbidden, (await b.Anonymous.SendAsync(mutationRequest)).StatusCode);
 
-        using HttpRequestMessage adminRequest = new(HttpMethod.Get, "/api/settings");
-        adminRequest.Headers.Add("X-Dashboard-Api-Key", "admin-key");
-        HttpResponseMessage admin = await b.Client.SendAsync(adminRequest);
-        Assert.Equal(HttpStatusCode.OK, admin.StatusCode);
-        string settingsJson = await admin.Content.ReadAsStringAsync();
-        Assert.DoesNotContain("viewer-key", settingsJson);
-        using JsonDocument settingsDoc = JsonDocument.Parse(settingsJson);
-        Assert.True(settingsDoc.RootElement.GetProperty("webDashboard").GetProperty("hasReadOnlyApiKey").GetBoolean());
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/settings")).StatusCode);
 
-        using HttpRequestMessage clearRequest = new(HttpMethod.Put, "/api/settings")
-        {
-            Content = JsonContent.Create(new { webDashboard = new { clearReadOnlyApiKey = true } }),
-        };
-        clearRequest.Headers.Add("X-Dashboard-Api-Key", "admin-key");
-        HttpResponseMessage clear = await b.Client.SendAsync(clearRequest);
-        Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
+        // Disabling the account revokes the live session on the very next request.
+        HttpResponseMessage disabled = await b.Client.PutAsJsonAsync($"/api/users/{id}", new { isEnabled = false });
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
 
         using HttpRequestMessage revokedRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
-        revokedRequest.Headers.Add("X-Dashboard-Api-Key", "viewer-key");
-        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Client.SendAsync(revokedRequest)).StatusCode);
-    }
-
-    [Fact]
-    public async Task Auth_ReadOnlyKey_RequiresDistinctAdministratorKey()
-    {
-        await using Bundle b = await CreateBundleAsync();
-
-        HttpResponseMessage withoutAdmin = await b.Client.PutAsJsonAsync("/api/settings",
-            new { webDashboard = new { readOnlyApiKey = "viewer-key" } });
-        Assert.Equal(HttpStatusCode.BadRequest, withoutAdmin.StatusCode);
-
-        HttpResponseMessage sameKey = await b.Client.PutAsJsonAsync("/api/settings",
-            new { webDashboard = new { apiKey = "same-key", readOnlyApiKey = "same-key" } });
-        Assert.Equal(HttpStatusCode.BadRequest, sameKey.StatusCode);
-    }
-
-    [Fact]
-    public async Task Auth_RequireApiKey_OnLoopback_EnforcesBearerToken()
-    {
-        await using Bundle b = await CreateBundleAsync(wd =>
-        {
-            wd.RequireApiKey = true;
-            wd.ApiKey = "test-key";
-        });
-
-        HttpResponseMessage anonymous = await b.Client.GetAsync("/api/status");
-        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
-
-        using var wrong = new HttpRequestMessage(HttpMethod.Get, "/api/status");
-        wrong.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "wrong-key");
-        HttpResponseMessage rejected = await b.Client.SendAsync(wrong);
-        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
-
-        using var correct = new HttpRequestMessage(HttpMethod.Get, "/api/status");
-        correct.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
-        HttpResponseMessage accepted = await b.Client.SendAsync(correct);
-        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
-
-        using var header = new HttpRequestMessage(HttpMethod.Get, "/api/status");
-        header.Headers.Add("X-Dashboard-Api-Key", "test-key");
-        HttpResponseMessage viaHeader = await b.Client.SendAsync(header);
-        Assert.Equal(HttpStatusCode.OK, viaHeader.StatusCode);
-    }
-
-    [Fact]
-    public async Task Auth_RequireApiKey_WithoutConfiguredKey_RejectsAll()
-    {
-        await using Bundle b = await CreateBundleAsync(wd => wd.RequireApiKey = true);
-        HttpResponseMessage response = await b.Client.GetAsync("/api/status");
-        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        revokedRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.SendAsync(revokedRequest)).StatusCode);
     }
 
     [Fact]
@@ -351,7 +393,8 @@ public sealed class WebDashboardEndpointTests
     private static async Task<Bundle> CreateBundleAsync(
         Action<WebDashboardSettings>? configureDashboard = null,
         Action<AppSettings>? configureSettings = null,
-        string? certPath = null)
+        string? certPath = null,
+        bool seedAdmin = true)
     {
         string dbPath = Path.Combine(Path.GetTempPath(), $"kaeo-web-{Guid.NewGuid():N}.db");
         var settings = new AppSettings
@@ -365,6 +408,8 @@ public sealed class WebDashboardEndpointTests
         configureSettings?.Invoke(settings);
 
         var database = new AppDatabase(settings.Logging);
+        if (seedAdmin)
+            DashboardTestSession.SeedAdmin(database);
         var moduleHost = new ModuleHost(database, settings);
         var controller = new ProxyHostController(settings, database, moduleHost);
 
@@ -376,23 +421,20 @@ public sealed class WebDashboardEndpointTests
         var host = new WebDashboardHost(settings, controller);
         await host.StartAsync();
 
+        HttpClient client = DashboardTestSession.CreateClient(host.Url!, useCookies: true);
+        if (seedAdmin)
+            await DashboardTestSession.SignInAdminAsync(client);
+
         return new Bundle
         {
             Host = host,
             Controller = controller,
             Database = database,
-            Client = CreateClient(host.Url!),
+            Client = client,
+            Anonymous = DashboardTestSession.CreateClient(host.Url!, useCookies: false),
             DbPath = dbPath,
             CertPath = certPath,
         };
-    }
-
-    private static HttpClient CreateClient(string url)
-    {
-        var handler = new HttpClientHandler();
-        if (url.StartsWith("https", StringComparison.OrdinalIgnoreCase))
-            handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
-        return new HttpClient(handler) { BaseAddress = new Uri(url), Timeout = TimeSpan.FromSeconds(10) };
     }
 
     private static int GetFreePort()
@@ -423,12 +465,14 @@ public sealed class WebDashboardEndpointTests
         public required ProxyHostController Controller { get; init; }
         public required AppDatabase Database { get; init; }
         public required HttpClient Client { get; init; }
+        public required HttpClient Anonymous { get; init; }
         public required string DbPath { get; init; }
         public string? CertPath { get; init; }
 
         public async ValueTask DisposeAsync()
         {
             Client.Dispose();
+            Anonymous.Dispose();
             await Host.DisposeAsync();
             await Controller.DisposeAsync();
             Database.Dispose();

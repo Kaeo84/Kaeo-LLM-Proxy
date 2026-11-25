@@ -64,7 +64,7 @@ internal static partial class DashboardEndpoints
             }).ToList(),
             dashboard = new
             {
-                authMode = DashboardAuth.AuthMode(settings.WebDashboard, controller.Database.HasDashboardLogins()),
+                authMode = "login",
                 scheme = settings.WebDashboard.Scheme,
             },
         }));

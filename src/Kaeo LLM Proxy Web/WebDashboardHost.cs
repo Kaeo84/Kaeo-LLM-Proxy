@@ -105,17 +105,20 @@ internal sealed class WebDashboardHost : IAsyncDisposable
             builder.WebHost.ConfigureKestrel(options => ConfigureListen(options, wd, port, https));
 
             WebApplication app = builder.Build();
-            app.UseDefaultFiles();
-            app.UseStaticFiles();
             app.UseRateLimiter();
             app.UseAuthentication();
             app.Use(async (context, next) =>
             {
-                if (context.Request.Path.StartsWithSegments("/api")
-                    && !DashboardAuth.IsAuthenticationEndpoint(context.Request))
+                HttpRequest request = context.Request;
+                if (DashboardAuth.IsAuthenticationEndpoint(request) || DashboardAuth.IsPublicAsset(request.Path))
                 {
-                    bool loginEnabled = _controller.Database.HasDashboardLogins();
-                    if (!DashboardAuth.TryAuthorize(context, wd, _controller.Database, loginEnabled, out string? error))
+                    await next();
+                    return;
+                }
+
+                if (request.Path.StartsWithSegments("/api"))
+                {
+                    if (!DashboardAuth.TryAuthorize(context, _controller.Database, out string? error))
                     {
                         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                         await context.Response.WriteAsJsonAsync(new { error });
@@ -123,15 +126,33 @@ internal sealed class WebDashboardHost : IAsyncDisposable
                     }
 
                     if (Equals(context.Items[DashboardAuth.RoleItemKey], DashboardAuth.ReadOnlyRole)
-                        && !DashboardAuth.IsReadOnlyRequestAllowed(context.Request))
+                        && !DashboardAuth.IsReadOnlyRequestAllowed(request))
                     {
                         context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                        await context.Response.WriteAsJsonAsync(new { error = "Read-only dashboard credentials can access logs only." });
+                        await context.Response.WriteAsJsonAsync(new { error = "Read-only dashboard accounts can access logs only." });
                         return;
                     }
+
+                    await next();
+                    return;
                 }
+
+                // Everything else (index.html, app.js, ...) requires a signed-in session.
+                if (context.User.Identity?.IsAuthenticated != true)
+                {
+                    if (HttpMethods.IsGet(request.Method))
+                    {
+                        context.Response.Redirect("/login.html");
+                        return;
+                    }
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+
                 await next();
             });
+            app.UseDefaultFiles();
+            app.UseStaticFiles();
 
             DashboardEndpoints.MapAll(app, _settings, _controller);
 
@@ -140,8 +161,7 @@ internal sealed class WebDashboardHost : IAsyncDisposable
 
             string host = DashboardAuth.IsLoopbackAddress(wd.ListenAddress) ? "localhost" : wd.ListenAddress;
             Url = $"{(https ? "https" : "http")}://{host}:{port}";
-            bool dashboardLoginsEnabled = _controller.Database.HasDashboardLogins();
-            Log.Information("Web dashboard listening on {Url} (auth={AuthMode})", Url, DashboardAuth.AuthMode(wd, dashboardLoginsEnabled));
+            Log.Information("Web dashboard listening on {Url} (login required)", Url);
         }
         catch (Exception ex)
         {

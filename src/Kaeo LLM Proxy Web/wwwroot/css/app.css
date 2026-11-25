@@ -270,3 +270,18 @@ fieldset.group legend { font-weight: 700; padding: 0 6px; }
     .top-actions { margin-left: 0; }
     main { padding: 10px; }
 }
+
+/* ---- login page ---- */
+.login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.login-card { width: 100%; max-width: 420px; padding: 28px; }
+.login-card .brand { font-size: 20px; margin-bottom: 14px; }
+.login-card h1 { margin: 0 0 6px; font-size: 18px; }
+.login-card form { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.login-card button[type="submit"] { width: 100%; margin-top: 4px; }
+.login-note { margin-top: 14px; }

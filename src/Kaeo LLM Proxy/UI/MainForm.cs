@@ -2085,8 +2085,6 @@ internal partial class MainForm : Form
         _cmbWebDashboardScheme.SelectedIndex = string.Equals(webDashboard.Scheme, "Https", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         _txtWebDashboardCertPath.Text = webDashboard.CertificatePath ?? string.Empty;
         _txtWebDashboardCertPassword.Text = webDashboard.CertificatePassword ?? string.Empty;
-        _chkWebDashboardRequireApiKey.Checked = webDashboard.RequireApiKey;
-        _txtWebDashboardApiKey.Text = webDashboard.ApiKey ?? string.Empty;
         UpdateWebDashboardUrlLabel();
 
         _dgvMappings.Rows.Clear();
@@ -2289,14 +2287,6 @@ internal partial class MainForm : Form
                 return;
             }
 
-            bool requireApiKey = _chkWebDashboardRequireApiKey.Checked;
-            string apiKey = _txtWebDashboardApiKey.Text;
-            if (requireApiKey && string.IsNullOrWhiteSpace(apiKey))
-            {
-                MessageBox.Show("Enter an API key or turn off 'Require API key'.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
             WebDashboardSettings webDashboard = _settings.WebDashboard;
             bool prevEnabled = webDashboard.Enabled;
             int prevPort = webDashboard.Port;
@@ -2304,8 +2294,6 @@ internal partial class MainForm : Form
             string prevScheme = webDashboard.Scheme;
             string? prevCertPath = webDashboard.CertificatePath;
             string? prevCertPassword = webDashboard.CertificatePassword;
-            bool prevRequireApiKey = webDashboard.RequireApiKey;
-            string? prevApiKey = webDashboard.ApiKey;
 
             webDashboard.Enabled = _chkWebDashboardEnabled.Checked;
             webDashboard.Port = port;
@@ -2313,8 +2301,6 @@ internal partial class MainForm : Form
             webDashboard.Scheme = https ? "Https" : "Http";
             webDashboard.CertificatePath = certPath.Length == 0 ? null : certPath;
             webDashboard.CertificatePassword = _txtWebDashboardCertPassword.Text.Length == 0 ? null : _txtWebDashboardCertPassword.Text;
-            webDashboard.RequireApiKey = requireApiKey;
-            webDashboard.ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey;
 
             if (!TryPersist("Web dashboard settings", PersistSettingsCore, () =>
             {
@@ -2324,8 +2310,6 @@ internal partial class MainForm : Form
                 webDashboard.Scheme = prevScheme;
                 webDashboard.CertificatePath = prevCertPath;
                 webDashboard.CertificatePassword = prevCertPassword;
-                webDashboard.RequireApiKey = prevRequireApiKey;
-                webDashboard.ApiKey = prevApiKey;
             }))
                 return;
 

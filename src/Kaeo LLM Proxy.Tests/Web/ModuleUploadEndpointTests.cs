@@ -93,6 +93,16 @@ public sealed class ModuleUploadEndpointTests : IDisposable
     }
 
     [Fact]
+    public async Task Upload_WithoutDashboardSession_IsUnauthorized()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        HttpResponseMessage response = await b.Anonymous.PostAsync("/api/modules/upload",
+            new StringContent("not a form"));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Empty(b.Database.LoadModuleRegistry());
+    }
+
+    [Fact]
     public async Task Upload_CorruptPackage_IsRefused()
     {
         await using Bundle b = await CreateBundleAsync();
@@ -155,6 +165,7 @@ public sealed class ModuleUploadEndpointTests : IDisposable
         configureSettings?.Invoke(settings);
 
         var database = new AppDatabase(settings.Logging);
+        DashboardTestSession.SeedAdmin(database);
         var moduleHost = new ModuleHost(database, settings);
         var controller = new ProxyHostController(settings, database, moduleHost);
 
@@ -165,12 +176,16 @@ public sealed class ModuleUploadEndpointTests : IDisposable
         var host = new WebDashboardHost(settings, controller);
         await host.StartAsync();
 
+        HttpClient client = DashboardTestSession.CreateClient(host.Url!, useCookies: true, timeout: TimeSpan.FromSeconds(30));
+        await DashboardTestSession.SignInAdminAsync(client);
+
         return new Bundle
         {
             Host = host,
             Controller = controller,
             Database = database,
-            Client = new HttpClient { BaseAddress = new Uri(host.Url!), Timeout = TimeSpan.FromSeconds(30) },
+            Client = client,
+            Anonymous = DashboardTestSession.CreateClient(host.Url!, useCookies: false),
             DbPath = dbPath,
             ExtractedModuleDir = Path.Combine(Path.GetDirectoryName(dbPath)!, "Modules", "web-search-test"),
         };
@@ -204,12 +219,14 @@ public sealed class ModuleUploadEndpointTests : IDisposable
         public required ProxyHostController Controller { get; init; }
         public required AppDatabase Database { get; init; }
         public required HttpClient Client { get; init; }
+        public required HttpClient Anonymous { get; init; }
         public required string DbPath { get; init; }
         public required string ExtractedModuleDir { get; init; }
 
         public async ValueTask DisposeAsync()
         {
             Client.Dispose();
+            Anonymous.Dispose();
             await Host.DisposeAsync();
             await Controller.DisposeAsync();
             Database.Dispose();

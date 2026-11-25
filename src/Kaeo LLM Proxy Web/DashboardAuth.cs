@@ -1,6 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
-using System.Text;
 using System.Security.Claims;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
@@ -9,9 +7,11 @@ using Microsoft.AspNetCore.Http;
 namespace Kaeo.LlmProxy.Web;
 
 /// <summary>
-/// Dashboard authentication. The configured API key is an administrator credential; an optional
-/// second key is restricted to logs. Loopback remains open only when no explicit authentication is
-/// configured. Token comparisons are constant-time.
+/// Dashboard authentication is login-only: every request must carry a valid dashboard session
+/// cookie issued by /api/auth/login (or first-run /api/auth/setup). Proxy API keys authenticate
+/// model requests only and never grant dashboard access. Sessions are re-validated against the
+/// user record on every API request so disabling a user, changing the password, or turning off
+/// the login revokes access immediately.
 /// </summary>
 internal static class DashboardAuth
 {
@@ -24,40 +24,9 @@ internal static class DashboardAuth
         return IPAddress.TryParse(address, out IPAddress? ip) && IPAddress.IsLoopback(ip);
     }
 
-    public static bool RequiresKey(WebDashboardSettings settings)
-        => !IsLoopbackAddress(settings.ListenAddress) || settings.RequireApiKey
-            || !string.IsNullOrWhiteSpace(settings.ReadOnlyApiKey);
-
-    public static string AuthMode(WebDashboardSettings settings, bool dashboardLoginsEnabled = false)
-        => dashboardLoginsEnabled ? "login" : RequiresKey(settings) ? "apiKey" : "open";
-
-    public static bool IsAuthorized(HttpContext context, WebDashboardSettings settings, out string? error)
-    {
-        error = null;
-        if (!RequiresKey(settings))
-            return true;
-
-        string? expected = settings.ApiKey;
-        if (string.IsNullOrWhiteSpace(expected))
-        {
-            // Keep the misconfiguration server-side; the caller gets a generic message.
-            error = "Dashboard authentication is misconfigured on the server.";
-            return false;
-        }
-
-        string? token = ExtractToken(context.Request);
-        if (string.IsNullOrEmpty(token))
-        {
-            error = "A dashboard API key is required. Send 'Authorization: Bearer <key>' or 'X-Dashboard-Api-Key: <key>'.";
-            return false;
-        }
-
-        bool match = CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
-        if (!match)
-            error = "The supplied dashboard API key is not valid.";
-        return match;
-    }
+    /// <summary>True when the request originates from the local machine (first-run setup guard).</summary>
+    public static bool IsRequestLoopback(HttpContext context)
+        => context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress);
 
     internal const string RoleItemKey = "Kaeo.DashboardRole";
     internal const string UserNameItemKey = "Kaeo.DashboardUsername";
@@ -75,7 +44,7 @@ internal static class DashboardAuth
         return null;
     }
 
-    public static bool TryAuthorize(HttpContext context, WebDashboardSettings settings, AppDatabase database, bool loginEnabled, out string? error)
+    public static bool TryAuthorize(HttpContext context, AppDatabase database, out string? error)
     {
         error = null;
         if (context.User.Identity?.IsAuthenticated == true
@@ -95,49 +64,23 @@ internal static class DashboardAuth
             }
         }
 
-        string? token = ExtractToken(context.Request);
-        if (!loginEnabled && !RequiresKey(settings))
-        {
-            context.Items[RoleItemKey] = AdminRole;
-            return true;
-        }
-
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            error = loginEnabled
-                ? "Sign in with a dashboard username and password, or provide a configured dashboard API key."
-                : "A dashboard API key is required. Enter the administrator or read-only key.";
-            return false;
-        }
-
-        bool isAdminKey = Matches(token, settings.ApiKey);
-        bool isReadOnlyKey = Matches(token, settings.ReadOnlyApiKey);
-        if (isAdminKey && isReadOnlyKey)
-        {
-            error = "Administrator and read-only dashboard keys are misconfigured.";
-            return false;
-        }
-
-        if (isAdminKey)
-        {
-            context.Items[RoleItemKey] = AdminRole;
-            return true;
-        }
-
-        if (isReadOnlyKey)
-        {
-            context.Items[RoleItemKey] = ReadOnlyRole;
-            return true;
-        }
-
-        error = "The supplied dashboard credential is not valid.";
+        error = "Sign in with a dashboard username and password.";
         return false;
     }
 
     public static bool IsAuthenticationEndpoint(HttpRequest request)
         => request.Path.Equals("/api/auth/status", StringComparison.OrdinalIgnoreCase)
             || request.Path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase)
+            || request.Path.Equals("/api/auth/setup", StringComparison.OrdinalIgnoreCase)
             || request.Path.Equals("/api/auth/logout", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Assets the login page itself needs; everything else stays behind sign-in.</summary>
+    public static bool IsPublicAsset(PathString path)
+        => path.Equals("/login.html", StringComparison.OrdinalIgnoreCase)
+            || path.Equals("/js/login.js", StringComparison.OrdinalIgnoreCase)
+            || path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/css", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWithSegments("/lib", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsReadOnlyRequestAllowed(HttpRequest request)
         => (HttpMethods.IsGet(request.Method)
@@ -145,26 +88,4 @@ internal static class DashboardAuth
                     || request.Path.Equals("/api/logs", StringComparison.OrdinalIgnoreCase)))
             || (HttpMethods.IsPost(request.Method)
                 && request.Path.Equals("/api/auth/logout", StringComparison.OrdinalIgnoreCase));
-
-    private static bool Matches(string token, string? expected)
-    {
-        if (string.IsNullOrEmpty(expected))
-            return false;
-
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
-    }
-
-    private static string? ExtractToken(HttpRequest request)
-    {
-        string? header = request.Headers["Authorization"];
-        if (!string.IsNullOrEmpty(header) && header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            return header["Bearer ".Length..].Trim();
-
-        string? apiKeyHeader = request.Headers["X-Dashboard-Api-Key"];
-        if (!string.IsNullOrEmpty(apiKeyHeader))
-            return apiKeyHeader.ToString().Trim();
-
-        return null;
-    }
 }

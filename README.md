@@ -113,24 +113,27 @@ To allow connections from other machines on your network:
 
 ## Web Dashboard Access
 
-The web dashboard can use optional username/password logins configured per user in the **Users**
-tab. Each login is assigned **Admin** (full dashboard access) or **Read Only** (request logs only).
-Passwords are stored as hashes; dashboard login uses a protected browser session cookie. Enabling
-any dashboard login requires sign-in for dashboard API access. Existing dashboard API keys remain
-available as a compatibility and recovery option.
+The web dashboard is **login-only**: every page and dashboard API call sits behind a sign-in
+page. Dashboard accounts are configured per user in the **Users** tab (web or Windows app) with
+a username, password, and role:
 
-Dashboard roles do not control model access. Model clients authenticate separately with each user's
-proxy API keys; each key's allowed-model list is enforced by the proxy. A Read Only dashboard login
-can still use models through a separately configured proxy API key.
+- **Admin** — full dashboard access (settings, mappings, users, modules, logs, everything).
+- **Read Only** — request logs only.
 
-The configured `WebDashboard.ApiKey` remains the **administrator API key**. An optional
-`WebDashboard.ReadOnlyApiKey` grants **log access only** to the dashboard. Setting it enables
-dashboard authentication on loopback. To require the administrator key on loopback without a
-read-only key, enable `WebDashboard.RequireApiKey`; non-loopback bindings always require
-authentication. Configure either login or API-key access before
-sharing the dashboard. Keys are sent using `X-Dashboard-Api-Key` or Bearer authorization. Do not
-send dashboard keys over untrusted HTTP networks; use HTTPS or terminate TLS at a trusted proxy.
+Passwords are stored as hashes; signing in issues a protected browser session cookie. Disabling
+a user, turning off their dashboard login, or changing their password revokes live sessions
+immediately. Sign-in attempts are rate-limited.
 
+**First run:** when no dashboard login exists yet, opening the dashboard from the local machine
+shows a *Create administrator account* setup page that creates the first Admin login. Remote
+machines cannot claim a fresh instance; create logins from the Windows app's Users tab instead.
+
+Proxy **API keys never grant dashboard access** — they authenticate model requests only, and each
+key's allowed-model list is enforced by the proxy. Dashboard roles do not control model access: a
+Read Only dashboard login can still use models through a separately configured proxy API key.
+
+Use HTTPS (or terminate TLS at a trusted proxy) before sharing the dashboard beyond localhost so
+credentials and session cookies are not sent over untrusted HTTP networks.
 ## Usage
 
 1. Run `Kaeo LLM Proxy.exe` — it starts minimised to the system tray

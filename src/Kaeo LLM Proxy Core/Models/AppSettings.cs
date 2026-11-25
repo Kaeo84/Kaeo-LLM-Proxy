@@ -1100,28 +1100,10 @@ internal sealed class WebDashboardSettings
 
     /// <summary>
     /// Address the dashboard binds to. Default "localhost" keeps it local-only; use "0.0.0.0" to
-    /// expose it on the network (pair with <see cref="RequireApiKey"/> and/or HTTPS when you do).
+    /// expose it on the network (pair with HTTPS when you do). The dashboard always requires a
+    /// username/password sign-in; proxy API keys never grant dashboard access.
     /// </summary>
     public string ListenAddress { get; set; } = "localhost";
-
-    /// <summary>
-    /// API key required on dashboard requests when <see cref="RequireApiKey"/> is true. This is a
-    /// separate key from any upstream/model credential. Null means no key is configured.
-    /// </summary>
-    public string? ApiKey { get; set; }
-
-    /// <summary>
-    /// Optional dashboard key restricted to log viewing. When configured, dashboard authentication
-    /// is required even on loopback; <see cref="ApiKey"/> remains the full-access administrator key.
-    /// </summary>
-    public string? ReadOnlyApiKey { get; set; }
-
-    /// <summary>
-    /// When true, every dashboard API request must present <see cref="ApiKey"/> or
-    /// <see cref="ReadOnlyApiKey"/> (via the <c>X-Dashboard-Api-Key</c> header or Bearer token).
-    /// Default: false (local-only binding is the guard). Enable when binding beyond localhost.
-    /// </summary>
-    public bool RequireApiKey { get; set; } = false;
 
     /// <summary>
     /// URL scheme: "Http" (default) or "Https". HTTP is the default so TLS can be terminated at a
@@ -1898,9 +1880,6 @@ internal sealed class AppSettings
                 Enabled = WebDashboard.Enabled,
                 Port = WebDashboard.Port,
                 ListenAddress = WebDashboard.ListenAddress,
-                ApiKey = WebDashboard.ApiKey,
-                ReadOnlyApiKey = WebDashboard.ReadOnlyApiKey,
-                RequireApiKey = WebDashboard.RequireApiKey,
                 Scheme = WebDashboard.Scheme,
                 CertificatePath = WebDashboard.CertificatePath,
                 CertificatePassword = WebDashboard.CertificatePassword,

@@ -14,15 +14,13 @@
             <a href="#requests" data-tab="requests">Requests</a>
             <a href="#models" data-tab="models">Models</a>
             <a href="#credentials" data-tab="credentials">Credentials</a>
-            <a href="#modules" data-tab="modules">Modules</a>
             <a href="#users" data-tab="users">Users</a>
             <a href="#settings" data-tab="settings">Settings</a>
             <a href="#mcp" data-tab="mcp">MCP</a>
         </nav>
         <div class="top-actions">
             <span id="conn-state" class="pill" title="API connection state">&hellip;</span>
-            <button id="btn-signin" class="ghost" type="button" title="Sign in to the dashboard">Sign in</button>
-            <button id="btn-key" class="ghost" type="button" title="Set the dashboard API key">Key</button>
+            <button id="btn-signin" class="ghost" type="button" title="Sign out of the dashboard">Sign out</button>
             <button id="btn-theme" class="ghost" type="button" title="Cycle theme: auto / light / dark">Auto</button>
         </div>
     </header>
@@ -94,15 +92,6 @@
             </div>
         </section>
 
-        <section id="tab-modules" class="tab">
-            <div class="toolbar">
-                <button id="btn-refresh-modules" type="button">Refresh</button>
-                <button id="btn-upload-module" type="button">Upload package…</button>
-                <input id="module-package-input" type="file" accept=".kaeomod" style="display:none">
-            </div>
-            <div id="module-cards" class="cards"></div>
-        </section>
-
         <section id="tab-users" class="tab">
             <div class="toolbar">
                 <button id="btn-add-user" type="button" class="primary">Add user</button>
@@ -127,6 +116,13 @@
                 <button id="btn-refresh-mcp" type="button">Refresh</button>
             </div>
             <div id="mcp-view"></div>
+            <h2>Modules</h2>
+            <div class="toolbar">
+                <button id="btn-refresh-modules" type="button">Refresh</button>
+                <button id="btn-upload-module" type="button">Upload package…</button>
+                <input id="module-package-input" type="file" accept=".kaeomod" style="display:none">
+            </div>
+            <div id="module-cards" class="cards"></div>
         </section>
     </main>
 
