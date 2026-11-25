@@ -61,6 +61,12 @@ internal static partial class DashboardEndpoints
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                // Another instance may hold the database; report retryable instead of crashing.
+                return Results.Json(new { error = $"Could not persist module settings: {ex.Message}" },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
             return Results.Ok();
         });
     }

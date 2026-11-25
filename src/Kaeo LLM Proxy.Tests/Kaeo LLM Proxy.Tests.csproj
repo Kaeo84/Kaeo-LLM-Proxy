@@ -34,6 +34,8 @@
 	<ItemGroup>
 		<ProjectReference Include="..\Kaeo LLM Proxy Module SSH\Kaeo LLM Proxy Module SSH.csproj" />
 		<ProjectReference Include="..\Kaeo LLM Proxy Module Chat Interface\Kaeo LLM Proxy Module Chat Interface.csproj" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Module Web Search\Kaeo LLM Proxy Module Web Search.csproj" />
+		<ProjectReference Include="..\Kaeo LLM Proxy Module Code Vector Store\Kaeo LLM Proxy Module Code Vector Store.csproj" />
 	</ItemGroup>
 
 </Project>

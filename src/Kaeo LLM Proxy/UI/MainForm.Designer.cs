@@ -225,6 +225,24 @@ partial class MainForm
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
+        _grpWebDashboard = new GroupBox();
+        _tlpWebDashboard = new TableLayoutPanel();
+        _chkWebDashboardEnabled = new CheckBox();
+        _lblWebDashboardPort = new Label();
+        _txtWebDashboardPort = new TextBox();
+        _lblWebDashboardAddress = new Label();
+        _txtWebDashboardAddress = new TextBox();
+        _lblWebDashboardScheme = new Label();
+        _cmbWebDashboardScheme = new ComboBox();
+        _lblWebDashboardCertPath = new Label();
+        _txtWebDashboardCertPath = new TextBox();
+        _lblWebDashboardCertPassword = new Label();
+        _txtWebDashboardCertPassword = new TextBox();
+        _chkWebDashboardRequireApiKey = new CheckBox();
+        _lblWebDashboardApiKey = new Label();
+        _txtWebDashboardApiKey = new TextBox();
+        _btnSaveWebDashboard = new Button();
+        _lblWebDashboardUrl = new Label();
         _flpMappingButtons = new FlowLayoutPanel();
         _btnAddMapping = new Button();
         _btnRemoveMapping = new Button();
@@ -359,6 +377,8 @@ partial class MainForm
 
         _grpListener.SuspendLayout();
         _tlpListener.SuspendLayout();
+        _grpWebDashboard.SuspendLayout();
+        _tlpWebDashboard.SuspendLayout();
         _grpLogging.SuspendLayout();
         _tlpLogging.SuspendLayout();
         _grpPerf.SuspendLayout();
@@ -1276,7 +1296,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 25;
+        _tlpSettings.RowCount = 26;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1329,6 +1349,8 @@ partial class MainForm
         _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
         _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 24);
         _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 24);
+        _tlpSettings.SetColumnSpan(_grpWebDashboard, 2);
+        _tlpSettings.Controls.Add(_grpWebDashboard, 0, 25);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1669,6 +1691,131 @@ partial class MainForm
         _btnSaveListener.Name = "_btnSaveListener";
         _btnSaveListener.Text = "Save";
         _btnSaveListener.Click += BtnSaveListener_Click;
+
+        // _grpWebDashboard
+        _grpWebDashboard.AutoSize = true;
+        _grpWebDashboard.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpWebDashboard.Controls.Add(_tlpWebDashboard);
+        _grpWebDashboard.Dock = DockStyle.Fill;
+        _grpWebDashboard.Margin = new Padding(4, 4, 4, 4);
+        _grpWebDashboard.Name = "_grpWebDashboard";
+        _grpWebDashboard.Text = "Web Dashboard";
+
+        // _tlpWebDashboard
+        _tlpWebDashboard.AutoSize = true;
+        _tlpWebDashboard.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpWebDashboard.ColumnCount = 2;
+        _tlpWebDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpWebDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpWebDashboard.Dock = DockStyle.Fill;
+        _tlpWebDashboard.Margin = new Padding(4);
+        _tlpWebDashboard.Name = "_tlpWebDashboard";
+        _tlpWebDashboard.RowCount = 10;
+        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardEnabled, 2);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardEnabled, 0, 0);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardPort, 0, 1);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardPort, 1, 1);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardAddress, 0, 2);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardAddress, 1, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardScheme, 0, 3);
+        _tlpWebDashboard.Controls.Add(_cmbWebDashboardScheme, 1, 3);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPath, 0, 4);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPath, 1, 4);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPassword, 0, 5);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPassword, 1, 5);
+        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardRequireApiKey, 2);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireApiKey, 0, 6);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardApiKey, 0, 7);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardApiKey, 1, 7);
+        _tlpWebDashboard.SetColumnSpan(_btnSaveWebDashboard, 2);
+        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 8);
+        _tlpWebDashboard.SetColumnSpan(_lblWebDashboardUrl, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 9);
+
+        _chkWebDashboardEnabled.AutoSize = true;
+        _chkWebDashboardEnabled.Margin = new Padding(4, 8, 4, 4);
+        _chkWebDashboardEnabled.Name = "_chkWebDashboardEnabled";
+        _chkWebDashboardEnabled.Text = "Enable web dashboard (restart the application to apply)";
+
+        _lblWebDashboardPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardPort.AutoSize = true;
+        _lblWebDashboardPort.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardPort.Name = "_lblWebDashboardPort";
+        _lblWebDashboardPort.Text = "Port (0 = proxy port + 1):";
+
+        _txtWebDashboardPort.Dock = DockStyle.Fill;
+        _txtWebDashboardPort.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardPort.Name = "_txtWebDashboardPort";
+
+        _lblWebDashboardAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardAddress.AutoSize = true;
+        _lblWebDashboardAddress.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardAddress.Name = "_lblWebDashboardAddress";
+        _lblWebDashboardAddress.Text = "Listen Address:";
+
+        _txtWebDashboardAddress.Dock = DockStyle.Fill;
+        _txtWebDashboardAddress.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardAddress.Name = "_txtWebDashboardAddress";
+
+        _lblWebDashboardScheme.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardScheme.AutoSize = true;
+        _lblWebDashboardScheme.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardScheme.Name = "_lblWebDashboardScheme";
+        _lblWebDashboardScheme.Text = "Scheme:";
+
+        _cmbWebDashboardScheme.Dock = DockStyle.Fill;
+        _cmbWebDashboardScheme.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbWebDashboardScheme.Items.AddRange(new object[] { "Http", "Https" });
+        _cmbWebDashboardScheme.Margin = new Padding(4, 6, 4, 4);
+        _cmbWebDashboardScheme.Name = "_cmbWebDashboardScheme";
+
+        _lblWebDashboardCertPath.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardCertPath.AutoSize = true;
+        _lblWebDashboardCertPath.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardCertPath.Name = "_lblWebDashboardCertPath";
+        _lblWebDashboardCertPath.Text = "Certificate Path (PFX, HTTPS only):";
+
+        _txtWebDashboardCertPath.Dock = DockStyle.Fill;
+        _txtWebDashboardCertPath.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardCertPath.Name = "_txtWebDashboardCertPath";
+
+        _lblWebDashboardCertPassword.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardCertPassword.AutoSize = true;
+        _lblWebDashboardCertPassword.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardCertPassword.Name = "_lblWebDashboardCertPassword";
+        _lblWebDashboardCertPassword.Text = "Certificate Password:";
+
+        _txtWebDashboardCertPassword.Dock = DockStyle.Fill;
+        _txtWebDashboardCertPassword.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardCertPassword.Name = "_txtWebDashboardCertPassword";
+        _txtWebDashboardCertPassword.UseSystemPasswordChar = true;
+
+        _chkWebDashboardRequireApiKey.AutoSize = true;
+        _chkWebDashboardRequireApiKey.Margin = new Padding(4, 8, 4, 4);
+        _chkWebDashboardRequireApiKey.Name = "_chkWebDashboardRequireApiKey";
+        _chkWebDashboardRequireApiKey.Text = "Require API key on dashboard requests (recommended beyond localhost)";
+
+        _lblWebDashboardApiKey.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardApiKey.AutoSize = true;
+        _lblWebDashboardApiKey.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardApiKey.Name = "_lblWebDashboardApiKey";
+        _lblWebDashboardApiKey.Text = "API Key:";
+
+        _txtWebDashboardApiKey.Dock = DockStyle.Fill;
+        _txtWebDashboardApiKey.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardApiKey.Name = "_txtWebDashboardApiKey";
+        _txtWebDashboardApiKey.UseSystemPasswordChar = true;
+
+        _btnSaveWebDashboard.Anchor = AnchorStyles.Right;
+        _btnSaveWebDashboard.AutoSize = true;
+        _btnSaveWebDashboard.Margin = new Padding(4, 8, 4, 4);
+        _btnSaveWebDashboard.Name = "_btnSaveWebDashboard";
+        _btnSaveWebDashboard.Text = "Save";
+        _btnSaveWebDashboard.Click += BtnSaveWebDashboard_Click;
+
+        _lblWebDashboardUrl.AutoSize = true;
+        _lblWebDashboardUrl.Margin = new Padding(4, 4, 4, 8);
+        _lblWebDashboardUrl.Name = "_lblWebDashboardUrl";
 
         // _grpLogging
         _grpLogging.AutoSize = true;
@@ -2717,6 +2864,10 @@ partial class MainForm
         _grpListener.PerformLayout();
         _tlpListener.ResumeLayout(false);
         _tlpListener.PerformLayout();
+        _grpWebDashboard.ResumeLayout(false);
+        _grpWebDashboard.PerformLayout();
+        _tlpWebDashboard.ResumeLayout(false);
+        _tlpWebDashboard.PerformLayout();
         _tlpHeartbeats.ResumeLayout(false);
         _tlpHeartbeats.PerformLayout();
         _grpPings.ResumeLayout(false);
@@ -2889,6 +3040,24 @@ partial class MainForm
     private GroupBox _grpListener;
     private TableLayoutPanel _tlpListener;
     private Button _btnSaveListener;
+    private GroupBox _grpWebDashboard;
+    private TableLayoutPanel _tlpWebDashboard;
+    private CheckBox _chkWebDashboardEnabled;
+    private Label _lblWebDashboardPort;
+    private TextBox _txtWebDashboardPort;
+    private Label _lblWebDashboardAddress;
+    private TextBox _txtWebDashboardAddress;
+    private Label _lblWebDashboardScheme;
+    private ComboBox _cmbWebDashboardScheme;
+    private Label _lblWebDashboardCertPath;
+    private TextBox _txtWebDashboardCertPath;
+    private Label _lblWebDashboardCertPassword;
+    private TextBox _txtWebDashboardCertPassword;
+    private CheckBox _chkWebDashboardRequireApiKey;
+    private Label _lblWebDashboardApiKey;
+    private TextBox _txtWebDashboardApiKey;
+    private Button _btnSaveWebDashboard;
+    private Label _lblWebDashboardUrl;
     private CheckBox _chkAutoStart;
     private CheckBox _chkStartWithDashboard;
     private CheckBox _chkRunAsAdmin;

@@ -7,6 +7,7 @@ using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Core.Modules;
 using Kaeo.LlmProxy.Web;
 using Serilog;
+using System.Diagnostics;
 
 namespace Kaeo.LlmProxy;
 
@@ -25,6 +26,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SynchronizationContext? _uiContext;
     private MainForm? _mainForm;
     private WebDashboardHost? _dashboard;
+    private ToolStripMenuItem? _openWebDashboardItem;
     private bool _disposed;
     private bool _exiting;
 
@@ -83,7 +85,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             _dashboard = dashboard;
             if (dashboard.Url is not null)
+            {
                 Log.Information("Web dashboard available at {Url}", dashboard.Url);
+                PostToUi(() =>
+                {
+                    if (_openWebDashboardItem is not null)
+                    {
+                        _openWebDashboardItem.Enabled = true;
+                        _openWebDashboardItem.ToolTipText = dashboard.Url;
+                    }
+                });
+            }
         }
         catch (Exception ex)
         {
@@ -100,7 +112,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ContextMenuStrip BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Open Dashboard", null, OnOpenDashboard);
+        menu.Items.Add("Open Desktop Dashboard", null, OnOpenDashboard);
+        _openWebDashboardItem = new ToolStripMenuItem("Open Web Dashboard", null, OnOpenWebDashboard)
+        {
+            Enabled = false,
+            ToolTipText = "Web dashboard is not running",
+        };
+        menu.Items.Add(_openWebDashboardItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Start Proxy", null, OnStartProxy);
         menu.Items.Add("Stop Proxy", null, OnStopProxy);
@@ -108,6 +126,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, OnExit);
         return menu;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> on the UI thread captured at construction. NotifyIcon and
+    /// menu items are not thread-safe; dashboard startup completes on a threadpool thread.
+    /// </summary>
+    private void PostToUi(Action action)
+    {
+        if (_disposed)
+            return;
+        if (_uiContext is not null && SynchronizationContext.Current != _uiContext)
+        {
+#pragma warning disable VSTHRD001
+            _uiContext.Post(_ => action(), null);
+#pragma warning restore VSTHRD001
+        }
+        else
+        {
+            action();
+        }
     }
 
     // Tray text and the error MessageBox are driven by the controller's StatusChanged /
@@ -144,6 +182,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void OnTrayDoubleClick(object? sender, EventArgs e) => ShowMainForm();
 
     private void OnOpenDashboard(object? sender, EventArgs e) => ShowMainForm();
+
+    private void OnOpenWebDashboard(object? sender, EventArgs e)
+    {
+        string? url = _dashboard?.Url;
+        if (url is null)
+        {
+            MessageBox.Show(
+                "The web dashboard is not running. Enable it in Settings → Web Dashboard and restart the application.",
+                "Kaeo LLM Proxy", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Could not open web dashboard in the default browser");
+            MessageBox.Show(
+                $"Could not open the default browser: {ex.Message}\n\nThe dashboard is available at {url}",
+                "Kaeo LLM Proxy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
 
     private void OnStartProxy(object? sender, EventArgs e)
     {

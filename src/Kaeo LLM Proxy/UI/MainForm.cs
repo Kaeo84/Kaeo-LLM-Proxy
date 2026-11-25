@@ -187,6 +187,13 @@ internal partial class MainForm : Form
         _txtRequestDbPath.Validated += (_, _) => SaveLoggingSettings();
         _txtLogRetention.Validated += (_, _) => SaveLoggingSettings();
 
+        // Web dashboard settings use an explicit Save button (they need an application restart);
+        // these handlers only refresh the URL preview label.
+        _chkWebDashboardEnabled.CheckedChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _txtWebDashboardPort.TextChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _txtWebDashboardAddress.TextChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _cmbWebDashboardScheme.SelectedIndexChanged += (_, _) => UpdateWebDashboardUrlLabel();
+
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
@@ -2064,6 +2071,18 @@ internal partial class MainForm : Form
         _txtKeepAliveInterval.Text = _settings.SseKeepAliveIntervalSeconds.ToString();
         _txtHeartbeatInterval.Text = _settings.HeartbeatIntervalSeconds.ToString();
 
+        // Web dashboard settings (explicit Save button; application restart to apply).
+        WebDashboardSettings webDashboard = _settings.WebDashboard;
+        _chkWebDashboardEnabled.Checked = webDashboard.Enabled;
+        _txtWebDashboardPort.Text = webDashboard.Port.ToString();
+        _txtWebDashboardAddress.Text = webDashboard.ListenAddress;
+        _cmbWebDashboardScheme.SelectedIndex = string.Equals(webDashboard.Scheme, "Https", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        _txtWebDashboardCertPath.Text = webDashboard.CertificatePath ?? string.Empty;
+        _txtWebDashboardCertPassword.Text = webDashboard.CertificatePassword ?? string.Empty;
+        _chkWebDashboardRequireApiKey.Checked = webDashboard.RequireApiKey;
+        _txtWebDashboardApiKey.Text = webDashboard.ApiKey ?? string.Empty;
+        UpdateWebDashboardUrlLabel();
+
         _dgvMappings.Rows.Clear();
         foreach (ModelMapping mapping in _settings.ModelMappings)
         {
@@ -2239,6 +2258,95 @@ internal partial class MainForm : Form
             RefreshStatus();
             UpdateApiExplorerUrlLabel();
         });
+
+    private void BtnSaveWebDashboard_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveWebDashboard, () =>
+        {
+            if (!int.TryParse(_txtWebDashboardPort.Text, out int port) || port < 0 || port > 65535)
+            {
+                MessageBox.Show("Dashboard port must be a number between 0 and 65535 (0 = proxy port + 1).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string address = _txtWebDashboardAddress.Text.Trim();
+            if (address.Length == 0)
+            {
+                MessageBox.Show("Dashboard listen address is required (use localhost for loopback-only).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            bool https = _cmbWebDashboardScheme.SelectedIndex == 1;
+            string certPath = _txtWebDashboardCertPath.Text.Trim();
+            if (https && certPath.Length == 0)
+            {
+                MessageBox.Show("HTTPS requires a certificate path (PFX). Use Http when TLS is terminated at a load balancer.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            bool requireApiKey = _chkWebDashboardRequireApiKey.Checked;
+            string apiKey = _txtWebDashboardApiKey.Text;
+            if (requireApiKey && string.IsNullOrWhiteSpace(apiKey))
+            {
+                MessageBox.Show("Enter an API key or turn off 'Require API key'.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            WebDashboardSettings webDashboard = _settings.WebDashboard;
+            bool prevEnabled = webDashboard.Enabled;
+            int prevPort = webDashboard.Port;
+            string prevAddress = webDashboard.ListenAddress;
+            string prevScheme = webDashboard.Scheme;
+            string? prevCertPath = webDashboard.CertificatePath;
+            string? prevCertPassword = webDashboard.CertificatePassword;
+            bool prevRequireApiKey = webDashboard.RequireApiKey;
+            string? prevApiKey = webDashboard.ApiKey;
+
+            webDashboard.Enabled = _chkWebDashboardEnabled.Checked;
+            webDashboard.Port = port;
+            webDashboard.ListenAddress = address;
+            webDashboard.Scheme = https ? "Https" : "Http";
+            webDashboard.CertificatePath = certPath.Length == 0 ? null : certPath;
+            webDashboard.CertificatePassword = _txtWebDashboardCertPassword.Text.Length == 0 ? null : _txtWebDashboardCertPassword.Text;
+            webDashboard.RequireApiKey = requireApiKey;
+            webDashboard.ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey;
+
+            if (!TryPersist("Web dashboard settings", PersistSettingsCore, () =>
+            {
+                webDashboard.Enabled = prevEnabled;
+                webDashboard.Port = prevPort;
+                webDashboard.ListenAddress = prevAddress;
+                webDashboard.Scheme = prevScheme;
+                webDashboard.CertificatePath = prevCertPath;
+                webDashboard.CertificatePassword = prevCertPassword;
+                webDashboard.RequireApiKey = prevRequireApiKey;
+                webDashboard.ApiKey = prevApiKey;
+            }))
+                return;
+
+            MessageBox.Show("Web dashboard settings saved. Restart the application for the changes to take effect.",
+                "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            UpdateWebDashboardUrlLabel();
+        });
+
+    private void UpdateWebDashboardUrlLabel()
+    {
+        if (!_chkWebDashboardEnabled.Checked)
+        {
+            _lblWebDashboardUrl.Text = "Web dashboard is disabled.";
+            return;
+        }
+
+        int port = int.TryParse(_txtWebDashboardPort.Text, out int parsed) && parsed > 0
+            ? parsed
+            : _settings.ListenPort + 1;
+        string address = _txtWebDashboardAddress.Text.Trim();
+        // Wildcard binds are not browsable addresses; show loopback like the tray log does.
+        string host = address.Length == 0 || address is "*" or "+" or "0.0.0.0" || address.Equals("any", StringComparison.OrdinalIgnoreCase)
+            ? "localhost"
+            : address;
+        string scheme = _cmbWebDashboardScheme.SelectedIndex == 1 ? "https" : "http";
+        _lblWebDashboardUrl.Text = $"Configured URL: {scheme}://{host}:{port}";
+    }
 
     /// <summary>
     /// Persists the immediately-saved general Settings tab options (everything except the

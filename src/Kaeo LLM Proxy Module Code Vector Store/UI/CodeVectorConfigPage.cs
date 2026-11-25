@@ -71,7 +71,7 @@ internal sealed class CodeVectorConfigPage : TabPage
     public CodeVectorConfigPage(CodeVectorModule module) : base("Code Vector Store")
     {
         _module = module;
-        _lastSavedSettings = SettingsToValues(module.Settings);
+        _lastSavedSettings = CodeVectorRepository.SettingsToValues(module.Settings);
         BuildUi();
         WireAutoSave();
         WireHelpTooltips();
@@ -1119,32 +1119,6 @@ internal sealed class CodeVectorConfigPage : TabPage
          _saveDebounceTimer?.Start();
      }
 
-     private static Dictionary<string, string> SettingsToValues(CodeVectorSettings s) => new()
-     {
-         ["backend_type"] = s.BackendType.ToString(),
-         ["remote_url"] = s.RemoteUrl,
-         ["remote_model"] = s.RemoteModel,
-         ["remote_credential"] = s.RemoteCredentialName,
-         ["remote_timeout"] = s.RemoteTimeoutSeconds.ToString(),
-         ["remote_parallelism"] = s.RemoteParallelism.ToString(),
-         ["onnx_folder"] = s.OnnxModelFolder,
-         ["onnx_max_seq"] = s.OnnxMaxSequenceLength.ToString(),
-         ["onnx_threads"] = s.OnnxMaxThreads.ToString(),
-         ["chunk_lines"] = s.ChunkLines.ToString(),
-         ["chunk_overlap"] = s.ChunkOverlapLines.ToString(),
-         ["max_file_kb"] = s.MaxFileSizeKb.ToString(),
-         ["default_top_k"] = s.DefaultTopK.ToString(),
-         ["sync_interval"] = s.GitSyncIntervalMinutes.ToString(),
-         ["log_level"] = s.McpLogLevel.ToString(),
-         ["search_enabled"] = s.SearchEnabled ? "1" : "0",
-         ["index_enabled"] = s.IndexEnabled ? "1" : "0",
-         ["sync_enabled"] = s.SyncRepoEnabled ? "1" : "0",
-         ["status_enabled"] = s.StatusEnabled ? "1" : "0",
-         ["remove_enabled"] = s.RemoveEnabled ? "1" : "0",
-         ["reindex_enabled"] = s.ReindexEnabled ? "1" : "0",
-         ["vector_database_path"] = s.VectorDatabasePath,
-     };
-
      private void ShowSaveError(string message)
      {
          if (IsDisposed) return;
@@ -1192,7 +1166,7 @@ internal sealed class CodeVectorConfigPage : TabPage
         // H7: write only the keys whose value actually changed since the last successful save.
         var repo = _module.Repository;
         int savedCount = 0;
-        foreach (var (key, value) in SettingsToValues(settings))
+        foreach (var (key, value) in CodeVectorRepository.SettingsToValues(settings))
         {
             if (_lastSavedSettings.TryGetValue(key, out var previous) && previous == value) continue;
             repo.SaveSetting(key, value);

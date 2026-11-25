@@ -51,6 +51,58 @@ internal sealed class CodeVectorRepository
             cmd => { AddParam(cmd, "$key", key); AddParam(cmd, "$value", value); });
     }
 
+    /// <summary>
+    /// The full settings object as key/value rows. Shared by the WinForms config page (diff save)
+    /// and the JSON settings surface so the two editors cannot drift apart.
+    /// </summary>
+    public static Dictionary<string, string> SettingsToValues(CodeVectorSettings s) => new()
+    {
+        ["backend_type"] = s.BackendType.ToString(),
+        ["remote_url"] = s.RemoteUrl,
+        ["remote_model"] = s.RemoteModel,
+        ["remote_credential"] = s.RemoteCredentialName,
+        ["remote_timeout"] = s.RemoteTimeoutSeconds.ToString(),
+        ["remote_parallelism"] = s.RemoteParallelism.ToString(),
+        ["onnx_folder"] = s.OnnxModelFolder,
+        ["onnx_max_seq"] = s.OnnxMaxSequenceLength.ToString(),
+        ["onnx_threads"] = s.OnnxMaxThreads.ToString(),
+        ["chunk_lines"] = s.ChunkLines.ToString(),
+        ["chunk_overlap"] = s.ChunkOverlapLines.ToString(),
+        ["max_file_kb"] = s.MaxFileSizeKb.ToString(),
+        ["default_top_k"] = s.DefaultTopK.ToString(),
+        ["default_collection"] = s.DefaultCollection,
+        ["sync_interval"] = s.GitSyncIntervalMinutes.ToString(),
+        ["log_level"] = s.McpLogLevel.ToString(),
+        ["search_enabled"] = s.SearchEnabled ? "1" : "0",
+        ["index_enabled"] = s.IndexEnabled ? "1" : "0",
+        ["sync_enabled"] = s.SyncRepoEnabled ? "1" : "0",
+        ["status_enabled"] = s.StatusEnabled ? "1" : "0",
+        ["remove_enabled"] = s.RemoveEnabled ? "1" : "0",
+        ["reindex_enabled"] = s.ReindexEnabled ? "1" : "0",
+        ["vector_database_path"] = s.VectorDatabasePath,
+    };
+
+    /// <summary>
+    /// Writes every settings key in one transaction so a failure or a concurrent writer cannot
+    /// leave a partially updated configuration (same policy as the other modules' settings saves).
+    /// </summary>
+    public void SaveSettings(CodeVectorSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        _db.ExecuteInTransaction((connection, transaction) =>
+        {
+            foreach (var (key, value) in SettingsToValues(settings))
+            {
+                using DbCommand command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = "INSERT INTO mcp_codevector_settings (key, value) VALUES ($key, $value) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+                AddParam(command, "$key", key);
+                AddParam(command, "$value", value);
+                command.ExecuteNonQuery();
+            }
+        });
+    }
+
     private const string MirrorSelectColumns = "SELECT id, collection_name, remote_url, branch, credential_name, mirror_path, path_prefix, source_kind, source_path, last_sync_utc, last_sync_status FROM mcp_codevector_repos";
 
     private static MirrorRegistration ReadMirror(DbDataReader r) => new()
