@@ -3,7 +3,7 @@ namespace Kaeo.LlmProxy.Core.Models;
 /// <summary>
 /// A person or service allowed to call the proxy. Users are contact records (name + email);
 /// authentication happens through their <see cref="ProxyApiKey"/>s, never through the user row
-/// itself. Stored in the application database, managed from the dashboard's Users tab.
+/// itself. Stored in the application database, managed from the Windows or web Users tab.
 /// </summary>
 internal sealed class ProxyUser
 {

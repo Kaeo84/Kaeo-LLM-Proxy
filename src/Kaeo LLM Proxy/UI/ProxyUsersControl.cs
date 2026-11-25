@@ -1,0 +1,546 @@
+using System.Data.Common;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Services;
+
+namespace Kaeo.LlmProxy;
+
+internal sealed class ProxyUsersControl : UserControl
+{
+    private readonly AppDatabase _database;
+    private readonly ProxyAccessService _access;
+    private readonly AppSettings _settings;
+    private readonly Func<bool, bool> _saveRequireApiKey;
+    private readonly CheckBox _requireApiKey = new() { AutoSize = true, Text = "Require API key for proxy requests" };
+    private readonly ListView _users = new() { Dock = DockStyle.Fill, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, View = View.Details };
+    private readonly ListView _keys = new() { Dock = DockStyle.Fill, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, View = View.Details };
+    private bool _loadingSecuritySetting;
+
+    public ProxyUsersControl(AppDatabase database, ProxyAccessService access, AppSettings settings, Func<bool, bool> saveRequireApiKey)
+    {
+        _database = database;
+        _access = access;
+        _settings = settings;
+        _saveRequireApiKey = saveRequireApiKey;
+        Dock = DockStyle.Fill;
+        Padding = new Padding(8);
+
+        _users.Columns.Add("Name", 155);
+        _users.Columns.Add("Email", 190);
+        _users.Columns.Add("Status", 75);
+        _keys.Columns.Add("Label", 115);
+        _keys.Columns.Add("Prefix", 105);
+        _keys.Columns.Add("Models", 210);
+        _keys.Columns.Add("Last used", 125);
+
+        Button addUser = MakeButton("Add user", (_, _) => AddUser());
+        Button editUser = MakeButton("Edit", (_, _) => EditSelectedUser());
+        Button toggleUser = MakeButton("Enable / disable", (_, _) => ToggleSelectedUser());
+        Button deleteUser = MakeButton("Delete user", (_, _) => DeleteSelectedUser());
+        Button refresh = MakeButton("Refresh", (_, _) => RefreshUsers());
+        Button createKey = MakeButton("Create key", (_, _) => CreateKey());
+        Button editKey = MakeButton("Edit key access", (_, _) => EditSelectedKey());
+        Button deleteKey = MakeButton("Delete key", (_, _) => DeleteSelectedKey());
+
+        FlowLayoutPanel userActions = new() { Dock = DockStyle.Bottom, AutoSize = true, WrapContents = true, Padding = new Padding(0, 6, 0, 0) };
+        userActions.Controls.AddRange([addUser, editUser, toggleUser, deleteUser, refresh]);
+        FlowLayoutPanel keyActions = new() { Dock = DockStyle.Bottom, AutoSize = true, WrapContents = true, Padding = new Padding(0, 6, 0, 0) };
+        keyActions.Controls.AddRange([createKey, editKey, deleteKey]);
+
+        Panel left = new() { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 6, 0) };
+        left.Controls.Add(_users);
+        left.Controls.Add(userActions);
+        Panel right = new() { Dock = DockStyle.Fill, Padding = new Padding(6, 0, 0, 0) };
+        right.Controls.Add(_keys);
+        right.Controls.Add(keyActions);
+
+        SplitContainer split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 350, FixedPanel = FixedPanel.Panel1 };
+        split.Panel1.Controls.Add(left);
+        split.Panel2.Controls.Add(right);
+
+        Label hint = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            Padding = new Padding(0, 6, 0, 8),
+            Text = "Create users and keys, and restrict each key to selected proxy models. No selected models means all models.",
+        };
+        FlowLayoutPanel security = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
+        security.Controls.Add(_requireApiKey);
+        security.Controls.Add(new Label { AutoSize = true, Padding = new Padding(12, 4, 0, 0), Text = "When off, requests without a key remain unrestricted." });
+
+        Controls.Add(split);
+        Controls.Add(hint);
+        Controls.Add(security);
+
+        _users.SelectedIndexChanged += (_, _) => RefreshKeys();
+        _requireApiKey.CheckedChanged += RequireApiKey_CheckedChanged;
+        Load += (_, _) => RefreshUsers();
+        LoadSecuritySetting();
+    }
+
+    private static Button MakeButton(string text, EventHandler click)
+    {
+        Button button = new() { AutoSize = true, Text = text, Margin = new Padding(2) };
+        button.Click += click;
+        return button;
+    }
+
+    private void LoadSecuritySetting()
+    {
+        _loadingSecuritySetting = true;
+        _requireApiKey.Checked = _settings.ProxySecurity.RequireApiKey;
+        _loadingSecuritySetting = false;
+    }
+
+    private void RequireApiKey_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_loadingSecuritySetting)
+            return;
+
+        bool requested = _requireApiKey.Checked;
+        if (!_saveRequireApiKey(requested))
+        {
+            _loadingSecuritySetting = true;
+            _requireApiKey.Checked = _settings.ProxySecurity.RequireApiKey;
+            _loadingSecuritySetting = false;
+        }
+    }
+
+    private void RefreshUsers()
+    {
+        int? selectedId = SelectedUser()?.Id;
+        _loadingSecuritySetting = true;
+        _requireApiKey.Checked = _settings.ProxySecurity.RequireApiKey;
+        _loadingSecuritySetting = false;
+        try
+        {
+            IReadOnlyList<ProxyUser> records = _database.LoadProxyUsers();
+            _users.BeginUpdate();
+            _users.Items.Clear();
+            foreach (ProxyUser user in records)
+            {
+                ListViewItem item = new(user.Name) { Tag = user };
+                item.SubItems.Add(user.Email);
+                item.SubItems.Add(user.IsEnabled ? "Enabled" : "Disabled");
+                _users.Items.Add(item);
+                if (user.Id == selectedId)
+                    item.Selected = true;
+            }
+            _users.EndUpdate();
+
+            if (_users.SelectedItems.Count == 0 && _users.Items.Count > 0)
+                _users.Items[0].Selected = true;
+            RefreshKeys();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void RefreshKeys()
+    {
+        _keys.Items.Clear();
+        ProxyUser? user = SelectedUser();
+        if (user is null)
+            return;
+
+        try
+        {
+            foreach (ProxyApiKey key in _database.LoadProxyApiKeys().Where(k => k.UserId == user.Id))
+            {
+                string models = key.AllowedModels.Count == 0 ? "All models" : string.Join(", ", key.AllowedModels);
+                ListViewItem item = new(key.Label.Length == 0 ? "(unlabeled)" : key.Label) { Tag = key };
+                item.SubItems.Add(key.KeyPrefix);
+                item.SubItems.Add(models);
+                item.SubItems.Add(key.LastUsedUtc?.ToLocalTime().ToString("g") ?? "Never");
+                _keys.Items.Add(item);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private ProxyUser? SelectedUser() => _users.SelectedItems.Count == 0 ? null : _users.SelectedItems[0].Tag as ProxyUser;
+    private ProxyApiKey? SelectedKey() => _keys.SelectedItems.Count == 0 ? null : _keys.SelectedItems[0].Tag as ProxyApiKey;
+
+    private void AddUser()
+    {
+        using UserEditorDialog dialog = new("Add user", new ProxyUser());
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            ProxyUser user = dialog.User;
+            user.CreatedUtc = DateTime.UtcNow;
+            _database.InsertProxyUser(user);
+            _access.InvalidateCache();
+            RefreshUsers();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void EditSelectedUser()
+    {
+        ProxyUser? selected = SelectedUser();
+        if (selected is null)
+        {
+            ShowSelectUser();
+            return;
+        }
+
+        using UserEditorDialog dialog = new("Edit user", selected);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            ProxyUser updated = dialog.User;
+            updated.Id = selected.Id;
+            updated.CreatedUtc = selected.CreatedUtc;
+            updated.IsEnabled = selected.IsEnabled;
+            _database.UpdateProxyUser(updated);
+            _access.InvalidateCache();
+            RefreshUsers();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void ToggleSelectedUser()
+    {
+        ProxyUser? user = SelectedUser();
+        if (user is null)
+        {
+            ShowSelectUser();
+            return;
+        }
+
+        try
+        {
+            user.IsEnabled = !user.IsEnabled;
+            _database.UpdateProxyUser(user);
+            _access.InvalidateCache();
+            RefreshUsers();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void DeleteSelectedUser()
+    {
+        ProxyUser? user = SelectedUser();
+        if (user is null)
+        {
+            ShowSelectUser();
+            return;
+        }
+
+        if (MessageBox.Show(this,
+                $"Delete {user.Name} and all of their API keys? This cannot be undone.",
+                "Delete user", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            _database.DeleteProxyUser(user.Id);
+            _access.InvalidateCache();
+            RefreshUsers();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void CreateKey()
+    {
+        ProxyUser? user = SelectedUser();
+        if (user is null)
+        {
+            ShowSelectUser();
+            return;
+        }
+
+        IReadOnlyList<ModelMapping> mappings;
+        try
+        {
+            mappings = _database.LoadModelMappings().Where(m => m.IsEnabled).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+            return;
+        }
+
+        using KeyEditorDialog dialog = new("Create API key", mappings, [], string.Empty);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
+            ProxyApiKey key = new()
+            {
+                UserId = user.Id,
+                Label = dialog.Label,
+                KeyHash = hash,
+                KeyPrefix = prefix,
+                CreatedUtc = DateTime.UtcNow,
+                AllowedModels = dialog.AllowedModels,
+            };
+            _database.InsertProxyApiKey(key);
+            _access.InvalidateCache();
+            RefreshKeys();
+            using OneTimeKeyDialog keyDialog = new(plainText);
+            keyDialog.ShowDialog(this);
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void EditSelectedKey()
+    {
+        ProxyApiKey? key = SelectedKey();
+        if (key is null)
+        {
+            MessageBox.Show(this, "Select an API key first.", "API keys", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        IReadOnlyList<ModelMapping> mappings;
+        try
+        {
+            mappings = _database.LoadModelMappings().Where(m => m.IsEnabled).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+            return;
+        }
+
+        using KeyEditorDialog dialog = new("Edit API key access", mappings, key.AllowedModels, key.Label);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            _database.UpdateProxyApiKeyAccess(key.Id, dialog.Label, dialog.AllowedModels);
+            _access.InvalidateCache();
+            RefreshKeys();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void DeleteSelectedKey()
+    {
+        ProxyApiKey? key = SelectedKey();
+        if (key is null)
+        {
+            MessageBox.Show(this, "Select an API key first.", "API keys", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (MessageBox.Show(this, $"Delete API key '{key.Label}' ({key.KeyPrefix})?", "Delete API key",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            _database.DeleteProxyApiKey(key.Id);
+            _access.InvalidateCache();
+            RefreshKeys();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void ShowSelectUser() =>
+        MessageBox.Show(this, "Select a user first.", "Users", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+    private void ShowDatabaseError(Exception ex) =>
+        MessageBox.Show(this, $"The user/key change could not be completed.\n\n{ex.Message}",
+            "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+}
+
+internal sealed class UserEditorDialog : Form
+{
+    private readonly TextBox _name = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _email = new() { Dock = DockStyle.Fill };
+
+    public ProxyUser User => new() { Name = _name.Text.Trim(), Email = _email.Text.Trim() };
+
+    public UserEditorDialog(string title, ProxyUser user)
+    {
+        Text = title;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ClientSize = new Size(420, 145);
+
+        _name.Text = user.Name;
+        _email.Text = user.Email;
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 3 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
+        layout.Controls.Add(_name, 1, 0);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Email", Anchor = AnchorStyles.Left }, 0, 1);
+        layout.Controls.Add(_email, 1, 1);
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
+        Button save = new() { AutoSize = true, Text = "Save" };
+        Button cancel = new() { AutoSize = true, Text = "Cancel", DialogResult = DialogResult.Cancel };
+        save.Click += (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(_name.Text))
+            {
+                MessageBox.Show(this, "A user name is required.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(_email.Text) && !_email.Text.Contains('@'))
+            {
+                MessageBox.Show(this, "Enter a valid email address or leave it blank.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            DialogResult = DialogResult.OK;
+            Close();
+        };
+        buttons.Controls.Add(save);
+        buttons.Controls.Add(cancel);
+        layout.Controls.Add(buttons, 0, 2);
+        layout.SetColumnSpan(buttons, 2);
+        Controls.Add(layout);
+        AcceptButton = save;
+        CancelButton = cancel;
+    }
+}
+
+internal sealed class KeyEditorDialog : Form
+{
+    private readonly TextBox _label = new() { Dock = DockStyle.Fill };
+    private readonly CheckedListBox _models = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
+
+    public string Label => _label.Text.Trim();
+    public List<string> AllowedModels => _models.CheckedItems.Cast<ModelChoice>().Select(m => m.Name).ToList();
+
+    public KeyEditorDialog(string title, IReadOnlyList<ModelMapping> mappings, IReadOnlyList<string> allowedModels, string label)
+    {
+        Text = title;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ClientSize = new Size(480, 430);
+        _label.Text = label;
+
+        HashSet<string> allowed = new(allowedModels, StringComparer.OrdinalIgnoreCase);
+        foreach (ModelMapping mapping in mappings.OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(mapping.ProxyName))
+                continue;
+            int index = _models.Items.Add(new ModelChoice(mapping.ProxyName));
+            if (allowed.Contains(mapping.ProxyName))
+                _models.SetItemChecked(index, true);
+        }
+
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 4 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Label", Anchor = AnchorStyles.Left }, 0, 0);
+        layout.Controls.Add(_label, 1, 0);
+        layout.Controls.Add(_models, 0, 1);
+        layout.SetColumnSpan(_models, 2);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Leave every model unchecked to allow all models.", Anchor = AnchorStyles.Left }, 0, 2);
+        layout.SetColumnSpan(layout.GetControlFromPosition(0, 2)!, 2);
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
+        Button save = new() { AutoSize = true, Text = "Save", DialogResult = DialogResult.OK };
+        Button cancel = new() { AutoSize = true, Text = "Cancel", DialogResult = DialogResult.Cancel };
+        buttons.Controls.Add(save);
+        buttons.Controls.Add(cancel);
+        layout.Controls.Add(buttons, 0, 3);
+        layout.SetColumnSpan(buttons, 2);
+        Controls.Add(layout);
+        AcceptButton = save;
+        CancelButton = cancel;
+    }
+
+    private sealed record ModelChoice(string Name)
+    {
+        public override string ToString() => Name;
+    }
+}
+
+internal sealed class OneTimeKeyDialog : Form
+{
+    private readonly TextBox _key;
+
+    public OneTimeKeyDialog(string key)
+    {
+        Text = "Copy new API key";
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        ClientSize = new Size(560, 145);
+
+        _key = new TextBox { Dock = DockStyle.Top, ReadOnly = true, Text = key, UseSystemPasswordChar = false };
+        Label warning = new()
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            Padding = new Padding(0, 8, 0, 8),
+            Text = "Copy this key now. It cannot be shown again; create a replacement if it is lost.",
+        };
+        FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, Height = 38 };
+        Button close = new() { AutoSize = true, Text = "Close", DialogResult = DialogResult.OK };
+        Button copy = new() { AutoSize = true, Text = "Copy" };
+        copy.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(key);
+                MessageBox.Show(this, "API key copied to clipboard.", "Copied", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex) when (ex is ExternalException or ThreadStateException)
+            {
+                MessageBox.Show(this, $"Could not copy the API key. Select and copy it manually.\n\n{ex.Message}",
+                    "Clipboard unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+        buttons.Controls.Add(close);
+        buttons.Controls.Add(copy);
+        Controls.Add(buttons);
+        Controls.Add(warning);
+        Controls.Add(_key);
+        AcceptButton = close;
+        CancelButton = close;
+    }
+}

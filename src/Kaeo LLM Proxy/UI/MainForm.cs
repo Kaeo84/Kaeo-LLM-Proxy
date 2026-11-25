@@ -28,6 +28,7 @@ internal partial class MainForm : Form
     private readonly OllamaProxyHandler _handler;
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
+    private readonly ProxyAccessService _access;
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
     private readonly StatisticsService _mcpStats;
@@ -95,7 +96,7 @@ internal partial class MainForm : Form
     // numeric textbox is invalid.
     private readonly ErrorProvider _inputErrors = new();
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
     {
         _settings = settings;
         _stats = stats;
@@ -103,6 +104,7 @@ internal partial class MainForm : Form
         _handler = handler;
         _perfService = perfService;
         _database = database;
+        _access = access;
         _moduleHost = moduleHost;
         _mcpServer = mcpServer;
         _mcpStats = mcpServer.Statistics;
@@ -114,6 +116,10 @@ internal partial class MainForm : Form
 
                 InitializeComponent();
         Icon = Program.GetApplicationIcon();
+
+        TabPage usersPage = new("Users");
+        usersPage.Controls.Add(new ProxyUsersControl(_database, _access, _settings, SaveProxyApiKeyRequirement));
+        _tabControl.TabPages.Insert(_tabControl.TabPages.IndexOf(_tabCredentials) + 1, usersPage);
 
         // Inject configuration tabs for already-loaded modules and track module registry
         // changes so imports, enables, disables, and removals update the tabs live.
@@ -2346,6 +2352,14 @@ internal partial class MainForm : Form
             : address;
         string scheme = _cmbWebDashboardScheme.SelectedIndex == 1 ? "https" : "http";
         _lblWebDashboardUrl.Text = $"Configured URL: {scheme}://{host}:{port}";
+    }
+
+    private bool SaveProxyApiKeyRequirement(bool requireApiKey)
+    {
+        bool previous = _settings.ProxySecurity.RequireApiKey;
+        _settings.ProxySecurity.RequireApiKey = requireApiKey;
+        return TryPersist("Proxy access security", PersistSettingsCore,
+            () => _settings.ProxySecurity.RequireApiKey = previous);
     }
 
     /// <summary>

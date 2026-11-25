@@ -246,7 +246,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.StreamMonitor);
+            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.Access, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.StreamMonitor);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }
