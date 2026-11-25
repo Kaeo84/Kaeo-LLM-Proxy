@@ -69,6 +69,7 @@
         $('#login-form').on('submit', function (e) { e.preventDefault(); submit(); });
         $.ajax({ url: '/api/auth/status', method: 'GET', dataType: 'json' })
             .done(function (status) {
+                if (status && status.requireLogin === false) { window.location.replace('/'); return; }
                 if (status && status.setupRequired) enterSetupMode();
                 $('#login-username').trigger('focus');
             })

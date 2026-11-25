@@ -13,14 +13,19 @@ namespace Kaeo.LlmProxy.Web;
 
 internal static partial class DashboardEndpoints
 {
-    private static void MapAuthentication(WebApplication app, ProxyHostController controller)
+    private static void MapAuthentication(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
         app.MapGet("/api/auth/status", () =>
         {
             try
             {
                 bool loginEnabled = controller.Database.HasDashboardLogins();
-                return Results.Json(new { loginEnabled, setupRequired = !loginEnabled });
+                return Results.Json(new
+                {
+                    loginEnabled,
+                    setupRequired = !loginEnabled,
+                    requireLogin = settings.WebDashboard.RequireLogin,
+                });
             }
             catch (Exception ex) when (ex is IOException or DbException)
             {

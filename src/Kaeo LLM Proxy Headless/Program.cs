@@ -43,10 +43,7 @@ internal static class Program
             e.SetObserved();
         };
 
-        if (!settings.AllowMultipleInstances && !TryAcquireSingleInstanceMutex())
-            return 1;
-
-#if DEBUG
+        #if DEBUG
         // A non-elevated process cannot bind a non-loopback address on Windows (http.sys); force
         // loopback in debug so the proxy starts without administrator rights.
         settings.ListenAddress = "localhost";
@@ -55,9 +52,17 @@ internal static class Program
         try
         {
             // One shared AppDatabase for the whole process; the controller borrows it and must not
-            // dispose it (the using here owns it).
+            // dispose it (the using here owns it). Opened before the single-instance check because
+            // the AllowMultipleInstances preference lives in runtime settings; the database
+            // tolerates concurrent instances (sharing-violation retries).
             using AppDatabase database = new(settings.Logging);
             settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
+
+            // Single-instance lock (opt-out via "Allow multiple instances" in Settings; multiple
+            // instances are allowed by default).
+            if (!settings.AllowMultipleInstances && !TryAcquireSingleInstanceMutex())
+                return 1;
+
             settings.ModelMappings = [.. database.LoadModelMappings()];
             settings.Credentials = [.. database.LoadCredentials()];
             ResolvePassphrase(settings);
@@ -136,8 +141,8 @@ internal static class Program
 
         ReleaseSingleInstanceMutex();
         Console.Error.WriteLine(
-            "Kaeo LLM Proxy (headless) is already running. " +
-            "Set \"AllowMultipleInstances\": true in settings.jsonc to run multiple instances.");
+            "Kaeo LLM Proxy (headless) is already running and single-instance mode is enabled. " +
+            "Enable \"Allow multiple instances\" in the Settings tab (Windows app or web dashboard) to run multiple instances.");
         return false;
     }
 

@@ -39,6 +39,7 @@ internal sealed class SettingsUpdate
     public int? HeartbeatIntervalSeconds { get; set; }
     public bool? EnablePerformanceSampling { get; set; }
     public bool? EnableApiExplorer { get; set; }
+    public bool? AllowMultipleInstances { get; set; }
     public WebDashboardUpdate? WebDashboard { get; set; }
     public ProxySecurityUpdate? ProxySecurity { get; set; }
 }
@@ -49,6 +50,7 @@ internal sealed class WebDashboardUpdate
     public bool? Enabled { get; set; }
     public int? Port { get; set; }
     public string? ListenAddress { get; set; }
+    public bool? RequireLogin { get; set; }
     public string? Scheme { get; set; }
     public string? CertificatePath { get; set; }
     public string? CertificatePassword { get; set; }

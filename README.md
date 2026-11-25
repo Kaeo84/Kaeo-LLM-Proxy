@@ -113,9 +113,9 @@ To allow connections from other machines on your network:
 
 ## Web Dashboard Access
 
-The web dashboard is **login-only**: every page and dashboard API call sits behind a sign-in
-page. Dashboard accounts are configured per user in the **Users** tab (web or Windows app) with
-a username, password, and role:
+The web dashboard is **login-only by default**: every page and dashboard API call sits behind a
+sign-in page. Dashboard accounts are configured per user in the **Users** tab (web or Windows app)
+with a username, password, and role:
 
 - **Admin** — full dashboard access (settings, mappings, users, modules, logs, everything).
 - **Read Only** — request logs only.
@@ -134,6 +134,12 @@ Read Only dashboard login can still use models through a separately configured p
 
 Use HTTPS (or terminate TLS at a trusted proxy) before sharing the dashboard beyond localhost so
 credentials and session cookies are not sent over untrusted HTTP networks.
+
+**Disabling the login screen:** the *Require login* toggle (Windows app: Settings tab → Web
+dashboard group; web: Settings → Web dashboard) turns the sign-in requirement off. It applies
+immediately, and while it is off **anyone who can reach the dashboard has full Admin access** —
+only use it on a trusted, isolated network.
+
 ## Usage
 
 1. Run `Kaeo LLM Proxy.exe` — it starts minimised to the system tray
@@ -142,6 +148,11 @@ credentials and session cookies are not sent over untrusted HTTP networks.
 4. Use **Fetch Models** to pull available model names from a running llama.cpp server
 5. Point your Ollama-compatible client at `http://localhost:11434` (or your configured port)
 6. The proxy routes each request to the correct llama.cpp instance and translates the response
+
+Multiple instances are allowed by default (handy when the tray app and the headless host share a
+machine). To enforce a single instance, turn off **Allow multiple instances** in the Settings tab
+or the web dashboard's Settings → Proxy group; the change applies on the next launch. Give each
+concurrently running instance its own listen ports.
 
 ## Context Compaction
 

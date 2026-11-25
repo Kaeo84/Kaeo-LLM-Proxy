@@ -118,7 +118,7 @@ internal sealed class WebDashboardHost : IAsyncDisposable
 
                 if (request.Path.StartsWithSegments("/api"))
                 {
-                    if (!DashboardAuth.TryAuthorize(context, _controller.Database, out string? error))
+                    if (!DashboardAuth.TryAuthorize(context, _settings, _controller.Database, out string? error))
                     {
                         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                         await context.Response.WriteAsJsonAsync(new { error });
@@ -137,8 +137,9 @@ internal sealed class WebDashboardHost : IAsyncDisposable
                     return;
                 }
 
-                // Everything else (index.html, app.js, ...) requires a signed-in session.
-                if (context.User.Identity?.IsAuthenticated != true)
+                // Everything else (index.html, app.js, ...) requires a signed-in session unless
+                // the login requirement is turned off in settings.
+                if (_settings.WebDashboard.RequireLogin && context.User.Identity?.IsAuthenticated != true)
                 {
                     if (HttpMethods.IsGet(request.Method))
                     {
@@ -161,7 +162,8 @@ internal sealed class WebDashboardHost : IAsyncDisposable
 
             string host = DashboardAuth.IsLoopbackAddress(wd.ListenAddress) ? "localhost" : wd.ListenAddress;
             Url = $"{(https ? "https" : "http")}://{host}:{port}";
-            Log.Information("Web dashboard listening on {Url} (login required)", Url);
+            Log.Information("Web dashboard listening on {Url} ({LoginMode})", Url,
+                wd.RequireLogin ? "login required" : "login disabled — full access for anyone who can reach it");
         }
         catch (Exception ex)
         {

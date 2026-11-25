@@ -7,8 +7,9 @@ using Microsoft.AspNetCore.Http;
 namespace Kaeo.LlmProxy.Web;
 
 /// <summary>
-/// Dashboard authentication is login-only: every request must carry a valid dashboard session
-/// cookie issued by /api/auth/login (or first-run /api/auth/setup). Proxy API keys authenticate
+/// Dashboard authentication is login-based: every request must carry a valid dashboard session
+/// cookie issued by /api/auth/login (or first-run /api/auth/setup) unless the RequireLogin setting
+/// is turned off, in which case every caller gets full admin access. Proxy API keys authenticate
 /// model requests only and never grant dashboard access. Sessions are re-validated against the
 /// user record on every API request so disabling a user, changing the password, or turning off
 /// the login revokes access immediately.
@@ -44,9 +45,19 @@ internal static class DashboardAuth
         return null;
     }
 
-    public static bool TryAuthorize(HttpContext context, AppDatabase database, out string? error)
+    public static bool TryAuthorize(HttpContext context, AppSettings settings, AppDatabase database, out string? error)
     {
         error = null;
+        if (!settings.WebDashboard.RequireLogin)
+        {
+            // Login disabled by configuration: everyone who can reach the dashboard is an admin.
+            context.Items[RoleItemKey] = AdminRole;
+            context.Items[UserNameItemKey] = context.User.Identity?.IsAuthenticated == true
+                ? context.User.FindFirstValue(ClaimTypes.Name)
+                : null;
+            return true;
+        }
+
         if (context.User.Identity?.IsAuthenticated == true
             && int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int userId))
         {

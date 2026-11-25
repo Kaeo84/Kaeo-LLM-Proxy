@@ -338,7 +338,7 @@ internal sealed class RuntimeSettings
 
     public bool StartWithDashboardOpen { get; set; } = false;
 
-    public bool AllowMultipleInstances { get; set; } = false;
+    public bool AllowMultipleInstances { get; set; } = true;
 
     /// <summary>
     /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
@@ -1100,10 +1100,19 @@ internal sealed class WebDashboardSettings
 
     /// <summary>
     /// Address the dashboard binds to. Default "localhost" keeps it local-only; use "0.0.0.0" to
-    /// expose it on the network (pair with HTTPS when you do). The dashboard always requires a
-    /// username/password sign-in; proxy API keys never grant dashboard access.
+    /// expose it on the network (pair with HTTPS when you do). The dashboard requires a
+    /// username/password sign-in unless <see cref="RequireLogin"/> is turned off; proxy API keys
+    /// never grant dashboard access.
     /// </summary>
     public string ListenAddress { get; set; } = "localhost";
+
+    /// <summary>
+    /// When true (the default), every dashboard page and API call requires a dashboard
+    /// username/password session. Turn off to make the login screen optional: the dashboard then
+    /// serves everyone who can reach it with full admin access — only do that on a trusted,
+    /// loopback-only or otherwise protected network. Applies immediately, no restart needed.
+    /// </summary>
+    public bool RequireLogin { get; set; } = true;
 
     /// <summary>
     /// URL scheme: "Http" (default) or "Https". HTTP is the default so TLS can be terminated at a
@@ -1231,13 +1240,13 @@ internal sealed class AppSettings
     public bool StartWithDashboardOpen { get; set; } = false;
 
     /// <summary>
-    /// When true, allows more than one instance of the application to run simultaneously.
-    /// By default only a single instance is permitted; attempting to launch a second instance
-    /// will display a message and exit. Advanced users may set this to true when running
-    /// multiple proxy configurations side-by-side. Default: false.
+    /// When true (the default), more than one instance of the application may run simultaneously
+    /// (e.g. several proxy configurations side-by-side, each with its own ports and web dashboard).
+    /// Set to false to restore the single-instance lock: a second launch displays a message and
+    /// exits. Managed in the Settings tab of either GUI; takes effect on the next launch.
     /// </summary>
     [JsonIgnore]
-    public bool AllowMultipleInstances { get; set; } = false;
+    public bool AllowMultipleInstances { get; set; } = true;
 
     /// <summary>
     /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
@@ -1880,6 +1889,7 @@ internal sealed class AppSettings
                 Enabled = WebDashboard.Enabled,
                 Port = WebDashboard.Port,
                 ListenAddress = WebDashboard.ListenAddress,
+                RequireLogin = WebDashboard.RequireLogin,
                 Scheme = WebDashboard.Scheme,
                 CertificatePath = WebDashboard.CertificatePath,
                 CertificatePassword = WebDashboard.CertificatePassword,

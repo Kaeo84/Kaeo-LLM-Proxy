@@ -1,12 +1,15 @@
+using System.Data.Common;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Serilog;
 
 namespace Kaeo.LlmProxy.Web;
 
 internal static partial class DashboardEndpoints
 {
-    private static void MapSettings(WebApplication app, AppSettings settings)
+    private static void MapSettings(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
         app.MapGet("/api/settings", () => Results.Json(BuildSettingsView(settings)));
 
@@ -20,6 +23,18 @@ internal static partial class DashboardEndpoints
             {
                 ApplySettings(settings, update);
                 settings.Save();
+                // Runtime settings (auto-start, capture toggles, AllowMultipleInstances, ...) live
+                // in the database, not settings.jsonc — persist them too so they survive restarts.
+                // A concurrent instance may briefly hold the file: degrade gracefully (the change
+                // is already applied in memory) instead of failing the whole save.
+                try
+                {
+                    controller.Database.SaveRuntimeSettings(settings.CreateRuntimeSettings());
+                }
+                catch (Exception ex) when (ex is IOException or DbException)
+                {
+                    Log.Warning(ex, "Could not persist runtime settings to the database; changes apply for this session only");
+                }
             }
             return Results.Json(BuildSettingsView(settings));
         });
@@ -46,6 +61,7 @@ internal static partial class DashboardEndpoints
             heartbeatIntervalSeconds = s.HeartbeatIntervalSeconds,
             enablePerformanceSampling = s.EnablePerformanceSampling,
             enableApiExplorer = s.EnableApiExplorer,
+            allowMultipleInstances = s.AllowMultipleInstances,
             logging = new
             {
                 logRetentionHours = s.Logging.LogRetentionHours,
@@ -56,6 +72,7 @@ internal static partial class DashboardEndpoints
                 enabled = wd.Enabled,
                 port = wd.Port,
                 listenAddress = wd.ListenAddress,
+                requireLogin = wd.RequireLogin,
                 scheme = wd.Scheme,
                 certificatePath = wd.CertificatePath,
                 hasCertificatePassword = !string.IsNullOrEmpty(wd.CertificatePassword),
@@ -110,6 +127,7 @@ internal static partial class DashboardEndpoints
         if (u.HeartbeatIntervalSeconds is { } hbi) s.HeartbeatIntervalSeconds = hbi;
         if (u.EnablePerformanceSampling is { } eps) s.EnablePerformanceSampling = eps;
         if (u.EnableApiExplorer is { } eae) s.EnableApiExplorer = eae;
+        if (u.AllowMultipleInstances is { } ami) s.AllowMultipleInstances = ami;
 
         if (u.WebDashboard is { } wd)
         {
@@ -117,6 +135,7 @@ internal static partial class DashboardEndpoints
             if (wd.Enabled is { } en) target.Enabled = en;
             if (wd.Port is { } p) target.Port = p;
             if (wd.ListenAddress is { } wla) target.ListenAddress = wla;
+            if (wd.RequireLogin is { } rl) target.RequireLogin = rl;
             if (wd.Scheme is { } sch) target.Scheme = sch;
             if (wd.CertificatePath is { } cp) target.CertificatePath = cp;
             if (wd.CertificatePassword is { } cpw) target.CertificatePassword = cpw;

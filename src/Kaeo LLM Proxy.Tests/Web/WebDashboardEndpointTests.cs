@@ -193,6 +193,7 @@ public sealed class WebDashboardEndpointTests
         using JsonDocument status = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/auth/status"));
         Assert.True(status.RootElement.GetProperty("loginEnabled").GetBoolean());
         Assert.False(status.RootElement.GetProperty("setupRequired").GetBoolean());
+        Assert.True(status.RootElement.GetProperty("requireLogin").GetBoolean());
     }
 
     [Fact]
@@ -307,6 +308,53 @@ public sealed class WebDashboardEndpointTests
         using HttpRequestMessage revokedRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
         revokedRequest.Headers.Add("Cookie", cookie);
         Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.SendAsync(revokedRequest)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Auth_RequireLoginOff_GrantsAnonymousAdmin_AndReEnableLocksAgain()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage off = await b.Client.PutAsJsonAsync("/api/settings", new { webDashboard = new { requireLogin = false } });
+        Assert.Equal(HttpStatusCode.OK, off.StatusCode);
+
+        // The toggle applies live: anonymous callers get full admin access, pages stop redirecting.
+        Assert.Equal(HttpStatusCode.OK, (await b.Anonymous.GetAsync("/api/settings")).StatusCode);
+        HttpResponseMessage root = await b.Anonymous.GetAsync("/");
+        Assert.Equal(HttpStatusCode.OK, root.StatusCode);
+        Assert.Contains("js/app.js", await root.Content.ReadAsStringAsync());
+
+        using JsonDocument me = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/auth/me"));
+        Assert.Equal("admin", me.RootElement.GetProperty("role").GetString());
+        Assert.False(me.RootElement.GetProperty("loginRequired").GetBoolean());
+
+        using JsonDocument status = JsonDocument.Parse(await b.Anonymous.GetStringAsync("/api/status"));
+        Assert.Equal("open", status.RootElement.GetProperty("dashboard").GetProperty("authMode").GetString());
+
+        // Anonymous admin can turn the requirement back on; the very next request is locked again.
+        HttpResponseMessage on = await b.Anonymous.PutAsJsonAsync("/api/settings", new { webDashboard = new { requireLogin = true } });
+        Assert.Equal(HttpStatusCode.OK, on.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.GetAsync("/api/status")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Settings_Put_PersistsRuntimeSettings_ToDatabase()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.PutAsJsonAsync("/api/settings", new
+        {
+            allowMultipleInstances = false,
+            autoStartProxy = false,
+        });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.False(doc.RootElement.GetProperty("allowMultipleInstances").GetBoolean());
+
+        // Runtime settings live in the database, not settings.jsonc: they must survive a reload.
+        RuntimeSettings persisted = b.Database.LoadRuntimeSettings();
+        Assert.False(persisted.AllowMultipleInstances);
+        Assert.False(persisted.AutoStartProxy);
     }
 
     [Fact]

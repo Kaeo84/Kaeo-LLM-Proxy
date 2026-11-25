@@ -710,7 +710,8 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name,
                     compaction_target_tokens,
                     max_concurrent_compactions,
-                    hide_heartbeat_logs
+                    hide_heartbeat_logs,
+                    allow_multiple_instances_v2
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -724,7 +725,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 AutoStartProxy = ReadBoolean(reader, 0),
                 StartWithDashboardOpen = ReadBoolean(reader, 1),
-                AllowMultipleInstances = ReadBoolean(reader, 2),
+                // Ordinal 2 (allow_multiple_instances) is superseded by the nullable v2 column:
+                // NULL means the preference was never set, which reads as the new default (true).
+                // The legacy column stays in the SELECT to keep the ordinals below stable.
                 ShowCloseToTrayNotification = ReadBoolean(reader, 3),
                 CollectRequestDetails = ReadBoolean(reader, 4),
                 CollectResponseDetails = ReadBoolean(reader, 5),
@@ -749,6 +752,7 @@ internal sealed class AppDatabase : IDisposable
                 CompactionTargetTokens = reader.GetInt32(20),
                 MaxConcurrentCompactions = reader.GetInt32(21),
                 HideHeartbeatLogs = ReadBoolean(reader, 22),
+                AllowMultipleInstances = reader.IsDBNull(23) || ReadBoolean(reader, 23),
             };
         }
     }
@@ -768,6 +772,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_start_proxy,
                     start_with_dashboard_open,
                     allow_multiple_instances,
+                    allow_multiple_instances_v2,
                     show_close_to_tray_notification,
                     collect_request_details,
                     collect_response_details,
@@ -794,6 +799,7 @@ internal sealed class AppDatabase : IDisposable
                     $autoStartProxy,
                     $startWithDashboardOpen,
                     $allowMultipleInstances,
+                    $allowMultipleInstancesV2,
                     $showCloseToTrayNotification,
                     $collectRequestDetails,
                     $collectResponseDetails,
@@ -819,6 +825,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_start_proxy = excluded.auto_start_proxy,
                     start_with_dashboard_open = excluded.start_with_dashboard_open,
                     allow_multiple_instances = excluded.allow_multiple_instances,
+                    allow_multiple_instances_v2 = excluded.allow_multiple_instances_v2,
                     show_close_to_tray_notification = excluded.show_close_to_tray_notification,
                     collect_request_details = excluded.collect_request_details,
                     collect_response_details = excluded.collect_response_details,
@@ -844,7 +851,10 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
             command.Parameters.AddWithValue("$autoStartProxy", ToSqliteBoolean(settings.AutoStartProxy));
             command.Parameters.AddWithValue("$startWithDashboardOpen", ToSqliteBoolean(settings.StartWithDashboardOpen));
+            // Both columns are written: v2 is authoritative for this build; the legacy column keeps
+            // a sensible value for an older build reading the same file.
             command.Parameters.AddWithValue("$allowMultipleInstances", ToSqliteBoolean(settings.AllowMultipleInstances));
+            command.Parameters.AddWithValue("$allowMultipleInstancesV2", ToSqliteBoolean(settings.AllowMultipleInstances));
             command.Parameters.AddWithValue("$showCloseToTrayNotification", ToSqliteBoolean(settings.ShowCloseToTrayNotification));
             command.Parameters.AddWithValue("$collectRequestDetails", ToSqliteBoolean(settings.CollectRequestDetails));
             command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
@@ -1433,6 +1443,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_start_proxy INTEGER NOT NULL,
                     start_with_dashboard_open INTEGER NOT NULL,
                     allow_multiple_instances INTEGER NOT NULL,
+                    allow_multiple_instances_v2 INTEGER NULL,
                     show_close_to_tray_notification INTEGER NOT NULL,
                     collect_request_details INTEGER NOT NULL,
                     collect_response_details INTEGER NOT NULL,
@@ -1712,6 +1723,11 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "start_with_dashboard_open", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "allow_multiple_instances", "INTEGER NOT NULL DEFAULT 0"),
+                                // NULL means "never chosen by the user": older builds could not actually
+                                // persist this preference (the single-instance check ran before runtime
+                                // settings were loaded and no GUI exposed it), so legacy rows carry only
+                                // the old default. NULL reads as the new default: multiple instances allowed.
+                                ("runtime_settings", "allow_multiple_instances_v2", "INTEGER NULL"),
                                 ("runtime_settings", "show_close_to_tray_notification", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "collect_request_details", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "collect_response_details", "INTEGER NOT NULL DEFAULT 0"),

@@ -20,18 +20,19 @@ internal static partial class DashboardEndpoints
 
     public static void MapAll(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
-        MapAuthentication(app, controller);
+        MapAuthentication(app, settings, controller);
         app.MapGet("/api/auth/me", (HttpContext context) => Results.Json(new
         {
             role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole,
             username = context.Items[DashboardAuth.UserNameItemKey]?.ToString(),
+            loginRequired = settings.WebDashboard.RequireLogin,
         }));
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
         MapLogs(app, controller);
         MapStats(app, controller);
         MapMcp(app, controller);
-        MapSettings(app, settings);
+        MapSettings(app, settings, controller);
         MapMappings(app, controller);
         MapCredentials(app, controller);
         MapModules(app, controller);
@@ -64,7 +65,7 @@ internal static partial class DashboardEndpoints
             }).ToList(),
             dashboard = new
             {
-                authMode = "login",
+                authMode = settings.WebDashboard.RequireLogin ? "login" : "open",
                 scheme = settings.WebDashboard.Scheme,
             },
         }));

@@ -91,6 +91,59 @@ public class AppDatabaseSchemaTests
         Assert.Contains("collect_non_proxied_categories", columns);
         Assert.Contains("enable_ir_translation", columns);
         Assert.Contains("compaction_fallback_context_tokens", columns);
+        Assert.Contains("allow_multiple_instances_v2", columns);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AllowMultipleInstancesSurvivesASaveAndReload(bool allowed)
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveRuntimeSettings(new RuntimeSettings
+            {
+                DebugMode = true,
+                AllowMultipleInstances = allowed,
+            });
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        RuntimeSettings reloaded = database.LoadRuntimeSettings();
+
+        Assert.Equal(allowed, reloaded.AllowMultipleInstances);
+        Assert.True(reloaded.DebugMode);
+
+        AppSettings app = new();
+        app.ApplyRuntimeSettings(reloaded);
+        Assert.Equal(allowed, app.AllowMultipleInstances);
+    }
+
+    [Fact]
+    public void AllowMultipleInstances_LegacyRowWithoutV2Value_ReadsAsNewDefault()
+    {
+        // Rows written before the v2 column existed only ever hold the old unreachable default
+        // (the setting was checked before the database loaded), so NULL must read as the new
+        // default of true rather than resurrecting the stale legacy value.
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveRuntimeSettings(new RuntimeSettings { AllowMultipleInstances = false });
+        }
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE runtime_settings SET allow_multiple_instances_v2 = NULL;";
+            command.ExecuteNonQuery();
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        Assert.True(database.LoadRuntimeSettings().AllowMultipleInstances);
     }
 
     [Fact]

@@ -157,7 +157,9 @@
     function setIdentity(identity) {
         currentIdentity = identity || null;
         applyDashboardRole(currentIdentity && currentIdentity.role);
-        $('#btn-signin').text(currentIdentity && currentIdentity.username ? 'Sign out' : 'Sign in')
+        var loginRequired = !currentIdentity || currentIdentity.loginRequired !== false;
+        $('#btn-signin').toggle(loginRequired)
+            .text(currentIdentity && currentIdentity.username ? 'Sign out' : 'Sign in')
             .attr('title', currentIdentity && currentIdentity.username ? 'Signed in as ' + currentIdentity.username : 'Sign in to the dashboard');
     }
 
@@ -818,6 +820,7 @@
                 { path: 'listenPort', label: 'Listen port', type: 'number', hint: '1–65535. Applies after proxy restart.' },
                 { path: 'listenAddress', label: 'Listen address', type: 'text', hint: 'localhost, 0.0.0.0, or a specific IP.' },
                 { path: 'autoStartProxy', label: 'Auto-start proxy on launch', type: 'bool' },
+                { path: 'allowMultipleInstances', label: 'Allow multiple instances', type: 'bool', hint: 'Applies on next launch. Off = a second launch shows "already running" and exits.' },
                 { path: 'maxConcurrentRequests', label: 'Max concurrent requests', type: 'number' },
                 { path: 'maxRequestBodyBytes', label: 'Max request body (bytes)', type: 'number' },
                 { path: 'enableCors', label: 'Enable CORS', type: 'bool' }
@@ -857,6 +860,7 @@
                 { path: 'webDashboard.enabled', label: 'Dashboard enabled', type: 'bool' },
                 { path: 'webDashboard.port', label: 'Port (0 = proxy port + 1)', type: 'number' },
                 { path: 'webDashboard.listenAddress', label: 'Listen address', type: 'text' },
+                { path: 'webDashboard.requireLogin', label: 'Require login', type: 'bool', hint: 'Applies immediately. Off = anyone who can reach the dashboard gets full admin access — use only on a trusted network.' },
                 { path: 'webDashboard.scheme', label: 'Scheme', type: 'select', options: ['Http', 'Https'] },
                 { path: 'webDashboard.certificatePath', label: 'HTTPS certificate path (PFX)', type: 'text' },
                 { path: 'webDashboard.certificatePassword', label: 'Certificate password', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasCertificatePassword' }
@@ -875,6 +879,7 @@
                 if (f.type === 'bool') {
                     $input = $('<input type="checkbox">').prop('checked', !!value);
                     var $boolField = $('<div class="field bool">').append($input).append($('<label>').text(f.label));
+                    if (f.hint) $boolField.append($('<span class="hint">').text(f.hint));
                     $input.attr('data-path', f.path).prop('disabled', !!f.readonly);
                     $grid.append($boolField);
                     return;

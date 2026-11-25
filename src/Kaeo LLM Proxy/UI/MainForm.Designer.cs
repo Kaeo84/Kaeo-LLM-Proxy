@@ -228,6 +228,7 @@ partial class MainForm
         _grpWebDashboard = new GroupBox();
         _tlpWebDashboard = new TableLayoutPanel();
         _chkWebDashboardEnabled = new CheckBox();
+        _chkWebDashboardRequireLogin = new CheckBox();
         _lblWebDashboardPort = new Label();
         _txtWebDashboardPort = new TextBox();
         _lblWebDashboardAddress = new Label();
@@ -250,6 +251,7 @@ partial class MainForm
         _chkAutoStart = new CheckBox();
         _chkStartWithDashboard = new CheckBox();
         _chkRunAsAdmin = new CheckBox();
+        _chkAllowMultipleInstances = new CheckBox();
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
         _chkDebugMode = new CheckBox();
@@ -1294,7 +1296,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 26;
+        _tlpSettings.RowCount = 27;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1315,40 +1317,42 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 7);
         _tlpSettings.SetColumnSpan(_chkRunAsAdmin, 2);
         _tlpSettings.Controls.Add(_chkRunAsAdmin, 0, 8);
+        _tlpSettings.SetColumnSpan(_chkAllowMultipleInstances, 2);
+        _tlpSettings.Controls.Add(_chkAllowMultipleInstances, 0, 9);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 9);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 10);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 10);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 11);
         _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
-        _tlpSettings.Controls.Add(_chkDebugMode, 0, 11);
+        _tlpSettings.Controls.Add(_chkDebugMode, 0, 12);
         _tlpSettings.SetColumnSpan(_chkIrTranslation, 2);
-        _tlpSettings.Controls.Add(_chkIrTranslation, 0, 13);
+        _tlpSettings.Controls.Add(_chkIrTranslation, 0, 14);
         _tlpSettings.SetColumnSpan(_grpNonProxiedCapture, 2);
-        _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 12);
+        _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 13);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 14);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 15);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 15);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 16);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 16);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 17);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 17);
+        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 18);
         _tlpSettings.SetColumnSpan(_grpSseKeepAlive, 2);
-        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
+        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 19);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 19);
-        _tlpSettings.Controls.Add(_lblCompactionInstructionSet, 0, 20);
-        _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 20);
-        _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 21);
-        _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 21);
-        _tlpSettings.Controls.Add(_lblMaxConcurrentCompactions, 0, 22);
-        _tlpSettings.Controls.Add(_txtMaxConcurrentCompactions, 1, 22);
-        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 23);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 20);
+        _tlpSettings.Controls.Add(_lblCompactionInstructionSet, 0, 21);
+        _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 21);
+        _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 22);
+        _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 22);
+        _tlpSettings.Controls.Add(_lblMaxConcurrentCompactions, 0, 23);
+        _tlpSettings.Controls.Add(_txtMaxConcurrentCompactions, 1, 23);
+        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 24);
         _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
-        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 24);
-        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 24);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 25);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 25);
         _tlpSettings.SetColumnSpan(_grpWebDashboard, 2);
-        _tlpSettings.Controls.Add(_grpWebDashboard, 0, 25);
+        _tlpSettings.Controls.Add(_grpWebDashboard, 0, 26);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1478,6 +1482,11 @@ partial class MainForm
         _chkRunAsAdmin.Margin = new Padding(4, 4, 4, 4);
         _chkRunAsAdmin.Name = "_chkRunAsAdmin";
         _chkRunAsAdmin.Text = "Run as administrator on launch (required to listen on addresses other than localhost)";
+
+        _chkAllowMultipleInstances.AutoSize = true;
+        _chkAllowMultipleInstances.Margin = new Padding(4, 4, 4, 4);
+        _chkAllowMultipleInstances.Name = "_chkAllowMultipleInstances";
+        _chkAllowMultipleInstances.Text = "Allow multiple instances (restart the application to apply)";
 
         _chkCollectDetails.AutoSize = true;
         _chkCollectDetails.Margin = new Padding(4, 4, 4, 4);
@@ -1708,7 +1717,7 @@ partial class MainForm
         _tlpWebDashboard.Dock = DockStyle.Fill;
         _tlpWebDashboard.Margin = new Padding(4);
         _tlpWebDashboard.Name = "_tlpWebDashboard";
-        _tlpWebDashboard.RowCount = 9;
+        _tlpWebDashboard.RowCount = 10;
         _tlpWebDashboard.SetColumnSpan(_chkWebDashboardEnabled, 2);
         _tlpWebDashboard.Controls.Add(_chkWebDashboardEnabled, 0, 0);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardPort, 0, 1);
@@ -1721,17 +1730,24 @@ partial class MainForm
         _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPath, 1, 4);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPassword, 0, 5);
         _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPassword, 1, 5);
+        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardRequireLogin, 2);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireLogin, 0, 6);
         _tlpWebDashboard.SetColumnSpan(_lblWebDashboardLoginNote, 2);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 6);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 7);
         _tlpWebDashboard.SetColumnSpan(_btnSaveWebDashboard, 2);
-        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 7);
+        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 8);
         _tlpWebDashboard.SetColumnSpan(_lblWebDashboardUrl, 2);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 8);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 9);
 
         _chkWebDashboardEnabled.AutoSize = true;
         _chkWebDashboardEnabled.Margin = new Padding(4, 8, 4, 4);
         _chkWebDashboardEnabled.Name = "_chkWebDashboardEnabled";
         _chkWebDashboardEnabled.Text = "Enable web dashboard (restart the application to apply)";
+
+        _chkWebDashboardRequireLogin.AutoSize = true;
+        _chkWebDashboardRequireLogin.Margin = new Padding(4, 8, 4, 4);
+        _chkWebDashboardRequireLogin.Name = "_chkWebDashboardRequireLogin";
+        _chkWebDashboardRequireLogin.Text = "Require login (username/password) for the web dashboard";
 
         _lblWebDashboardPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblWebDashboardPort.AutoSize = true;
@@ -1789,7 +1805,7 @@ partial class MainForm
         _lblWebDashboardLoginNote.AutoSize = true;
         _lblWebDashboardLoginNote.Margin = new Padding(4, 8, 4, 4);
         _lblWebDashboardLoginNote.Name = "_lblWebDashboardLoginNote";
-        _lblWebDashboardLoginNote.Text = "The dashboard is login-only. Manage dashboard logins in the Users tab; API keys grant model access only.";
+        _lblWebDashboardLoginNote.Text = "Manage dashboard logins in the Users tab; API keys grant model access only. Turning off login gives full dashboard access to anyone who can reach it.";
 
         _btnSaveWebDashboard.Anchor = AnchorStyles.Right;
         _btnSaveWebDashboard.AutoSize = true;
@@ -3028,6 +3044,7 @@ partial class MainForm
     private GroupBox _grpWebDashboard;
     private TableLayoutPanel _tlpWebDashboard;
     private CheckBox _chkWebDashboardEnabled;
+    private CheckBox _chkWebDashboardRequireLogin;
     private Label _lblWebDashboardPort;
     private TextBox _txtWebDashboardPort;
     private Label _lblWebDashboardAddress;
@@ -3044,6 +3061,7 @@ partial class MainForm
     private CheckBox _chkAutoStart;
     private CheckBox _chkStartWithDashboard;
     private CheckBox _chkRunAsAdmin;
+    private CheckBox _chkAllowMultipleInstances;
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
     private CheckBox _chkDebugMode;

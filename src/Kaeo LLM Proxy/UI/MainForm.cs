@@ -167,6 +167,7 @@ internal partial class MainForm : Form
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkAllowMultipleInstances.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -2060,6 +2061,7 @@ internal partial class MainForm : Form
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
+        _chkAllowMultipleInstances.Checked = _settings.AllowMultipleInstances;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkSysLogHideHeartbeats.Checked = _settings.HideHeartbeatLogs;
@@ -2080,6 +2082,7 @@ internal partial class MainForm : Form
         // Web dashboard settings (explicit Save button; application restart to apply).
         WebDashboardSettings webDashboard = _settings.WebDashboard;
         _chkWebDashboardEnabled.Checked = webDashboard.Enabled;
+        _chkWebDashboardRequireLogin.Checked = webDashboard.RequireLogin;
         _txtWebDashboardPort.Text = webDashboard.Port.ToString();
         _txtWebDashboardAddress.Text = webDashboard.ListenAddress;
         _cmbWebDashboardScheme.SelectedIndex = string.Equals(webDashboard.Scheme, "Https", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
@@ -2291,6 +2294,7 @@ internal partial class MainForm : Form
             bool prevEnabled = webDashboard.Enabled;
             int prevPort = webDashboard.Port;
             string prevAddress = webDashboard.ListenAddress;
+            bool prevRequireLogin = webDashboard.RequireLogin;
             string prevScheme = webDashboard.Scheme;
             string? prevCertPath = webDashboard.CertificatePath;
             string? prevCertPassword = webDashboard.CertificatePassword;
@@ -2298,6 +2302,7 @@ internal partial class MainForm : Form
             webDashboard.Enabled = _chkWebDashboardEnabled.Checked;
             webDashboard.Port = port;
             webDashboard.ListenAddress = address;
+            webDashboard.RequireLogin = _chkWebDashboardRequireLogin.Checked;
             webDashboard.Scheme = https ? "Https" : "Http";
             webDashboard.CertificatePath = certPath.Length == 0 ? null : certPath;
             webDashboard.CertificatePassword = _txtWebDashboardCertPassword.Text.Length == 0 ? null : _txtWebDashboardCertPassword.Text;
@@ -2307,6 +2312,7 @@ internal partial class MainForm : Form
                 webDashboard.Enabled = prevEnabled;
                 webDashboard.Port = prevPort;
                 webDashboard.ListenAddress = prevAddress;
+                webDashboard.RequireLogin = prevRequireLogin;
                 webDashboard.Scheme = prevScheme;
                 webDashboard.CertificatePath = prevCertPath;
                 webDashboard.CertificatePassword = prevCertPassword;
@@ -2410,6 +2416,7 @@ internal partial class MainForm : Form
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
+        _settings.AllowMultipleInstances = _chkAllowMultipleInstances.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.HideHeartbeatLogs = _chkSysLogHideHeartbeats.Checked;
