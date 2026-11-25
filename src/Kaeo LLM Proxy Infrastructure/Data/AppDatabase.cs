@@ -1478,7 +1478,11 @@ internal sealed class AppDatabase : IDisposable
                     name TEXT NOT NULL,
                     email TEXT NOT NULL DEFAULT '',
                     created_utc TEXT NOT NULL,
-                    is_enabled INTEGER NOT NULL DEFAULT 1
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    dashboard_login_enabled INTEGER NOT NULL DEFAULT 0,
+                    dashboard_username TEXT NOT NULL DEFAULT '',
+                    dashboard_password_hash TEXT NOT NULL DEFAULT '',
+                    dashboard_role TEXT NOT NULL DEFAULT 'readOnly'
                 );
 
                 CREATE TABLE IF NOT EXISTS proxy_api_keys (
@@ -1499,6 +1503,7 @@ internal sealed class AppDatabase : IDisposable
 
                         ReconcileExistingTables(connection);
                         EnsureModuleIdUniqueIndex(connection);
+                        EnsureDashboardUsernameUniqueIndex(connection);
                     }
                 }
 
@@ -1521,6 +1526,13 @@ internal sealed class AppDatabase : IDisposable
                     {
                         Log.Warning(ex, "Could not enforce unique module_id index; existing duplicate module registrations were left intact");
                     }
+                }
+
+                private static void EnsureDashboardUsernameUniqueIndex(SqliteConnection connection)
+                {
+                    using SqliteCommand command = connection.CreateCommand();
+                    command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_proxy_users_dashboard_username ON proxy_users(dashboard_username COLLATE NOCASE) WHERE dashboard_login_enabled = 1;";
+                    command.ExecuteNonQuery();
                 }
 
                 /// <summary>
@@ -1770,6 +1782,10 @@ internal sealed class AppDatabase : IDisposable
                                 ("proxy_users", "email", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_users", "created_utc", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_users", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                                ("proxy_users", "dashboard_login_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_users", "dashboard_username", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "dashboard_password_hash", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "dashboard_role", "TEXT NOT NULL DEFAULT 'readOnly'"),
                                 ("proxy_api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"),
                                 ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
@@ -2562,7 +2578,8 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, name, email, created_utc, is_enabled
+                SELECT id, name, email, created_utc, is_enabled,
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role
                 FROM proxy_users
                 ORDER BY name COLLATE NOCASE, id;
                 """;
@@ -2578,10 +2595,25 @@ internal sealed class AppDatabase : IDisposable
                     Email = reader.GetString(2),
                     CreatedUtc = ReadUtc(reader, 3),
                     IsEnabled = ReadBoolean(reader, 4),
+                    DashboardLoginEnabled = ReadBoolean(reader, 5),
+                    DashboardUsername = reader.GetString(6),
+                    DashboardPasswordHash = reader.GetString(7),
+                    DashboardRole = reader.GetString(8),
                 });
             }
 
             return users;
+        }
+    }
+
+    public bool HasDashboardLogins()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT EXISTS(SELECT 1 FROM proxy_users WHERE dashboard_login_enabled = 1);";
+            return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0;
         }
     }
 
@@ -2596,14 +2628,20 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                INSERT INTO proxy_users (name, email, created_utc, is_enabled)
-                VALUES ($name, $email, $createdUtc, $isEnabled);
+                INSERT INTO proxy_users
+                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role)
+                VALUES
+                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$name", user.Name);
             command.Parameters.AddWithValue("$email", user.Email);
             command.Parameters.AddWithValue("$createdUtc", ToUtcText(user.CreatedUtc));
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+            command.Parameters.AddWithValue("$dashboardLoginEnabled", ToSqliteBoolean(user.DashboardLoginEnabled));
+            command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
+            command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
+            command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
 
             object? scalar = command.ExecuteScalar();
             user.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
@@ -2622,13 +2660,21 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 UPDATE proxy_users
-                SET name = $name, email = $email, is_enabled = $isEnabled
+                SET name = $name, email = $email, is_enabled = $isEnabled,
+                    dashboard_login_enabled = $dashboardLoginEnabled,
+                    dashboard_username = $dashboardUsername,
+                    dashboard_password_hash = $dashboardPasswordHash,
+                    dashboard_role = $dashboardRole
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", user.Id);
             command.Parameters.AddWithValue("$name", user.Name);
             command.Parameters.AddWithValue("$email", user.Email);
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+            command.Parameters.AddWithValue("$dashboardLoginEnabled", ToSqliteBoolean(user.DashboardLoginEnabled));
+            command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
+            command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
+            command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
             command.ExecuteNonQuery();
         }
     }
@@ -2714,7 +2760,8 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, name, email, created_utc, is_enabled
+                SELECT id, name, email, created_utc, is_enabled,
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role
                 FROM proxy_users
                 WHERE id = $id;
                 """;
@@ -2731,6 +2778,41 @@ internal sealed class AppDatabase : IDisposable
                 Email = reader.GetString(2),
                 CreatedUtc = ReadUtc(reader, 3),
                 IsEnabled = ReadBoolean(reader, 4),
+                DashboardLoginEnabled = ReadBoolean(reader, 5),
+                DashboardUsername = reader.GetString(6),
+                DashboardPasswordHash = reader.GetString(7),
+                DashboardRole = reader.GetString(8),
+            };
+        }
+    }
+
+    public ProxyUser? FindProxyUserByDashboardUsername(string username)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role FROM proxy_users WHERE dashboard_login_enabled = 1 AND dashboard_username = $username COLLATE NOCASE LIMIT 1;";
+            command.Parameters.AddWithValue("$username", username.Trim());
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            if (!reader.Read())
+                return null;
+
+            return new ProxyUser
+            {
+                Id = reader.GetInt32(0),
+                Name = reader.GetString(1),
+                Email = reader.GetString(2),
+                CreatedUtc = ReadUtc(reader, 3),
+                IsEnabled = ReadBoolean(reader, 4),
+                DashboardLoginEnabled = ReadBoolean(reader, 5),
+                DashboardUsername = reader.GetString(6),
+                DashboardPasswordHash = reader.GetString(7),
+                DashboardRole = reader.GetString(8),
             };
         }
     }

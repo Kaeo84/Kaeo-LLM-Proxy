@@ -1,9 +1,8 @@
 namespace Kaeo.LlmProxy.Core.Models;
 
 /// <summary>
-/// A person or service allowed to call the proxy. Users are contact records (name + email);
-/// authentication happens through their <see cref="ProxyApiKey"/>s, never through the user row
-/// itself. Stored in the application database, managed from the Windows or web Users tab.
+/// A person or service represented in the application database. Proxy model access uses their
+/// <see cref="ProxyApiKey"/>s; optional dashboard credentials separately grant a dashboard role.
 /// </summary>
 internal sealed class ProxyUser
 {
@@ -18,6 +17,14 @@ internal sealed class ProxyUser
 
     /// <summary>When the user was created (UTC).</summary>
     public DateTime CreatedUtc { get; set; }
+
+    public bool DashboardLoginEnabled { get; set; }
+
+    public string DashboardUsername { get; set; } = string.Empty;
+
+    public string DashboardPasswordHash { get; set; } = string.Empty;
+
+    public string DashboardRole { get; set; } = "readOnly";
 
     /// <summary>
     /// Disabled users keep their record and keys but every key authenticates as rejected,

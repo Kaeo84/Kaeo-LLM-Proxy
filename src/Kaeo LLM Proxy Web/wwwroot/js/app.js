@@ -127,6 +127,59 @@
         $('#key-input').on('keydown', function (e) { if (e.key === 'Enter') finish(true); });
     }
 
+    // ------------------------------------------------------------------ dashboard login
+    var loginPromptQueue = null;
+
+    function promptForLogin(onOk, onCancel) {
+        if (loginPromptQueue) {
+            loginPromptQueue.push({ ok: onOk, cancel: onCancel });
+            return;
+        }
+        loginPromptQueue = [{ ok: onOk, cancel: onCancel }];
+        var $body = $('<div>')
+            .append($('<p class="muted">').text('Sign in with a dashboard account. Proxy model access continues to use the user API keys below.'))
+            .append($('<div class="field">').append($('<label>').text('Username'))
+                .append($('<input type="text" id="login-username" autocomplete="username">')))
+            .append($('<div class="field">').append($('<label>').text('Password'))
+                .append($('<input type="password" id="login-password" autocomplete="current-password">')));
+
+        function finish(save, identity) {
+            var queue = loginPromptQueue || [];
+            loginPromptQueue = null;
+            closeModal();
+            if (save) {
+                setKey('');
+                dashboardLoginConfigured = true;
+                setIdentity(identity);
+                setConn('ok');
+                queue.forEach(function (q) { q.ok(); });
+            } else {
+                queue.forEach(function (q) { q.cancel(); });
+            }
+        }
+
+        function signIn() {
+            $.ajax({
+                url: '/api/auth/login', method: 'POST', contentType: 'application/json; charset=utf-8',
+                dataType: 'json',
+                data: JSON.stringify({ username: $('#login-username').val().trim(), password: $('#login-password').val() })
+            }).done(function (identity) { finish(true, identity); })
+                .fail(function (xhr) { modalError(apiError(xhr).message); });
+        }
+
+        openModal('Dashboard sign in', $body, [
+            { label: 'Use API key', onClick: function () {
+                var queue = loginPromptQueue || [];
+                loginPromptQueue = null;
+                closeModal();
+                promptForKey(function () { queue.forEach(function (q) { q.ok(); }); }, function () { queue.forEach(function (q) { q.cancel(); }); });
+            } },
+            { label: 'Cancel', onClick: function () { finish(false); } },
+            { label: 'Sign in', cls: 'primary', onClick: signIn }
+        ]);
+        $('#login-password').on('keydown', function (e) { if (e.key === 'Enter') signIn(); });
+    }
+
     // ------------------------------------------------------------------ API helper
     function apiError(xhr) {
         var message = 'Request failed (' + xhr.status + ' ' + xhr.statusText + ')';
@@ -162,7 +215,10 @@
                 }, function (xhr) {
                     if (xhr.status === 401 && !retried) {
                         setConn('key');
-                        promptForKey(function () { attempt(true); }, function () { reject(apiError(xhr)); });
+                        api('GET', '/api/auth/status', undefined, { silent: true }).then(function (status) {
+                            var prompt = status && status.loginEnabled ? promptForLogin : promptForKey;
+                            prompt(function () { attempt(true); }, function () { reject(apiError(xhr)); });
+                        }).catch(function () { reject(apiError(xhr)); });
                         return;
                     }
                     var err = apiError(xhr);
@@ -178,7 +234,7 @@
         var $c = $('#conn-state');
         $c.removeClass('ok err warn');
         if (state === 'ok') $c.addClass('ok').text('connected');
-        else if (state === 'key') $c.addClass('warn').text('key required');
+        else if (state === 'key') $c.addClass('warn').text('sign-in required');
         else $c.addClass('err').text('offline');
     }
 
@@ -200,17 +256,29 @@
     // ------------------------------------------------------------------ tabs
     var activeTab = 'dashboard';
     var dashboardRole = 'admin';
+    var dashboardLoginConfigured = false;
+    var currentIdentity = null;
     var loaders = {};
+
+    function setIdentity(identity) {
+        currentIdentity = identity || null;
+        applyDashboardRole(currentIdentity && currentIdentity.role);
+        $('#btn-signin').text(currentIdentity && currentIdentity.username ? 'Sign out' : 'Sign in')
+            .attr('title', currentIdentity && currentIdentity.username ? 'Signed in as ' + currentIdentity.username : 'Sign in to the dashboard');
+    }
 
     function applyDashboardRole(role) {
         dashboardRole = role === 'readOnly' ? 'readOnly' : 'admin';
+        $('#tabs a').show();
+        $('#btn-key').show();
+        $('#topbar').removeClass('read-only');
         if (dashboardRole !== 'readOnly') return;
 
         $('#tabs a').not('[data-tab="requests"]').hide();
         $('#btn-key').hide();
         $('#topbar').addClass('read-only');
         $('#tabs a[data-tab="requests"]').show();
-        if (location.hash !== '#requests') location.hash = '#requests';
+        if (location.hash !== '#requests') location.hash = 'requests';
         activateTab('requests');
     }
 
@@ -671,6 +739,9 @@
                     .append($('<h3>').text(u.name + ' ')
                         .append($('<span class="pill">').addClass(u.isEnabled ? 'ok' : '').text(u.isEnabled ? 'enabled' : 'disabled')));
                 $card.append(kv('Email', u.email || '—'))
+                    .append(kv('Dashboard login', u.dashboardLoginEnabled
+                        ? u.dashboardUsername + ' · ' + (u.dashboardRole === 'admin' ? 'Admin' : 'Read Only')
+                        : 'disabled'))
                     .append(kv('Created', u.createdUtc ? new Date(u.createdUtc).toLocaleString() : '—'));
 
                 var $keys = $('<div class="user-keys">');
@@ -726,18 +797,57 @@
         }
         var $name = field('Name', $('<input type="text">').val(existing ? existing.name : ''), 'Required — who this account belongs to.');
         var $email = field('Email', $('<input type="email">').val(existing ? existing.email : ''), 'Contact address (optional).');
+        var $loginEnabled = $('<input type="checkbox">').prop('checked', !!(existing && existing.dashboardLoginEnabled));
+        $body.append($('<div class="field bool">').append($loginEnabled).append($('<label>').text('Enable dashboard login')));
+        var $username = field('Dashboard username', $('<input type="text" autocomplete="username">')
+            .val(existing ? existing.dashboardUsername : ''), 'Separate from the proxy API keys used by model clients.');
+        var $password = field('Dashboard password', $('<input type="password" autocomplete="new-password">'),
+            existing && existing.hasDashboardPassword ? 'Leave blank to keep the current password; enter a new one to reset it.' : 'Use at least 12 characters.');
+        var $role = $('<select>').append($('<option>').val('admin').text('Admin — full dashboard access'))
+            .append($('<option>').val('readOnly').text('Read Only — request logs only'))
+            .val(existing ? existing.dashboardRole : (dashboardLoginConfigured ? 'readOnly' : 'admin'));
+        field('Dashboard role', $role, 'This role controls the web dashboard only, not model access through proxy API keys.');
+
+        function syncLoginFields() {
+            var disabled = !$loginEnabled.prop('checked');
+            $username.add($password).add($role).prop('disabled', disabled);
+        }
+        $loginEnabled.on('change', syncLoginFields);
+        syncLoginFields();
 
         function save() {
             var name = $name.val().trim();
+            var username = $username.val().trim();
+            var password = $password.val();
+            var enabled = $loginEnabled.prop('checked');
             if (!name) { modalError('User name is required.'); return; }
-            var payload = { name: name, email: $email.val().trim() };
+            if (!dashboardLoginConfigured && enabled && !password) {
+                modalError('Set a new password when enabling the first dashboard login.');
+                return;
+            }
+            var payload = {
+                name: name,
+                email: $email.val().trim(),
+                dashboardLoginEnabled: enabled,
+                dashboardUsername: username,
+                dashboardRole: $role.val()
+            };
+            if (password) payload.dashboardPassword = password;
             var request = existing
                 ? api('PUT', '/api/users/' + existing.id, payload)
                 : api('POST', '/api/users', payload);
             request.then(function () {
                 closeModal();
-                toast(existing ? 'User updated.' : 'User added.');
-                loadUsers();
+                var wasConfigured = dashboardLoginConfigured;
+                dashboardLoginConfigured = dashboardLoginConfigured || enabled;
+                if (!wasConfigured && enabled && password) {
+                    api('POST', '/api/auth/login', { username: username, password: password }, { silent: true })
+                        .then(function (identity) { setIdentity(identity); toast('Dashboard login enabled and signed in.'); loadUsers(); })
+                        .catch(function (err) { toast(err.message, true); });
+                } else {
+                    toast(existing ? 'User updated.' : 'User added.');
+                    loadUsers();
+                }
             }).catch(function (err) { modalError(err.message); });
         }
 
@@ -878,7 +988,7 @@
                 { path: 'webDashboard.certificatePath', label: 'HTTPS certificate path (PFX)', type: 'text' },
                 { path: 'webDashboard.apiKey', label: 'Administrator API key (full access)', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasApiKey' },
                 { path: 'webDashboard.readOnlyApiKey', label: 'Read-only API key (logs only)', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasReadOnlyApiKey', hint: 'When configured, dashboard authentication is required even on localhost. This key can only read request logs.' },
-                { path: 'webDashboard.clearReadOnlyApiKey', label: 'Revoke the current read-only key', type: 'bool', hint: 'Immediately invalidates this key. If localhost has no other key configured, the dashboard returns to open local access.' }
+                { path: 'webDashboard.clearReadOnlyApiKey', label: 'Revoke the current read-only key', type: 'bool', hint: 'Immediately invalidates this key. If localhost has no other key configured, the dashboard returns to open local access.' },
                 { path: 'webDashboard.certificatePassword', label: 'Certificate password', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasCertificatePassword' }
             ]
         }
@@ -1037,6 +1147,24 @@
 
         $('#btn-theme').on('click', cycleTheme);
         $('#btn-key').on('click', function () { promptForKey(function () { toast('API key saved.'); loaders[activeTab](); }, function () { }); });
+        $('#btn-signin').on('click', function () {
+            if (currentIdentity && currentIdentity.username) {
+                api('POST', '/api/auth/logout', {}).then(function () {
+                    setKey('');
+                    window.location.reload();
+                });
+                return;
+            }
+            api('GET', '/api/auth/status', undefined, { silent: true }).then(function (status) {
+                var prompt = status && status.loginEnabled ? promptForLogin : promptForKey;
+                prompt(function () {
+                    api('GET', '/api/auth/me').then(function (identity) {
+                        setIdentity(identity);
+                        activateTab(location.hash.replace('#', '') || (identity.role === 'readOnly' ? 'requests' : 'dashboard'));
+                    });
+                }, function () { });
+            });
+        });
 
         $('#modal-close').on('click', closeModal);
         $('#modal-backdrop').on('click', function (e) { if (e.target === this) closeModal(); });
@@ -1067,9 +1195,13 @@
         $('#settings-form').on('submit', function (e) { e.preventDefault(); saveSettings(); });
         $('#btn-refresh-mcp').on('click', loadMcp);
 
-        api('GET', '/api/auth/me', undefined, { silent: true })
+        api('GET', '/api/auth/status', undefined, { silent: true })
+            .then(function (status) {
+                dashboardLoginConfigured = !!(status && status.loginEnabled);
+                return api('GET', '/api/auth/me', undefined, { silent: true });
+            })
             .then(function (identity) {
-                applyDashboardRole(identity.role);
+                setIdentity(identity);
                 if (dashboardRole !== 'readOnly')
                     activateTab(location.hash.replace('#', '') || 'dashboard');
             })

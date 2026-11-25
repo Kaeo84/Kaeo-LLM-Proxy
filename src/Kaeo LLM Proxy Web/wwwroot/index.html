@@ -21,6 +21,7 @@
         </nav>
         <div class="top-actions">
             <span id="conn-state" class="pill" title="API connection state">&hellip;</span>
+            <button id="btn-signin" class="ghost" type="button" title="Sign in to the dashboard">Sign in</button>
             <button id="btn-key" class="ghost" type="button" title="Set the dashboard API key">Key</button>
             <button id="btn-theme" class="ghost" type="button" title="Cycle theme: auto / light / dark">Auto</button>
         </div>
@@ -106,7 +107,7 @@
             <div class="toolbar">
                 <button id="btn-add-user" type="button" class="primary">Add user</button>
                 <button id="btn-refresh-users" type="button">Refresh</button>
-                <span class="muted">API keys are shown once at creation &mdash; store them safely. Enforcement is toggled under Settings &rarr; Proxy access security.</span>
+                <span class="muted">Proxy API keys control model access; optional dashboard username/password logins control Admin or Read Only dashboard access.</span>
             </div>
             <div id="user-cards" class="cards"></div>
         </section>

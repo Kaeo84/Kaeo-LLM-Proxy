@@ -2,7 +2,10 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Kaeo.LlmProxy.Core.Models;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.RateLimiting;
 using Kaeo.LlmProxy.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -65,16 +68,54 @@ internal sealed class WebDashboardHost : IAsyncDisposable
                 options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
                 options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
             });
+            builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+                .AddCookie(options =>
+                {
+                    options.Cookie.Name = ".KaeoDashboard.Session";
+                    options.Cookie.HttpOnly = true;
+                    options.Cookie.SameSite = SameSiteMode.Strict;
+                    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                    options.Cookie.IsEssential = true;
+                    options.ExpireTimeSpan = TimeSpan.FromHours(8);
+                    options.SlidingExpiration = true;
+                    options.Events.OnRedirectToLogin = context =>
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        return Task.CompletedTask;
+                    };
+                    options.Events.OnRedirectToAccessDenied = context =>
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        return Task.CompletedTask;
+                    };
+                });
+            builder.Services.AddRateLimiter(options =>
+            {
+                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                options.AddPolicy("dashboard-login", context => RateLimitPartition.GetFixedWindowLimiter(
+                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 5,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true,
+                    }));
+            });
             builder.WebHost.ConfigureKestrel(options => ConfigureListen(options, wd, port, https));
 
             WebApplication app = builder.Build();
             app.UseDefaultFiles();
             app.UseStaticFiles();
+            app.UseRateLimiter();
+            app.UseAuthentication();
             app.Use(async (context, next) =>
             {
-                if (context.Request.Path.StartsWithSegments("/api"))
+                if (context.Request.Path.StartsWithSegments("/api")
+                    && !DashboardAuth.IsAuthenticationEndpoint(context.Request))
                 {
-                    if (!DashboardAuth.TryAuthorize(context, wd, out string? error))
+                    bool loginEnabled = _controller.Database.HasDashboardLogins();
+                    if (!DashboardAuth.TryAuthorize(context, wd, _controller.Database, loginEnabled, out string? error))
                     {
                         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                         await context.Response.WriteAsJsonAsync(new { error });
@@ -99,7 +140,8 @@ internal sealed class WebDashboardHost : IAsyncDisposable
 
             string host = DashboardAuth.IsLoopbackAddress(wd.ListenAddress) ? "localhost" : wd.ListenAddress;
             Url = $"{(https ? "https" : "http")}://{host}:{port}";
-            Log.Information("Web dashboard listening on {Url} (auth={AuthMode})", Url, DashboardAuth.AuthMode(wd));
+            bool dashboardLoginsEnabled = _controller.Database.HasDashboardLogins();
+            Log.Information("Web dashboard listening on {Url} (auth={AuthMode})", Url, DashboardAuth.AuthMode(wd, dashboardLoginsEnabled));
         }
         catch (Exception ex)
         {

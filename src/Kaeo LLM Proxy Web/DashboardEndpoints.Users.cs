@@ -2,6 +2,7 @@ using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Data.Sqlite;
 
 namespace Kaeo.LlmProxy.Web;
 
@@ -35,23 +36,38 @@ internal static partial class DashboardEndpoints
             if (!string.IsNullOrWhiteSpace(write.Email) && !write.Email.Contains('@'))
                 return Results.BadRequest(new { error = "Email address looks invalid." });
 
+            string? dashboardRole = DashboardAuth.NormalizeRole(write.DashboardRole ?? DashboardAuth.ReadOnlyRole);
+            if (dashboardRole is null)
+                return Results.BadRequest(new { error = "Dashboard role must be Admin or Read Only." });
+
+            ProxyUser user = new()
+            {
+                Name = write.Name.Trim(),
+                Email = write.Email?.Trim() ?? string.Empty,
+                CreatedUtc = DateTime.UtcNow,
+                IsEnabled = write.IsEnabled ?? true,
+                DashboardLoginEnabled = write.DashboardLoginEnabled ?? false,
+                DashboardUsername = write.DashboardUsername?.Trim() ?? string.Empty,
+                DashboardRole = dashboardRole,
+            };
+            if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
+                return Results.BadRequest(new { error = credentialError });
+
             try
             {
-                ProxyUser user = new()
-                {
-                    Name = write.Name.Trim(),
-                    Email = write.Email?.Trim() ?? string.Empty,
-                    CreatedUtc = DateTime.UtcNow,
-                    IsEnabled = write.IsEnabled ?? true,
-                };
-
                 lock (Sync)
                 {
+                    if (!ValidateDashboardLogin(user, controller.Database.LoadProxyUsers(), null, out credentialError))
+                        return Results.BadRequest(new { error = credentialError });
                     controller.Database.InsertProxyUser(user);
                     controller.Access.InvalidateCache();
                 }
 
                 return Results.Json(UserView(user, []));
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                return Results.Conflict(new { error = "That dashboard username is already in use." });
             }
             catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
             {
@@ -77,11 +93,28 @@ internal static partial class DashboardEndpoints
                     if (write.Name is not null) user.Name = write.Name.Trim();
                     if (write.Email is not null) user.Email = write.Email.Trim();
                     if (write.IsEnabled is { } enabled) user.IsEnabled = enabled;
+                    if (write.DashboardUsername is not null) user.DashboardUsername = write.DashboardUsername.Trim();
+                    if (write.DashboardLoginEnabled is { } loginEnabled) user.DashboardLoginEnabled = loginEnabled;
+                    if (write.DashboardRole is not null)
+                    {
+                        string? dashboardRole = DashboardAuth.NormalizeRole(write.DashboardRole);
+                        if (dashboardRole is null)
+                            return Results.BadRequest(new { error = "Dashboard role must be Admin or Read Only." });
+                        user.DashboardRole = dashboardRole;
+                    }
+                    if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
+                        return Results.BadRequest(new { error = credentialError });
+                    if (!ValidateDashboardLogin(user, controller.Database.LoadProxyUsers(), id, out credentialError))
+                        return Results.BadRequest(new { error = credentialError });
 
                     controller.Database.UpdateProxyUser(user);
                     controller.Access.InvalidateCache();
                     return Results.Json(UserView(user, controller.Database.LoadProxyApiKeys().Where(k => k.UserId == id)));
                 }
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+            {
+                return Results.Conflict(new { error = "That dashboard username is already in use." });
             }
             catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
             {
@@ -202,8 +235,52 @@ internal static partial class DashboardEndpoints
         email = user.Email,
         createdUtc = user.CreatedUtc,
         isEnabled = user.IsEnabled,
+        dashboardLoginEnabled = user.DashboardLoginEnabled,
+        dashboardUsername = user.DashboardUsername,
+        dashboardRole = user.DashboardRole,
+        hasDashboardPassword = !string.IsNullOrEmpty(user.DashboardPasswordHash),
         keys = keys.Select(KeyView).ToList(),
     };
+
+    private static bool TryConfigureDashboardPassword(ProxyUser user, string? password, out string? error)
+    {
+        error = null;
+        if (password is null)
+            return true;
+        if (password.Length < 12 || password.Length > 1024)
+        {
+            error = "Dashboard passwords must be between 12 and 1024 characters.";
+            return false;
+        }
+
+        user.DashboardPasswordHash = DashboardPasswords.Hash(user, password);
+        return true;
+    }
+
+    private static bool ValidateDashboardLogin(ProxyUser user, IEnumerable<ProxyUser> users, int? exceptId, out string? error)
+    {
+        error = null;
+        if (!user.DashboardLoginEnabled)
+            return true;
+        if (user.DashboardUsername.Length is < 3 or > 128)
+        {
+            error = "Dashboard usernames must be between 3 and 128 characters.";
+            return false;
+        }
+        if (string.IsNullOrEmpty(user.DashboardPasswordHash))
+        {
+            error = "Set a dashboard password before enabling this login.";
+            return false;
+        }
+        if (users.Any(existing => existing.Id != exceptId
+            && existing.DashboardLoginEnabled
+            && string.Equals(existing.DashboardUsername, user.DashboardUsername, StringComparison.OrdinalIgnoreCase)))
+        {
+            error = "That dashboard username is already in use.";
+            return false;
+        }
+        return true;
+    }
 
     // Metadata only: prefix is a short non-secret fragment; hash and plaintext never appear.
     private static object KeyView(ProxyApiKey key) => new

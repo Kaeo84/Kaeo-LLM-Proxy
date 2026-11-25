@@ -1,7 +1,9 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Security.Claims;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Infrastructure;
 using Microsoft.AspNetCore.Http;
 
 namespace Kaeo.LlmProxy.Web;
@@ -26,8 +28,8 @@ internal static class DashboardAuth
         => !IsLoopbackAddress(settings.ListenAddress) || settings.RequireApiKey
             || !string.IsNullOrWhiteSpace(settings.ReadOnlyApiKey);
 
-    public static string AuthMode(WebDashboardSettings settings)
-        => RequiresKey(settings) ? "apiKey" : "open";
+    public static string AuthMode(WebDashboardSettings settings, bool dashboardLoginsEnabled = false)
+        => dashboardLoginsEnabled ? "login" : RequiresKey(settings) ? "apiKey" : "open";
 
     public static bool IsAuthorized(HttpContext context, WebDashboardSettings settings, out string? error)
     {
@@ -58,14 +60,43 @@ internal static class DashboardAuth
     }
 
     internal const string RoleItemKey = "Kaeo.DashboardRole";
+    internal const string UserNameItemKey = "Kaeo.DashboardUsername";
+    internal const string PasswordHashClaim = "Kaeo.DashboardPasswordHash";
     internal const string AdminRole = "admin";
     internal const string ReadOnlyRole = "readOnly";
 
-    public static bool TryAuthorize(HttpContext context, WebDashboardSettings settings, out string? error)
+    public static string? NormalizeRole(string? role)
+    {
+        if (string.Equals(role, AdminRole, StringComparison.OrdinalIgnoreCase))
+            return AdminRole;
+        if (string.Equals(role, ReadOnlyRole, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(role, "readonly", StringComparison.OrdinalIgnoreCase))
+            return ReadOnlyRole;
+        return null;
+    }
+
+    public static bool TryAuthorize(HttpContext context, WebDashboardSettings settings, AppDatabase database, bool loginEnabled, out string? error)
     {
         error = null;
+        if (context.User.Identity?.IsAuthenticated == true
+            && int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int userId))
+        {
+            ProxyUser? user = database.FindProxyUser(userId);
+            string? claimedPasswordHash = context.User.FindFirstValue(PasswordHashClaim);
+            string? role = user is not null && user.IsEnabled && user.DashboardLoginEnabled
+                && string.Equals(claimedPasswordHash, user.DashboardPasswordHash, StringComparison.Ordinal)
+                ? NormalizeRole(user.DashboardRole)
+                : null;
+            if (user is not null && role is not null)
+            {
+                context.Items[RoleItemKey] = role;
+                context.Items[UserNameItemKey] = user.DashboardUsername;
+                return true;
+            }
+        }
+
         string? token = ExtractToken(context.Request);
-        if (!RequiresKey(settings))
+        if (!loginEnabled && !RequiresKey(settings))
         {
             context.Items[RoleItemKey] = AdminRole;
             return true;
@@ -73,7 +104,9 @@ internal static class DashboardAuth
 
         if (string.IsNullOrWhiteSpace(token))
         {
-            error = "A dashboard API key is required. Enter the administrator or read-only key.";
+            error = loginEnabled
+                ? "Sign in with a dashboard username and password, or provide a configured dashboard API key."
+                : "A dashboard API key is required. Enter the administrator or read-only key.";
             return false;
         }
 
@@ -97,14 +130,21 @@ internal static class DashboardAuth
             return true;
         }
 
-        error = "The supplied dashboard API key is not valid.";
+        error = "The supplied dashboard credential is not valid.";
         return false;
     }
 
+    public static bool IsAuthenticationEndpoint(HttpRequest request)
+        => request.Path.Equals("/api/auth/status", StringComparison.OrdinalIgnoreCase)
+            || request.Path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase)
+            || request.Path.Equals("/api/auth/logout", StringComparison.OrdinalIgnoreCase);
+
     public static bool IsReadOnlyRequestAllowed(HttpRequest request)
-        => HttpMethods.IsGet(request.Method)
-            && (request.Path.Equals("/api/auth/me", StringComparison.OrdinalIgnoreCase)
-                || request.Path.Equals("/api/logs", StringComparison.OrdinalIgnoreCase));
+        => (HttpMethods.IsGet(request.Method)
+                && (request.Path.Equals("/api/auth/me", StringComparison.OrdinalIgnoreCase)
+                    || request.Path.Equals("/api/logs", StringComparison.OrdinalIgnoreCase)))
+            || (HttpMethods.IsPost(request.Method)
+                && request.Path.Equals("/api/auth/logout", StringComparison.OrdinalIgnoreCase));
 
     private static bool Matches(string token, string? expected)
     {

@@ -21,6 +21,129 @@ namespace Kaeo.LlmProxy.Tests.Web;
 public sealed class WebUsersEndpointTests
 {
     [Fact]
+    public async Task DashboardLogin_UsesHashedPasswordAndCookieSession_AndCanLogout()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "correct horse battery";
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Dashboard Admin",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "admin.person",
+            dashboardPassword = password,
+            dashboardRole = "admin",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        string userJson = await created.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(password, userJson);
+        Assert.DoesNotContain("dashboardPasswordHash", userJson);
+        using JsonDocument userDoc = JsonDocument.Parse(userJson);
+        Assert.True(userDoc.RootElement.GetProperty("hasDashboardPassword").GetBoolean());
+        Assert.Equal("admin", userDoc.RootElement.GetProperty("dashboardRole").GetString());
+
+        using JsonDocument status = JsonDocument.Parse(await (await b.Client.GetAsync("/api/auth/status")).Content.ReadAsStringAsync());
+        Assert.True(status.RootElement.GetProperty("loginEnabled").GetBoolean());
+        Assert.Equal(HttpStatusCode.Unauthorized, (await b.Client.GetAsync("/api/settings")).StatusCode);
+
+        HttpResponseMessage wrongPassword = await b.Client.PostAsJsonAsync("/api/auth/login",
+            new { username = "admin.person", password = "incorrect password" });
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongPassword.StatusCode);
+
+        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+            new { username = "ADMIN.PERSON", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage identityRequest = new(HttpMethod.Get, "/api/auth/me");
+        identityRequest.Headers.Add("Cookie", cookie);
+        HttpResponseMessage identity = await b.Client.SendAsync(identityRequest);
+        Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
+        using JsonDocument identityDoc = JsonDocument.Parse(await identity.Content.ReadAsStringAsync());
+        Assert.Equal("admin", identityDoc.RootElement.GetProperty("role").GetString());
+        Assert.Equal("admin.person", identityDoc.RootElement.GetProperty("username").GetString());
+
+        using HttpRequestMessage logoutRequest = new(HttpMethod.Post, "/api/auth/logout");
+        logoutRequest.Headers.Add("Cookie", cookie);
+        HttpResponseMessage logout = await b.Client.SendAsync(logoutRequest);
+        Assert.Equal(HttpStatusCode.OK, logout.StatusCode);
+        Assert.Contains(logout.Headers.GetValues("Set-Cookie"), value => value.Contains("expires=", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DashboardLogin_RequiresStrongPasswordAndUniqueUsername()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage weakPassword = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Weak",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "weak-user",
+            dashboardPassword = "too-short",
+            dashboardRole = "admin",
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, weakPassword.StatusCode);
+
+        HttpResponseMessage first = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "First",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "unique-user",
+            dashboardPassword = "long enough password",
+            dashboardRole = "admin",
+        });
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+            new { username = "unique-user", password = "long enough password" });
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+        using HttpRequestMessage duplicateRequest = new(HttpMethod.Post, "/api/users")
+        {
+            Content = JsonContent.Create(new
+            {
+                name = "Duplicate",
+                dashboardLoginEnabled = true,
+                dashboardUsername = "UNIQUE-USER",
+                dashboardPassword = "another long password",
+                dashboardRole = "readOnly",
+            }),
+        };
+        duplicateRequest.Headers.Add("Cookie", cookie);
+        HttpResponseMessage duplicate = await b.Client.SendAsync(duplicateRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
+    }
+
+    [Fact]
+    public async Task DashboardLogin_ReadOnlyRoleCanReadLogsButCannotReadSettings()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "read only password";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Log Reader",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "logs",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        HttpResponseMessage login = await b.Client.PostAsJsonAsync("/api/auth/login",
+            new { username = "logs", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage logsRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
+        logsRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.SendAsync(logsRequest)).StatusCode);
+
+        using HttpRequestMessage settingsRequest = new(HttpMethod.Get, "/api/settings");
+        settingsRequest.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.Forbidden, (await b.Client.SendAsync(settingsRequest)).StatusCode);
+    }
+
+    [Fact]
     public async Task Users_CreateListUpdateDelete_RoundTrip()
     {
         await using Bundle b = await CreateBundleAsync();

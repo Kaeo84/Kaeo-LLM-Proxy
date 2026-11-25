@@ -70,6 +70,16 @@ internal sealed class UserWrite
     public string? Name { get; set; }
     public string? Email { get; set; }
     public bool? IsEnabled { get; set; }
+    public bool? DashboardLoginEnabled { get; set; }
+    public string? DashboardUsername { get; set; }
+    public string? DashboardPassword { get; set; }
+    public string? DashboardRole { get; set; }
+}
+
+internal sealed class DashboardLoginWrite
+{
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
 }
 
 /// <summary>

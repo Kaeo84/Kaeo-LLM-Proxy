@@ -113,12 +113,21 @@ To allow connections from other machines on your network:
 
 ## Web Dashboard Access
 
-The web dashboard uses the configured `WebDashboard.ApiKey` as the **administrator key**. An
-optional `WebDashboard.ReadOnlyApiKey` grants **log access only**: it can read `/api/logs` but
-cannot view settings, credentials, models, users, modules, or control the proxy. Setting the
-read-only key also enables dashboard authentication on loopback. To require the administrator key
-on loopback without a read-only key, enable `WebDashboard.RequireApiKey`; non-loopback bindings
-always require authentication. Configure both keys before
+The web dashboard can use optional username/password logins configured per user in the **Users**
+tab. Each login is assigned **Admin** (full dashboard access) or **Read Only** (request logs only).
+Passwords are stored as hashes; dashboard login uses a protected browser session cookie. Enabling
+any dashboard login requires sign-in for dashboard API access. Existing dashboard API keys remain
+available as a compatibility and recovery option.
+
+Dashboard roles do not control model access. Model clients authenticate separately with each user's
+proxy API keys; each key's allowed-model list is enforced by the proxy. A Read Only dashboard login
+can still use models through a separately configured proxy API key.
+
+The configured `WebDashboard.ApiKey` remains the **administrator API key**. An optional
+`WebDashboard.ReadOnlyApiKey` grants **log access only** to the dashboard. Setting it enables
+dashboard authentication on loopback. To require the administrator key on loopback without a
+read-only key, enable `WebDashboard.RequireApiKey`; non-loopback bindings always require
+authentication. Configure either login or API-key access before
 sharing the dashboard. Keys are sent using `X-Dashboard-Api-Key` or Bearer authorization. Do not
 send dashboard keys over untrusted HTTP networks; use HTTPS or terminate TLS at a trusted proxy.
 
