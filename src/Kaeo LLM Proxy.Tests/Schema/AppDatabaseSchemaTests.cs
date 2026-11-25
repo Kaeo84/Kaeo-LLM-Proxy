@@ -94,6 +94,47 @@ public class AppDatabaseSchemaTests
         Assert.Contains("allow_multiple_instances_v2", columns);
     }
 
+    [Fact]
+    public void RequestTablesBaselineCarryUserIdForUsageAttribution()
+    {
+        string path = NewDatabasePath();
+
+        using AppDatabase database = OpenDatabase(path);
+
+        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            Assert.Contains("user_id", ReadColumnNames(path, table));
+    }
+
+    [Fact]
+    public void RequestTables_LegacyWithoutUserId_AreReconciledOnOpen()
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.Insert(new RequestLog { Model = "legacy", PromptTokens = 5, CompletionTokens = 2, TotalTokens = 7 });
+        }
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = $"ALTER TABLE {table} DROP COLUMN user_id;";
+                command.ExecuteNonQuery();
+            }
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            Assert.Contains("user_id", ReadColumnNames(path, table));
+
+        // Pre-attribution rows survive the upgrade and read back unattributed.
+        RequestLog legacy = database.LoadRecent(1).Single();
+        Assert.Null(legacy.UserId);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

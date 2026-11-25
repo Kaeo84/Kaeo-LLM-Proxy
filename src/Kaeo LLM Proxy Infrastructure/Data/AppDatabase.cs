@@ -241,7 +241,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address,
                     user_agent,
                     request_headers,
-                    response_headers
+                    response_headers,
+                    user_id
                 )
                 VALUES (
                     $timestampUtc,
@@ -275,7 +276,8 @@ internal sealed class AppDatabase : IDisposable
                     $clientAddress,
                     $userAgent,
                     $requestHeaders,
-                    $responseHeaders
+                    $responseHeaders,
+                    $userId
                 );
                 """;
 
@@ -955,6 +957,64 @@ internal sealed class AppDatabase : IDisposable
     }
 
     /// <summary>
+    /// Aggregates token-bearing proxy requests into (local day, model, user) rows for the
+    /// dashboard Usage view. The range is UTC inclusive/exclusive; days are server-local calendar
+    /// days so the grouping matches the timestamps shown in the GUI. Rows where no tokens were
+    /// reported at all are excluded — usage means token consumption, and zero-token probes would
+    /// otherwise inflate every request count. <paramref name="userId"/> narrows to one user;
+    /// null aggregates everyone (including unattributed rows).
+    /// </summary>
+    public IReadOnlyList<TokenUsageRow> QueryTokenUsage(DateTime fromUtcInclusive, DateTime toUtcExclusive, int? userId = null)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    date(timestamp_utc, 'localtime') AS day,
+                    model,
+                    user_id,
+                    COUNT(*),
+                    SUM(prompt_tokens),
+                    SUM(completion_tokens),
+                    SUM(CASE WHEN total_tokens > 0 THEN total_tokens ELSE prompt_tokens + completion_tokens END),
+                    SUM(cached_prompt_tokens),
+                    SUM(reasoning_tokens)
+                FROM requests
+                WHERE timestamp_utc >= $from AND timestamp_utc < $to
+                    AND (prompt_tokens > 0 OR completion_tokens > 0 OR total_tokens > 0)
+                    AND ($userId IS NULL OR user_id = $userId)
+                GROUP BY day, model, user_id
+                ORDER BY day;
+                """;
+            // "O"-format UTC strings are fixed-length, so a lexicographic range is a time range.
+            command.Parameters.AddWithValue("$from", ToUtcText(fromUtcInclusive));
+            command.Parameters.AddWithValue("$to", ToUtcText(toUtcExclusive));
+            command.Parameters.AddWithValue("$userId", userId.HasValue ? userId.Value : DBNull.Value);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<TokenUsageRow> rows = [];
+            while (reader.Read())
+            {
+                rows.Add(new TokenUsageRow(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetInt32(2),
+                    reader.GetInt32(3),
+                    reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.GetInt64(6),
+                    reader.GetInt64(7),
+                    reader.GetInt64(8)));
+            }
+
+            return rows;
+        }
+    }
+
+    /// <summary>
     /// Loads up to <paramref name="count"/> recent entries from the active database, oldest first
     /// (so callers can enqueue them in chronological order). Used to seed the in-memory queue on
     /// startup.
@@ -1291,7 +1351,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address TEXT NULL,
                     user_agent TEXT NULL,
                     request_headers TEXT NULL,
-                    response_headers TEXT NULL
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1331,7 +1392,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address TEXT NULL,
                     user_agent TEXT NULL,
                     request_headers TEXT NULL,
-                    response_headers TEXT NULL
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1369,7 +1431,8 @@ internal sealed class AppDatabase : IDisposable
                                     client_address TEXT NULL,
                                     user_agent TEXT NULL,
                                     request_headers TEXT NULL,
-                                    response_headers TEXT NULL
+                                    response_headers TEXT NULL,
+                                    user_id INTEGER NULL
                                 );
 
                                 CREATE INDEX IF NOT EXISTS idx_non_proxied_requests_timestamp_utc ON non_proxied_requests(timestamp_utc);
@@ -1611,6 +1674,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("requests", "user_agent", "TEXT NULL"),
                                 ("requests", "request_headers", "TEXT NULL"),
                                 ("requests", "response_headers", "TEXT NULL"),
+                                ("requests", "user_id", "INTEGER NULL"),
 
                                 // ── mcp_requests: the same log schema ─────────────────────────
                                 ("mcp_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
@@ -1645,6 +1709,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("mcp_requests", "user_agent", "TEXT NULL"),
                                 ("mcp_requests", "request_headers", "TEXT NULL"),
                                 ("mcp_requests", "response_headers", "TEXT NULL"),
+                                ("mcp_requests", "user_id", "INTEGER NULL"),
 
                                 // ── non_proxied_requests ──────────────────────────────────────
                                 ("non_proxied_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
@@ -1679,6 +1744,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("non_proxied_requests", "user_agent", "TEXT NULL"),
                                 ("non_proxied_requests", "request_headers", "TEXT NULL"),
                                 ("non_proxied_requests", "response_headers", "TEXT NULL"),
+                                ("non_proxied_requests", "user_id", "INTEGER NULL"),
 
                                 // ── model_mappings ────────────────────────────────────────────
                                 ("model_mappings", "id", "INTEGER NOT NULL DEFAULT 0"),
@@ -2066,6 +2132,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$userAgent", DbValue(entry.UserAgent));
         command.Parameters.AddWithValue("$requestHeaders", DbValue(entry.RequestHeaders));
         command.Parameters.AddWithValue("$responseHeaders", DbValue(entry.ResponseHeaders));
+        command.Parameters.AddWithValue("$userId", entry.UserId.HasValue ? entry.UserId.Value : DBNull.Value);
     }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)

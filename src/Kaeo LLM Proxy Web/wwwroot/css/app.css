@@ -286,3 +286,31 @@ fieldset.group legend { font-weight: 700; padding: 0 6px; }
 .login-card form { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
 .login-card button[type="submit"] { width: 100%; margin-top: 4px; }
 .login-note { margin-top: 14px; }
+
+/* ---- usage tab ---- */
+.usage-chart {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin: 12px 0 4px;
+    overflow-x: auto;
+}
+.usage-chart svg { display: block; max-width: 100%; }
+.usage-grid { stroke: var(--border); stroke-width: 1; }
+.usage-axis { fill: var(--fg-muted); font-size: 11px; }
+.usage-bar { stroke: var(--bg-panel); stroke-width: .5; }
+.usage-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 2px 12px; }
+.usage-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.usage-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.usage-card .usage-big { font-size: 26px; font-weight: 600; }
+.usage-share-col { width: 22%; }
+.usage-share { background: var(--bg-inset); border-radius: 4px; height: 12px; overflow: hidden; }
+.usage-share-fill { background: var(--accent); height: 100%; }
+.usage-day-row { cursor: pointer; }
+.usage-day-row:hover { background: var(--row-hover); }
+.usage-caret { width: 22px; color: var(--fg-muted); }
+.usage-day-detail > td { background: var(--bg-inset); padding: 8px 12px 12px 34px; }
+.usage-model-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.usage-model-table th, .usage-model-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.usage-model-table th.num, .usage-model-table td.num { text-align: right; }

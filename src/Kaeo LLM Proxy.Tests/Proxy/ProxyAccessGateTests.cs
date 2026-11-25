@@ -7,6 +7,7 @@ using Kaeo.LlmProxy.Infrastructure;
 using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Services.Mcp;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace Kaeo.LlmProxy.Tests;
@@ -311,6 +312,38 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
         string key = CreateKey();
         HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Post, "/api/chat", key, ChatBody("beta")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ValidKey_ChatLogIsAttributedToTheKeysUser()
+    {
+        string key = CreateKey();
+        ProxyUser user = _database.LoadProxyUsers().Single(u => u.Name == "Tester");
+        HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Post, "/api/chat", key, ChatBody("alpha")));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // The stats writer persists asynchronously; poll briefly for the attributed row.
+        long? userId = null;
+        bool found = false;
+        for (int attempt = 0; attempt < 50 && !found; attempt++)
+        {
+            using (SqliteConnection connection = new($"Data Source={_dbPath}"))
+            {
+                await connection.OpenAsync();
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = "SELECT user_id FROM requests ORDER BY id DESC LIMIT 1;";
+                object? result = await command.ExecuteScalarAsync();
+                if (result is not null)
+                {
+                    found = true;
+                    userId = result is DBNull ? null : Convert.ToInt64(result);
+                }
+            }
+            if (!found) await Task.Delay(100);
+        }
+
+        Assert.True(found, "The chat request was never persisted.");
+        Assert.Equal(user.Id, userId);
     }
 
     private static int GetFreePort()

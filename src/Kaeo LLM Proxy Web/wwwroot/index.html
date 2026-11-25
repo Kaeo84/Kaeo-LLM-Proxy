@@ -12,6 +12,7 @@
         <nav id="tabs">
             <a href="#dashboard" data-tab="dashboard">Dashboard</a>
             <a href="#requests" data-tab="requests">Requests</a>
+            <a href="#usage" data-tab="usage">Usage</a>
             <a href="#models" data-tab="models">Models</a>
             <a href="#credentials" data-tab="credentials">Credentials</a>
             <a href="#users" data-tab="users">Users</a>
@@ -56,6 +57,53 @@
                     <tbody></tbody>
                 </table>
             </div>
+        </section>
+
+        <section id="tab-usage" class="tab">
+            <div class="toolbar">
+                <label>Period
+                    <select id="usage-period">
+                        <option value="thisMonth">This month</option>
+                        <option value="lastMonth">Last month</option>
+                        <option value="thisWeek">This week</option>
+                        <option value="lastWeek">Last week</option>
+                        <option value="last30">Last 30 days</option>
+                        <option value="last90">Last 90 days</option>
+                    </select>
+                </label>
+                <label>Group by
+                    <select id="usage-group">
+                        <option value="day">Day</option>
+                        <option value="week">Week</option>
+                        <option value="month">Month</option>
+                    </select>
+                </label>
+                <label>Model
+                    <select id="usage-model"><option value="">All models</option></select>
+                </label>
+                <label id="usage-user-wrap">User
+                    <select id="usage-user"><option value="all">All users</option></select>
+                </label>
+                <button id="btn-refresh-usage" type="button">Refresh</button>
+                <span id="usage-range" class="muted"></span>
+            </div>
+            <div id="usage-summary" class="cards"></div>
+            <div id="usage-chart" class="usage-chart"></div>
+            <div id="usage-legend" class="usage-legend"></div>
+            <div id="usage-byuser-wrap">
+                <h2>Usage by user</h2>
+                <div id="usage-byuser"></div>
+            </div>
+            <h2>By day</h2>
+            <div class="table-wrap">
+                <table id="usage-day-table">
+                    <thead>
+                        <tr><th></th><th>Day</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p class="muted">Click a day to expand its per-model breakdown. Counts cover model requests that reported token usage; days are local time. Requests made without an API key appear as &ldquo;Unattributed&rdquo;.</p>
         </section>
 
         <section id="tab-models" class="tab">

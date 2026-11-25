@@ -117,8 +117,8 @@ The web dashboard is **login-only by default**: every page and dashboard API cal
 sign-in page. Dashboard accounts are configured per user in the **Users** tab (web or Windows app)
 with a username, password, and role:
 
-- **Admin** — full dashboard access (settings, mappings, users, modules, logs, everything).
-- **Read Only** — request logs only.
+- **Admin** — full dashboard access (settings, mappings, users, modules, logs, usage, everything).
+- **Read Only** — request logs and their own token usage.
 
 Passwords are stored as hashes; signing in issues a protected browser session cookie. Disabling
 a user, turning off their dashboard login, or changing their password revokes live sessions
@@ -139,6 +139,22 @@ credentials and session cookies are not sent over untrusted HTTP networks.
 dashboard group; web: Settings → Web dashboard) turns the sign-in requirement off. It applies
 immediately, and while it is off **anyone who can reach the dashboard has full Admin access** —
 only use it on a trusted, isolated network.
+
+## Token Usage (Web Dashboard)
+
+The web dashboard's **Usage** tab reports token consumption from the request-log database:
+
+- **Read Only** users see their own usage only (matched by the API key that made each request).
+- **Admin** users see everyone's usage and can scope the view to *All users*, themselves, or any
+  single user, plus a **Usage by user** breakdown with per-user totals and share bars.
+
+Pick a period (this/last month, this/last week, last 30/90 days), group the stacked chart by
+**day / week / month**, and optionally filter to one model. The **By day** table expands each row
+into per-model detail (requests, prompt, completion, total, cached prompt, and reasoning tokens).
+
+Only requests that reported tokens are counted — zero-token probes are excluded. Requests made
+without an API key (or before attribution existed) appear as **Unattributed** in the admin
+by-user view. Days are grouped in the server's local time zone.
 
 ## Usage
 

@@ -169,15 +169,15 @@
         $('#topbar').removeClass('read-only');
         if (dashboardRole !== 'readOnly') return;
 
-        $('#tabs a').not('[data-tab="requests"]').hide();
+        $('#tabs a').not('[data-tab="requests"],[data-tab="usage"]').hide();
         $('#topbar').addClass('read-only');
-        $('#tabs a[data-tab="requests"]').show();
-        if (location.hash !== '#requests') location.hash = 'requests';
-        activateTab('requests');
+        $('#tabs a[data-tab="requests"], #tabs a[data-tab="usage"]').show();
+        if (location.hash !== '#requests' && location.hash !== '#usage') location.hash = 'requests';
+        activateTab(location.hash === '#usage' ? 'usage' : 'requests');
     }
 
     function activateTab(name) {
-        if (dashboardRole === 'readOnly' && name !== 'requests') name = 'requests';
+        if (dashboardRole === 'readOnly' && name !== 'requests' && name !== 'usage') name = 'requests';
         if (!loaders[name]) name = 'dashboard';
         activeTab = name;
         $('#tabs a').removeClass('active').filter('[data-tab="' + name + '"]').addClass('active');
@@ -812,6 +812,233 @@
     }
 
     loaders.users = loadUsers;
+
+    // ------------------------------------------------------------------ usage tab
+    var USAGE_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c', '#475569', '#0d9488', '#9333ea'];
+    var usageState = { period: 'thisMonth', group: 'day', model: '', user: 'all' };
+    var usageColorMap = {};
+    var usageColorNext = 0;
+    var lastUsageData = null;
+    var usageResizeTimer = null;
+
+    function usageColor(model) {
+        if (!usageColorMap.hasOwnProperty(model)) {
+            usageColorMap[model] = USAGE_COLORS[usageColorNext % USAGE_COLORS.length];
+            usageColorNext++;
+        }
+        return usageColorMap[model];
+    }
+
+    function usagePad(n) { return (n < 10 ? '0' : '') + n; }
+    function usageDateStr(d) { return d.getFullYear() + '-' + usagePad(d.getMonth() + 1) + '-' + usagePad(d.getDate()); }
+
+    function usageRange(period) {
+        var now = new Date();
+        var y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+        var from, to, dow;
+        if (period === 'lastMonth') { from = new Date(y, m - 1, 1); to = new Date(y, m, 0); }
+        else if (period === 'thisWeek') { dow = (now.getDay() + 6) % 7; from = new Date(y, m, d - dow); to = new Date(y, m, d); }
+        else if (period === 'lastWeek') { dow = (now.getDay() + 6) % 7; from = new Date(y, m, d - dow - 7); to = new Date(y, m, d - dow - 1); }
+        else if (period === 'last30') { from = new Date(y, m, d - 29); to = new Date(y, m, d); }
+        else if (period === 'last90') { from = new Date(y, m, d - 89); to = new Date(y, m, d); }
+        else { from = new Date(y, m, 1); to = new Date(y, m, d); }
+        return { from: usageDateStr(from), to: usageDateStr(to) };
+    }
+
+    function loadUsage() {
+        var range = usageRange(usageState.period);
+        var url = '/api/usage?from=' + range.from + '&to=' + range.to + '&groupBy=' + usageState.group;
+        if (usageState.model) url += '&model=' + encodeURIComponent(usageState.model);
+        if (dashboardRole !== 'readOnly' && usageState.user) url += '&userId=' + encodeURIComponent(usageState.user);
+        api('GET', url).then(renderUsage).catch(function () { /* toast already shown */ });
+    }
+    loaders.usage = loadUsage;
+
+    function renderUsage(data) {
+        lastUsageData = data;
+        $('#usage-range').text(data.from + ' \u2192 ' + data.to);
+
+        // Rebuild model options only when unfiltered: a filtered response carries just the
+        // selected model and would otherwise collapse the list.
+        var $model = $('#usage-model');
+        if (!usageState.model) {
+            $model.empty().append($('<option>').val('').text('All models'));
+            (data.models || []).forEach(function (m) { $model.append($('<option>').val(m).text(m)); });
+        }
+
+        var isAdmin = dashboardRole !== 'readOnly';
+        $('#usage-user-wrap').toggle(isAdmin);
+        $('#usage-byuser-wrap').toggle(isAdmin);
+        if (isAdmin) {
+            var keepUser = usageState.user || 'all';
+            var $user = $('#usage-user').empty().append($('<option>').val('all').text('All users'));
+            if (currentIdentity && currentIdentity.username)
+                $user.append($('<option>').val('me').text('Me (' + currentIdentity.username + ')'));
+            (data.users || []).forEach(function (u) { $user.append($('<option>').val(String(u.id)).text(u.name)); });
+            $user.val(keepUser);
+            if (!$user.val()) { $user.val('all'); usageState.user = 'all'; }
+        }
+
+        var t = data.totals || {};
+        var $cards = $('#usage-summary').empty();
+        [['Total tokens', t.totalTokens], ['Prompt tokens', t.promptTokens], ['Completion tokens', t.completionTokens], ['Requests', t.requests]].forEach(function (pair) {
+            $cards.append($('<div class="card usage-card">').append($('<h3>').text(pair[0]))
+                .append($('<div class="usage-big">').text(fmt(pair[1] || 0))));
+        });
+
+        renderUsageChart(data);
+        renderUsageLegend(data);
+        if (isAdmin) renderUsageByUser(data);
+        renderUsageDays(data);
+    }
+
+    function svgEl(tag, attrs) {
+        var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (var k in attrs) if (attrs.hasOwnProperty(k)) el.setAttribute(k, attrs[k]);
+        return el;
+    }
+
+    function usageNiceMax(value) {
+        if (value <= 0) return 10;
+        var exp = Math.pow(10, Math.floor(Math.log(value) / Math.LN10));
+        var frac = value / exp;
+        var nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+        return nice * exp;
+    }
+
+    function renderUsageChart(data) {
+        var $wrap = $('#usage-chart').empty();
+        var buckets = data.buckets || [];
+        var width = Math.max($wrap.width() || 800, 320);
+        var height = 260, padL = 64, padR = 12, padT = 12, padB = 34;
+        var plotW = width - padL - padR, plotH = height - padT - padB;
+        var totals = buckets.map(function (b) { return b.totalTokens; }).concat([0]);
+        var max = usageNiceMax(Math.max.apply(null, totals));
+        var svg = svgEl('svg', { width: width, height: height, viewBox: '0 0 ' + width + ' ' + height, role: 'img' });
+
+        var steps = 4, i;
+        for (i = 0; i <= steps; i++) {
+            var gy = padT + plotH - plotH * i / steps;
+            svg.appendChild(svgEl('line', { x1: padL, y1: gy, x2: width - padR, y2: gy, 'class': 'usage-grid' }));
+            var yLabel = svgEl('text', { x: padL - 8, y: gy + 4, 'text-anchor': 'end', 'class': 'usage-axis' });
+            yLabel.textContent = fmt(Math.round(max * i / steps));
+            svg.appendChild(yLabel);
+        }
+
+        var n = buckets.length || 1;
+        var slot = plotW / n;
+        var barW = Math.max(2, Math.min(48, slot * 0.7));
+        var labelStep = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotW / 70))));
+        buckets.forEach(function (b, idx) {
+            var x = padL + slot * idx + (slot - barW) / 2;
+            var yCursor = padT + plotH;
+            (b.byModel || []).forEach(function (m) {
+                var h = max > 0 ? (m.totalTokens / max) * plotH : 0;
+                if (h <= 0) return;
+                yCursor -= h;
+                var rect = svgEl('rect', { x: x, y: yCursor, width: barW, height: h, fill: usageColor(m.model), 'class': 'usage-bar' });
+                var title = svgEl('title', {});
+                title.textContent = b.label + ' \u2014 ' + m.model + ': ' + fmt(m.totalTokens) + ' tokens (' +
+                    fmt(m.promptTokens) + ' prompt / ' + fmt(m.completionTokens) + ' completion)';
+                rect.appendChild(title);
+                svg.appendChild(rect);
+            });
+            if (idx % labelStep === 0) {
+                var xLabel = svgEl('text', { x: padL + slot * idx + slot / 2, y: height - 10, 'text-anchor': 'middle', 'class': 'usage-axis' });
+                xLabel.textContent = b.label;
+                svg.appendChild(xLabel);
+            }
+        });
+
+        if ((data.totals || {}).totalTokens === 0) {
+            var empty = svgEl('text', { x: padL + plotW / 2, y: padT + plotH / 2, 'text-anchor': 'middle', 'class': 'usage-axis' });
+            empty.textContent = 'No token usage in this range';
+            svg.appendChild(empty);
+        }
+        $wrap.append(svg);
+    }
+
+    function renderUsageLegend(data) {
+        var $l = $('#usage-legend').empty();
+        (data.models || []).forEach(function (m) {
+            $l.append($('<span class="usage-legend-item">')
+                .append($('<span class="usage-swatch">').css('background', usageColor(m)))
+                .append($('<span>').text(m)));
+        });
+    }
+
+    function renderUsageByUser(data) {
+        var $wrap = $('#usage-byuser').empty();
+        var list = data.byUser || [];
+        if (!list.length) { $wrap.append($('<p class="muted">').text('No usage in this range.')); return; }
+        var max = Math.max.apply(null, list.map(function (u) { return u.totalTokens; }).concat([1]));
+        var $table = $('<table>').append($('<thead>').append($('<tr>')
+            .append('<th>User</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th><th class="usage-share-col">Share</th>')));
+        var $tbody = $('<tbody>');
+        list.forEach(function (u) {
+            var pct = Math.round(u.totalTokens / max * 100);
+            $tbody.append($('<tr>')
+                .append($('<td>').text(u.name))
+                .append($('<td class="num">').text(fmt(u.requests)))
+                .append($('<td class="num">').text(fmt(u.promptTokens)))
+                .append($('<td class="num">').text(fmt(u.completionTokens)))
+                .append($('<td class="num">').text(fmt(u.totalTokens)))
+                .append($('<td class="usage-share-col">').append($('<div class="usage-share">')
+                    .append($('<div class="usage-share-fill">').css('width', pct + '%')))));
+        });
+        $wrap.append($('<div class="table-wrap">').append($table.append($tbody)));
+    }
+
+    function renderUsageDays(data) {
+        var $tbody = $('#usage-day-table tbody').empty();
+        var days = data.days || [];
+        if (!days.length) {
+            $tbody.append($('<tr>').append($('<td colspan="6" class="muted">').text('No token usage in this range.')));
+            return;
+        }
+        days.forEach(function (d) {
+            var $row = $('<tr class="usage-day-row">')
+                .append($('<td class="usage-caret">').text('\u25b8'))
+                .append($('<td>').text(d.day))
+                .append($('<td class="num">').text(fmt(d.requests)))
+                .append($('<td class="num">').text(fmt(d.promptTokens)))
+                .append($('<td class="num">').text(fmt(d.completionTokens)))
+                .append($('<td class="num">').text(fmt(d.totalTokens)));
+            var $detail = $('<tr class="usage-day-detail hidden">').append($('<td colspan="6">'));
+            var $inner = $('<table class="usage-model-table">').append($('<thead>').append($('<tr>')
+                .append('<th>Model</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th><th>Cached prompt</th><th>Reasoning</th>')));
+            var $innerBody = $('<tbody>');
+            (d.models || []).forEach(function (m) {
+                $innerBody.append($('<tr>')
+                    .append($('<td>').text(m.model))
+                    .append($('<td class="num">').text(fmt(m.requests)))
+                    .append($('<td class="num">').text(fmt(m.promptTokens)))
+                    .append($('<td class="num">').text(fmt(m.completionTokens)))
+                    .append($('<td class="num">').text(fmt(m.totalTokens)))
+                    .append($('<td class="num">').text(fmt(m.cachedPromptTokens)))
+                    .append($('<td class="num">').text(fmt(m.reasoningTokens))));
+            });
+            $detail.find('td').append($inner.append($innerBody));
+            $row.on('click', function () {
+                var wasOpen = !$detail.hasClass('hidden');
+                $detail.toggleClass('hidden', wasOpen);
+                $row.toggleClass('open', !wasOpen);
+                $row.find('.usage-caret').text(wasOpen ? '\u25b8' : '\u25be');
+            });
+            $tbody.append($row).append($detail);
+        });
+    }
+
+    $('#usage-period').on('change', function () { usageState.period = $(this).val(); loadUsage(); });
+    $('#usage-group').on('change', function () { usageState.group = $(this).val(); loadUsage(); });
+    $('#usage-model').on('change', function () { usageState.model = $(this).val() || ''; loadUsage(); });
+    $('#usage-user').on('change', function () { usageState.user = $(this).val() || 'all'; loadUsage(); });
+    $('#btn-refresh-usage').on('click', loadUsage);
+    $(window).on('resize', function () {
+        if (activeTab !== 'usage' || !lastUsageData) return;
+        clearTimeout(usageResizeTimer);
+        usageResizeTimer = setTimeout(function () { renderUsageChart(lastUsageData); }, 150);
+    });
 
     // ------------------------------------------------------------------ settings tab
     var SETTINGS_SCHEMA = [

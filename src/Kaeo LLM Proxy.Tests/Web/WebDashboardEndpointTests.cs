@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -308,6 +309,128 @@ public sealed class WebDashboardEndpointTests
         using HttpRequestMessage revokedRequest = new(HttpMethod.Get, "/api/logs?source=proxy&after=0&limit=1");
         revokedRequest.Headers.Add("Cookie", cookie);
         Assert.Equal(HttpStatusCode.Unauthorized, (await b.Anonymous.SendAsync(revokedRequest)).StatusCode);
+    }
+
+    private static void SeedUsage(AppDatabase database, DateTime timestamp, string model, int? userId,
+        int prompt, int completion, int total) =>
+        database.Insert(new RequestLog
+        {
+            Timestamp = timestamp,
+            Method = "POST",
+            OllamaPath = "/v1/chat/completions",
+            Model = model,
+            StatusCode = 200,
+            Status = RequestStatus.Success,
+            UserId = userId,
+            PromptTokens = prompt,
+            CompletionTokens = completion,
+            TotalTokens = total,
+        });
+
+    private static string DayString(DateTime day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    [Fact]
+    public async Task Usage_ReadOnly_SeesOnlyOwnUsage_EvenWhenAskingForAnotherUser()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "usage reader password";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Usage Reader",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "usage.reader",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int readerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+        ProxyUser admin = b.Database.LoadProxyUsers().Single(u => u.DashboardUsername == DashboardTestSession.AdminUsername);
+
+        DateTime today = DateTime.Today.AddHours(9);
+        SeedUsage(b.Database, today, "m1", readerId, 10, 5, 15);
+        SeedUsage(b.Database, today, "m1", admin.Id, 100, 50, 150);
+        SeedUsage(b.Database, today, "m2", null, 7, 3, 10);
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "usage.reader", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        // The userId parameter must be ignored for read-only sessions: they are pinned to themselves.
+        using HttpRequestMessage request = new(HttpMethod.Get, $"/api/usage?from={DayString(DateTime.Today)}&to={DayString(DateTime.Today)}&userId={admin.Id}");
+        request.Headers.Add("Cookie", cookie);
+        HttpResponseMessage response = await b.Anonymous.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("self", doc.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(15, doc.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+        Assert.Empty(doc.RootElement.GetProperty("users").EnumerateArray());
+        JsonElement byUser = Assert.Single(doc.RootElement.GetProperty("byUser").EnumerateArray());
+        Assert.Equal(readerId, byUser.GetProperty("userId").GetInt32());
+        Assert.Equal(["m1"], doc.RootElement.GetProperty("models").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public async Task Usage_Admin_ScopesByUser_FiltersByModel_AndBucketsByMonth()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new { name = "Model Consumer" });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int consumerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+        ProxyUser admin = b.Database.LoadProxyUsers().Single(u => u.DashboardUsername == DashboardTestSession.AdminUsername);
+
+        DateTime today = DateTime.Today.AddHours(9);
+        DateTime lastMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1).AddMonths(-1).AddHours(9);
+        SeedUsage(b.Database, today, "m1", admin.Id, 100, 50, 150);
+        SeedUsage(b.Database, today, "m2", consumerId, 10, 5, 15);
+        SeedUsage(b.Database, today, "m1", null, 7, 3, 10);
+        SeedUsage(b.Database, lastMonth, "m1", admin.Id, 30, 10, 40);
+
+        // Default range is this month: everyone, including unattributed traffic.
+        using JsonDocument all = JsonDocument.Parse(await b.Client.GetStringAsync("/api/usage"));
+        Assert.Equal("all", all.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(175, all.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+        Assert.Equal(3, all.RootElement.GetProperty("byUser").GetArrayLength());
+        Assert.Contains(all.RootElement.GetProperty("byUser").EnumerateArray(),
+            u => u.GetProperty("name").GetString() == "Unattributed" && u.GetProperty("totalTokens").GetInt64() == 10);
+        Assert.Contains(all.RootElement.GetProperty("users").EnumerateArray(), u => u.GetProperty("id").GetInt32() == consumerId);
+
+        using JsonDocument me = JsonDocument.Parse(await b.Client.GetStringAsync("/api/usage?userId=me"));
+        Assert.Equal("self", me.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(150, me.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+
+        using JsonDocument one = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/usage?userId={consumerId}"));
+        Assert.Equal("user", one.RootElement.GetProperty("scope").GetString());
+        Assert.Equal(15, one.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+
+        using JsonDocument filtered = JsonDocument.Parse(await b.Client.GetStringAsync("/api/usage?model=M1"));
+        Assert.Equal(160, filtered.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+
+        // Two calendar months, empty spans included, oldest first.
+        string url = $"/api/usage?from={DayString(lastMonth.Date)}&to={DayString(DateTime.Today)}&groupBy=month";
+        using JsonDocument monthly = JsonDocument.Parse(await b.Client.GetStringAsync(url));
+        JsonElement[] buckets = monthly.RootElement.GetProperty("buckets").EnumerateArray().ToArray();
+        Assert.Equal(2, buckets.Length);
+        Assert.Equal(lastMonth.ToString("yyyy-MM", CultureInfo.InvariantCulture), buckets[0].GetProperty("key").GetString());
+        Assert.Equal(40, buckets[0].GetProperty("totalTokens").GetInt64());
+        Assert.Equal(175, buckets[1].GetProperty("totalTokens").GetInt64());
+        Assert.Equal(2, monthly.RootElement.GetProperty("days").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Usage_InvalidParameters_Return400()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        string today = DayString(DateTime.Today);
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/usage?from=not-a-date")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync($"/api/usage?from={today}&to=2020-01-01")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/usage?groupBy=year")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/usage?userId=abc")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/usage?from=2020-01-01&to=2021-06-01")).StatusCode);
     }
 
     [Fact]

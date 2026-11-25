@@ -1890,6 +1890,8 @@ internal sealed partial class OllamaProxyHandler(AppSettings settings, Statistic
             {
                 ProxyAccessPrincipal? principal = _access.Authenticate(ExtractClientApiKey(req));
                 _currentPrincipal.Value = principal;
+                // Attribute the request to the key's owner for per-user token usage reporting.
+                log.UserId = principal?.User.Id;
 
                 if (_settings.ProxySecurity.RequireApiKey && principal is null)
                 {

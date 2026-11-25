@@ -30,6 +30,7 @@ internal static partial class DashboardEndpoints
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
         MapLogs(app, controller);
+        MapUsage(app, controller);
         MapStats(app, controller);
         MapMcp(app, controller);
         MapSettings(app, settings, controller);

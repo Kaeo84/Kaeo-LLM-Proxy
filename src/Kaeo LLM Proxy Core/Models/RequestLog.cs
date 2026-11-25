@@ -187,6 +187,13 @@ internal sealed class RequestLog
     public string? UserAgent { get; set; }
 
     /// <summary>
+    /// The user who owns the API key that authenticated this request, for per-user token usage
+    /// reporting. Null when the request carried no known key (open proxy, rejected before the
+    /// access gate) or predates usage attribution.
+    /// </summary>
+    public int? UserId { get; set; }
+
+    /// <summary>
     /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
     /// every log source. This is what makes an otherwise opaque request — an unknown app hitting the
     /// proxy, a probe with no body — diagnosable, since it names the client library, content type,
