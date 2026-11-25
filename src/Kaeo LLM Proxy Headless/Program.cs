@@ -25,8 +25,12 @@ internal static class Program
     private static Mutex? _singleInstanceMutex;
     private static string _crashLogDirectory = AppContext.BaseDirectory;
 
-    private static async Task<int> Main()
+    private static async Task<int> Main(string[] args)
     {
+        // Offline packaging verbs run before any host startup (no settings, DB, or mutex).
+        if (args.Length > 0 && args[0].StartsWith("--module-", StringComparison.OrdinalIgnoreCase))
+            return ModuleCli.Run(args);
+
         // Seed a crash-only logger before anything else can fail; reuse the bootstrap settings so
         // AppSettings.Load only runs once.
         AppSettings settings = InitializeCrashLogger() ?? AppSettings.Load();

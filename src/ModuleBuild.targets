@@ -187,4 +187,47 @@
 	<RemoveDir Directories="$(OutputPath)Modules" />
 	</Target>
 
+	<!-- ═══════════════════════════════════════════════════════════════════
+		 Target for MODULE projects: produce a .kaeomod package from the portable
+		 (net10.0) build output via the headless host's offline packaging CLI.
+		 Unsigned by default; set $(ModuleSigningKey) to a PKCS#8 PEM private key
+		 path to sign. The package lands in bin\{Config}\packages\ (outside the
+		 TFM output folder) so the host-copy globs never pick it up.
+
+		 Runs only when the headless host DLL already exists. On a fresh build the
+		 modules compile before the headless host, so packaging is skipped the first
+		 time (a high-importance message says so); rebuilding the module — or building
+		 the headless host first — produces the package. ContinueOnError keeps a
+		 packaging hiccup from breaking the module build itself.
+		 Set $(PackModuleOnBuild)=false to opt out entirely.
+		 ═══════════════════════════════════════════════════════════════════ -->
+	<Target Name="PackModulePackage"
+			AfterTargets="Build"
+			Condition="'$(IsModuleProject)' == 'true' AND '$(TargetFramework)' == 'net10.0' AND '$(PackModuleOnBuild)' != 'false'">
+
+	<PropertyGroup>
+		<_HeadlessDll>$(MSBuildThisFileDirectory)Kaeo LLM Proxy Headless\bin\$(Configuration)\net10.0\Kaeo LLM Proxy Headless.dll</_HeadlessDll>
+		<_ModulePackageDir>$(OutputPath)..\packages</_ModulePackageDir>
+		<_ModulePackageOut>$(_ModulePackageDir)\$(AssemblyName).kaeomod</_ModulePackageOut>
+		<_ModulePackVerb Condition="'$(ModuleSigningKey)' == ''">--module-pack</_ModulePackVerb>
+		<_ModulePackVerb Condition="'$(ModuleSigningKey)' != ''">--module-sign</_ModulePackVerb>
+		<_ModuleSignArg Condition="'$(ModuleSigningKey)' != ''">--key &quot;$(ModuleSigningKey)&quot;</_ModuleSignArg>
+	</PropertyGroup>
+
+	<Message Importance="High" Condition="!Exists('$(_HeadlessDll)')"
+		Text="ModuleBuild: Skipping .kaeomod packaging for $(AssemblyName) (headless host not built yet). Build the headless host, then rebuild this module to produce the package." />
+
+	<MakeDir Directories="$(_ModulePackageDir)" Condition="Exists('$(_HeadlessDll)')" />
+
+	<!-- The source dir is passed as "$(OutputPath)." — the trailing dot matters: $(OutputPath)
+		 ends with a backslash, and a quoted path ending in \" would be parsed by Windows as an
+		 escaped quote, mangling every following argument. The dot avoids the trailing backslash
+		 and Path.GetFullPath normalizes it away. -->
+	<Exec Condition="Exists('$(_HeadlessDll)')"
+		Command="dotnet &quot;$(_HeadlessDll)&quot; $(_ModulePackVerb) &quot;$(OutputPath).&quot; --entry &quot;$(AssemblyName).dll&quot; --id &quot;$(AssemblyName)&quot; --tfm &quot;$(TargetFramework)&quot; $(_ModuleSignArg) --out &quot;$(_ModulePackageOut)&quot;"
+		ContinueOnError="true"
+		Timeout="120000"
+		IgnoreStandardErrorWarningFormat="true" />
+	</Target>
+
 </Project>

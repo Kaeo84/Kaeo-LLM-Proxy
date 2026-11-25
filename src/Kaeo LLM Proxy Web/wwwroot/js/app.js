@@ -554,11 +554,14 @@
             list.forEach(function (m) {
                 var $card = $('<div class="card">')
                     .append($('<h3>').text(m.name + ' ')
-                        .append($('<span class="pill">').addClass(m.isRunning ? 'ok' : '').text(m.isRunning ? 'running' : 'stopped')));
+                        .append($('<span class="pill">').addClass(m.isRunning ? 'ok' : '').text(m.isRunning ? 'running' : 'stopped'))
+                        .append(' ')
+                        .append(signatureBadge(m)));
                 $card.append(kv('Module ID', m.moduleId))
                     .append(kv('Version', m.version))
                     .append(kv('Enabled', m.isEnabled ? 'yes' : 'no'))
                     .append(kv('Registered', m.registeredUtc ? new Date(m.registeredUtc).toLocaleString() : '—'));
+                if (m.signatureState === 'Signed' && m.signerKeyId) $card.append(kv('Signer key', m.signerKeyId));
                 if (m.lastError) $card.append($('<div class="banner error">').text(m.lastError));
 
                 var $actions = $('<div class="actions">');
@@ -570,6 +573,44 @@
                 $card.append($actions);
                 $cards.append($card);
             });
+        });
+    }
+
+    function signatureBadge(m) {
+        var state = m.signatureState || 'Unsigned';
+        var cls = state === 'Signed' ? 'ok' : (state === 'Invalid' ? 'err' : 'warn');
+        var label = state === 'Signed' ? 'signed' : (state === 'Invalid' ? 'invalid signature' : 'unsigned');
+        return $('<span class="pill">').addClass(cls).text(label);
+    }
+
+    function uploadModulePackage(file) {
+        var form = new FormData();
+        form.append('package', file, file.name);
+        var headers = {};
+        var key = getKey();
+        if (key) headers['X-Dashboard-Api-Key'] = key;
+        toast('Uploading ' + file.name + '…');
+        $.ajax({
+            url: '/api/modules/upload',
+            method: 'POST',
+            headers: headers,
+            data: form,
+            processData: false,
+            contentType: false,
+            dataType: 'text'
+        }).then(function (text) {
+            var result = null;
+            try { result = JSON.parse(text); } catch (e) { /* empty body */ }
+            toast('Module ' + ((result && result.name) || file.name) + ' imported (' +
+                ((result && result.signatureState) || 'Unsigned') + ').');
+            loadModules();
+        }, function (xhr) {
+            if (xhr.status === 401) {
+                setConn('key');
+                promptForKey(function () { uploadModulePackage(file); }, function () { toast(apiError(xhr).message, true); });
+                return;
+            }
+            toast(apiError(xhr).message, true);
         });
     }
 
@@ -823,6 +864,12 @@
         $('#btn-add-credential').on('click', credentialDialog);
         $('#btn-refresh-credentials').on('click', loadCredentials);
         $('#btn-refresh-modules').on('click', loadModules);
+        $('#btn-upload-module').on('click', function () { $('#module-package-input').trigger('click'); });
+        $('#module-package-input').on('change', function () {
+            var file = this.files && this.files[0];
+            this.value = '';
+            if (file) uploadModulePackage(file);
+        });
         $('#btn-save-settings').on('click', saveSettings);
         $('#btn-reload-settings').on('click', loadSettings);
         $('#settings-form').on('submit', function (e) { e.preventDefault(); saveSettings(); });

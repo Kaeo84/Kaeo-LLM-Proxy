@@ -18,6 +18,7 @@ internal sealed class ModuleHost
     private readonly AppSettings _settings;
     private readonly ModuleDatabaseGateway _databaseGateway;
     private readonly ModuleSecretProvider _secretProvider;
+    private readonly ModulePackageLoader _packageLoader;
     private readonly LateBoundActivityLog _activityLog = new();
     private readonly List<LoadedModule> _loadedModules = [];
 
@@ -88,6 +89,8 @@ internal sealed class ModuleHost
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _databaseGateway = new ModuleDatabaseGateway(database);
         _secretProvider = new ModuleSecretProvider(settings);
+        string dataDirectory = Path.GetDirectoryName(database.DatabasePath) ?? AppContext.BaseDirectory;
+        _packageLoader = new ModulePackageLoader(settings, dataDirectory);
     }
 
     /// <summary>
@@ -245,15 +248,32 @@ internal sealed class ModuleHost
             if (!File.Exists(fullPath))
                 throw new FileNotFoundException($"The module file '{fullPath}' does not exist.", fullPath);
 
-            if (_database.FindModuleRegistryByPath(fullPath) is not null)
-                throw new InvalidOperationException($"This module is already registered:\n{fullPath}");
+            // Every import passes through the packaging/policy seam: .kaeomod packages are
+            // verified and extracted first; loose DLLs get the unsigned-policy check.
+            string importPath = fullPath;
+            string signatureState = ModuleSignatureStates.Unsigned;
+            string? signerKeyId = null;
+            if (ModulePackageLoader.IsPackagePath(fullPath))
+            {
+                ModulePackageLoader.PreparedPackage prepared = _packageLoader.PreparePackage(fullPath);
+                importPath = prepared.EntryAssemblyPath;
+                signatureState = prepared.SignatureState;
+                signerKeyId = prepared.SignerKeyId;
+            }
+            else
+            {
+                _packageLoader.CheckLooseAssembly(fullPath);
+            }
 
-            ModuleAssemblyLoadContext loadContext = new(fullPath);
+            if (_database.FindModuleRegistryByPath(importPath) is not null)
+                throw new InvalidOperationException($"This module is already registered:\n{importPath}");
+
+            ModuleAssemblyLoadContext loadContext = new(importPath);
             IKaeoModule module;
             try
             {
-                Assembly assembly = loadContext.LoadFromAssemblyPath(fullPath);
-                module = await CreateModuleBoundedAsync(fullPath, assembly).ConfigureAwait(false);
+                Assembly assembly = loadContext.LoadFromAssemblyPath(importPath);
+                module = await CreateModuleBoundedAsync(importPath, assembly).ConfigureAwait(false);
             }
             catch
             {
@@ -271,12 +291,14 @@ internal sealed class ModuleHost
 
             ModuleRegistryEntry entry = new()
             {
-                AssemblyPath = fullPath,
+                AssemblyPath = importPath,
                 ModuleId = module.Id,
                 Name = module.Name,
                 Version = module.Version,
                 IsEnabled = true,
                 RegisteredUtc = DateTime.UtcNow,
+                SignatureState = signatureState,
+                SignerKeyId = signerKeyId,
             };
 
             try
@@ -321,7 +343,7 @@ internal sealed class ModuleHost
                 throw;
             }
 
-            Log.Information("Imported module {Name} {Version} from {Path}", module.Name, module.Version, fullPath);
+            Log.Information("Imported module {Name} {Version} from {Path} ({SignatureState})", module.Name, module.Version, importPath, signatureState);
             ModulesChanged?.Invoke(this, EventArgs.Empty);
             return entry;
         }
@@ -493,6 +515,10 @@ internal sealed class ModuleHost
         if (!File.Exists(entry.AssemblyPath))
             throw new FileNotFoundException(
                 $"The registered module file no longer exists:\n{entry.AssemblyPath}", entry.AssemblyPath);
+
+        // Re-verify installed packages (payload hashes + signature) and apply the load policy
+        // before the assembly is touched, so post-install tampering or a policy flip blocks load.
+        (entry.SignatureState, entry.SignerKeyId) = _packageLoader.VerifyRegisteredAssembly(entry.AssemblyPath);
 
         ModuleAssemblyLoadContext loadContext = new(entry.AssemblyPath);
         IKaeoModule module;

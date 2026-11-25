@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Modules;
 using Microsoft.Data.Sqlite;
 using Serilog;
 
@@ -1462,7 +1463,9 @@ internal sealed class AppDatabase : IDisposable
                     version TEXT NULL,
                     is_enabled INTEGER NOT NULL DEFAULT 1,
                     registered_utc TEXT NOT NULL,
-                    last_error TEXT NULL
+                    last_error TEXT NULL,
+                    signature_state TEXT NOT NULL DEFAULT 'Unsigned',
+                    signer_key_id TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS mcp_server_settings (
@@ -1736,6 +1739,8 @@ internal sealed class AppDatabase : IDisposable
                                 ("module_registry", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
                                 ("module_registry", "registered_utc", "TEXT NOT NULL DEFAULT ''"),
                                 ("module_registry", "last_error", "TEXT NULL"),
+                                ("module_registry", "signature_state", "TEXT NOT NULL DEFAULT 'Unsigned'"),
+                                ("module_registry", "signer_key_id", "TEXT NULL"),
 
                                 ("mcp_server_settings", "value", "TEXT NOT NULL DEFAULT ''"),
                             ];
@@ -2339,7 +2344,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 FROM module_registry
                 ORDER BY id;
                 """;
@@ -2359,6 +2366,8 @@ internal sealed class AppDatabase : IDisposable
                     IsEnabled = ReadBoolean(reader, 5),
                     RegisteredUtc = ReadUtc(reader, 6),
                     LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    SignatureState = reader.IsDBNull(8) ? ModuleSignatureStates.Unsigned : reader.GetString(8),
+                    SignerKeyId = reader.IsDBNull(9) ? null : reader.GetString(9),
                 });
             }
 
@@ -2383,7 +2392,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 FROM module_registry
                 WHERE assembly_path = $assemblyPath;
                 """;
@@ -2403,6 +2414,8 @@ internal sealed class AppDatabase : IDisposable
                 IsEnabled = ReadBoolean(reader, 5),
                 RegisteredUtc = ReadUtc(reader, 6),
                 LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                SignatureState = reader.IsDBNull(8) ? ModuleSignatureStates.Unsigned : reader.GetString(8),
+                SignerKeyId = reader.IsDBNull(9) ? null : reader.GetString(9),
             };
         }
     }
@@ -2425,7 +2438,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 )
                 VALUES (
                     $assemblyPath,
@@ -2434,7 +2449,9 @@ internal sealed class AppDatabase : IDisposable
                     $version,
                     $isEnabled,
                     $registeredUtc,
-                    $lastError
+                    $lastError,
+                    $signatureState,
+                    $signerKeyId
                 );
                 SELECT last_insert_rowid();
                 """;
@@ -2445,6 +2462,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
             command.Parameters.AddWithValue("$registeredUtc", ToUtcText(entry.RegisteredUtc));
             command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.Parameters.AddWithValue("$signatureState", entry.SignatureState);
+            command.Parameters.AddWithValue("$signerKeyId", DbValue(entry.SignerKeyId));
 
             object? scalar = command.ExecuteScalar();
             entry.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
@@ -2468,7 +2487,9 @@ internal sealed class AppDatabase : IDisposable
                     name = $name,
                     version = $version,
                     is_enabled = $isEnabled,
-                    last_error = $lastError
+                    last_error = $lastError,
+                    signature_state = $signatureState,
+                    signer_key_id = $signerKeyId
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", entry.Id);
@@ -2477,6 +2498,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$version", DbValue(entry.Version));
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
             command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.Parameters.AddWithValue("$signatureState", entry.SignatureState);
+            command.Parameters.AddWithValue("$signerKeyId", DbValue(entry.SignerKeyId));
             command.ExecuteNonQuery();
         }
     }

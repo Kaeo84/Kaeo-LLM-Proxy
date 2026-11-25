@@ -1554,6 +1554,21 @@ internal sealed class AppSettings
     public WebDashboardSettings WebDashboard { get; set; } = new();
 
     /// <summary>
+    /// Module signature enforcement: AllowUnsigned (default), Warn, or RequireSigned. Every
+    /// module load routes through one verification seam, so changing this is config-only.
+    /// Serialized as a string so settings.jsonc stays readable.
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<ModuleLoadPolicy>))]
+    public ModuleLoadPolicy ModuleLoadPolicy { get; set; } = ModuleLoadPolicy.AllowUnsigned;
+
+    /// <summary>
+    /// Public keys trusted to sign module packages (ECDSA P-256). Populate from the
+    /// <c>.pub</c> files produced by <c>--module-keygen</c>. Empty means no signer is trusted;
+    /// signed packages are then refused under RequireSigned.
+    /// </summary>
+    public List<TrustedModuleKey> TrustedModuleKeys { get; set; } = [];
+
+    /// <summary>
     /// SHA-256 hash of the user's passphrase, prefixed with <c>!pwh!</c>.
     /// The hash itself — not the raw passphrase — is used as PBKDF2 input for
     /// encrypting API keys. This avoids storing the raw passphrase on disk while
