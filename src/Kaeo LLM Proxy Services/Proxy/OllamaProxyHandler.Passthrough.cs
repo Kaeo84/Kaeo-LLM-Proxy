@@ -2334,6 +2334,9 @@ partial class OllamaProxyHandler
     ///         separated by a blank line, so that strict Jinja templates (e.g. Qwen3)
     ///         that only allow one system message do not raise an exception.</item>
     ///   <item>Removes a trailing assistant response-prefill message, because some upstreams reject it when thinking mode is enabled.</item>
+        ///   <item>Supplies an empty <c>content</c> on any message that carries a null or absent one, because
+        ///         strict OpenAI-compatible providers (e.g. Qwen Cloud) reject an assistant tool-call turn
+        ///         without it.</item>
     ///   <item>Applies the per-model sampling priorities: <c>Provider</c> drops client-supplied
     ///         <c>temperature</c>/<c>repeat_penalty</c> so hosted providers keep their platform
     ///         values; <c>Proxy</c> overwrites (or injects) the configured proxy values.</item>
@@ -2421,11 +2424,16 @@ partial class OllamaProxyHandler
             bool hasConsecutiveSystemMessages = false;
             bool hasTrailingAssistantPrefill = false;
             bool shouldInjectInstructions = false;
+            bool repairedMessageContent = false;
             if (root.TryGetProperty("messages", out JsonElement messagesEl)
                 && messagesEl.ValueKind == JsonValueKind.Array)
             {
                 List<JsonElement> messages = [.. messagesEl.EnumerateArray()];
                 shouldInjectInstructions = !string.IsNullOrWhiteSpace(injectedInstructions);
+
+                // A client that sends "content": null (or omits it) on an assistant tool-call turn is
+                // legal for OpenAI/llama.cpp but a hard 400 for strict providers such as Qwen Cloud.
+                repairedMessageContent = MessageContentRepair.NeedsRepair(messages);
 
                 int leadingSystem = 0;
                 foreach (JsonElement msg in messages)
@@ -2448,6 +2456,7 @@ partial class OllamaProxyHandler
                 && !hasConsecutiveSystemMessages
                 && !hasTrailingAssistantPrefill
                 && !shouldInjectInstructions
+                && !repairedMessageContent
                 && tempPriority == SamplingPriority.ClientApp
                 && repeatPriority == SamplingPriority.ClientApp
                 && !rewriteReasoningEffort
@@ -2570,7 +2579,7 @@ partial class OllamaProxyHandler
                 }
                 else if (prop.Name.Equals("messages", StringComparison.OrdinalIgnoreCase)
                       && prop.Value.ValueKind == JsonValueKind.Array
-                      && (hasConsecutiveSystemMessages || hasTrailingAssistantPrefill || shouldInjectInstructions))
+                      && (hasConsecutiveSystemMessages || hasTrailingAssistantPrefill || shouldInjectInstructions || repairedMessageContent))
                 {
                     writer.WritePropertyName("messages");
                     writer.WriteStartArray();
@@ -2602,7 +2611,10 @@ partial class OllamaProxyHandler
                         if (hasTrailingAssistantPrefill && i == messages.Count - 1 && IsAssistantResponsePrefill(msg))
                             continue;
 
-                        msg.WriteTo(writer);
+                        if (MessageContentRepair.NeedsRepair(msg))
+                            MessageContentRepair.WriteRepaired(writer, msg);
+                        else
+                            msg.WriteTo(writer);
                     }
 
                     writer.WriteEndArray();
@@ -2654,7 +2666,8 @@ partial class OllamaProxyHandler
                     reasoningFormat,
                     injectedInstructions,
                     hasConsecutiveSystemMessages,
-                    hasTrailingAssistantPrefill);
+                    hasTrailingAssistantPrefill,
+                    repairedMessageContent);
 
             return output;
         }
@@ -2696,7 +2709,8 @@ partial class OllamaProxyHandler
         ReasoningEffortFormat reasoningFormat,
         string? injectedInstructions,
         bool hasConsecutiveSystemMessages,
-        bool hasTrailingAssistantPrefill)
+        bool hasTrailingAssistantPrefill,
+        bool repairedMessageContent)
     {
         // Extract the client's original values for before/after comparison.
         float? clientTemperature = ReadJsonNumber(root, "temperature");
@@ -2723,6 +2737,8 @@ partial class OllamaProxyHandler
             sb.AppendLine("messages: merged consecutive leading system messages into a single system message");
         if (hasTrailingAssistantPrefill)
             sb.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
+        if (repairedMessageContent)
+            sb.AppendLine("messages: added an empty content field to messages that had none (strict upstream compatibility)");
 
         return sb.ToString().TrimEnd();
     }

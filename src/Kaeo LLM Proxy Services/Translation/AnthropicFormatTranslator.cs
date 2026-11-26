@@ -257,10 +257,10 @@ internal static class AnthropicFormatTranslator
                         });
                     }
 
-                    JsonObject assistant = new() { ["role"] = "assistant" };
-                    string text = ConcatTextBlocks(blocks);
-                    if (text.Length > 0)
-                        assistant["content"] = text;
+                    // Content is emitted even when the turn is tool-use only: an Anthropic assistant
+                    // turn may carry no text block at all, and omitting the member is a hard 400 on
+                    // strict OpenAI-compatible providers ("The content field is a required field").
+                    JsonObject assistant = new() { ["role"] = "assistant", ["content"] = ConcatTextBlocks(blocks) };
                     assistant["tool_calls"] = toolCalls;
                     messages.Add(assistant);
                     continue;

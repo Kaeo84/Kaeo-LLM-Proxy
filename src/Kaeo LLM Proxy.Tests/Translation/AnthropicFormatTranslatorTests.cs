@@ -335,7 +335,7 @@ public class AnthropicFormatTranslatorTests
     }
 
     [Fact]
-    public void AnthropicRequest_ToolUseWithoutText_ContentOmitted()
+    public void AnthropicRequest_ToolUseWithoutText_ContentIsEmptyString()
     {
         string anthropic = """
         {"max_tokens":10,"messages":[{"role":"assistant","content":[
@@ -343,7 +343,12 @@ public class AnthropicFormatTranslatorTests
         """;
 
         JsonNode result = Parse(AnthropicFormatTranslator.AnthropicRequestToOpenAi(anthropic, "m", false));
-        Assert.Null(result["messages"]![0]!["content"]);
+
+        // An Anthropic assistant turn may be tool-use only. The member must still be present (empty,
+        // never null and never absent) because strict OpenAI-compatible providers such as Qwen Cloud
+        // reject a message without it: "The content field is a required field".
+        Assert.True(result["messages"]![0]!.AsObject().ContainsKey("content"));
+        Assert.Equal(string.Empty, (string?)result["messages"]![0]!["content"]);
         Assert.Equal("{}", (string)result["messages"]![0]!["tool_calls"]![0]!["function"]!["arguments"]!);
     }
 

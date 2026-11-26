@@ -167,5 +167,6 @@ internal static class RequestPayloadPipeline
         new ReasoningEffortStep(),
         new RewriteModelNameStep(),
         new ComposeMessagesStep(),
+        new MessageContentStep(),
     ];
 }
