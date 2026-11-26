@@ -312,6 +312,36 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Settings_Get_ExposesInstructionSetNamesOnly()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        // The controller replaces Settings.InstructionSets from the database at construction, so
+        // seed the live list afterwards.
+        b.Controller.Settings.InstructionSets.Add(new InstructionSet
+        {
+            Name = "Be Terse",
+            Description = "Short answers",
+            Instructions = "instruction-text-must-not-leak",
+        });
+
+        string body = await b.Client.GetStringAsync("/api/settings");
+        Assert.DoesNotContain("instruction-text-must-not-leak", body);
+
+        using JsonDocument doc = JsonDocument.Parse(body);
+        JsonElement sets = doc.RootElement.GetProperty("instructionSets");
+        JsonElement entry = default;
+        foreach (JsonElement candidate in sets.EnumerateArray())
+        {
+            if (candidate.GetProperty("name").GetString() == "Be Terse")
+                entry = candidate;
+        }
+        Assert.Equal(JsonValueKind.Object, entry.ValueKind);
+        Assert.Equal("Short answers", entry.GetProperty("description").GetString());
+        Assert.False(entry.TryGetProperty("instructions", out _));
+    }
+
+    [Fact]
     public async Task Auth_Anonymous_ApiIs401_AndPagesRedirectToLogin()
     {
         await using Bundle b = await CreateBundleAsync();

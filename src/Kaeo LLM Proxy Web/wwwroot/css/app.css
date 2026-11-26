@@ -102,6 +102,27 @@ h2 { font-size: 15px; margin: 20px 0 8px; }
 .muted { color: var(--fg-muted); font-size: 12px; }
 .hidden { display: none !important; }
 
+/* The dashboard page fills the viewport so a tab's table can stretch to the bottom edge
+   (a horizontal scrollbar parked mid-page looks like a half-finished layout). Tabs scroll
+   themselves vertically when their content is taller than the window. */
+body.dashboard { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body.dashboard #topbar { flex: none; }
+body.dashboard main {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+body.dashboard .tab.active {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
 .toolbar {
     display: flex;
     align-items: center;
@@ -110,6 +131,7 @@ h2 { font-size: 15px; margin: 20px 0 8px; }
     margin-bottom: 12px;
 }
 .toolbar label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.toolbar .toolbar-right { margin-left: auto; }
 
 /* ---- controls ---- */
 button {
@@ -179,14 +201,20 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
+.table-wrap.table-fill { flex: 1 1 auto; min-height: 120px; overflow: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { color: var(--fg-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--row-hover); }
 #log-table tbody tr { cursor: pointer; }
+#mapping-table tbody tr { cursor: pointer; }
+#mapping-table tbody tr.selected,
+#mapping-table tbody tr.selected:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* Upstream model names are clipped to ~48 characters (the JS truncates the text as well) so a
+   long name can never wrap onto a second line and grow the row. */
+td.truncate { max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
-td .row-actions { display: flex; gap: 6px; }
 
 /* ---- forms ---- */
 fieldset.group {

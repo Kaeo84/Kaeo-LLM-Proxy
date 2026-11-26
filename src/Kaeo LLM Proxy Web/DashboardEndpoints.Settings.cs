@@ -81,6 +81,11 @@ internal static partial class DashboardEndpoints
             {
                 requireApiKey = s.ProxySecurity.RequireApiKey,
             },
+            // Read-only convenience for the model editor's instruction-set picker. Names and
+            // descriptions only — the injected instruction text never leaves the app.
+            instructionSets = s.InstructionSets
+                .Select(i => new { name = i.Name, description = i.Description })
+                .ToArray(),
         };
     }
 

@@ -6,7 +6,7 @@
     <title>Kaeo LLM Proxy</title>
     <link rel="stylesheet" href="css/app.css">
 </head>
-<body>
+<body class="dashboard">
     <header id="topbar">
         <div class="brand">Kaeo <span>LLM Proxy</span></div>
         <nav id="tabs">
@@ -46,7 +46,7 @@
                 <button id="btn-clear-logs" type="button">Clear view</button>
                 <span id="log-count" class="muted"></span>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap table-fill">
                 <table id="log-table">
                     <thead>
                         <tr>
@@ -109,14 +109,18 @@
         <section id="tab-models" class="tab">
             <div class="toolbar">
                 <button id="btn-add-mapping" type="button" class="primary">Add model</button>
-                <button id="btn-refresh-mappings" type="button">Refresh</button>
+                <button id="btn-remove-mapping" type="button" disabled>Remove</button>
+                <button id="btn-duplicate-mapping" type="button" disabled>Duplicate</button>
+                <button id="btn-configure-mapping" type="button" disabled>Configure</button>
+                <button id="btn-toggle-mapping" type="button" disabled>Toggle enabled</button>
+                <button id="btn-refresh-mappings" type="button" class="toolbar-right">Refresh</button>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap table-fill">
                 <table id="mapping-table">
                     <thead>
                         <tr>
-                            <th>Enabled</th><th>Proxy name</th><th>Upstream model</th><th>Upstream URL</th>
-                            <th>Type</th><th>Credential</th><th>Hidden</th><th></th>
+                            <th>Enabled</th><th>Proxy name</th><th>Upstream model</th><th>Instruction set</th>
+                            <th>Type</th><th>Credential</th><th>Hidden</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -130,7 +134,7 @@
                 <button id="btn-refresh-credentials" type="button">Refresh</button>
                 <span class="muted">Secrets are write-only &mdash; they are never shown again after saving.</span>
             </div>
-            <div class="table-wrap">
+            <div class="table-wrap table-fill">
                 <table id="credential-table">
                     <thead>
                         <tr><th>Name</th><th>Description</th><th>Username</th><th>Secret stored</th><th></th></tr>

@@ -386,38 +386,125 @@
 
     // ------------------------------------------------------------------ models tab
     var UPSTREAM_TYPES = [[1, 'OpenAI'], [2, 'Ollama'], [3, 'Anthropic'], [0, 'LlamaCpp (legacy)']];
+    var UPSTREAM_MODEL_MAX_CHARS = 48;
 
     function upstreamTypeName(value) {
         for (var i = 0; i < UPSTREAM_TYPES.length; i++) if (UPSTREAM_TYPES[i][0] === value) return UPSTREAM_TYPES[i][1];
         return String(value);
     }
 
+    function truncateText(text, max) {
+        var value = text === null || text === undefined ? '' : String(text);
+        return value.length <= max ? value : value.slice(0, max - 1) + '\u2026';
+    }
+
+    // The grid is a projection of the last /api/mappings response; toolbar actions and the
+    // row click/double-click handlers all resolve the mapping by Id from this cache.
+    var mappingCache = [];
+    var selectedMappingId = null;
+
+    function findMapping(id) {
+        if (id === null || id === undefined) return null;
+        for (var i = 0; i < mappingCache.length; i++) if (mappingCache[i].id === id) return mappingCache[i];
+        return null;
+    }
+
+    function mappingName(m) {
+        return m && m.OllamaName ? m.OllamaName : 'mapping ' + (m ? m.id : '');
+    }
+
+    function updateMappingButtons() {
+        $('#btn-remove-mapping, #btn-duplicate-mapping, #btn-configure-mapping, #btn-toggle-mapping')
+            .prop('disabled', !findMapping(selectedMappingId));
+    }
+
+    function selectMapping(id) {
+        selectedMappingId = findMapping(id) ? id : null;
+        $('#mapping-table tbody tr[data-id]').each(function () {
+            $(this).toggleClass('selected', Number($(this).attr('data-id')) === selectedMappingId);
+        });
+        updateMappingButtons();
+    }
+
     function loadMappings() {
         api('GET', '/api/mappings').then(function (list) {
+            mappingCache = list || [];
+            if (!findMapping(selectedMappingId)) selectedMappingId = null;
+
             var $tbody = $('#mapping-table tbody').empty();
-            if (!list.length) {
-                $tbody.append($('<tr>').append($('<td colspan="8" class="muted">').text('No model mappings yet.')));
+            if (!mappingCache.length) {
+                $tbody.append($('<tr>').append($('<td colspan="7" class="muted">').text('No model mappings yet.')));
+                updateMappingButtons();
                 return;
             }
-            list.forEach(function (m) {
-                var $actions = $('<div class="row-actions">');
-                $('<button type="button">').text('Edit').on('click', function () { mappingDialog(m); }).appendTo($actions);
-                $('<button type="button" class="danger">').text('Delete').on('click', function () {
-                    confirmDialog('Delete model', 'Delete model "' + (m.OllamaName || m.id) + '"? This cannot be undone.', function () {
-                        api('DELETE', '/api/mappings/' + m.id).then(function () { toast('Model deleted.'); loadMappings(); });
-                    });
-                }).appendTo($actions);
-
+            mappingCache.forEach(function (m) {
+                var model = m.LlamaCppName || '';
                 $tbody.append($('<tr>')
+                    .attr('data-id', m.id)
+                    .toggleClass('selected', m.id === selectedMappingId)
                     .append($('<td>').append($('<span class="pill">').addClass(m.isEnabled ? 'ok' : '').text(m.isEnabled ? 'yes' : 'no')))
                     .append($('<td>').text(m.OllamaName))
-                    .append($('<td>').text(m.LlamaCppName))
-                    .append($('<td>').text(m.upstreamUrl))
+                    .append($('<td class="truncate">').attr('title', model).text(truncateText(model, UPSTREAM_MODEL_MAX_CHARS)))
+                    .append($('<td>').text(m.instructionSetName || '\u2014'))
                     .append($('<td>').text(upstreamTypeName(m.upstreamType)))
-                    .append($('<td>').text(m.credentialName || '—'))
-                    .append($('<td>').text(m.hidden ? 'yes' : 'no'))
-                    .append($('<td>').append($actions)));
+                    .append($('<td>').text(m.credentialName || '\u2014'))
+                    .append($('<td>').text(m.hidden ? 'yes' : 'no')));
             });
+            updateMappingButtons();
+        });
+    }
+
+    function configureSelectedMapping() {
+        var m = findMapping(selectedMappingId);
+        if (m) mappingDialog(m);
+    }
+
+    function removeSelectedMapping() {
+        var m = findMapping(selectedMappingId);
+        if (!m) return;
+        confirmDialog('Delete model', 'Delete model "' + mappingName(m) + '"? This cannot be undone.', function () {
+            api('DELETE', '/api/mappings/' + m.id).then(function () {
+                selectedMappingId = null;
+                toast('Model deleted.');
+                loadMappings();
+            });
+        });
+    }
+
+    function toggleSelectedMapping() {
+        var m = findMapping(selectedMappingId);
+        if (!m) return;
+        var updated = JSON.parse(JSON.stringify(m));
+        updated.isEnabled = !updated.isEnabled;
+        api('PUT', '/api/mappings/' + m.id, updated).then(function () {
+            toast(updated.isEnabled ? 'Model enabled.' : 'Model disabled.');
+            loadMappings();
+        });
+    }
+
+    // Mirrors the Windows app: "name - Copy", then "name - Copy 2", and so on.
+    function uniqueProxyName(baseName) {
+        var base = baseName || 'Model';
+        var used = {};
+        mappingCache.forEach(function (m) { used[String(m.OllamaName || '').toLowerCase()] = true; });
+        var candidate = base + ' - Copy';
+        if (!used[candidate.toLowerCase()]) return candidate;
+        for (var n = 2; ; n++) {
+            candidate = base + ' - Copy ' + n;
+            if (!used[candidate.toLowerCase()]) return candidate;
+        }
+    }
+
+    function duplicateSelectedMapping() {
+        var source = findMapping(selectedMappingId);
+        if (!source) return;
+        var copy = JSON.parse(JSON.stringify(source));
+        delete copy.id; // the POST endpoint assigns the next Id
+        copy.OllamaName = uniqueProxyName(source.OllamaName);
+        api('POST', '/api/mappings', copy).then(function (created) {
+            selectedMappingId = created && created.id ? created.id : null;
+            toast('Model duplicated.');
+            loadMappings();
         });
     }
 
@@ -441,6 +528,7 @@
         });
         $type.val(existing ? String(base.upstreamType) : '1');
         var $credential = field('Credential name', $('<input type="text" list="credential-names">').val(base.credentialName || ''), 'Optional stored credential used as the bearer key.');
+        var $instructionSet = field('Instruction set', $('<input type="text" list="instruction-set-names">').val(base.instructionSetName || ''), 'Optional named instruction set prepended to this model\'s requests.');
         var $timeout = field('Upstream timeout (seconds)', $('<input type="number" min="1">').val(base.upstreamTimeoutSeconds || 300));
         var $enabled = field('Enabled', $('<input type="checkbox">').prop('checked', base.isEnabled !== false));
         var $hidden = field('Hidden from discovery', $('<input type="checkbox">').prop('checked', !!base.hidden));
@@ -448,8 +536,14 @@
         var $advanced = $('<textarea rows="12">').val(JSON.stringify(base, null, 2));
         $body.append($('<details>').append($('<summary>').text('All settings (JSON) — advanced fields preserved on save')).append($advanced));
         $body.append($('<datalist id="credential-names">'));
+        $body.append($('<datalist id="instruction-set-names">'));
         api('GET', '/api/credentials', undefined, { silent: true }).then(function (creds) {
             (creds || []).forEach(function (c) { $('<option>').val(c.name).appendTo('#credential-names'); });
+        }).catch(function () { /* datalist is a convenience only */ });
+        api('GET', '/api/settings', undefined, { silent: true }).then(function (settings) {
+            ((settings && settings.instructionSets) || []).forEach(function (set) {
+                $('<option>').val(set.name).text(set.description || '').appendTo('#instruction-set-names');
+            });
         }).catch(function () { /* datalist is a convenience only */ });
 
         function save() {
@@ -463,6 +557,7 @@
             merged.upstreamUrl = $url.val().trim();
             merged.upstreamType = parseInt($type.val(), 10);
             merged.credentialName = $credential.val().trim() || null;
+            merged.instructionSetName = $instructionSet.val().trim() || null;
             merged.upstreamTimeoutSeconds = parseInt($timeout.val(), 10) || 300;
             merged.isEnabled = $enabled.prop('checked');
             merged.hidden = $hidden.prop('checked');
@@ -1300,7 +1395,18 @@
         $('#btn-clear-logs').on('click', function () { $('#log-table tbody').empty(); updateLogCount(); });
 
         $('#btn-add-mapping').on('click', function () { mappingDialog(null); });
+        $('#btn-remove-mapping').on('click', removeSelectedMapping);
+        $('#btn-duplicate-mapping').on('click', duplicateSelectedMapping);
+        $('#btn-configure-mapping').on('click', configureSelectedMapping);
+        $('#btn-toggle-mapping').on('click', toggleSelectedMapping);
         $('#btn-refresh-mappings').on('click', loadMappings);
+        $('#mapping-table').on('click', 'tbody tr[data-id]', function () {
+            selectMapping(Number($(this).attr('data-id')));
+        });
+        $('#mapping-table').on('dblclick', 'tbody tr[data-id]', function () {
+            selectMapping(Number($(this).attr('data-id')));
+            configureSelectedMapping();
+        });
         $('#btn-add-credential').on('click', credentialDialog);
         $('#btn-refresh-credentials').on('click', loadCredentials);
         $('#btn-refresh-modules').on('click', loadModules);
