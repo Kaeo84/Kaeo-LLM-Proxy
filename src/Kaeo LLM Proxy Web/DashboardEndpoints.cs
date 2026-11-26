@@ -32,6 +32,7 @@ internal static partial class DashboardEndpoints
         }));
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
+        MapWebDashboard(app, controller);
         MapLogs(app, controller);
         MapObservability(app, controller);
         MapUsage(app, controller);
@@ -74,6 +75,24 @@ internal static partial class DashboardEndpoints
             {
                 authMode = settings.WebDashboard.RequireLogin ? "login" : "open",
                 scheme = settings.WebDashboard.Scheme,
+                isRunning = controller.WebDashboard.IsRunning,
+                url = controller.WebDashboard.Url,
+                status = controller.WebDashboard.Status,
+                listenAddress = controller.WebDashboard.ListenAddress,
+                listenPort = controller.WebDashboard.ListenPort,
+                requireLogin = settings.WebDashboard.RequireLogin,
+                certificateCredentialName = settings.WebDashboard.CertificateCredentialName,
+                canControl = controller.WebDashboard.CanControl,
+                error = controller.WebDashboard.LastError,
+            },
+            // Sampled by PerformanceService on the same interval as the Windows dashboard, so the
+            // two views agree. Zeroes until the first sample lands.
+            performance = new
+            {
+                cpuPercent = Math.Round(controller.PerfService.CpuPercent, 1),
+                memoryMb = Math.Round(controller.PerfService.MemoryMb, 1),
+                gen2Collections = controller.PerfService.Gen2Collections,
+                lohMb = Math.Round(controller.PerfService.LohMb, 1),
             },
             // Which database this instance is actually writing to. Each build output resolves its
             // own file, so two launches (or a portable copy) can silently diverge — surfacing the
@@ -105,6 +124,47 @@ internal static partial class DashboardEndpoints
             return Results.Json(new { isRunning = controller.Server.IsRunning, error = controller.LastStartError });
         });
     }
+
+    private static void MapWebDashboard(WebApplication app, ProxyHostController controller)
+    {
+        // The dashboard's own Stop/Restart must not tear the listener down inside the request it
+        // is currently answering, so the response is returned first and the work is deferred.
+        app.MapPost("/api/webdashboard/start", async () =>
+        {
+            await controller.WebDashboard.StartAsync(forceStart: true);
+            return Results.Json(WebDashboardState(controller));
+        });
+
+        app.MapPost("/api/webdashboard/stop", () =>
+        {
+            controller.WebDashboard.StopAfter(TimeSpan.FromMilliseconds(300));
+            return Results.Json(new
+            {
+                isRunning = true,
+                status = "Stopping",
+                message = "The web dashboard is shutting down; this page will stop responding.",
+            });
+        });
+
+        app.MapPost("/api/webdashboard/restart", () =>
+        {
+            controller.WebDashboard.RestartAfter(TimeSpan.FromMilliseconds(300));
+            return Results.Json(new
+            {
+                isRunning = true,
+                status = "Restarting",
+                message = "The web dashboard is restarting; this page will reconnect shortly.",
+            });
+        });
+    }
+
+    private static object WebDashboardState(ProxyHostController controller) => new
+    {
+        isRunning = controller.WebDashboard.IsRunning,
+        status = controller.WebDashboard.Status,
+        url = controller.WebDashboard.Url,
+        error = controller.WebDashboard.LastError,
+    };
 
     private static void MapLogs(WebApplication app, ProxyHostController controller)
     {
@@ -195,6 +255,7 @@ internal static partial class DashboardEndpoints
     {
         "mcp" => LogSource.Mcp,
         "nonproxied" or "non-proxied" => LogSource.NonProxied,
+        "web" => LogSource.Web,
         _ => LogSource.Proxy,
     };
 
@@ -234,6 +295,7 @@ internal static partial class DashboardEndpoints
             proxy = SourceStats(controller.Stats),
             mcp = SourceStats(controller.McpStats),
             nonProxied = SourceStats(controller.NonProxiedStats),
+            web = SourceStats(controller.WebStats),
         }));
     }
 
@@ -310,6 +372,7 @@ internal static partial class DashboardEndpoints
         {
             "mcp" => controller.McpStats,
             "nonproxied" or "non-proxied" => controller.NonProxiedStats,
+            "web" => controller.WebStats,
             _ => controller.Stats,
         };
 

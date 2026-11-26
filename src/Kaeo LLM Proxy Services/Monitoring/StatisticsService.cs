@@ -623,6 +623,22 @@ internal class StatisticsService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Waits (briefly) for queued log entries to reach the database. Best effort by design: a
+    /// caller shutting down its own logging path wants its last entries persisted, but must never
+    /// hang on a stalled writer. No-op when the service has no store.
+    /// </summary>
+    public async Task FlushAsync(TimeSpan? timeout = null)
+    {
+        if (_persistChannel is null)
+            return;
+
+        TimeSpan limit = timeout ?? TimeSpan.FromSeconds(2);
+        long deadline = Stopwatch.GetTimestamp() + (long)(limit.TotalSeconds * Stopwatch.Frequency);
+        while (_persistChannel.Reader.Count > 0 && Stopwatch.GetTimestamp() < deadline)
+            await Task.Delay(15).ConfigureAwait(false);
+    }
+
     public void Dispose()
     {
         _cleanupTimer?.Dispose();

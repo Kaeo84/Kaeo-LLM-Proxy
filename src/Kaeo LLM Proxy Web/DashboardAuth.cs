@@ -29,6 +29,13 @@ internal static class DashboardAuth
     public static bool IsRequestLoopback(HttpContext context)
         => context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress);
 
+    /// <summary>
+    /// The dashboard user id carried by the session cookie, or null when the caller is anonymous.
+    /// Used to attribute web traffic in the log so a request row names its dashboard user.
+    /// </summary>
+    public static int? ResolveUserId(HttpContext context)
+        => int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int userId) ? userId : null;
+
     internal const string RoleItemKey = "Kaeo.DashboardRole";
     internal const string UserNameItemKey = "Kaeo.DashboardUsername";
     internal const string PasswordHashClaim = "Kaeo.DashboardPasswordHash";

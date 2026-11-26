@@ -171,6 +171,45 @@ dashboard group; web: Settings → Web dashboard) turns the sign-in requirement 
 immediately, and while it is off **anyone who can reach the dashboard has full Admin access** —
 only use it on a trusted, isolated network.
 
+## HTTPS Certificate and Web Server Control
+
+HTTPS needs no hand-edited files: store the certificate as a **Credential** (Windows app:
+**Credentials** tab; web: **Credentials** tab) and then pick it in **Settings → Web dashboard →
+Certificate Credential (HTTPS only)** (web: Settings → *HTTPS certificate credential*).
+
+- **PFX / PKCS#12** — put the base64 of the `.pfx` file in **Certificate** and the export password
+  (if any) in **Secret**.
+- **PEM** — put the certificate chain in **Certificate**, the private key in **Private Key**, and
+  leave **Secret** empty.
+
+The credential is read when the web server starts, so editing or replacing the credential and
+restarting the web server picks up the new certificate. Selecting *(none)* serves plain HTTP.
+
+Editing a credential in the web dashboard keeps the stored secret, private key, and certificate
+when you leave those fields blank, so you can change a description without re-pasting the material.
+
+### Starting and stopping the web server
+
+- **Web dashboard** → Dashboard → **Web server** card: status, URL, listen address, certificate,
+  and **Start** / **Stop** / **Restart**. Stop asks for confirmation first because it disconnects
+  the page you are on.
+- **Windows app** → Dashboard → **Web dashboard** group: the same status, URL, and three buttons.
+
+Read Only dashboard users see the web server status but not the buttons. Stopping the web server
+does not change the *Enabled* setting, so the next proxy start brings it back.
+
+### Performance and web traffic
+
+The Dashboard also shows the same **CPU**, **working set**, **GC gen2**, and **LOH** figures as the
+Windows app, refreshed with the rest of the status card.
+
+Web-server requests are logged to the same database as proxied traffic under a **Web** source:
+**Traffic** → source **Web** (Admin only) in the dashboard, or the **Web** sub-tab of the Windows
+app's **Logs** tab. Both list dashboard page loads, API calls, and rejected requests (401/403)
+with the same retention and pruning as proxy logs. Static assets and the dashboard's own polling
+endpoints (`/api/status`, `/api/stats`, `/api/logs`, ...) are skipped so the table stays readable,
+but an error response is always recorded.
+
 ## Token Usage (Web Dashboard)
 
 The web dashboard's **Usage** tab reports token consumption from the request-log database:

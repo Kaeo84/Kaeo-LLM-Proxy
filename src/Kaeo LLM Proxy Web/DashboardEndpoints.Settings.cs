@@ -74,6 +74,7 @@ internal static partial class DashboardEndpoints
                 listenAddress = wd.ListenAddress,
                 requireLogin = wd.RequireLogin,
                 scheme = wd.Scheme,
+                certificateCredentialName = wd.CertificateCredentialName,
                 certificatePath = wd.CertificatePath,
                 hasCertificatePassword = !string.IsNullOrEmpty(wd.CertificatePassword),
             },
@@ -110,6 +111,17 @@ internal static partial class DashboardEndpoints
             if (wd.Scheme is not null && !wd.Scheme.Equals("Http", StringComparison.OrdinalIgnoreCase)
                 && !wd.Scheme.Equals("Https", StringComparison.OrdinalIgnoreCase))
                 return "WebDashboard.Scheme must be 'Http' or 'Https'.";
+            if (!string.IsNullOrWhiteSpace(wd.CertificateCredentialName))
+            {
+                string name = wd.CertificateCredentialName.Trim();
+                bool exists;
+                lock (settings.CredentialsSyncRoot)
+                {
+                    exists = settings.Credentials.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+                }
+                if (!exists)
+                    return $"WebDashboard.CertificateCredentialName '{name}' does not match a stored credential.";
+            }
         }
         return null;
     }
@@ -142,6 +154,7 @@ internal static partial class DashboardEndpoints
             if (wd.ListenAddress is { } wla) target.ListenAddress = wla;
             if (wd.RequireLogin is { } rl) target.RequireLogin = rl;
             if (wd.Scheme is { } sch) target.Scheme = sch;
+            if (wd.CertificateCredentialName is { } ccn) target.CertificateCredentialName = string.IsNullOrWhiteSpace(ccn) ? null : ccn.Trim();
             if (wd.CertificatePath is { } cp) target.CertificatePath = cp;
             if (wd.CertificatePassword is { } cpw) target.CertificatePassword = cpw;
         }

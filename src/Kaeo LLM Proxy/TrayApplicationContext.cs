@@ -25,7 +25,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AppDatabase _database;
     private readonly SynchronizationContext? _uiContext;
     private MainForm? _mainForm;
-    private WebDashboardHost? _dashboard;
     private ToolStripMenuItem? _openWebDashboardItem;
     private bool _disposed;
     private bool _exiting;
@@ -61,6 +60,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _controller.StatusChanged += OnServerStatusChanged;
         _controller.ProxyStartFailed += OnProxyStartFailed;
 
+        // The dashboard host lives in the Web assembly, which the controller's assembly must not
+        // reference, so this is the only place that can teach the controller how to create it.
+        // Without the factory the controller can still report state but not (re)start the listener.
+        _controller.WebDashboard.RegisterHostFactory(() => new WebDashboardHost(_settings, _controller));
+        _controller.WebDashboard.StatusChanged += OnWebDashboardStatusChanged;
+
         if (_settings.AutoStartProxy)
             StartProxy();
 
@@ -76,31 +81,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            WebDashboardHost dashboard = new(_settings, _controller);
-            await dashboard.StartAsync();
-            if (_disposed)
+            await _controller.WebDashboard.StartAsync();
+            string? url = _controller.WebDashboard.Url;
+            if (url is not null)
             {
-                await dashboard.StopAsync();
-                return;
-            }
-            _dashboard = dashboard;
-            if (dashboard.Url is not null)
-            {
-                Log.Information("Web dashboard available at {Url}", dashboard.Url);
-                PostToUi(() =>
-                {
-                    if (_openWebDashboardItem is not null)
-                    {
-                        _openWebDashboardItem.Enabled = true;
-                        _openWebDashboardItem.ToolTipText = dashboard.Url;
-                    }
-                });
+                Log.Information("Web dashboard available at {Url}", url);
+                PostToUi(UpdateWebDashboardMenuItem);
             }
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "Web dashboard failed to start; continuing without it");
         }
+    }
+
+    private void OnWebDashboardStatusChanged(object? sender, string status)
+        => PostToUi(UpdateWebDashboardMenuItem);
+
+    private void UpdateWebDashboardMenuItem()
+    {
+        if (_openWebDashboardItem is null)
+            return;
+
+        string? url = _controller.WebDashboard.Url;
+        _openWebDashboardItem.Enabled = url is not null;
+        _openWebDashboardItem.ToolTipText = url ?? "Web dashboard is not running";
     }
 
     private void OnProxyStartFailed(object? sender, Exception ex)
@@ -185,11 +190,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnOpenWebDashboard(object? sender, EventArgs e)
     {
-        string? url = _dashboard?.Url;
+        string? url = _controller.WebDashboard.Url;
         if (url is null)
         {
             MessageBox.Show(
-                "The web dashboard is not running. Enable it in Settings → Web Dashboard and restart the application.",
+                "The web dashboard is not running. Start it from the dashboard or enable it in Settings → Web Dashboard.",
                 "Kaeo LLM Proxy", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -246,7 +251,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.Access, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.StreamMonitor);
+            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.Access, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.WebStats, _controller.StreamMonitor, _controller.WebDashboard);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }
@@ -355,17 +360,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Visible = false;
         try
         {
-            if (_dashboard is not null)
-            {
-                try
-                {
-                    await _dashboard.StopAsync();
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(ex, "Error stopping web dashboard");
-                }
-            }
+            // The controller stops the web dashboard first (it is the control plane that drives
+            // the rest), then the MCP server, modules, and the proxy.
             await _controller.StopAsync();
         }
         finally
@@ -385,6 +381,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _controller.StatusChanged -= OnServerStatusChanged;
             _controller.ProxyStartFailed -= OnProxyStartFailed;
+            _controller.WebDashboard.StatusChanged -= OnWebDashboardStatusChanged;
             ContextMenuStrip? menu = _trayIcon.ContextMenuStrip;
             _trayIcon.Dispose();
             menu?.Dispose();

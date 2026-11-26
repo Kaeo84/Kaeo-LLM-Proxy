@@ -31,6 +31,13 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
     public StatisticsService Stats { get; }
     public StatisticsService McpStats { get; }
     public StatisticsService NonProxiedStats { get; }
+
+    /// <summary>Traffic served by the web dashboard's own listener (page loads, sign-ins, API calls).</summary>
+    public StatisticsService WebStats { get; }
+
+    /// <summary>Lifecycle + status of the web dashboard listener, driven by both GUIs and its own API.</summary>
+    public WebDashboardService WebDashboard { get; }
+
     public PerformanceService PerfService { get; }
     public OllamaProxyHandler Handler { get; }
     public ProxyServer Server { get; }
@@ -82,6 +89,8 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
             maxEntriesWithBodies: Settings.Logging.MaxLogEntriesWithBodies);
         NonProxiedStats = new StatisticsService(Settings.MaxLogEntries, Database, Settings.Logging.LogRetentionHours, LogSource.NonProxied,
             maxEntriesWithBodies: Settings.Logging.MaxLogEntriesWithBodies);
+        WebStats = new StatisticsService(Settings.MaxLogEntries, Database, Settings.Logging.LogRetentionHours, LogSource.Web,
+            maxEntriesWithBodies: 0);
 
         // Modules were initialized with a forwarding sink; point it at the real MCP log store
         // so module activity (e.g. SSH connections) appears in the MCP logs.
@@ -89,6 +98,7 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
 
         Access = new ProxyAccessService(Database);
         McpServer = new McpServerService(Database, Settings, ModuleHost, McpStats, Access);
+        WebDashboard = new WebDashboardService(Settings);
         PerfService = new PerformanceService(Settings.EnablePerformanceSampling);
         StreamMonitor = new StreamMonitor();
         Handler = new OllamaProxyHandler(Settings, Stats, ModuleHost, McpServer, NonProxiedStats, streamMonitor: StreamMonitor, access: Access);
@@ -190,8 +200,8 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Graceful shutdown: stop the MCP server, then modules, then drain the proxy. Each step is
-    /// isolated so one failure never prevents the others. Idempotent.
+    /// Graceful shutdown: stop the web dashboard, then the MCP server, then modules, then drain the
+    /// proxy. Each step is isolated so one failure never prevents the others. Idempotent.
     /// </summary>
     public async Task StopAsync()
     {
@@ -199,6 +209,16 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
             return;
         _stopped = true;
 
+        try
+        {
+            // First: the dashboard is the control plane that drives the steps below, so it stops
+            // before the services its endpoints call into.
+            await WebDashboard.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping web dashboard during shutdown");
+        }
         try
         {
             await McpServer.StopAsync();
@@ -243,6 +263,8 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         Stats.Dispose();
         McpStats.Dispose();
         NonProxiedStats.Dispose();
+        WebStats.Dispose();
+        WebDashboard.Dispose();
         PerfService.Dispose();
         // The database is owned by the host entry point (created and disposed there); only one
         // shared instance exists per process, so it must not be disposed here.

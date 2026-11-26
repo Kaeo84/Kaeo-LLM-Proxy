@@ -95,6 +95,20 @@ partial class MainForm
         _btnDashMcpStop = new Button();
         _btnDashMcpRestart = new Button();
 
+        // Dashboard web server status controls
+        _grpDashWeb = new GroupBox();
+        _tlpDashWeb = new TableLayoutPanel();
+        _lblDashWebStatusCaption = new Label();
+        _lblDashWebStatusValue = new Label();
+        _lblDashWebUrlCaption = new Label();
+        _lblDashWebUrlValue = new Label();
+        _lblDashWebPortCaption = new Label();
+        _lblDashWebPortValue = new Label();
+        _flpDashWebButtons = new FlowLayoutPanel();
+        _btnDashWebStart = new Button();
+        _btnDashWebStop = new Button();
+        _btnDashWebRestart = new Button();
+
         // Stats panel
         _tlpStats = new TableLayoutPanel();
         _lblTotalRequestsCaption = new Label();
@@ -173,6 +187,18 @@ partial class MainForm
         _colMcpStatus = new ColumnHeader();
         _colMcpDuration = new ColumnHeader();
         _colMcpBytes = new ColumnHeader();
+        _logWebPage = new TabPage();
+        _tlpWebLogs = new TableLayoutPanel();
+        _flpWebLogTop = new FlowLayoutPanel();
+        _lblWebLogFilter = new Label();
+        _txtWebLogFilter = new TextBox();
+        _lstWebLogs = new ListView();
+        _colWebTime = new ColumnHeader();
+        _colWebMethod = new ColumnHeader();
+        _colWebPath = new ColumnHeader();
+        _colWebStatus = new ColumnHeader();
+        _colWebDuration = new ColumnHeader();
+        _colWebBytes = new ColumnHeader();
         _chkAutoRefresh = new CheckBox();
         _lblRefreshInterval = new Label();
         _cmbRefreshInterval = new ComboBox();
@@ -237,9 +263,7 @@ partial class MainForm
         _lblWebDashboardScheme = new Label();
         _cmbWebDashboardScheme = new ComboBox();
         _lblWebDashboardCertPath = new Label();
-        _txtWebDashboardCertPath = new TextBox();
-        _lblWebDashboardCertPassword = new Label();
-        _txtWebDashboardCertPassword = new TextBox();
+        _cmbWebDashboardCertCredential = new ComboBox();
         _lblWebDashboardLoginNote = new Label();
         _btnSaveWebDashboard = new Button();
         _lblWebDashboardUrl = new Label();
@@ -403,6 +427,9 @@ partial class MainForm
         _logNonProxiedPage.SuspendLayout();
         _tlpNonProxiedLogs.SuspendLayout();
         _flpNonProxiedLogTop.SuspendLayout();
+        _logWebPage.SuspendLayout();
+        _tlpWebLogs.SuspendLayout();
+        _flpWebLogTop.SuspendLayout();
         _tlpLogs.SuspendLayout();
         _flpLogsButtons.SuspendLayout();
         _tabSettings.SuspendLayout();
@@ -442,6 +469,9 @@ partial class MainForm
         _grpDashMcp.SuspendLayout();
         _tlpDashMcp.SuspendLayout();
         _flpDashMcpButtons.SuspendLayout();
+        _grpDashWeb.SuspendLayout();
+        _tlpDashWeb.SuspendLayout();
+        _flpDashWebButtons.SuspendLayout();
         _flpStatusButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_dgvMappings).BeginInit();
         SuspendLayout();
@@ -481,9 +511,11 @@ partial class MainForm
         _tlpDashboard.Controls.Add(_grpPerf, 0, 0);
         _tlpDashboard.Controls.Add(_grpStatus, 0, 1);
         _tlpDashboard.Controls.Add(_grpDashMcp, 0, 2);
+        _tlpDashboard.Controls.Add(_grpDashWeb, 0, 3);
         _tlpDashboard.Dock = DockStyle.Top;
         _tlpDashboard.Name = "_tlpDashboard";
-        _tlpDashboard.RowCount = 4;
+        _tlpDashboard.RowCount = 5;
+        _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -678,6 +710,95 @@ partial class MainForm
         _btnDashMcpRestart.Size = new Size(88, 28);
         _btnDashMcpRestart.Text = "Restart";
         _btnDashMcpRestart.Click += BtnDashMcpRestart_Click;
+
+        // _grpDashWeb — runtime status of the web dashboard listener
+        _grpDashWeb.AutoSize = true;
+        _grpDashWeb.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpDashWeb.Controls.Add(_tlpDashWeb);
+        _grpDashWeb.Dock = DockStyle.Fill;
+        _grpDashWeb.Margin = new Padding(0, 0, 0, 8);
+        _grpDashWeb.Name = "_grpDashWeb";
+        _grpDashWeb.Padding = new Padding(6, 2, 6, 4);
+        _grpDashWeb.Text = "Web Server Status";
+
+        // _tlpDashWeb — 2 columns: caption AutoSize | value Percent; final row is the button strip
+        _tlpDashWeb.AutoSize = true;
+        _tlpDashWeb.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpDashWeb.ColumnCount = 2;
+        _tlpDashWeb.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpDashWeb.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpDashWeb.Controls.Add(_lblDashWebStatusCaption, 0, 0);
+        _tlpDashWeb.Controls.Add(_lblDashWebStatusValue, 1, 0);
+        _tlpDashWeb.Controls.Add(_lblDashWebUrlCaption, 0, 1);
+        _tlpDashWeb.Controls.Add(_lblDashWebUrlValue, 1, 1);
+        _tlpDashWeb.Controls.Add(_lblDashWebPortCaption, 0, 2);
+        _tlpDashWeb.Controls.Add(_lblDashWebPortValue, 1, 2);
+        _tlpDashWeb.Controls.Add(_flpDashWebButtons, 0, 3);
+        _tlpDashWeb.Dock = DockStyle.Fill;
+        _tlpDashWeb.Name = "_tlpDashWeb";
+        _tlpDashWeb.SetColumnSpan(_flpDashWebButtons, 2);
+
+        // _flpDashWebButtons
+        _flpDashWebButtons.AutoSize = true;
+        _flpDashWebButtons.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _flpDashWebButtons.Controls.Add(_btnDashWebStart);
+        _flpDashWebButtons.Controls.Add(_btnDashWebStop);
+        _flpDashWebButtons.Controls.Add(_btnDashWebRestart);
+        _flpDashWebButtons.Dock = DockStyle.Fill;
+        _flpDashWebButtons.Margin = new Padding(2, 6, 2, 0);
+        _flpDashWebButtons.Name = "_flpDashWebButtons";
+
+        _lblDashWebStatusCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebStatusCaption.AutoSize = true;
+        _lblDashWebStatusCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebStatusCaption.Name = "_lblDashWebStatusCaption";
+        _lblDashWebStatusCaption.Text = "Status:";
+
+        _lblDashWebStatusValue.AutoSize = true;
+        _lblDashWebStatusValue.Font = BoldValueFont;
+        _lblDashWebStatusValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebStatusValue.Name = "_lblDashWebStatusValue";
+        _lblDashWebStatusValue.Text = "Stopped";
+
+        _lblDashWebUrlCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebUrlCaption.AutoSize = true;
+        _lblDashWebUrlCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebUrlCaption.Name = "_lblDashWebUrlCaption";
+        _lblDashWebUrlCaption.Text = "URL:";
+
+        _lblDashWebUrlValue.AutoSize = true;
+        _lblDashWebUrlValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebUrlValue.Name = "_lblDashWebUrlValue";
+        _lblDashWebUrlValue.Text = "-";
+
+        _lblDashWebPortCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebPortCaption.AutoSize = true;
+        _lblDashWebPortCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebPortCaption.Name = "_lblDashWebPortCaption";
+        _lblDashWebPortCaption.Text = "Listen IP / Port:";
+
+        _lblDashWebPortValue.AutoSize = true;
+        _lblDashWebPortValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebPortValue.Name = "_lblDashWebPortValue";
+        _lblDashWebPortValue.Text = "-";
+
+        _btnDashWebStart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebStart.Name = "_btnDashWebStart";
+        _btnDashWebStart.Size = new Size(80, 28);
+        _btnDashWebStart.Text = "Start";
+        _btnDashWebStart.Click += BtnDashWebStart_Click;
+
+        _btnDashWebStop.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebStop.Name = "_btnDashWebStop";
+        _btnDashWebStop.Size = new Size(80, 28);
+        _btnDashWebStop.Text = "Stop";
+        _btnDashWebStop.Click += BtnDashWebStop_Click;
+
+        _btnDashWebRestart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebRestart.Name = "_btnDashWebRestart";
+        _btnDashWebRestart.Size = new Size(88, 28);
+        _btnDashWebRestart.Text = "Restart";
+        _btnDashWebRestart.Click += BtnDashWebRestart_Click;
 
         // _tlpStats
         _tlpStats.AutoSize = true;
@@ -906,6 +1027,7 @@ partial class MainForm
         _logSubTabs.Controls.Add(_logProxyPage);
         _logSubTabs.Controls.Add(_logMcpPage);
         _logSubTabs.Controls.Add(_logNonProxiedPage);
+        _logSubTabs.Controls.Add(_logWebPage);
         _logSubTabs.Controls.Add(_tabSysLogs);
                 _logSubTabs.Controls.Add(_logStreamsPage);
         _logSubTabs.Dock = DockStyle.Fill;
@@ -1065,6 +1187,76 @@ partial class MainForm
         _colNpDuration.Width = 60;
         _colNpBytes.Text = "Bytes (req/resp)";
         _colNpBytes.Width = 110;
+
+        // _logWebPage
+        _logWebPage.Controls.Add(_tlpWebLogs);
+        _logWebPage.Dock = DockStyle.Fill;
+        _logWebPage.Name = "_logWebPage";
+        _logWebPage.Padding = new Padding(3);
+        _logWebPage.Text = "Web";
+
+        // _tlpWebLogs — 1 column: filter bar AutoSize | list fills
+        _tlpWebLogs.ColumnCount = 1;
+        _tlpWebLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpWebLogs.Controls.Add(_flpWebLogTop, 0, 0);
+        _tlpWebLogs.Controls.Add(_lstWebLogs, 0, 1);
+        _tlpWebLogs.Dock = DockStyle.Fill;
+        _tlpWebLogs.Name = "_tlpWebLogs";
+        _tlpWebLogs.RowCount = 2;
+        _tlpWebLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpWebLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpWebLogTop
+        _flpWebLogTop.AutoSize = true;
+        _flpWebLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpWebLogTop.Controls.Add(_lblWebLogFilter);
+        _flpWebLogTop.Controls.Add(_txtWebLogFilter);
+        _flpWebLogTop.Dock = DockStyle.Fill;
+        _flpWebLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpWebLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpWebLogTop.Name = "_flpWebLogTop";
+        _flpWebLogTop.WrapContents = false;
+
+        _lblWebLogFilter.Anchor = AnchorStyles.Left;
+        _lblWebLogFilter.AutoSize = true;
+        _lblWebLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblWebLogFilter.Name = "_lblWebLogFilter";
+        _lblWebLogFilter.Text = "Filter:";
+
+        _txtWebLogFilter.Anchor = AnchorStyles.Left;
+        _txtWebLogFilter.Margin = new Padding(0, 0, 0, 0);
+        _txtWebLogFilter.Name = "_txtWebLogFilter";
+        _txtWebLogFilter.PlaceholderText = "Filter by method, path, or status";
+        _txtWebLogFilter.Size = new Size(320, 23);
+        _txtWebLogFilter.TextChanged += LogFilter_TextChanged;
+
+        // _lstWebLogs
+        _lstWebLogs.Columns.Add(_colWebTime);
+        _lstWebLogs.Columns.Add(_colWebMethod);
+        _lstWebLogs.Columns.Add(_colWebPath);
+        _lstWebLogs.Columns.Add(_colWebStatus);
+        _lstWebLogs.Columns.Add(_colWebDuration);
+        _lstWebLogs.Columns.Add(_colWebBytes);
+        _lstWebLogs.FullRowSelect = true;
+        _lstWebLogs.GridLines = true;
+        _lstWebLogs.Dock = DockStyle.Fill;
+        _lstWebLogs.Margin = new Padding(0);
+        _lstWebLogs.Name = "_lstWebLogs";
+        _lstWebLogs.View = View.Details;
+        _lstWebLogs.DoubleClick += LstWebLogs_DoubleClick;
+
+        _colWebTime.Text = "Time";
+        _colWebTime.Width = 105;
+        _colWebMethod.Text = "Method";
+        _colWebMethod.Width = 55;
+        _colWebPath.Text = "Path";
+        _colWebPath.Width = 260;
+        _colWebStatus.Text = "Status";
+        _colWebStatus.Width = 60;
+        _colWebDuration.Text = "ms";
+        _colWebDuration.Width = 60;
+        _colWebBytes.Text = "Bytes (req/resp)";
+        _colWebBytes.Width = 110;
 
         // _logStreamsPage
         _logStreamsPage.Controls.Add(_tlpStreams);
@@ -1718,7 +1910,7 @@ partial class MainForm
         _tlpWebDashboard.Dock = DockStyle.Fill;
         _tlpWebDashboard.Margin = new Padding(4);
         _tlpWebDashboard.Name = "_tlpWebDashboard";
-        _tlpWebDashboard.RowCount = 10;
+        _tlpWebDashboard.RowCount = 9;
         _tlpWebDashboard.SetColumnSpan(_chkWebDashboardEnabled, 2);
         _tlpWebDashboard.Controls.Add(_chkWebDashboardEnabled, 0, 0);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardPort, 0, 1);
@@ -1728,17 +1920,15 @@ partial class MainForm
         _tlpWebDashboard.Controls.Add(_lblWebDashboardScheme, 0, 3);
         _tlpWebDashboard.Controls.Add(_cmbWebDashboardScheme, 1, 3);
         _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPath, 0, 4);
-        _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPath, 1, 4);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPassword, 0, 5);
-        _tlpWebDashboard.Controls.Add(_txtWebDashboardCertPassword, 1, 5);
+        _tlpWebDashboard.Controls.Add(_cmbWebDashboardCertCredential, 1, 4);
         _tlpWebDashboard.SetColumnSpan(_chkWebDashboardRequireLogin, 2);
-        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireLogin, 0, 6);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireLogin, 0, 5);
         _tlpWebDashboard.SetColumnSpan(_lblWebDashboardLoginNote, 2);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 7);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 6);
         _tlpWebDashboard.SetColumnSpan(_btnSaveWebDashboard, 2);
-        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 8);
+        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 7);
         _tlpWebDashboard.SetColumnSpan(_lblWebDashboardUrl, 2);
-        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 9);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 8);
 
         _chkWebDashboardEnabled.AutoSize = true;
         _chkWebDashboardEnabled.Margin = new Padding(4, 8, 4, 4);
@@ -1786,24 +1976,14 @@ partial class MainForm
         _lblWebDashboardCertPath.AutoSize = true;
         _lblWebDashboardCertPath.Margin = new Padding(4, 8, 8, 4);
         _lblWebDashboardCertPath.Name = "_lblWebDashboardCertPath";
-        _lblWebDashboardCertPath.Text = "Certificate Path (PFX, HTTPS only):";
+        _lblWebDashboardCertPath.Text = "Certificate Credential (HTTPS only):";
 
-        _txtWebDashboardCertPath.Dock = DockStyle.Fill;
-        _txtWebDashboardCertPath.Margin = new Padding(4, 6, 4, 4);
-        _txtWebDashboardCertPath.Name = "_txtWebDashboardCertPath";
+                _cmbWebDashboardCertCredential.Dock = DockStyle.Fill;
+                _cmbWebDashboardCertCredential.DropDownStyle = ComboBoxStyle.DropDownList;
+                _cmbWebDashboardCertCredential.Margin = new Padding(4, 6, 4, 4);
+                _cmbWebDashboardCertCredential.Name = "_cmbWebDashboardCertCredential";
 
-        _lblWebDashboardCertPassword.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _lblWebDashboardCertPassword.AutoSize = true;
-        _lblWebDashboardCertPassword.Margin = new Padding(4, 8, 8, 4);
-        _lblWebDashboardCertPassword.Name = "_lblWebDashboardCertPassword";
-        _lblWebDashboardCertPassword.Text = "Certificate Password:";
-
-        _txtWebDashboardCertPassword.Dock = DockStyle.Fill;
-        _txtWebDashboardCertPassword.Margin = new Padding(4, 6, 4, 4);
-        _txtWebDashboardCertPassword.Name = "_txtWebDashboardCertPassword";
-        _txtWebDashboardCertPassword.UseSystemPasswordChar = true;
-
-        _lblWebDashboardLoginNote.AutoSize = true;
+                _lblWebDashboardLoginNote.AutoSize = true;
         _lblWebDashboardLoginNote.Margin = new Padding(4, 8, 4, 4);
         _lblWebDashboardLoginNote.Name = "_lblWebDashboardLoginNote";
         _lblWebDashboardLoginNote.Text = "Manage dashboard logins in the Users tab; API keys grant model access only. Turning off login gives full dashboard access to anyone who can reach it.";
@@ -2796,6 +2976,11 @@ partial class MainForm
         _tabDashboard.ResumeLayout(false);
         _logProxyPage.ResumeLayout(false);
         _logMcpPage.ResumeLayout(false);
+        _logWebPage.ResumeLayout(false);
+        _tlpWebLogs.ResumeLayout(false);
+        _tlpWebLogs.PerformLayout();
+        _flpWebLogTop.ResumeLayout(false);
+        _flpWebLogTop.PerformLayout();
         _splitStreams.ResumeLayout(false);
         _tlpStreams.ResumeLayout(false);
         _logStreamsPage.ResumeLayout(false);
@@ -2838,6 +3023,10 @@ partial class MainForm
         _tlpDashMcp.PerformLayout();
         _grpDashMcp.ResumeLayout(false);
         _grpDashMcp.PerformLayout();
+        _tlpDashWeb.ResumeLayout(false);
+        _tlpDashWeb.PerformLayout();
+        _grpDashWeb.ResumeLayout(false);
+        _grpDashWeb.PerformLayout();
         _tabTest.ResumeLayout(false);
         _tlpTestOuter.ResumeLayout(false);
         _tlpTestOuter.PerformLayout();
@@ -2926,6 +3115,19 @@ partial class MainForm
     private Button _btnDashMcpStart;
     private Button _btnDashMcpStop;
     private Button _btnDashMcpRestart;
+
+    private GroupBox _grpDashWeb;
+    private TableLayoutPanel _tlpDashWeb;
+    private Label _lblDashWebStatusCaption;
+    private Label _lblDashWebStatusValue;
+    private Label _lblDashWebUrlCaption;
+    private Label _lblDashWebUrlValue;
+    private Label _lblDashWebPortCaption;
+    private Label _lblDashWebPortValue;
+    private FlowLayoutPanel _flpDashWebButtons;
+    private Button _btnDashWebStart;
+    private Button _btnDashWebStop;
+    private Button _btnDashWebRestart;
     private TableLayoutPanel _tlpStats;
     private Label _lblTotalRequestsCaption;
     private Label _lblTotalRequestsValue;
@@ -2990,6 +3192,18 @@ partial class MainForm
     private ColumnHeader _colNpStatus;
     private ColumnHeader _colNpDuration;
     private ColumnHeader _colNpBytes;
+    private TabPage _logWebPage;
+    private TableLayoutPanel _tlpWebLogs;
+    private FlowLayoutPanel _flpWebLogTop;
+    private Label _lblWebLogFilter;
+    private TextBox _txtWebLogFilter;
+    private ListView _lstWebLogs;
+    private ColumnHeader _colWebTime;
+    private ColumnHeader _colWebMethod;
+    private ColumnHeader _colWebPath;
+    private ColumnHeader _colWebStatus;
+    private ColumnHeader _colWebDuration;
+    private ColumnHeader _colWebBytes;
         private TabPage _logStreamsPage;
         private TableLayoutPanel _tlpStreams;
         private ListView _lstStreams;
@@ -3063,9 +3277,7 @@ partial class MainForm
     private Label _lblWebDashboardScheme;
     private ComboBox _cmbWebDashboardScheme;
     private Label _lblWebDashboardCertPath;
-    private TextBox _txtWebDashboardCertPath;
-    private Label _lblWebDashboardCertPassword;
-    private TextBox _txtWebDashboardCertPassword;
+    private ComboBox _cmbWebDashboardCertCredential;
     private Label _lblWebDashboardLoginNote;
     private Button _btnSaveWebDashboard;
     private Label _lblWebDashboardUrl;

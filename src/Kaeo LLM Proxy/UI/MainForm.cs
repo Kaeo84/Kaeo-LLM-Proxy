@@ -40,7 +40,19 @@ internal partial class MainForm : Form
     /// </summary>
     private readonly StatisticsService _nonProxiedStats;
 
+        /// <summary>
+        /// Web dashboard (web server) request traffic. Surfaced as its own Logs sub-tab so the
+        /// dashboard's own page loads and API calls do not mix with model or MCP traffic.
+        /// </summary>
+        private readonly StatisticsService _webStats;
+
         private readonly StreamMonitor? _streamMonitor;
+
+        /// <summary>
+        /// Owns the web dashboard listener. Null only in hosts that never create one, in which
+        /// case the dashboard's Web Server group reports "not available".
+        /// </summary>
+        private readonly WebDashboardService? _webDashboard;
 
         // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
@@ -54,6 +66,7 @@ internal partial class MainForm : Form
     private IReadOnlyList<RequestLog> _logCache = [];
     private IReadOnlyList<RequestLog> _mcpLogCache = [];
     private IReadOnlyList<RequestLog> _nonProxiedLogCache = [];
+    private IReadOnlyList<RequestLog> _webLogCache = [];
     private IReadOnlyList<SystemLogEntry> _sysLogCache = [];
     private bool _sysLogRefreshInFlight;
 
@@ -76,6 +89,7 @@ internal partial class MainForm : Form
     // disabled for the duration.
     private bool _proxyOperationInProgress;
     private bool _mcpDashOperationInProgress;
+    private bool _webDashOperationInProgress;
 
     // Coalesces concurrent MCP settings applies so rapid successive changes produce at most
     // one in-flight apply plus one follow-up.
@@ -96,7 +110,7 @@ internal partial class MainForm : Form
     // numeric textbox is invalid.
     private readonly ErrorProvider _inputErrors = new();
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StatisticsService webStats, StreamMonitor? streamMonitor = null, WebDashboardService? webDashboard = null)
     {
         _settings = settings;
         _stats = stats;
@@ -109,7 +123,9 @@ internal partial class MainForm : Form
         _mcpServer = mcpServer;
         _mcpStats = mcpServer.Statistics;
         _nonProxiedStats = nonProxiedStats;
+        _webStats = webStats;
         _streamMonitor = streamMonitor;
+        _webDashboard = webDashboard;
 
                 if (_streamMonitor is not null)
                     _streamMonitor.StreamsChanged += OnStreamsChanged;
@@ -136,6 +152,8 @@ internal partial class MainForm : Form
         _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
         _lstNonProxiedLogs.VirtualMode = true;
         _lstNonProxiedLogs.RetrieveVirtualItem += LstNonProxiedLogs_RetrieveVirtualItem;
+        _lstWebLogs.VirtualMode = true;
+        _lstWebLogs.RetrieveVirtualItem += LstWebLogs_RetrieveVirtualItem;
         _lstSysLogs.VirtualMode = true;
         _lstSysLogs.RetrieveVirtualItem += LstSysLogs_RetrieveVirtualItem;
 
@@ -144,6 +162,7 @@ internal partial class MainForm : Form
         _lstLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
         _lstMcpLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
         _lstNonProxiedLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
+        _lstWebLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
 
         _stats.StatsChanged += OnStatsChanged;
         _mcpStats.StatsChanged += OnMcpStatsChanged;
@@ -203,6 +222,8 @@ internal partial class MainForm : Form
 
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
+        if (_webDashboard is not null)
+            _webDashboard.StatusChanged += OnWebDashboardStatusChanged;
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => UpdateMcpApiExplorerUrlLabel();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => OnMcpSettingChanged();
@@ -240,6 +261,7 @@ internal partial class MainForm : Form
         RefreshModules();
         LoadMcpSettingsToForm();
         UpdateMcpStatusDisplays();
+        RefreshWebDashboardStatus();
         _stats.ConnectionHealthChanged += OnConnectionHealthChanged;
         _database.ModelMappingsSaved += OnModelMappingsSaved;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
@@ -303,6 +325,8 @@ internal partial class MainForm : Form
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
         _mcpServer.StatusChanged -= OnMcpStatusChanged;
+        if (_webDashboard is not null)
+            _webDashboard.StatusChanged -= OnWebDashboardStatusChanged;
         if (_streamMonitor is not null)
             _streamMonitor.StreamsChanged -= OnStreamsChanged;
         _inputErrors.Dispose();
@@ -789,6 +813,131 @@ internal partial class MainForm : Form
         }
     }
 
+    // ── Web dashboard status group ──────────────────────────────────────────
+
+    private void OnWebDashboardStatusChanged(object? sender, string status)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(RefreshWebDashboardStatus);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Refreshes the dashboard Web Server group: shows whether the listener is up, the browsable
+    /// URL, and the address/port it bound, and enables the control buttons accordingly.
+    /// </summary>
+    private void RefreshWebDashboardStatus()
+    {
+        if (_webDashboard is null)
+        {
+            _lblDashWebStatusValue.Text = "Not available";
+            _lblDashWebUrlValue.Text = "-";
+            _lblDashWebPortValue.Text = "-";
+            _btnDashWebStart.Enabled = false;
+            _btnDashWebStop.Enabled = false;
+            _btnDashWebRestart.Enabled = false;
+            return;
+        }
+
+        bool running = _webDashboard.IsRunning;
+        string status = _webDashboard.Status;
+
+        _lblDashWebStatusValue.Text = running ? "Running" : status;
+        _lblDashWebStatusValue.ForeColor = running
+            ? Color.Green
+            : status.StartsWith("Failed", StringComparison.OrdinalIgnoreCase)
+                ? Color.Red
+                : SystemColors.ControlText;
+
+        _lblDashWebUrlValue.Text = running ? _webDashboard.Url ?? "-" : "-";
+        _lblDashWebPortValue.Text = $"{_webDashboard.ListenAddress}:{_webDashboard.ListenPort}";
+
+        _btnDashWebStart.Enabled = !running && _webDashboard.CanControl && !_webDashOperationInProgress;
+        _btnDashWebStop.Enabled = running && !_webDashOperationInProgress;
+        _btnDashWebRestart.Enabled = running && !_webDashOperationInProgress;
+    }
+
+    private async void BtnDashWebStart_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.StartAsync(forceStart: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to start the web dashboard from the dashboard");
+            MessageBox.Show($"Failed to start the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
+    private async void BtnDashWebStop_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to stop the web dashboard from the dashboard");
+            MessageBox.Show($"Error stopping the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
+    private async void BtnDashWebRestart_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.RestartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to restart the web dashboard from the dashboard");
+            MessageBox.Show($"Error restarting the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────────
 
     private void RefreshStats()
@@ -920,6 +1069,16 @@ internal partial class MainForm : Form
             _lstNonProxiedLogs.Invalidate();
         }
 
+        private void RefreshWebLogs()
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+
+            string filter = _txtWebLogFilter.Text;
+            _webLogCache = [.. _webStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
+            _lstWebLogs.VirtualListSize = _webLogCache.Count;
+            _lstWebLogs.Invalidate();
+        }
+
         /// <summary>
         /// Re-applies the active tab's filter. Text filters are applied in memory over the cached
         /// summaries rather than re-queried, so typing re-filters instantly without a database round
@@ -1049,6 +1208,33 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
+    private void LstWebLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _webLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        RequestLog log = _webLogCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
+    }
+
     private void BtnClearLogs_Click(object? sender, EventArgs e) =>
         RunOnceWhileDisabled(_btnClearLogs, () =>
         {
@@ -1067,6 +1253,13 @@ internal partial class MainForm : Form
                     _nonProxiedLogCache = [];
                     _lstNonProxiedLogs.VirtualListSize = 0;
                     _lstNonProxiedLogs.Invalidate();
+                }
+                else if (_logSubTabs.SelectedTab == _logWebPage)
+                {
+                    _webStats.ClearLogs();
+                    _webLogCache = [];
+                    _lstWebLogs.VirtualListSize = 0;
+                    _lstWebLogs.Invalidate();
                 }
                 else if (_logSubTabs.SelectedTab == _tabSysLogs)
                 {
@@ -1101,6 +1294,8 @@ internal partial class MainForm : Form
             ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
         else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
             ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
+        else if (_logSubTabs.SelectedTab == _logWebPage)
+            ShowSelectedLogDetails(_lstWebLogs, _webLogCache, LogSource.Web);
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             ShowSelectedSysLogDetails();
         else
@@ -1203,6 +1398,9 @@ internal partial class MainForm : Form
     private void LstNonProxiedLogs_DoubleClick(object? sender, EventArgs e) =>
         ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
 
+    private void LstWebLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstWebLogs, _webLogCache, LogSource.Web);
+
     private void ShowLogDetails(RequestLog log, LogSource source)
     {
         // The in-memory entry is a lightweight summary without request/response bodies.
@@ -1271,6 +1469,7 @@ internal partial class MainForm : Form
             {
                 LogSource.Mcp => _mcpStats,
                 LogSource.NonProxied => _nonProxiedStats,
+                LogSource.Web => _webStats,
                 _ => _stats,
             };
             ExceptionDetail? ex = statsForSource.GetException(log.ExceptionId.Value);
@@ -1600,6 +1799,8 @@ internal partial class MainForm : Form
             RefreshMcpLogs();
         else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
             RefreshNonProxiedLogs();
+        else if (_logSubTabs.SelectedTab == _logWebPage)
+            RefreshWebLogs();
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             RefreshSystemLogs();
         else if (_logSubTabs.SelectedTab == _logStreamsPage)
@@ -2117,8 +2318,7 @@ internal partial class MainForm : Form
         _txtWebDashboardPort.Text = webDashboard.Port.ToString();
         _txtWebDashboardAddress.Text = webDashboard.ListenAddress;
         _cmbWebDashboardScheme.SelectedIndex = string.Equals(webDashboard.Scheme, "Https", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-        _txtWebDashboardCertPath.Text = webDashboard.CertificatePath ?? string.Empty;
-        _txtWebDashboardCertPassword.Text = webDashboard.CertificatePassword ?? string.Empty;
+        LoadWebDashboardCertificateCredentials(webDashboard.CertificateCredentialName);
         UpdateWebDashboardUrlLabel();
 
         _dgvMappings.Rows.Clear();
@@ -2314,10 +2514,11 @@ internal partial class MainForm : Form
             }
 
             bool https = _cmbWebDashboardScheme.SelectedIndex == 1;
-            string certPath = _txtWebDashboardCertPath.Text.Trim();
-            if (https && certPath.Length == 0)
+            string certCredential = _cmbWebDashboardCertCredential.SelectedItem as string ?? string.Empty;
+            if (https && certCredential.Length == 0)
             {
-                MessageBox.Show("HTTPS requires a certificate path (PFX). Use Http when TLS is terminated at a load balancer.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("HTTPS requires a certificate credential. Add the PFX or PEM certificate to the Credentials tab, then select it here. Use Http when TLS is terminated at a load balancer.",
+                    "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2327,16 +2528,14 @@ internal partial class MainForm : Form
             string prevAddress = webDashboard.ListenAddress;
             bool prevRequireLogin = webDashboard.RequireLogin;
             string prevScheme = webDashboard.Scheme;
-            string? prevCertPath = webDashboard.CertificatePath;
-            string? prevCertPassword = webDashboard.CertificatePassword;
+            string? prevCertCredential = webDashboard.CertificateCredentialName;
 
             webDashboard.Enabled = _chkWebDashboardEnabled.Checked;
             webDashboard.Port = port;
             webDashboard.ListenAddress = address;
             webDashboard.RequireLogin = _chkWebDashboardRequireLogin.Checked;
             webDashboard.Scheme = https ? "Https" : "Http";
-            webDashboard.CertificatePath = certPath.Length == 0 ? null : certPath;
-            webDashboard.CertificatePassword = _txtWebDashboardCertPassword.Text.Length == 0 ? null : _txtWebDashboardCertPassword.Text;
+            webDashboard.CertificateCredentialName = certCredential.Length == 0 ? null : certCredential;
 
             if (!TryPersist("Web dashboard settings", PersistSettingsCore, () =>
             {
@@ -2345,8 +2544,7 @@ internal partial class MainForm : Form
                 webDashboard.ListenAddress = prevAddress;
                 webDashboard.RequireLogin = prevRequireLogin;
                 webDashboard.Scheme = prevScheme;
-                webDashboard.CertificatePath = prevCertPath;
-                webDashboard.CertificatePassword = prevCertPassword;
+                webDashboard.CertificateCredentialName = prevCertCredential;
             }))
                 return;
 
@@ -2373,6 +2571,41 @@ internal partial class MainForm : Form
             : address;
         string scheme = _cmbWebDashboardScheme.SelectedIndex == 1 ? "https" : "http";
         _lblWebDashboardUrl.Text = $"Configured URL: {scheme}://{host}:{port}";
+    }
+
+    /// <summary>
+    /// Fills the HTTPS certificate picker with the stored credential names. The first entry is the
+    /// empty "no certificate" option so the selection can be cleared or left blank for Http.
+    /// </summary>
+    private void LoadWebDashboardCertificateCredentials(string? selected)
+    {
+        _cmbWebDashboardCertCredential.BeginUpdate();
+        try
+        {
+            _cmbWebDashboardCertCredential.Items.Clear();
+            _cmbWebDashboardCertCredential.Items.Add(string.Empty);
+
+            List<string> names;
+            lock (_settings.CredentialsSyncRoot)
+            {
+                names = [.. _settings.Credentials
+                    .Select(c => c.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
+            }
+
+            foreach (string name in names)
+                _cmbWebDashboardCertCredential.Items.Add(name);
+
+            int index = string.IsNullOrWhiteSpace(selected)
+                ? 0
+                : _cmbWebDashboardCertCredential.Items.IndexOf(selected);
+            _cmbWebDashboardCertCredential.SelectedIndex = index < 0 ? 0 : index;
+        }
+        finally
+        {
+            _cmbWebDashboardCertCredential.EndUpdate();
+        }
     }
 
     private bool SaveProxyApiKeyRequirement(bool requireApiKey)
@@ -2469,10 +2702,12 @@ internal partial class MainForm : Form
         _stats.UpdateMaxEntries(maxLogs);
         _mcpStats.UpdateMaxEntries(maxLogs);
         _nonProxiedStats.UpdateMaxEntries(maxLogs);
+        _webStats.UpdateMaxEntries(maxLogs);
         // Re-clamp the body-retention window against the new maximum for every log source.
         _stats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _mcpStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _nonProxiedStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
+        _webStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
         TryPersist("Settings", PersistSettingsCore);
@@ -2544,6 +2779,7 @@ internal partial class MainForm : Form
         _stats.UpdateRetentionHours(logRetentionHours);
         _mcpStats.UpdateRetentionHours(logRetentionHours);
         _nonProxiedStats.UpdateRetentionHours(logRetentionHours);
+        _webStats.UpdateRetentionHours(logRetentionHours);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);
@@ -3343,7 +3579,10 @@ internal partial class MainForm : Form
         }
 
         _lstCredentials.EndUpdate();
-    }
+
+                // The HTTPS certificate picker in the Settings tab references credential names.
+                LoadWebDashboardCertificateCredentials(_settings.WebDashboard.CertificateCredentialName);
+            }
 
     private void BtnAddCredential_Click(object? sender, EventArgs e)
     {

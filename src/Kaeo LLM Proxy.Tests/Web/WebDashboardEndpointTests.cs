@@ -717,6 +717,61 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task WebTraffic_RecordsDashboardCalls_AndSkipsStatusPolling()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/credentials")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/status")).StatusCode);
+
+        RequestLog entry = await WaitForWebTrafficAsync(b, "/api/credentials");
+        Assert.Equal("GET", entry.Method);
+        Assert.Equal(200, entry.StatusCode);
+        Assert.Equal(RequestStatus.Success, entry.Status);
+
+        // The dashboard polls /api/status continuously; recording it would bury real traffic.
+        Assert.DoesNotContain(b.Controller.WebStats.GetRecentLogs(), log => log.OllamaPath == "/api/status");
+
+        // Web traffic shares the request-log store, under its own table.
+        await b.Controller.WebStats.FlushAsync();
+        Assert.NotNull(b.Database.LoadFullLogEntry(entry.Timestamp, LogSource.Web));
+    }
+
+    [Fact]
+    public async Task WebTraffic_RecordsRejectedRequests_EvenThoughTheyArePollingEndpoints()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        // Anonymous polling is rejected before the auth gate, so the skip list must not apply:
+        // an unauthorized caller is exactly the traffic worth seeing.
+        HttpResponseMessage rejected = await b.Anonymous.GetAsync("/api/logs");
+        Assert.Equal(HttpStatusCode.Unauthorized, rejected.StatusCode);
+
+        RequestLog entry = await WaitForWebTrafficAsync(b, "/api/logs");
+        Assert.Equal(401, entry.StatusCode);
+        Assert.Equal(RequestStatus.Error, entry.Status);
+    }
+
+    /// <summary>
+    /// The traffic middleware records after the response is written, so the entry can land a
+    /// moment after the client's call returns. Polls briefly instead of sleeping a fixed time.
+    /// </summary>
+    private static async Task<RequestLog> WaitForWebTrafficAsync(Bundle bundle, string path)
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            RequestLog? match = bundle.Controller.WebStats.GetRecentLogs()
+                .FirstOrDefault(log => log.OllamaPath == path);
+            if (match is not null)
+                return match;
+
+            await Task.Delay(50);
+        }
+
+        throw new Xunit.Sdk.XunitException($"No web traffic entry was recorded for '{path}'.");
+    }
+
+    [Fact]
     public async Task Proxy_Restart_KeepsIsRunning()
     {
         await using Bundle b = await CreateBundleAsync();
@@ -851,7 +906,39 @@ public sealed class WebDashboardEndpointTests
         }
     }
 
-    private static async Task<Bundle> CreateBundleAsync(
+    [Fact]
+        public async Task Https_WithCertificateFromCredential_ServesStatus()
+        {
+            string pfxBase64;
+            using (RSA rsa = RSA.Create(2048))
+            {
+                var request = new CertificateRequest("CN=localhost", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                using X509Certificate2 cert = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddDays(1));
+                pfxBase64 = Convert.ToBase64String(cert.Export(X509ContentType.Pfx, "cred-pass"));
+            }
+
+            await using Bundle b = await CreateBundleAsync(
+                wd =>
+                {
+                    wd.Scheme = "Https";
+                    wd.CertificateCredentialName = "dashboard-cert";
+                },
+                settings => settings.Credentials =
+                [
+                    new StoredCredential
+                    {
+                        Name = "dashboard-cert",
+                        Description = "Dashboard HTTPS",
+                        Secret = "cred-pass",
+                        Certificate = pfxBase64,
+                    },
+                ]);
+
+            Assert.StartsWith("https://", b.Host.Url);
+            Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/status")).StatusCode);
+        }
+
+        private static async Task<Bundle> CreateBundleAsync(
         Action<WebDashboardSettings>? configureDashboard = null,
         Action<AppSettings>? configureSettings = null,
         string? certPath = null,

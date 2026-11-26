@@ -74,14 +74,18 @@ internal static class Program
             controller.StatusChanged += (_, status) => Console.WriteLine($"[proxy] {status}");
             controller.ProxyStartFailed += (_, ex) => Console.Error.WriteLine($"[proxy] start failed: {ex.Message}");
 
+            // The controller's assembly must not reference the Web assembly, so the process that
+            // owns the dashboard host registers how to create it. This also makes the dashboard's
+            // own Stop/Restart endpoints work in headless mode.
+            controller.WebDashboard.RegisterHostFactory(() => new WebDashboardHost(settings, controller));
+
             await controller.StartAsync();
 
-            await using WebDashboardHost dashboard = new(settings, controller);
             try
             {
-                await dashboard.StartAsync();
-                if (dashboard.Url is not null)
-                    Console.WriteLine($"[dashboard] {dashboard.Url}");
+                await controller.WebDashboard.StartAsync();
+                if (controller.WebDashboard.Url is not null)
+                    Console.WriteLine($"[dashboard] {controller.WebDashboard.Url}");
             }
             catch (Exception ex)
             {
@@ -92,7 +96,6 @@ internal static class Program
             await WaitForShutdownAsync();
 
             Console.WriteLine("Kaeo LLM Proxy (headless) shutting down…");
-            await dashboard.StopAsync();
             await controller.StopAsync();
             return 0;
         }

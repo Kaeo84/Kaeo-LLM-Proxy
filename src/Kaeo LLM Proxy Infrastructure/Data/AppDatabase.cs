@@ -1262,6 +1262,7 @@ internal sealed class AppDatabase : IDisposable
     {
         LogSource.Mcp => "mcp_requests",
         LogSource.NonProxied => "non_proxied_requests",
+        LogSource.Web => "web_requests",
         _ => "requests",
     };
 
@@ -1455,6 +1456,45 @@ internal sealed class AppDatabase : IDisposable
                                 );
 
                                 CREATE INDEX IF NOT EXISTS idx_non_proxied_requests_timestamp_utc ON non_proxied_requests(timestamp_utc);
+
+                CREATE TABLE IF NOT EXISTS web_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    ollama_path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    original_model TEXT NULL,
+                    streaming INTEGER NOT NULL,
+                    status INTEGER NOT NULL,
+                    error_message TEXT NULL,
+                    status_code INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    tokens_per_second REAL NOT NULL,
+                    exception_id INTEGER NULL,
+                    request_body TEXT NULL,
+                    upstream_request_body TEXT NULL,
+                    response_body TEXT NULL,
+                    request_bytes INTEGER NOT NULL,
+                    response_bytes INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    draft_n INTEGER NOT NULL DEFAULT 0,
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0,
+                    debug_summary TEXT NULL,
+                    upstream_response_body TEXT NULL,
+                    stop_reason TEXT NULL,
+                    client_address TEXT NULL,
+                    user_agent TEXT NULL,
+                    request_headers TEXT NULL,
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_web_requests_timestamp_utc ON web_requests(timestamp_utc);
 
                 CREATE TABLE IF NOT EXISTS model_mappings (
                     id INTEGER NOT NULL DEFAULT 0,
@@ -1765,6 +1805,41 @@ internal sealed class AppDatabase : IDisposable
                                 ("non_proxied_requests", "request_headers", "TEXT NULL"),
                                 ("non_proxied_requests", "response_headers", "TEXT NULL"),
                                 ("non_proxied_requests", "user_id", "INTEGER NULL"),
+
+                                // ── web_requests: the same log schema ─────────────────────────
+                                ("web_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "ollama_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "upstream_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "model", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "original_model", "TEXT NULL"),
+                                ("web_requests", "streaming", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "status", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "error_message", "TEXT NULL"),
+                                ("web_requests", "status_code", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "duration_ms", "REAL NOT NULL DEFAULT 0"),
+                                ("web_requests", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "tokens_per_second", "REAL NOT NULL DEFAULT 0"),
+                                ("web_requests", "exception_id", "INTEGER NULL"),
+                                ("web_requests", "request_body", "TEXT NULL"),
+                                ("web_requests", "upstream_request_body", "TEXT NULL"),
+                                ("web_requests", "response_body", "TEXT NULL"),
+                                ("web_requests", "request_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "draft_n", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "draft_n_accepted", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "debug_summary", "TEXT NULL"),
+                                ("web_requests", "upstream_response_body", "TEXT NULL"),
+                                ("web_requests", "stop_reason", "TEXT NULL"),
+                                ("web_requests", "client_address", "TEXT NULL"),
+                                ("web_requests", "user_agent", "TEXT NULL"),
+                                ("web_requests", "request_headers", "TEXT NULL"),
+                                ("web_requests", "response_headers", "TEXT NULL"),
+                                ("web_requests", "user_id", "INTEGER NULL"),
 
                                 // ── model_mappings ────────────────────────────────────────────
                                 ("model_mappings", "id", "INTEGER NOT NULL DEFAULT 0"),

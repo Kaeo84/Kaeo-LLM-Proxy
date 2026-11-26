@@ -26,6 +26,15 @@ internal enum LogSource
     /// proxied traffic, while still being logged and attributable.
     /// </summary>
     NonProxied,
+
+    /// <summary>
+    /// Requests served by the web dashboard's own Kestrel listener: page loads, sign-ins, and
+    /// control-plane API calls. Logged separately from proxy traffic because it is traffic to the
+    /// dashboard, not through the proxy, so it answers "who is using the dashboard and what did
+    /// they do". High-frequency read-only dashboard polling is not logged (failures always are) so
+    /// a single open browser tab cannot bury real activity.
+    /// </summary>
+    Web,
 }
 
 /// <summary>A single logged proxy request with timing and token stats.</summary>

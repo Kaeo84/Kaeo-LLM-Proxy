@@ -52,6 +52,13 @@ internal sealed class WebDashboardUpdate
     public string? ListenAddress { get; set; }
     public bool? RequireLogin { get; set; }
     public string? Scheme { get; set; }
+
+    /// <summary>
+    /// Name of a stored credential holding the HTTPS certificate. Preferred over
+    /// <see cref="CertificatePath"/>; sending an empty string clears it.
+    /// </summary>
+    public string? CertificateCredentialName { get; set; }
+
     public string? CertificatePath { get; set; }
     public string? CertificatePassword { get; set; }
 }

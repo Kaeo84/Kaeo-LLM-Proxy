@@ -26,15 +26,21 @@ internal static partial class DashboardEndpoints
             lock (Sync)
             {
                 List<StoredCredential> list = controller.Settings.Credentials;
+                // Saving under an existing name edits that credential in place. Omitted secret
+                // fields (null) keep their stored value, so an edit can change the description or
+                // swap just the certificate without wiping the API key the caller never saw.
+                StoredCredential? existing = list.FirstOrDefault(
+                    c => string.Equals(c.Name, write.Name, StringComparison.OrdinalIgnoreCase));
+
                 list.RemoveAll(c => string.Equals(c.Name, write.Name, StringComparison.OrdinalIgnoreCase));
                 list.Add(new StoredCredential
                 {
                     Name = write.Name,
                     Description = write.Description,
                     Username = write.Username,
-                    Secret = write.Secret ?? "",
-                    PrivateKey = write.PrivateKey,
-                    Certificate = write.Certificate,
+                    Secret = write.Secret ?? existing?.Secret ?? "",
+                    PrivateKey = write.PrivateKey ?? existing?.PrivateKey,
+                    Certificate = write.Certificate ?? existing?.Certificate,
                 });
                 controller.Database.SaveCredentials(list);
             }

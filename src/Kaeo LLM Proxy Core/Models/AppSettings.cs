@@ -1121,8 +1121,19 @@ internal sealed class WebDashboardSettings
     public string Scheme { get; set; } = "Http";
 
     /// <summary>
-    /// Path to a PFX/PKCS#12 certificate used when <see cref="Scheme"/> is "Https". Null/empty uses
-    /// the ASP.NET Core development certificate (development only).
+    /// Name of a stored credential (<see cref="AppSettings.Credentials"/>) that supplies the HTTPS
+    /// certificate when <see cref="Scheme"/> is "Https". The credential's <c>Certificate</c> field
+    /// holds either a PFX/PKCS#12 file encoded as base64 or a PEM certificate (paired with the
+    /// credential's <c>PrivateKey</c>); the credential's <c>Secret</c> is the PFX password, if any.
+    /// Preferred over <see cref="CertificatePath"/> because the material is encrypted at rest and
+    /// managed alongside every other credential.
+    /// </summary>
+    public string? CertificateCredentialName { get; set; }
+
+    /// <summary>
+    /// Path to a PFX/PKCS#12 certificate used when <see cref="Scheme"/> is "Https" and
+    /// <see cref="CertificateCredentialName"/> is not set. Null/empty uses the ASP.NET Core
+    /// development certificate (development only).
     /// </summary>
     public string? CertificatePath { get; set; }
 
@@ -1891,6 +1902,7 @@ internal sealed class AppSettings
                 ListenAddress = WebDashboard.ListenAddress,
                 RequireLogin = WebDashboard.RequireLogin,
                 Scheme = WebDashboard.Scheme,
+                CertificateCredentialName = WebDashboard.CertificateCredentialName,
                 CertificatePath = WebDashboard.CertificatePath,
                 CertificatePassword = WebDashboard.CertificatePassword,
             },

@@ -251,6 +251,40 @@
         $mcp.append($mcpActions);
         $cards.append($mcp);
 
+        // The dashboard owns this listener, so Stop and Restart take this page down with them.
+        var web = s.dashboard || {};
+        var $web = $('<div class="card">').append($('<h3>').text('Web server ').append(pill(web.isRunning, 'running', 'stopped')))
+            .append(kv('Status', web.status || '—'))
+            .append(kv('URL', web.url || '—'))
+            .append(kv('Listen', (web.listenAddress || 'localhost') + ':' + (web.listenPort || '—')))
+            .append(kv('Certificate', web.certificateCredentialName || '—'));
+        var $webActions = $('<div class="actions">');
+        $('<button type="button" class="primary">').text('Start').prop('disabled', web.isRunning || !web.canControl)
+            .on('click', function () { api('POST', '/api/webdashboard/start').then(refreshDashboard); }).appendTo($webActions);
+        $('<button type="button" class="danger">').text('Stop').prop('disabled', !web.isRunning)
+            .on('click', function () {
+                if (!window.confirm('Stop the web server? This page will stop responding and must be restarted from the Windows app or the headless console.')) return;
+                api('POST', '/api/webdashboard/stop')
+                    .then(function () { toast('Web server stopping…'); })
+                    .catch(function () { /* the listener drops before the reply is read */ });
+            }).appendTo($webActions);
+        $('<button type="button">').text('Restart').prop('disabled', !web.isRunning || !web.canControl)
+            .on('click', function () {
+                api('POST', '/api/webdashboard/restart')
+                    .then(function () { toast('Web server restarting…'); })
+                    .catch(function () { /* the listener drops before the reply is read */ });
+            }).appendTo($webActions);
+        $web.append($webActions);
+        if (web.error) $web.append($('<p class="card-error">').text(web.error));
+        $cards.append($web);
+
+        var perf = s.performance || {};
+        $cards.append($('<div class="card">').append($('<h3>').text('Performance'))
+            .append(kv('CPU', (perf.cpuPercent || 0).toFixed(1) + ' %'))
+            .append(kv('Memory', (perf.memoryMb || 0).toFixed(1) + ' MB'))
+            .append(kv('GC gen2', fmt(perf.gen2Collections)))
+            .append(kv('Large object heap', (perf.lohMb || 0).toFixed(1) + ' MB')));
+
         var enabled = (s.modules || []).filter(function (m) { return m.isEnabled; }).length;
         var running = (s.modules || []).filter(function (m) { return m.isRunning; }).length;
         $cards.append($('<div class="card">').append($('<h3>').text('Modules'))
@@ -270,7 +304,7 @@
 
     function renderStats(stats) {
         var $wrap = $('#stats-tables').empty();
-        var sources = [['proxy', 'Proxy'], ['mcp', 'MCP'], ['nonProxied', 'Non-proxied']];
+        var sources = [['proxy', 'Proxy'], ['mcp', 'MCP'], ['web', 'Web'], ['nonProxied', 'Non-proxied']];
         var $table = $('<table>').append($('<thead>').append($('<tr>')
             .append('<th>Source</th><th>Requests</th><th>Errors</th><th>Prompt tokens</th><th>Completion tokens</th><th>req/s</th>')));
         var $tbody = $('<tbody>');
@@ -290,8 +324,8 @@
     loaders.dashboard = refreshDashboard;
 
     // ------------------------------------------------------------------ requests tab
-    var logCursors = { proxy: 0, mcp: 0, nonproxied: 0 };
-    var logLoaded = { proxy: false, mcp: false, nonproxied: false };
+    var logCursors = { proxy: 0, mcp: 0, web: 0, nonproxied: 0 };
+    var logLoaded = { proxy: false, mcp: false, web: false, nonproxied: false };
     var renderedLogSource = null;
     var logGeneration = 0;
     var logsPaused = false;
@@ -306,7 +340,7 @@
         var $source = $('#log-source');
         var keep = $source.val() || 'proxy';
         $source.empty();
-        [['proxy', 'Proxy'], ['mcp', 'MCP'], ['nonproxied', 'Non-proxied']].forEach(function (s) {
+        [['proxy', 'Proxy'], ['mcp', 'MCP'], ['web', 'Web'], ['nonproxied', 'Non-proxied']].forEach(function (s) {
             if (dashboardRole === 'readOnly' && s[0] !== 'proxy') return;
             $source.append($('<option>').val(s[0]).text(s[1]));
         });
@@ -796,6 +830,7 @@
                 return;
             }
             list.forEach(function (c) {
+                var $edit = $('<button type="button">').text('Edit').on('click', function () { credentialDialog(c); });
                 var $del = $('<button type="button" class="danger">').text('Delete').on('click', function () {
                     confirmDialog('Delete credential', 'Delete credential "' + c.name + '"? Mappings referencing it will lose authentication.', function () {
                         api('DELETE', '/api/credentials/' + encodeURIComponent(c.name)).then(function () { toast('Credential deleted.'); loadCredentials(); });
@@ -806,12 +841,15 @@
                     .append($('<td>').text(c.description || '—'))
                     .append($('<td>').text(c.username || '—'))
                     .append($('<td>').append($('<span class="pill">').addClass(c.hasSecretMaterial ? 'ok' : '').text(c.hasSecretMaterial ? 'yes' : 'no')))
-                    .append($('<td>').append($del)));
+                    .append($('<td>').append($edit).append(' ').append($del)));
             });
         });
     }
 
-    function credentialDialog() {
+    // `existing` comes from the credentials list, which never returns secret material: the secret,
+    // private key, and certificate start blank and are only sent when the operator types a
+    // replacement. A blank field leaves the stored value untouched (the API treats null as "keep").
+    function credentialDialog(existing) {
         var $body = $('<div>');
         function field(label, $input, hint) {
             var $f = $('<div class="field">').append($('<label>').text(label)).append($input);
@@ -819,12 +857,18 @@
             $body.append($f);
             return $input;
         }
-        var $name = field('Name', $('<input type="text">'), 'Saving with an existing name replaces that credential.');
-        var $description = field('Description', $('<input type="text">'));
-        var $username = field('Username', $('<input type="text">'));
-        var $secret = field('Secret / API key', $('<input type="password" autocomplete="new-password">'), 'Write-only: never returned by the API.');
-        var $privateKey = field('Private key (PEM, optional)', $('<textarea rows="4">'));
-        var $certificate = field('Certificate (PEM, optional)', $('<textarea rows="4">'));
+        var editing = !!existing;
+        var $name = field('Name', $('<input type="text">').val(editing ? existing.name : ''),
+            editing ? 'The name identifies the credential and cannot be changed here.' : 'Saving with an existing name replaces that credential.');
+        if (editing) $name.prop('readonly', true);
+        var $description = field('Description', $('<input type="text">').val(editing ? (existing.description || '') : ''));
+        var $username = field('Username', $('<input type="text">').val(editing ? (existing.username || '') : ''));
+        var $secret = field('Secret / API key', $('<input type="password" autocomplete="new-password">'),
+            editing ? 'Write-only: never returned by the API. Leave blank to keep the stored value.' : 'Write-only: never returned by the API.');
+        var $privateKey = field('Private key (PEM, optional)', $('<textarea rows="4">'),
+            editing ? 'Leave blank to keep the stored key.' : null);
+        var $certificate = field('Certificate (PFX as base64 or PEM, optional)', $('<textarea rows="4">'),
+            editing ? 'Leave blank to keep the stored certificate; paste a new one to replace it (used for the HTTPS dashboard).' : 'Used for the HTTPS dashboard when selected in Settings.');
 
         function save() {
             var name = $name.val().trim();
@@ -843,7 +887,7 @@
             }).catch(function (err) { modalError(err.message); });
         }
 
-        openModal('Add credential', $body, [
+        openModal(editing ? 'Edit credential' : 'Add credential', $body, [
             { label: 'Cancel' },
             { label: 'Save', cls: 'primary', onClick: save }
         ]);
@@ -1442,8 +1486,7 @@
                 { path: 'webDashboard.listenAddress', label: 'Listen address', type: 'text' },
                 { path: 'webDashboard.requireLogin', label: 'Require login', type: 'bool', hint: 'Applies immediately. Off = anyone who can reach the dashboard gets full admin access — use only on a trusted network.' },
                 { path: 'webDashboard.scheme', label: 'Scheme', type: 'select', options: ['Http', 'Https'] },
-                { path: 'webDashboard.certificatePath', label: 'HTTPS certificate path (PFX)', type: 'text' },
-                { path: 'webDashboard.certificatePassword', label: 'Certificate password', type: 'password', writeOnly: true, hasPath: 'webDashboard.hasCertificatePassword' }
+                { path: 'webDashboard.certificateCredentialName', label: 'HTTPS certificate credential', type: 'credentials', hint: 'HTTPS only. Store the PFX (base64) or PEM certificate on the Credentials tab, then select it here.' }
             ]
         }
     ];
@@ -1468,6 +1511,17 @@
                     $input = $('<select>');
                     f.options.forEach(function (o) { $('<option>').val(o).text(o).appendTo($input); });
                     $input.val(value || f.options[0]);
+                } else if (f.type === 'credentials') {
+                    // Credential names come from a separate endpoint, so the options arrive after
+                    // the form renders. The select stays disabled until they do, which keeps Save
+                    // from submitting an empty value and clearing the stored selection.
+                    $input = $('<select>').append($('<option>').val('').text('(none)')).prop('disabled', true);
+                    api('GET', '/api/credentials', undefined, { silent: true }).then(function (creds) {
+                        (creds || []).forEach(function (c) {
+                            $('<option>').val(c.name).text(c.name).appendTo($input);
+                        });
+                        $input.val(value || '').prop('disabled', !!f.readonly);
+                    }).catch(function () { /* the picker degrades to "(none)" only */ });
                 } else if (f.type === 'password') {
                     var has = !!getPath(view, f.hasPath);
                     $input = $('<input type="password" autocomplete="new-password">')
@@ -1476,7 +1530,10 @@
                     $input = $('<input>').attr('type', f.type === 'number' ? 'number' : 'text')
                         .val(value === null || value === undefined ? '' : value);
                 }
-                $input.attr('data-path', f.path).prop('disabled', !!f.readonly);
+                $input.attr('data-path', f.path);
+                // Only ever disable here: an async field (credentials) enables itself once its
+                // options exist, and re-enabling it here would let Save submit an empty value.
+                if (f.readonly) $input.prop('disabled', true);
                 var $field = $('<div class="field">').append($('<label>').text(f.label)).append($input);
                 if (f.hint) $field.append($('<span class="hint">').text(f.hint));
                 if (f.readonly) $field.append($('<span class="hint">').text('Read-only here.'));
@@ -1684,7 +1741,7 @@
             selectMapping(Number($(this).attr('data-id')));
             configureSelectedMapping();
         });
-        $('#btn-add-credential').on('click', credentialDialog);
+        $('#btn-add-credential').on('click', function () { credentialDialog(); });
         $('#btn-refresh-credentials').on('click', loadCredentials);
         $('#btn-refresh-modules').on('click', loadModules);
         $('#btn-upload-module').on('click', function () { $('#module-package-input').trigger('click'); });
