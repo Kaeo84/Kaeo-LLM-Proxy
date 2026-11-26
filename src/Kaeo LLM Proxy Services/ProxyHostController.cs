@@ -51,6 +51,13 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
     /// </summary>
     public event EventHandler<Exception>? ProxyStartFailed;
 
+    /// <summary>
+    /// Message from the most recent failed start, or null after a successful one. The dashboard
+    /// surfaces it so a Restart that cannot rebind (port in use, missing URL ACL) explains itself
+    /// instead of just coming back "stopped".
+    /// </summary>
+    public string? LastStartError { get; private set; }
+
     public ProxyHostController(AppSettings settings, AppDatabase database, ModuleHost moduleHost)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -100,15 +107,28 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         try
         {
             Server.Start(Settings.ListenPort, Settings.ListenAddress, Settings.MaxConcurrentRequests);
+            LastStartError = null;
             Log.Information("Proxy started on {Address}:{Port}", Settings.ListenAddress, Settings.ListenPort);
             StatusChanged?.Invoke(this, $"Listening {Settings.ListenAddress}:{Settings.ListenPort}");
         }
         catch (Exception ex)
         {
+            LastStartError = ex.Message;
             Log.Error(ex, "Failed to start proxy on {Address}:{Port}", Settings.ListenAddress, Settings.ListenPort);
             StatusChanged?.Invoke(this, "Error");
             ProxyStartFailed?.Invoke(this, ex);
         }
+    }
+
+    /// <summary>
+    /// Stops the listener (draining in-flight requests first) and starts it again on the configured
+    /// endpoint. Never throws: a rebind failure is handled exactly like a failed
+    /// <see cref="StartProxy"/>.
+    /// </summary>
+    public async Task RestartProxyAsync()
+    {
+        await Server.StopAsync();
+        StartProxy();
     }
 
     /// <summary>

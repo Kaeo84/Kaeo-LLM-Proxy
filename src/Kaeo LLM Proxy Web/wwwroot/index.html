@@ -12,6 +12,7 @@
         <nav id="tabs">
             <a href="#dashboard" data-tab="dashboard">Dashboard</a>
             <a href="#requests" data-tab="requests">Requests</a>
+            <a href="#syslog" data-tab="syslog">Sys Log</a>
             <a href="#usage" data-tab="usage">Usage</a>
             <a href="#models" data-tab="models">Models</a>
             <a href="#credentials" data-tab="credentials">Credentials</a>
@@ -42,10 +43,43 @@
                         <option value="nonproxied">Non-proxied</option>
                     </select>
                 </label>
+                <label>Refresh
+                    <select id="log-refresh" class="refresh-select">
+                        <option value="0">Manual</option>
+                        <option value="5">5s</option>
+                        <option value="10">10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </label>
                 <button id="btn-pause" type="button">Pause</button>
                 <button id="btn-clear-logs" type="button">Clear view</button>
                 <span id="log-count" class="muted"></span>
+                <button id="btn-refresh-logs" type="button" class="toolbar-right">Refresh</button>
             </div>
+            <details id="streams-panel" class="streams-panel">
+                <summary>Live streams <span id="stream-count" class="muted"></span></summary>
+                <div class="streams-body">
+                    <div class="table-wrap streams-scroll">
+                        <table id="stream-table">
+                            <thead>
+                                <tr>
+                                    <th>State</th><th>Started</th><th>Kind</th><th>Method</th><th>Path</th>
+                                    <th>Model</th><th>Upstream B</th><th>Client B</th><th>Frames</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div id="stream-detail" class="hidden">
+                        <div class="stream-panes">
+                            <div><h4>Raw upstream tail</h4><pre id="stream-raw"></pre></div>
+                            <div><h4>Forwarded to client</h4><pre id="stream-forwarded"></pre></div>
+                        </div>
+                    </div>
+                    <p class="muted">Live rows come first, then streams that finished in the last 15 minutes. Click a row to load its captured tails.</p>
+                </div>
+            </details>
             <div class="table-wrap table-fill">
                 <table id="log-table">
                     <thead>
@@ -53,6 +87,42 @@
                             <th>Time</th><th>Requestor</th><th>Method</th><th>Path</th><th>Model</th>
                             <th>Status</th><th>ms</th><th>Prompt</th><th>Completion</th><th>tok/s</th>
                         </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="tab-syslog" class="tab">
+            <div class="toolbar">
+                <span id="syslog-levels" class="level-checks">
+                    <label><input type="checkbox" value="Verbose"> Verbose</label>
+                    <label><input type="checkbox" value="Debug"> Debug</label>
+                    <label><input type="checkbox" value="Information" checked> Info</label>
+                    <label><input type="checkbox" value="Warning" checked> Warning</label>
+                    <label><input type="checkbox" value="Error" checked> Error</label>
+                    <label><input type="checkbox" value="Fatal" checked> Fatal</label>
+                </span>
+                <label>Search <input id="syslog-search" type="search" placeholder="message text"></label>
+                <label><input id="syslog-hide-heartbeats" type="checkbox" checked> Hide heartbeats</label>
+                <label>Refresh
+                    <select id="syslog-refresh" class="refresh-select">
+                        <option value="0">Manual</option>
+                        <option value="5">5s</option>
+                        <option value="10">10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </label>
+                <button id="btn-clear-syslog" type="button">Clear view</button>
+                <span id="syslog-count" class="muted"></span>
+                <button id="btn-refresh-syslog" type="button" class="toolbar-right">Refresh</button>
+            </div>
+            <div id="syslog-health" class="muted"></div>
+            <div class="table-wrap table-fill">
+                <table id="syslog-table">
+                    <thead>
+                        <tr><th>Time</th><th>Level</th><th>Message</th><th>Source</th></tr>
                     </thead>
                     <tbody></tbody>
                 </table>

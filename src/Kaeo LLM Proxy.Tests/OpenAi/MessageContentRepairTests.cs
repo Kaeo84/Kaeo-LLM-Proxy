@@ -252,7 +252,7 @@ public class MessageContentRepairTests
             OriginalJson = "{}",
             Payload = (JsonObject)JsonNode.Parse("""
                 {"model":"m","messages":[{"role":"user","content":"hi"}]}
-                """),
+                """)!,
             Settings = settings,
             Log = new RequestLog(),
         };

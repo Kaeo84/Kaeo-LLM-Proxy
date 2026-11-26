@@ -241,9 +241,39 @@ internal partial class MainForm : Form
         LoadMcpSettingsToForm();
         UpdateMcpStatusDisplays();
         _stats.ConnectionHealthChanged += OnConnectionHealthChanged;
+        _database.ModelMappingsSaved += OnModelMappingsSaved;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
         _tabControl.SelectedIndexChanged += TabControl_SelectedIndexChanged;
+    }
+
+    /// <summary>
+    /// Re-syncs the mappings grid whenever the window regains focus. The web dashboard edits the
+    /// same <see cref="AppSettings.ModelMappings"/> list, and the grid is only a snapshot of it.
+    /// </summary>
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        SyncMappingsGridFromSettings();
+    }
+
+    /// <summary>
+    /// Marshals a mapping re-sync onto the UI thread after the database rewrote the mapping table
+    /// (the web dashboard does this from an ASP.NET request thread).
+    /// </summary>
+    private void OnModelMappingsSaved()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        try
+        {
+            BeginInvoke(SyncMappingsGridFromSettings);
+        }
+        catch (InvalidOperationException)
+        {
+            // The form was disposed between the check and the marshal — nothing left to refresh.
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -268,6 +298,7 @@ internal partial class MainForm : Form
         _stats.StatsChanged -= OnStatsChanged;
         _mcpStats.StatsChanged -= OnMcpStatsChanged;
         _stats.ConnectionHealthChanged -= OnConnectionHealthChanged;
+        _database.ModelMappingsSaved -= OnModelMappingsSaved;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
@@ -2600,6 +2631,58 @@ internal partial class MainForm : Form
     }
 
     /// <summary>
+    /// Rebuilds the mappings grid from <see cref="AppSettings.ModelMappings"/> when the two have
+    /// diverged. The web dashboard edits that list in place, while
+    /// <see cref="CommitMappingsFromGrid"/> rebuilds it from the grid rows — so without this
+    /// re-sync the next Windows-GUI mapping edit would silently drop every dashboard-added model.
+    /// </summary>
+    private void SyncMappingsGridFromSettings()
+    {
+        if (_loadingSettings || _dgvMappings.IsDisposed)
+            return;
+
+        List<ModelMapping> mappings = _settings.ModelMappings;
+        if (string.Equals(GridMappingSignature(), MappingSignature(mappings), StringComparison.Ordinal))
+            return;
+
+        // Keep the selected mapping selected across the rebuild.
+        int? selectedId = _dgvMappings.SelectedRows.Count > 0
+            ? (_dgvMappings.SelectedRows[0].Tag as ModelMapping)?.Id
+            : null;
+
+        _loadingSettings = true;
+        try
+        {
+            _dgvMappings.Rows.Clear();
+            foreach (ModelMapping mapping in mappings)
+            {
+                int row = AddMappingRow(mapping.Clone());
+                if (selectedId is not null && mapping.Id == selectedId.Value)
+                    _dgvMappings.Rows[row].Selected = true;
+            }
+        }
+        finally
+        {
+            _loadingSettings = false;
+        }
+
+        RefreshMappingInstructionCells();
+    }
+
+    /// <summary>Identity and editable names of the rows currently in the mappings grid.</summary>
+    private string GridMappingSignature() =>
+        string.Join('\u001f', _dgvMappings.Rows.Cast<DataGridViewRow>()
+            .Where(row => row.Tag is ModelMapping)
+            .Select(row => (row.Tag as ModelMapping)!.Id + "\u001e" +
+                (row.Cells[_colProxyName.Name].Value?.ToString() ?? string.Empty) + "\u001e" +
+                (row.Cells[_colModelName.Name].Value?.ToString() ?? string.Empty)));
+
+    /// <summary>Identity and editable names of the committed mappings, in list order.</summary>
+    private static string MappingSignature(IEnumerable<ModelMapping> mappings) =>
+        string.Join('\u001f', mappings.Select(m =>
+            m.Id + "\u001e" + (m.ProxyName ?? string.Empty) + "\u001e" + (m.ModelName ?? string.Empty)));
+
+    /// <summary>
     /// Rebuilds <see cref="AppSettings.ModelMappings"/> from the mappings grid and persists the
     /// change immediately. Called whenever a mapping row is added, removed, duplicated, or
     /// edited. Shows a warning and leaves the previous mappings in place when the grid is invalid.
@@ -3781,6 +3864,8 @@ internal partial class MainForm : Form
 
     private void TabControl_SelectedIndexChanged(object? sender, EventArgs e)
     {
+        if (_tabControl.SelectedTab == _tabSettings)
+            SyncMappingsGridFromSettings();
         if (_tabControl.SelectedTab == _tabTest)
             LoadTestModels();
     }

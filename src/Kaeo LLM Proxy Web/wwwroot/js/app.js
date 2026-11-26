@@ -7,6 +7,21 @@
     var THEME_STORAGE = 'kaeo.dashboard.theme';
     var MAX_LOG_ROWS = 500;
 
+    // Both log views default to manual refresh; the chosen interval is remembered per view so a
+    // reload of the page keeps the cadence the user picked.
+    var REFRESH_STORAGE = { requests: 'kaeo.dashboard.refresh.requests', syslog: 'kaeo.dashboard.refresh.syslog' };
+
+    function readRefreshSeconds(key) {
+        try {
+            var value = parseInt(localStorage.getItem(key), 10);
+            return isFinite(value) && value > 0 ? value : 0;
+        } catch (e) { return 0; }
+    }
+
+    function writeRefreshSeconds(key, seconds) {
+        try { localStorage.setItem(key, String(seconds)); } catch (e) { /* ignore */ }
+    }
+
     function esc(value) {
         if (value === null || value === undefined) return '';
         return String(value)
@@ -217,12 +232,23 @@
             .on('click', function () { api('POST', '/api/proxy/start').then(refreshDashboard); }).appendTo($proxyActions);
         $('<button type="button" class="danger">').text('Stop').prop('disabled', !s.proxy.isRunning)
             .on('click', function () { api('POST', '/api/proxy/stop').then(refreshDashboard); }).appendTo($proxyActions);
+        $('<button type="button">').text('Restart').prop('disabled', !s.proxy.isRunning)
+            .on('click', function () { api('POST', '/api/proxy/restart').then(refreshDashboard); }).appendTo($proxyActions);
         $proxy.append($proxyActions);
+        if (s.proxy.error) $proxy.append($('<p class="card-error">').text(s.proxy.error));
         $cards.append($proxy);
 
         var $mcp = $('<div class="card">').append($('<h3>').text('MCP server ').append(pill(s.mcp.isRunning, 'running', 'stopped')))
             .append(kv('Status', s.mcp.status || '—'))
             .append(kv('Endpoint', s.mcp.endpointUrl || '—'));
+        var $mcpActions = $('<div class="actions">');
+        $('<button type="button" class="primary">').text('Start').prop('disabled', s.mcp.isRunning)
+            .on('click', function () { api('POST', '/api/mcp/start').then(refreshDashboard); }).appendTo($mcpActions);
+        $('<button type="button" class="danger">').text('Stop').prop('disabled', !s.mcp.isRunning)
+            .on('click', function () { api('POST', '/api/mcp/stop').then(refreshDashboard); }).appendTo($mcpActions);
+        $('<button type="button">').text('Restart').prop('disabled', !s.mcp.isRunning)
+            .on('click', function () { api('POST', '/api/mcp/restart').then(refreshDashboard); }).appendTo($mcpActions);
+        $mcp.append($mcpActions);
         $cards.append($mcp);
 
         var enabled = (s.modules || []).filter(function (m) { return m.isEnabled; }).length;
@@ -234,7 +260,12 @@
 
         $cards.append($('<div class="card">').append($('<h3>').text('Dashboard'))
             .append(kv('Auth mode', s.dashboard.authMode))
-            .append(kv('Scheme', s.dashboard.scheme)));
+            .append(kv('Scheme', s.dashboard.scheme))
+            .append(kv('Database', s.databasePath || '—')));
+        if (s.databaseDegraded) {
+            $cards.append($('<p class="card-error">')
+                .text('The database could not be opened, so this instance is running against a private in-memory store. Changes will not survive a restart.'));
+        }
     }
 
     function renderStats(stats) {
@@ -382,9 +413,154 @@
         $('#modal-body').empty().append($body);
     }
 
-    loaders.requests = function () { resetLogsView(); };
+    loaders.requests = function () { resetLogsView(); loadStreams(); };
 
-    // ------------------------------------------------------------------ models tab
+        // ------------------------------------------------------------------ live streams
+        var streamCache = [];
+        var streamsBusy = false;
+        var selectedStreamId = null;
+
+        function streamStateClass(state) {
+            return state === 'Streaming' ? 'ok' : state === 'Waiting' ? 'warn' : '';
+        }
+
+        function loadStreams() {
+            if (streamsBusy) return;
+            streamsBusy = true;
+            api('GET', '/api/streams', undefined, { silent: true })
+                .then(function (data) {
+                    var live = (data && data.live) || [];
+                    var history = (data && data.history) || [];
+                    streamCache = live.concat(history);
+                    renderStreams(live.length, history.length);
+                })
+                .catch(function () { /* transient poll failure — next tick retries */ })
+                .then(function () { streamsBusy = false; });
+        }
+
+        function renderStreams(liveCount, historyCount) {
+            var $tbody = $('#stream-table tbody').empty();
+            $('#stream-count').text(streamCache.length
+                ? liveCount + ' live, ' + historyCount + ' recent'
+                : 'none');
+            if (!streamCache.length) {
+                $tbody.append($('<tr>').append($('<td colspan="9" class="muted">')
+                    .text('No streams in flight and none finished in the last 15 minutes.')));
+                $('#stream-detail').addClass('hidden');
+                return;
+            }
+            streamCache.forEach(function (s) {
+                $tbody.append($('<tr>')
+                    .attr('data-id', s.requestId)
+                    .toggleClass('selected', s.requestId === selectedStreamId)
+                    .append($('<td>').append($('<span class="pill">').addClass(streamStateClass(s.state)).text(s.state)))
+                    .append($('<td>').text(new Date(s.startedUtc).toLocaleTimeString()))
+                    .append($('<td>').text(s.kind))
+                    .append($('<td>').text(s.method))
+                    .append($('<td>').text(s.path))
+                    .append($('<td>').text(s.model || '\u2014'))
+                    .append($('<td class="num">').text(fmt(s.upstreamBytes)))
+                    .append($('<td class="num">').text(fmt(s.clientBytes)))
+                    .append($('<td class="num">').text(fmt(s.frameCount))));
+            });
+        }
+
+        // The list omits the captured tails (up to 64 KB per stream); they load on row click.
+        function openStreamDetail(id) {
+            selectedStreamId = id;
+            $('#stream-table tbody tr[data-id]').each(function () {
+                $(this).toggleClass('selected', $(this).attr('data-id') === id);
+            });
+            $('#stream-detail').removeClass('hidden');
+            $('#stream-raw, #stream-forwarded').text('Loading\u2026');
+            api('GET', '/api/streams/detail?id=' + encodeURIComponent(id), undefined, { silent: true })
+                .then(function (s) {
+                    $('#stream-raw').text(s.rawUpstreamText || '(no upstream bytes captured yet)');
+                    $('#stream-forwarded').text(s.forwardedText || '(nothing forwarded to the client yet)');
+                })
+                .catch(function (err) {
+                    $('#stream-raw, #stream-forwarded').text('');
+                    toast(err.message, true);
+                });
+        }
+
+        // ------------------------------------------------------------------ sys log tab
+        var SYSLOG_LEVELS = ['Verbose', 'Debug', 'Information', 'Warning', 'Error', 'Fatal'];
+        var SYSLOG_MAX_ROWS = 1000;
+        var syslogBusy = false;
+
+        function selectedSyslogLevels() {
+            return $('#syslog-levels input:checked').map(function () { return this.value; }).get();
+        }
+
+        function loadSyslog() {
+            if (syslogBusy) return;
+            var levels = selectedSyslogLevels();
+            if (!levels.length) {
+                $('#syslog-table tbody').empty();
+                $('#syslog-count').text('0 rows');
+                $('#syslog-health').text('No levels selected — tick at least one level to load entries.');
+                return;
+            }
+            syslogBusy = true;
+            var url = '/api/syslog?limit=' + SYSLOG_MAX_ROWS
+                + '&hideHeartbeats=' + ($('#syslog-hide-heartbeats').prop('checked') ? 'true' : 'false');
+            // Sending every level would be the same as no filter; only narrow when the user narrowed.
+            if (levels.length < SYSLOG_LEVELS.length) url += '&level=' + encodeURIComponent(levels.join(','));
+            var search = $.trim($('#syslog-search').val() || '');
+            if (search) url += '&search=' + encodeURIComponent(search);
+
+            api('GET', url, undefined, { silent: true })
+                .then(function (data) {
+                    var entries = (data && data.entries) || [];
+                    var $body = $('#syslog-table tbody').empty();
+                    entries.forEach(function (e) { $body.append(syslogRow(e)); });
+                    $('#syslog-count').text(entries.length + (entries.length === 1 ? ' row' : ' rows'));
+                    $('#syslog-health').text(data && data.dbHealthy === false
+                        ? 'The database sink is offline, so new entries are going to the fallback log file and will not appear here.'
+                        : '');
+                })
+                .catch(function (err) { $('#syslog-health').text(err.message); })
+                .then(function () { syslogBusy = false; });
+        }
+
+        function syslogRow(e) {
+            var $row = $('<tr>')
+                .append($('<td>').text(new Date(e.timestamp).toLocaleTimeString()))
+                .append($('<td>').append($('<span class="pill syslog-level">')
+                    .addClass((e.level || '').toLowerCase()).text(e.level)))
+                .append($('<td class="msg">').text(e.message))
+                .append($('<td class="muted">').text(shortSource(e.sourceContext)));
+            $row.on('click', function () { syslogDetail(e); });
+            return $row;
+        }
+
+        function shortSource(context) {
+            if (!context) return '';
+            var parts = String(context).split('.');
+            return parts[parts.length - 1];
+        }
+
+        function syslogDetail(e) {
+            var $body = $('<div>');
+            var $grid = $('<div class="field-grid">');
+            [
+                ['Time', new Date(e.timestamp).toLocaleString()],
+                ['Level', e.level],
+                ['Source', e.sourceContext],
+                ['Heartbeat', e.isHeartbeat ? 'yes' : 'no']
+            ].forEach(function (pair) {
+                if (!pair[1]) return;
+                $grid.append($('<div class="field">').append($('<label>').text(pair[0])).append($('<div>').text(pair[1])));
+            });
+            $body.append($grid).append($('<h4>').text('Message')).append($('<pre>').text(e.message || ''));
+            if (e.exception) $body.append($('<h4>').text('Exception')).append($('<pre>').text(e.exception));
+            openModal('Log entry', $body, [{ label: 'Close' }], true);
+        }
+
+        loaders.syslog = loadSyslog;
+
+        // ------------------------------------------------------------------ models tab
     var UPSTREAM_TYPES = [[1, 'OpenAI'], [2, 'Ollama'], [3, 'Anthropic'], [0, 'LlamaCpp (legacy)']];
     var UPSTREAM_MODEL_MAX_CHARS = 48;
 
@@ -1354,7 +1530,11 @@
     // ------------------------------------------------------------------ polling
     var lastStatusPoll = 0;
     var lastLogPoll = 0;
+    var lastStreamPoll = 0;
+    var lastSyslogPoll = 0;
 
+    // Manual is the default for both log views, so nothing is fetched until the user asks for it
+    // or picks an interval. The status card keeps its own fixed 3-second cadence.
     setInterval(function () {
         if (document.hidden) return;
         var now = Date.now();
@@ -1362,9 +1542,23 @@
             lastStatusPoll = now;
             refreshDashboard();
         }
-        if (activeTab === 'requests' && !logsPaused && now - lastLogPoll >= 2000) {
-            lastLogPoll = now;
-            pollLogs(false);
+
+        var requestsInterval = readRefreshSeconds(REFRESH_STORAGE.requests) * 1000;
+        if (activeTab === 'requests' && requestsInterval > 0) {
+            if (!logsPaused && now - lastLogPoll >= requestsInterval) {
+                lastLogPoll = now;
+                pollLogs(false);
+            }
+            if (now - lastStreamPoll >= requestsInterval) {
+                lastStreamPoll = now;
+                loadStreams();
+            }
+        }
+
+        var syslogInterval = readRefreshSeconds(REFRESH_STORAGE.syslog) * 1000;
+        if (activeTab === 'syslog' && syslogInterval > 0 && now - lastSyslogPoll >= syslogInterval) {
+            lastSyslogPoll = now;
+            loadSyslog();
         }
     }, 500);
 
@@ -1399,6 +1593,34 @@
             $(this).text(logsPaused ? 'Resume' : 'Pause');
         });
         $('#btn-clear-logs').on('click', function () { $('#log-table tbody').empty(); updateLogCount(); });
+
+        // Refresh cadence. Manual (0) means the toolbar buttons are the only trigger.
+        $('#log-refresh').val(String(readRefreshSeconds(REFRESH_STORAGE.requests)))
+            .on('change', function () { writeRefreshSeconds(REFRESH_STORAGE.requests, parseInt(this.value, 10) || 0); });
+        $('#syslog-refresh').val(String(readRefreshSeconds(REFRESH_STORAGE.syslog)))
+            .on('change', function () { writeRefreshSeconds(REFRESH_STORAGE.syslog, parseInt(this.value, 10) || 0); });
+        $('#btn-refresh-logs').on('click', function () { pollLogs(false); loadStreams(); });
+        $('#btn-refresh-syslog').on('click', loadSyslog);
+        $('#btn-clear-syslog').on('click', function () {
+            $('#syslog-table tbody').empty();
+            $('#syslog-count').text('0 rows');
+        });
+        $('#syslog-levels').on('change', 'input', loadSyslog);
+        $('#syslog-hide-heartbeats').on('change', loadSyslog);
+        var syslogSearchTimer = null;
+        $('#syslog-search').on('input', function () {
+            clearTimeout(syslogSearchTimer);
+            syslogSearchTimer = setTimeout(loadSyslog, 300);
+        });
+
+        $('#stream-table').on('click', 'tbody tr[data-id]', function () {
+            openStreamDetail($(this).attr('data-id'));
+        });
+        // <details> has no jQuery event; load the first snapshot as the panel opens.
+        $('#streams-panel').on('click', 'summary', function () {
+            var panel = document.getElementById('streams-panel');
+            if (panel && panel.open) setTimeout(loadStreams, 0);
+        });
 
         $('#btn-add-mapping').on('click', function () { mappingDialog(null); });
         $('#btn-remove-mapping').on('click', removeSelectedMapping);

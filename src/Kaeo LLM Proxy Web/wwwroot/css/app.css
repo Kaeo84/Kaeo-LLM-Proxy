@@ -176,6 +176,13 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .pill.err { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
 .pill.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+/* Serilog level badges: only the levels that need attention are coloured. */
+.pill.syslog-level.verbose,
+.pill.syslog-level.debug,
+.pill.syslog-level.information { background: var(--pill-bg); color: var(--fg-muted); }
+.pill.syslog-level.warning { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.pill.syslog-level.error,
+.pill.syslog-level.fatal { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
 
 /* ---- cards ---- */
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
@@ -191,6 +198,8 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .card .kv .v { font-weight: 600; text-align: right; word-break: break-all; }
 /* Wraps instead of overflowing the card: the user-level button row is wider than a 280px card. */
 .card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* Inline failure text under a card's action row (proxy start errors, degraded database). */
+.card-error { margin: 10px 0 0; font-size: 12px; color: var(--err); word-break: break-word; }
 
 /* ---- users tab ---- */
 .user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
@@ -224,6 +233,47 @@ tbody tr:hover { background: var(--row-hover); }
    long name can never wrap onto a second line and grow the row. */
 td.truncate { max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- streams panel (Requests tab) ---- */
+.streams-panel { flex: none; margin-bottom: 12px; }
+.streams-panel > summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 6px 2px;
+    color: var(--fg-muted);
+}
+.streams-panel > summary:hover { color: var(--fg); }
+.streams-panel .streams-body { display: flex; flex-direction: column; gap: 8px; }
+/* Capped so expanding the panel never squeezes the request table out of the viewport. */
+.streams-panel .streams-scroll { max-height: 32vh; overflow: auto; }
+.streams-panel #stream-detail {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+.stream-panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.stream-panes h4 { margin: 0 0 4px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .04em; }
+.stream-panes pre {
+    margin: 0;
+    max-height: 26vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 12px;
+}
+#stream-table tbody tr { cursor: pointer; }
+#stream-table tbody tr.selected,
+#stream-table tbody tr.selected:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+/* ---- sys log tab ---- */
+.level-checks { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#syslog-health { margin-bottom: 8px; }
+#syslog-table tbody tr { cursor: pointer; }
+/* Messages are the only column worth wrapping; the rest stay on one line so rows stay compact. */
+#syslog-table td.msg { white-space: normal; word-break: break-word; min-width: 320px; }
 
 /* ---- forms ---- */
 fieldset.group {

@@ -35,6 +35,11 @@ public sealed class WebDashboardEndpointTests
         Assert.True(doc.RootElement.TryGetProperty("proxy", out _));
         Assert.True(doc.RootElement.TryGetProperty("dashboard", out JsonElement dash));
         Assert.Equal("login", dash.GetProperty("authMode").GetString());
+
+        // The resolved database file is reported so two instances on different build outputs are
+        // distinguishable from a bug when an edit appears to vanish.
+        Assert.Equal(b.DbPath, doc.RootElement.GetProperty("databasePath").GetString());
+        Assert.False(doc.RootElement.GetProperty("databaseDegraded").GetBoolean());
     }
 
     [Fact]
@@ -709,6 +714,111 @@ public sealed class WebDashboardEndpointTests
         Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/mcp")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/modules")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await b.Client.GetAsync("/api/stats")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Proxy_Restart_KeepsIsRunning()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        Assert.Equal(HttpStatusCode.OK, (await b.Client.PostAsync("/api/proxy/start", null)).StatusCode);
+
+        HttpResponseMessage restarted = await b.Client.PostAsync("/api/proxy/restart", null);
+        Assert.Equal(HttpStatusCode.OK, restarted.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await restarted.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.GetProperty("isRunning").GetBoolean());
+        Assert.True(b.Controller.Server.IsRunning);
+    }
+
+    [Fact]
+    public async Task Mcp_Stop_ReturnsStateShape_EvenWhenNothingIsRunning()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        Assert.False(b.Controller.McpServer.IsRunning);
+
+        HttpResponseMessage stopped = await b.Client.PostAsync("/api/mcp/stop", null);
+        Assert.Equal(HttpStatusCode.OK, stopped.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await stopped.Content.ReadAsStringAsync());
+        Assert.False(doc.RootElement.GetProperty("isRunning").GetBoolean());
+        Assert.Equal("Stopped", doc.RootElement.GetProperty("status").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("endpointUrl", out _));
+    }
+
+    [Fact]
+    public async Task Streams_ReturnEmptyCollections_WhenNothingIsInFlight()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.GetAsync("/api/streams");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(0, doc.RootElement.GetProperty("live").GetArrayLength());
+        Assert.Equal(0, doc.RootElement.GetProperty("history").GetArrayLength());
+
+        Assert.Equal(HttpStatusCode.BadRequest, (await b.Client.GetAsync("/api/streams/detail")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await b.Client.GetAsync("/api/streams/detail?id=missing")).StatusCode);
+    }
+
+    [Fact]
+    public async Task SysLog_ReturnsShape_AndRejectsUnknownDetail()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.GetAsync("/api/syslog?limit=50&hideHeartbeats=true");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("dbHealthy", out _));
+        Assert.Equal(JsonValueKind.Array, doc.RootElement.GetProperty("entries").ValueKind);
+    }
+
+    [Fact]
+    public async Task ObservabilityEndpoints_AreForbiddenForReadOnlySessions()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "read only password";
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Stream Watcher",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "streams.reader",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "streams.reader", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        // The log store can hold payload text and the stream monitor exposes other users' bytes.
+        foreach (string path in new[] { "/api/syslog", "/api/streams", "/api/streams/detail?id=x" })
+        {
+            using HttpRequestMessage request = new(HttpMethod.Get, path);
+            request.Headers.Add("Cookie", cookie);
+            Assert.Equal(HttpStatusCode.Forbidden, (await b.Anonymous.SendAsync(request)).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Mappings_WebMutation_RaisesModelMappingsSaved_SoTheWindowsGridResyncs()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        int raised = 0;
+        b.Database.ModelMappingsSaved += () => Interlocked.Increment(ref raised);
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/mappings", new ModelMapping
+        {
+            ProxyName = "web-added",
+            ModelName = "upstream-model",
+            UpstreamUrl = "http://localhost:1",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        // The Windows GUI rebuilds the mapping list from its own grid rows, so it must be told.
+        Assert.Equal(1, Volatile.Read(ref raised));
+        Assert.Contains(b.Controller.Settings.ModelMappings, m => m.ProxyName == "web-added");
+        Assert.Contains(b.Database.LoadModelMappings(), m => m.ProxyName == "web-added");
     }
 
     [Fact]

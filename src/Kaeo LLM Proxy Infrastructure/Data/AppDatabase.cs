@@ -33,6 +33,14 @@ internal sealed class AppDatabase : IDisposable
     /// </summary>
     public bool IsDegraded { get; private set; }
 
+        /// <summary>
+        /// Raised after <see cref="SaveModelMappings"/> rewrites the mapping table. The Windows GUI
+        /// renders mappings into a grid and rebuilds <c>AppSettings.ModelMappings</c> from those rows on
+        /// every edit, so it must re-sync when another in-process caller (the web dashboard) changes
+        /// them — otherwise the next GUI edit silently discards the dashboard's change.
+        /// </summary>
+        public event Action? ModelMappingsSaved;
+
     public AppDatabase(LoggingSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -467,6 +475,11 @@ internal sealed class AppDatabase : IDisposable
 
             transaction.Commit();
         }
+
+        // Raised outside the lock: the Windows GUI keeps its own grid of mappings and rebuilds
+        // AppSettings.ModelMappings from those rows on every edit, so it has to re-sync whenever
+        // another in-process caller (the web dashboard) rewrites the table.
+        ModelMappingsSaved?.Invoke();
     }
 
     public IReadOnlyList<InstructionSet> LoadInstructionSets()

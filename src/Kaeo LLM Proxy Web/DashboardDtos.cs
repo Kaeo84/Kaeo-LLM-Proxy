@@ -98,3 +98,29 @@ internal sealed class KeyWrite
     public string? Label { get; set; }
     public List<string>? AllowedModels { get; set; }
 }
+
+/// <summary>
+/// One live or recently completed streaming response. The rolling tail text is only populated by
+/// <c>/api/streams/detail</c>; it stays null (and is therefore omitted from the JSON) in the list
+/// response so a 2-second poll does not ship up to 64 KB per stream.
+/// </summary>
+internal sealed class StreamView
+{
+    public string RequestId { get; set; } = string.Empty;
+    public string Kind { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string Method { get; set; } = string.Empty;
+    public string Path { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public DateTime StartedUtc { get; set; }
+    public DateTime LastUpstreamActivityUtc { get; set; }
+    public DateTime LastClientActivityUtc { get; set; }
+    public long UpstreamBytes { get; set; }
+    public long ClientBytes { get; set; }
+    public long KeepAliveFrames { get; set; }
+    public int FrameCount { get; set; }
+    public bool IsLive { get; set; }
+    public DateTime? EndedUtc { get; set; }
+    public string? RawUpstreamText { get; set; }
+    public string? ForwardedText { get; set; }
+}

@@ -33,6 +33,7 @@ internal static partial class DashboardEndpoints
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
         MapLogs(app, controller);
+        MapObservability(app, controller);
         MapUsage(app, controller);
         MapStats(app, controller);
         MapMcp(app, controller);
@@ -53,6 +54,8 @@ internal static partial class DashboardEndpoints
                 isRunning = controller.Server.IsRunning,
                 listenAddress = controller.Server.ListenAddress,
                 listenPort = controller.Server.ListenPort,
+                // StartProxy never throws; a failed bind surfaces here so the dashboard can show it.
+                error = controller.LastStartError,
             },
             mcp = new
             {
@@ -72,6 +75,11 @@ internal static partial class DashboardEndpoints
                 authMode = settings.WebDashboard.RequireLogin ? "login" : "open",
                 scheme = settings.WebDashboard.Scheme,
             },
+            // Which database this instance is actually writing to. Each build output resolves its
+            // own file, so two launches (or a portable copy) can silently diverge — surfacing the
+            // path here makes that mismatch visible instead of looking like lost edits.
+            databasePath = controller.Database.DatabasePath,
+            databaseDegraded = controller.Database.IsDegraded,
         }));
     }
 
@@ -80,13 +88,21 @@ internal static partial class DashboardEndpoints
         app.MapPost("/api/proxy/start", () =>
         {
             controller.StartProxy();
-            return Results.Json(new { isRunning = controller.Server.IsRunning });
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = controller.LastStartError });
         });
 
         app.MapPost("/api/proxy/stop", async () =>
         {
             await controller.Server.StopAsync();
-            return Results.Json(new { isRunning = controller.Server.IsRunning });
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = (string?)null });
+        });
+
+        // Stop-then-start on the configured endpoint. The dashboard runs on its own port, so
+        // restarting the proxy listener never interrupts the page that asked for it.
+        app.MapPost("/api/proxy/restart", async () =>
+        {
+            await controller.RestartProxyAsync();
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = controller.LastStartError });
         });
     }
 
@@ -250,7 +266,35 @@ internal static partial class DashboardEndpoints
                     .ToList(),
             });
         });
+
+        // The dashboard and the MCP server live in the same process, so these drive the exact
+        // instance the proxy exposes. Start forces the listener up even when the persisted Enabled
+        // flag is off — an explicit Start click is a stronger signal than the saved default.
+        app.MapPost("/api/mcp/start", async () =>
+        {
+            await controller.McpServer.StartAsync(forceStart: true);
+            return Results.Json(McpState(controller));
+        });
+
+        app.MapPost("/api/mcp/stop", async () =>
+        {
+            await controller.McpServer.StopAsync();
+            return Results.Json(McpState(controller));
+        });
+
+        app.MapPost("/api/mcp/restart", async () =>
+        {
+            await controller.McpServer.RestartAsync();
+            return Results.Json(McpState(controller));
+        });
     }
+
+    private static object McpState(ProxyHostController controller) => new
+    {
+        isRunning = controller.McpServer.IsRunning,
+        status = controller.McpServer.Status,
+        endpointUrl = controller.McpServer.EndpointUrl,
+    };
 
     private static object SourceStats(StatisticsService stats) => new
     {
