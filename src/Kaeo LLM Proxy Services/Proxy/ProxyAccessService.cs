@@ -97,20 +97,26 @@ internal sealed class ProxyAccessService(AppDatabase database)
     }
 
     /// <summary>
-    /// Whether the principal may call <paramref name="modelName"/>. No principal (open proxy) or
-    /// an empty allow-list means every model; otherwise the requested name must match an entry
-    /// case-insensitively.
+    /// Whether the principal may call <paramref name="modelName"/>. Open-proxy requests and Admin
+    /// users may call every model; other users need an explicit per-key model grant.
     /// </summary>
     internal static bool IsModelAllowed(ProxyAccessPrincipal? principal, string? modelName)
     {
-        if (principal is null || principal.Key.AllowedModels.Count == 0)
+        if (principal is null || IsAdmin(principal))
             return true;
 
-        if (string.IsNullOrWhiteSpace(modelName))
-            return false;
-
-        return principal.Key.AllowedModels.Contains(modelName, StringComparer.OrdinalIgnoreCase);
+        return !string.IsNullOrWhiteSpace(modelName)
+            && principal.Key.AllowedModels.Contains(modelName, StringComparer.OrdinalIgnoreCase);
     }
+
+    /// <summary>Whether the principal may use the MCP server. Open-proxy requests and Admin users bypass the key grant.</summary>
+    internal static bool IsMcpAllowed(ProxyAccessPrincipal? principal) =>
+        principal is null || IsAdmin(principal) || principal.Key.McpAccess;
+
+    private static bool IsAdmin(ProxyAccessPrincipal principal) =>
+        string.Equals(principal.User.DashboardRole, DashboardAdminRole, StringComparison.OrdinalIgnoreCase);
+
+    private const string DashboardAdminRole = "admin";
 
     /// <summary>Drops all cached authentications so dashboard edits take effect immediately.</summary>
     public void InvalidateCache()

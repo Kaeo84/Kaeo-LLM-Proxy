@@ -90,13 +90,14 @@ internal sealed class DashboardSetupWrite
 
 /// <summary>
 /// API key create/update payload. On create the server generates the key material; on update
-/// only label and allowed-model list are mutable. Empty/absent AllowedModels on create means
-/// "all models"; on update null leaves the list untouched.
+/// only label, model grants, and MCP access are mutable. Missing AllowedModels on update leaves
+/// the list untouched.
 /// </summary>
 internal sealed class KeyWrite
 {
     public string? Label { get; set; }
     public List<string>? AllowedModels { get; set; }
+    public bool? McpAccess { get; set; }
 }
 
 /// <summary>

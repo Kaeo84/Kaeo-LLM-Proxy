@@ -135,9 +135,33 @@ reason, and the Windows app's Users tab has an **Account enabled** checkbox to r
 shows a *Create administrator account* setup page that creates the first Admin login. Remote
 machines cannot claim a fresh instance; create logins from the Windows app's Users tab instead.
 
-Proxy **API keys never grant dashboard access** — they authenticate model requests only, and each
-key's allowed-model list is enforced by the proxy. Dashboard roles do not control model access: a
-Read Only dashboard login can still use models through a separately configured proxy API key.
+Proxy **API keys never grant dashboard access** — they authenticate model and MCP requests only.
+
+## API Key Grants (Models and MCP)
+
+Each API key carries its own grants, edited in the **Users** tab (web: edit key; Windows app: the
+key editor dialog) next to each other:
+
+- **Allowed models** — one checkbox per configured model. A key with no boxes checked gets **no**
+  model access, including model discovery, `/api/show`, chat, and passthrough.
+- **Allow MCP server access** — a single on/off grant for the MCP server. A key without it gets
+  `403 Forbidden` from the MCP endpoint, while a valid key without any grants still authenticates.
+
+Dashboard role decides the defaults:
+
+- **Admin** users always have every model and the full MCP server regardless of per-key grants.
+- **Read Only** users get only what their key explicitly grants.
+
+The MCP server accepts either the configured shared bearer credential (full access, unchanged) or a
+proxy API key as the bearer token. Unknown keys get `401`; known keys without the MCP grant get
+`403`. Grant changes apply immediately — the authentication cache is invalidated on every edit.
+
+**Every MCP request now needs a bearer token.** Only the `/health` probe stays open, so an MCP
+client that used to connect anonymously must add `Authorization: Bearer <key>` with a key that has
+MCP access (or an Admin key), or keep using the shared credential if one is configured.
+
+> **Upgrade note:** before per-key grants were enforced, an empty allowed-model list meant *all
+> models*. It now means *no models*, so re-check existing Read Only keys after upgrading.
 
 Use HTTPS (or terminate TLS at a trusted proxy) before sharing the dashboard beyond localhost so
 credentials and session cookies are not sent over untrusted HTTP networks.

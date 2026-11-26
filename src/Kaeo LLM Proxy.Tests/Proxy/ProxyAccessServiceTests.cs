@@ -35,14 +35,14 @@ public sealed class ProxyAccessServiceTests : IDisposable
         }
     }
 
-    private ProxyUser CreateUser(string name = "Alice", string email = "alice@example.com", bool enabled = true)
+    private ProxyUser CreateUser(string name = "Alice", string email = "alice@example.com", bool enabled = true, string role = "readOnly")
     {
-        ProxyUser user = new() { Name = name, Email = email, CreatedUtc = DateTime.UtcNow, IsEnabled = enabled };
+        ProxyUser user = new() { Name = name, Email = email, CreatedUtc = DateTime.UtcNow, IsEnabled = enabled, DashboardRole = role };
         _database.InsertProxyUser(user);
         return user;
     }
 
-    private (ProxyApiKey Key, string PlainText) CreateKey(int userId, List<string>? allowedModels = null)
+    private (ProxyApiKey Key, string PlainText) CreateKey(int userId, List<string>? allowedModels = null, bool mcpAccess = false)
     {
         (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
         ProxyApiKey key = new()
@@ -53,6 +53,7 @@ public sealed class ProxyAccessServiceTests : IDisposable
             KeyPrefix = prefix,
             CreatedUtc = DateTime.UtcNow,
             AllowedModels = allowedModels ?? [],
+            McpAccess = mcpAccess,
         };
         _database.InsertProxyApiKey(key);
         _access.InvalidateCache();
@@ -112,14 +113,18 @@ public sealed class ProxyAccessServiceTests : IDisposable
 
         ProxyApiKey loaded = _database.FindProxyApiKeyByHash(key.KeyHash)!;
         Assert.Equal(["alpha", "Beta"], loaded.AllowedModels);
+        Assert.False(loaded.McpAccess);
 
-        _database.UpdateProxyApiKeyAccess(key.Id, "renamed", ["gamma"]);
+        _database.UpdateProxyApiKeyAccess(key.Id, "renamed", ["gamma"], mcpAccess: true);
         ProxyApiKey updated = _database.FindProxyApiKeyByHash(key.KeyHash)!;
         Assert.Equal("renamed", updated.Label);
         Assert.Equal(["gamma"], updated.AllowedModels);
+        Assert.True(updated.McpAccess);
 
         _database.UpdateProxyApiKeyAccess(key.Id, "renamed", []);
-        Assert.Empty(_database.FindProxyApiKeyByHash(key.KeyHash)!.AllowedModels);
+        ProxyApiKey cleared = _database.FindProxyApiKeyByHash(key.KeyHash)!;
+        Assert.Empty(cleared.AllowedModels);
+        Assert.False(cleared.McpAccess);
     }
 
     [Fact]
@@ -183,15 +188,15 @@ public sealed class ProxyAccessServiceTests : IDisposable
     }
 
     [Fact]
-    public void IsModelAllowed_EmptyAllowList_MeansAllModels()
+    public void IsModelAllowed_EmptyAllowList_DeniesReadOnlyKeys()
     {
         ProxyUser user = CreateUser();
         (ProxyApiKey key, _) = CreateKey(user.Id);
         ProxyAccessPrincipal principal = new(user, key);
 
         Assert.True(ProxyAccessService.IsModelAllowed(null, "anything"));
-        Assert.True(ProxyAccessService.IsModelAllowed(principal, "anything"));
-        Assert.True(ProxyAccessService.IsModelAllowed(principal, ""));
+        Assert.False(ProxyAccessService.IsModelAllowed(principal, "anything"));
+        Assert.False(ProxyAccessService.IsModelAllowed(principal, ""));
     }
 
     [Fact]
@@ -206,5 +211,31 @@ public sealed class ProxyAccessServiceTests : IDisposable
         Assert.False(ProxyAccessService.IsModelAllowed(principal, "beta"));
         Assert.False(ProxyAccessService.IsModelAllowed(principal, ""));
         Assert.False(ProxyAccessService.IsModelAllowed(principal, null));
+    }
+
+    [Fact]
+    public void IsModelAllowed_AdminKey_BypassesGrants()
+    {
+        ProxyUser user = CreateUser(role: "admin");
+        (ProxyApiKey key, _) = CreateKey(user.Id);
+        ProxyAccessPrincipal principal = new(user, key);
+
+        Assert.True(ProxyAccessService.IsModelAllowed(principal, "anything"));
+    }
+
+    [Fact]
+    public void IsMcpAllowed_RequiresGrantUnlessAdminOrAnonymous()
+    {
+        ProxyUser readOnly = CreateUser();
+        (ProxyApiKey deniedKey, _) = CreateKey(readOnly.Id);
+        (ProxyApiKey grantedKey, _) = CreateKey(readOnly.Id, mcpAccess: true);
+
+        Assert.True(ProxyAccessService.IsMcpAllowed(null));
+        Assert.False(ProxyAccessService.IsMcpAllowed(new ProxyAccessPrincipal(readOnly, deniedKey)));
+        Assert.True(ProxyAccessService.IsMcpAllowed(new ProxyAccessPrincipal(readOnly, grantedKey)));
+
+        ProxyUser admin = CreateUser(name: "Boss", email: "boss@example.com", role: "admin");
+        (ProxyApiKey adminKey, _) = CreateKey(admin.Id);
+        Assert.True(ProxyAccessService.IsMcpAllowed(new ProxyAccessPrincipal(admin, adminKey)));
     }
 }

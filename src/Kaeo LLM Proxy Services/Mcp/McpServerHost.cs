@@ -77,6 +77,7 @@ internal sealed class McpServerHost : IAsyncDisposable
     private readonly ISecretProvider _secrets;
     private readonly Func<McpSessionInfo, McpServerOptions> _serverOptionsFactory;
     private readonly StatisticsService _statistics;
+    private readonly ProxyAccessService? _access;
     private readonly ConcurrentDictionary<string, McpHttpSession> _sessions = new(StringComparer.Ordinal);
 
     private HttpListener? _listener;
@@ -126,12 +127,14 @@ internal sealed class McpServerHost : IAsyncDisposable
         McpServerSettings settings,
         ISecretProvider secrets,
         Func<McpSessionInfo, McpServerOptions> serverOptionsFactory,
-        StatisticsService statistics)
+        StatisticsService statistics,
+        ProxyAccessService? access = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _secrets = secrets ?? throw new ArgumentNullException(nameof(secrets));
         _serverOptionsFactory = serverOptionsFactory ?? throw new ArgumentNullException(nameof(serverOptionsFactory));
         _statistics = statistics ?? throw new ArgumentNullException(nameof(statistics));
+        _access = access;
     }
 
     public bool IsRunning { get; private set; }
@@ -195,13 +198,21 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         Log.Information("MCP server listening at {EndpointUrl}", EndpointUrl);
 
-        // Fail-open auth is only defensible on a loopback bind; warn prominently otherwise.
+                if (_access is not null)
+                {
+                    Log.Information(
+                        "MCP requests require a bearer token: the configured shared credential or a proxy API key granted MCP access " +
+                        "(Admin keys always pass).");
+                }
+
+        // Requests are only anonymous when there is nothing to authenticate against (no shared
+        // credential and no key store). Warn prominently when such a server is exposed.
         bool loopbackBind = listenerHost is not ("+" or "[::]")
             && (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
                 || host is "127.0.0.1" or "::1" or "[::1]"
                 || (IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? bindAddress) && IPAddress.IsLoopback(bindAddress)));
         _loopbackBind = loopbackBind;
-        if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName))
+        if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName) && _access is null)
         {
             Log.Warning(
                 "MCP server is listening on non-loopback address {Host}:{Port} with authentication DISABLED. " +
@@ -439,10 +450,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         if (method == "GET" && path == SpecPath && ApiExplorer is not null)
         {
             // The spec lists every tool name/description: reconnaissance aid when auth is on.
-            if (!IsAuthorized(request, out string? specAuthError))
+            if (!IsAuthorized(request, out string? specAuthError, out int specAuthStatus))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                response.StatusCode = 401;
+                response.StatusCode = specAuthStatus;
                 await WriteTextAsync(response, specAuthError ?? "Unauthorized", ct);
                 return;
             }
@@ -457,10 +468,10 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (method == "GET" && path == ScalarPath && ApiExplorer is not null)
         {
-            if (!IsAuthorized(request, out string? scalarAuthError))
+            if (!IsAuthorized(request, out string? scalarAuthError, out int scalarAuthStatus))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                response.StatusCode = 401;
+                response.StatusCode = scalarAuthStatus;
                 await WriteTextAsync(response, scalarAuthError ?? "Unauthorized", ct);
                 return;
             }
@@ -477,10 +488,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         // URL and cannot be pointed at the /mcp suffix, so serve the endpoint on the root too.
         if (path is McpPath or "/")
         {
-            if (!IsAuthorized(request, out string? authError))
+            if (!IsAuthorized(request, out string? authError, out int authStatus))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                await WriteJsonRpcErrorAsync(response, 401, TryProbeRequestId(request, ct), -32001, authError ?? "Unauthorized", ct);
+                await WriteJsonRpcErrorAsync(response, authStatus, TryProbeRequestId(request, ct), -32001, authError ?? "Unauthorized", ct);
                 return;
             }
 
@@ -1095,19 +1106,19 @@ internal sealed class McpServerHost : IAsyncDisposable
     // ── Auth & responses ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Enforces optional bearer-token authentication. The expected token is resolved live from
-    /// the host's credential store on every request, so credential edits apply immediately.
+    /// Accepts the configured shared bearer credential or an API key with MCP access. The shared
+    /// credential retains full access; Read Only API keys require an explicit MCP grant.
     /// </summary>
-    private bool IsAuthorized(HttpListenerRequest request, out string? error)
+    private bool IsAuthorized(HttpListenerRequest request, out string? error, out int failureStatus)
     {
         error = null;
+        failureStatus = 401;
 
         string? credentialName = _settings.AuthCredentialName;
-        if (string.IsNullOrWhiteSpace(credentialName))
-            return true;
+        bool hasCredential = !string.IsNullOrWhiteSpace(credentialName);
+        string? expected = hasCredential ? _secrets.ResolveSecret(credentialName!) : null;
 
-        string? expected = _secrets.ResolveSecret(credentialName);
-        if (string.IsNullOrWhiteSpace(expected))
+        if (hasCredential && string.IsNullOrWhiteSpace(expected))
         {
             // L5: keep the configured credential name server-side; the caller gets a generic message
             // so an unauthenticated client cannot enumerate which credential is misconfigured.
@@ -1119,18 +1130,52 @@ internal sealed class McpServerHost : IAsyncDisposable
         string? header = request.Headers["Authorization"];
         if (string.IsNullOrEmpty(header) || !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
-            error = "A bearer token is required. Send 'Authorization: Bearer <token>'.";
+            // No credential and no key store to check against: nothing can be authenticated, so the
+            // server stays open exactly as it was before key-based MCP access existed.
+            if (!hasCredential && _access is null)
+                return true;
+
+            Log.Warning("MCP request rejected: no bearer token was supplied");
+            error = "A bearer token is required. Send 'Authorization: Bearer <token>' using a proxy API key "
+                + "with MCP access enabled (Admin keys always work) or the configured shared credential.";
             return false;
         }
 
         string token = header["Bearer ".Length..].Trim();
-        bool match = CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
 
-        if (!match)
+        if (!string.IsNullOrWhiteSpace(expected) && CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected)))
+        {
+            return true;
+        }
+
+        if (_access is null)
+        {
+            if (!hasCredential)
+                return true;
+
+            Log.Warning("MCP request rejected: the supplied bearer token is not valid");
             error = "The supplied bearer token is not valid.";
+            return false;
+        }
 
-        return match;
+        ProxyAccessPrincipal? principal = _access.Authenticate(token);
+        if (principal is null)
+        {
+            Log.Warning("MCP request rejected: the supplied bearer token is not a valid API key");
+            error = "The supplied bearer token is not valid.";
+            return false;
+        }
+
+        if (!ProxyAccessService.IsMcpAllowed(principal))
+        {
+            Log.Warning("MCP request rejected: API key '{KeyLabel}' is not granted MCP access", principal.Key.Label);
+            failureStatus = 403;
+            error = "This API key is not authorized to access the MCP server.";
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>

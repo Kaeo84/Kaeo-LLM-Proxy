@@ -84,7 +84,7 @@ public sealed class ApiTranslationE2ETests : IAsyncDisposable
         _database = new AppDatabase(_settings.Logging);
         _moduleHost = new ModuleHost(_database, _settings);
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
-        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _stats);
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _stats, new ProxyAccessService(_database));
         _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer);
         _proxy = new ProxyServer(_handler);
 

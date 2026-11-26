@@ -69,8 +69,8 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
         _database = new AppDatabase(_settings.Logging);
         _moduleHost = new ModuleHost(_database, _settings);
         _stats = new StatisticsService(_settings.MaxLogEntries, _database, _settings.Logging.LogRetentionHours);
-        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _stats);
         _access = new ProxyAccessService(_database);
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _stats, _access);
         _handler = new OllamaProxyHandler(_settings, _stats, _moduleHost, _mcpServer, access: _access);
         _proxy = new ProxyServer(_handler);
 
@@ -105,9 +105,9 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
         }
     }
 
-    private string CreateKey(List<string>? allowedModels = null, bool userEnabled = true)
+    private string CreateKey(List<string>? allowedModels = null, bool userEnabled = true, string role = "readOnly", bool mcpAccess = false)
     {
-        ProxyUser user = new() { Name = "Tester", Email = "t@example.com", CreatedUtc = DateTime.UtcNow, IsEnabled = userEnabled };
+        ProxyUser user = new() { Name = "Tester", Email = "t@example.com", CreatedUtc = DateTime.UtcNow, IsEnabled = userEnabled, DashboardRole = role };
         _database.InsertProxyUser(user);
         (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
         _database.InsertProxyApiKey(new ProxyApiKey
@@ -118,6 +118,7 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
             KeyPrefix = prefix,
             CreatedUtc = DateTime.UtcNow,
             AllowedModels = allowedModels ?? [],
+            McpAccess = mcpAccess,
         });
         _access.InvalidateCache();
         return plainText;
@@ -176,7 +177,7 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
     public async Task RequireApiKey_ValidKey_Succeeds()
     {
         _settings.ProxySecurity.RequireApiKey = true;
-        string key = CreateKey();
+        string key = CreateKey(["alpha", "beta"]);
         HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Get, "/api/tags", key));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -307,17 +308,42 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task UnrestrictedKey_ChatSucceeds_ForAnyModel()
+    public async Task AdminKey_ChatSucceeds_ForAnyModel()
     {
-        string key = CreateKey();
+        string key = CreateKey(role: "admin");
         HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Post, "/api/chat", key, ChatBody("beta")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
-    public async Task ValidKey_ChatLogIsAttributedToTheKeysUser()
+    public async Task AdminKey_DiscoveryListsEveryModel()
+    {
+        string key = CreateKey(role: "admin");
+        HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Get, "/api/tags", key));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(2, doc.RootElement.GetProperty("models").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ReadOnlyKey_NoModelGrants_DeniesChatAndListsNoModels()
     {
         string key = CreateKey();
+
+        HttpResponseMessage chat = await _client.SendAsync(Request(HttpMethod.Post, "/api/chat", key, ChatBody("alpha")));
+        Assert.Equal(HttpStatusCode.Forbidden, chat.StatusCode);
+
+        HttpResponseMessage tags = await _client.SendAsync(Request(HttpMethod.Get, "/api/tags", key));
+        Assert.Equal(HttpStatusCode.OK, tags.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await tags.Content.ReadAsStringAsync());
+        Assert.Equal(0, doc.RootElement.GetProperty("models").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ValidKey_ChatLogIsAttributedToTheKeysUser()
+    {
+        string key = CreateKey(["alpha"]);
         ProxyUser user = _database.LoadProxyUsers().Single(u => u.Name == "Tester");
         HttpResponseMessage response = await _client.SendAsync(Request(HttpMethod.Post, "/api/chat", key, ChatBody("alpha")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

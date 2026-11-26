@@ -162,6 +162,7 @@ internal static partial class DashboardEndpoints
                         KeyPrefix = prefix,
                         CreatedUtc = DateTime.UtcNow,
                         AllowedModels = NormalizeModelList(write.AllowedModels),
+                        McpAccess = write.McpAccess ?? false,
                     };
 
                     controller.Database.InsertProxyApiKey(key);
@@ -192,12 +193,14 @@ internal static partial class DashboardEndpoints
 
                     string label = write.Label?.Trim() ?? key.Label;
                     List<string> models = write.AllowedModels is not null ? NormalizeModelList(write.AllowedModels) : key.AllowedModels;
+                    bool mcpAccess = write.McpAccess ?? key.McpAccess;
 
-                    controller.Database.UpdateProxyApiKeyAccess(id, label, models);
+                    controller.Database.UpdateProxyApiKeyAccess(id, label, models, mcpAccess);
                     controller.Access.InvalidateCache();
 
                     key.Label = label;
                     key.AllowedModels = models;
+                    key.McpAccess = mcpAccess;
                     return Results.Json(KeyView(key));
                 }
             }
@@ -292,6 +295,7 @@ internal static partial class DashboardEndpoints
         createdUtc = key.CreatedUtc,
         lastUsedUtc = key.LastUsedUtc,
         allowedModels = key.AllowedModels,
+        mcpAccess = key.McpAccess,
     };
 
     private static List<string> NormalizeModelList(List<string>? models) =>

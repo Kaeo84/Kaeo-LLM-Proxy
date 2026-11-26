@@ -37,6 +37,7 @@ partial class MainForm
         _chkMcpCollectResponse = new CheckBox();
         _lblMcpApiExplorerUrl = new Label();
         _lblMcpSpecUrl = new Label();
+        _lblMcpAccessHint = new Label();
         _lblMcpListenAddress = new Label();
         _cboMcpListenAddress = new ComboBox();
         _lblMcpPort = new Label();
@@ -2236,6 +2237,7 @@ partial class MainForm
         _tlpMcp.Controls.Add(_chkMcpCollectResponse, 0, 7);
         _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 8);
         _tlpMcp.Controls.Add(_lblMcpStatus, 1, 8);
+        _tlpMcp.Controls.Add(_lblMcpAccessHint, 0, 9);
         _tlpMcp.Controls.Add(_flpMcpButtons, 0, 10);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
@@ -2257,6 +2259,7 @@ partial class MainForm
         _tlpMcp.SetColumnSpan(_chkMcpCollectResponse, 2);
         _tlpMcp.SetColumnSpan(_lblMcpApiExplorerUrl, 2);
         _tlpMcp.SetColumnSpan(_lblMcpSpecUrl, 2);
+        _tlpMcp.SetColumnSpan(_lblMcpAccessHint, 2);
         _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
 
         _chkMcpEnabled.AccessibleName = "Enable MCP server";
@@ -2282,6 +2285,14 @@ partial class MainForm
         _lblMcpSpecUrl.Margin = new Padding(0, 0, 0, 8);
         _lblMcpSpecUrl.Name = "_lblMcpSpecUrl";
         _lblMcpSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+
+        _lblMcpAccessHint.AutoSize = false;
+        _lblMcpAccessHint.Dock = DockStyle.Fill;
+        _lblMcpAccessHint.ForeColor = SystemColors.GrayText;
+        _lblMcpAccessHint.Margin = new Padding(0, 8, 0, 0);
+        _lblMcpAccessHint.Name = "_lblMcpAccessHint";
+        _lblMcpAccessHint.Text = "Clients authenticate with the configured shared credential or with a proxy API key "
+            + "granted MCP access in the Users tab. Admin users always have access; Read Only keys need the grant.";
 
         _lblMcpListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpListenAddress.AutoSize = true;
@@ -3156,6 +3167,7 @@ partial class MainForm
     private CheckBox _chkMcpCollectResponse;
     private Label _lblMcpApiExplorerUrl;
     private Label _lblMcpSpecUrl;
+    private Label _lblMcpAccessHint;
     private Label _lblMcpListenAddress;
     private ComboBox _cboMcpListenAddress;
     private Label _lblMcpPort;

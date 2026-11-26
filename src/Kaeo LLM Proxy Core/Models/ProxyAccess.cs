@@ -62,8 +62,11 @@ internal sealed class ProxyApiKey
     public DateTime? LastUsedUtc { get; set; }
 
     /// <summary>
-    /// Proxy model names this key may call. Empty means every configured model. Matched
-    /// case-insensitively against the model name the client requests.
+    /// Proxy model names this key may call. Read Only users must have an explicit grant; Admin
+    /// users bypass this list.
     /// </summary>
     public List<string> AllowedModels { get; set; } = [];
+
+    /// <summary>Whether this key may use the MCP server. Admin users bypass this flag.</summary>
+    public bool McpAccess { get; set; }
 }

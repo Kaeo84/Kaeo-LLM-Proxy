@@ -1586,7 +1586,8 @@ internal sealed class AppDatabase : IDisposable
                     key_prefix TEXT NOT NULL DEFAULT '',
                     created_utc TEXT NOT NULL,
                     last_used_utc TEXT NULL,
-                    allowed_models TEXT NOT NULL DEFAULT '[]'
+                    allowed_models TEXT NOT NULL DEFAULT '[]',
+                    mcp_access INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_proxy_api_keys_user_id ON proxy_api_keys(user_id);
@@ -1894,6 +1895,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("proxy_api_keys", "created_utc", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "last_used_utc", "TEXT NULL"),
                                 ("proxy_api_keys", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("proxy_api_keys", "mcp_access", "INTEGER NOT NULL DEFAULT 0"),
                             ];
 
                     // Read the existing shape once — table names from sqlite_master, then each
@@ -2819,7 +2821,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access
                 FROM proxy_api_keys
                 ORDER BY id;
                 """;
@@ -2844,7 +2846,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access
                 FROM proxy_api_keys
                 WHERE key_hash = $keyHash;
                 """;
@@ -2937,8 +2939,8 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models)
-                VALUES ($userId, $label, $keyHash, $keyPrefix, $createdUtc, $lastUsedUtc, $allowedModels);
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access)
+                VALUES ($userId, $label, $keyHash, $keyPrefix, $createdUtc, $lastUsedUtc, $allowedModels, $mcpAccess);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$userId", key.UserId);
@@ -2948,14 +2950,15 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$createdUtc", ToUtcText(key.CreatedUtc));
             command.Parameters.AddWithValue("$lastUsedUtc", key.LastUsedUtc is { } used ? ToUtcText(used) : DBNull.Value);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(key.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(key.McpAccess));
 
             object? scalar = command.ExecuteScalar();
             key.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
         }
     }
 
-    /// <summary>Updates an API key's label and allowed-model list.</summary>
-    public void UpdateProxyApiKeyAccess(int id, string label, IReadOnlyList<string> allowedModels)
+    /// <summary>Updates an API key's label, model grants, and MCP server grant.</summary>
+    public void UpdateProxyApiKeyAccess(int id, string label, IReadOnlyList<string> allowedModels, bool mcpAccess = false)
     {
         ArgumentNullException.ThrowIfNull(allowedModels);
 
@@ -2966,12 +2969,13 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 UPDATE proxy_api_keys
-                SET label = $label, allowed_models = $allowedModels
+                SET label = $label, allowed_models = $allowedModels, mcp_access = $mcpAccess
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", id);
             command.Parameters.AddWithValue("$label", label);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(allowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(mcpAccess));
             command.ExecuteNonQuery();
         }
     }
@@ -3013,6 +3017,7 @@ internal sealed class AppDatabase : IDisposable
         CreatedUtc = ReadUtc(reader, 5),
         LastUsedUtc = reader.IsDBNull(6) ? null : ReadUtc(reader, 6),
         AllowedModels = DeserializeAllowedModels(reader.IsDBNull(7) ? null : reader.GetString(7)),
+        McpAccess = reader.FieldCount > 8 && !reader.IsDBNull(8) && ReadBoolean(reader, 8),
     };
 
     private static List<string> DeserializeAllowedModels(string? json)

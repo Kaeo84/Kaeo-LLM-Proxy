@@ -980,9 +980,12 @@
                         }).appendTo($keyActions);
                         $head.append($keyActions);
                         $row.append($head);
+                        var accessSummary = u.dashboardRole === 'admin'
+                            ? 'Admin: all models + MCP'
+                            : ((k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'no models')
+                                + ' · MCP ' + (k.mcpAccess ? 'allowed' : 'denied');
                         $row.append($('<div class="key-meta">').text(
-                            ((k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'all models')
-                            + ' \u00b7 last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
+                            accessSummary + ' · last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
                         $keys.append($row);
                     });
                 }
@@ -1025,7 +1028,7 @@
         var $role = $('<select>').append($('<option>').val('admin').text('Admin — full dashboard access'))
             .append($('<option>').val('readOnly').text('Read Only — request logs only'))
             .val(existing ? existing.dashboardRole : 'readOnly');
-        field('Dashboard role', $role, 'This role controls the web dashboard only, not model access through proxy API keys.');
+        field('Dashboard role', $role, 'Admin always has full model and MCP access. Read Only users need explicit per-key model and MCP grants.');
 
         function syncLoginFields() {
             var disabled = !$loginEnabled.prop('checked');
@@ -1075,6 +1078,7 @@
                 .filter(function (n) { return !!n; })
                 .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
             var allowed = existing ? (existing.allowedModels || []) : [];
+            var isAdmin = user.dashboardRole === 'admin';
 
             var $body = $('<div>');
             var $label = $('<input type="text">').val(existing ? existing.label : '');
@@ -1082,10 +1086,14 @@
                 .append($('<span class="hint">').text('What this key is for, e.g. "laptop" or "CI pipeline".')));
 
             $body.append($('<div class="field">').append($('<label>').text('Model access'))
-                .append($('<span class="hint">').text('Check the models this key may call. Leave everything unchecked for access to all models.')));
+                .append($('<span class="hint">').text(isAdmin
+                    ? 'Admin users always have access to every model.'
+                    : 'Check each model this key may call. No selections means no model access.')));
             var $models = $('<div class="model-checks">');
             if (!models.length) {
-                $models.append($('<p class="muted">').text('No models configured — the key will allow all models.'));
+                $models.append($('<p class="muted">').text(isAdmin
+                    ? 'No models are configured. Admin users still have access to all models.'
+                    : 'No models are configured; this key has no model access.'));
             }
             models.forEach(function (name) {
                 var checked = allowed.some(function (a) { return a.toLowerCase() === name.toLowerCase(); });
@@ -1094,12 +1102,19 @@
             });
             $body.append($models);
 
+            var $mcpAccess = $('<input type="checkbox">').prop('checked', existing ? !!existing.mcpAccess : false);
+            $body.append($('<div class="field bool">').append($mcpAccess)
+                .append($('<label>').text('Allow MCP server access'))
+                .append($('<span class="hint">').text(isAdmin
+                    ? 'Admin users always have access to all MCP tools.'
+                    : 'Grants this key access to the MCP server and all enabled MCP tools.')));
+
             function selectedModels() {
                 return $models.find('input:checked').map(function () { return $(this).val(); }).get();
             }
 
             function save() {
-                var payload = { label: $label.val().trim(), allowedModels: selectedModels() };
+                var payload = { label: $label.val().trim(), allowedModels: selectedModels(), mcpAccess: $mcpAccess.prop('checked') };
                 if (existing) {
                     api('PUT', '/api/keys/' + existing.id, payload).then(function () {
                         closeModal();
@@ -1538,6 +1553,9 @@
                 .append(kv('Collect request details', s.collectRequestDetails ? 'yes' : 'no'))
                 .append(kv('Collect response details', s.collectResponseDetails ? 'yes' : 'no'));
             $view.append($('<div class="cards">').append($card));
+            $view.append($('<p class="muted">').text(
+                'Clients authenticate with the configured shared credential or with a proxy API key that has '
+                + '"Allow MCP server access" enabled. Admin users always have access; Read Only keys need the grant.'));
 
             $view.append($('<h2>').text('Tool modules'));
             var $tools = $('<div class="cards">');

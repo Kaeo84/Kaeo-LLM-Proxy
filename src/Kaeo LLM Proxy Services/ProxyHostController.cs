@@ -87,10 +87,10 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         // so module activity (e.g. SSH connections) appears in the MCP logs.
         ModuleHost.BindActivityLog(new McpActivityLogAdapter(McpStats));
 
-        McpServer = new McpServerService(Database, Settings, ModuleHost, McpStats);
+        Access = new ProxyAccessService(Database);
+        McpServer = new McpServerService(Database, Settings, ModuleHost, McpStats, Access);
         PerfService = new PerformanceService(Settings.EnablePerformanceSampling);
         StreamMonitor = new StreamMonitor();
-        Access = new ProxyAccessService(Database);
         Handler = new OllamaProxyHandler(Settings, Stats, ModuleHost, McpServer, NonProxiedStats, streamMonitor: StreamMonitor, access: Access);
         Handler.StartHeartbeatMonitors();
         Server = new ProxyServer(Handler);
