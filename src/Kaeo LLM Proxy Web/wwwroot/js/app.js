@@ -291,6 +291,9 @@
 
     // ------------------------------------------------------------------ requests tab
     var logCursors = { proxy: 0, mcp: 0, nonproxied: 0 };
+    var logLoaded = { proxy: false, mcp: false, nonproxied: false };
+    var renderedLogSource = null;
+    var logGeneration = 0;
     var logsPaused = false;
     var logBusy = false;
     var STATUS_NAMES = ['Success', 'Error', 'Cancelled'];
@@ -312,10 +315,22 @@
     }
 
     function resetLogsView() {
-        logCursors[currentSource()] = 0;
+        var source = currentSource();
+        renderedLogSource = source;
+        logGeneration++;
+        logCursors[source] = 0;
+        logLoaded[source] = false;
         $('#log-table tbody').empty();
         updateLogCount();
         pollLogs(true);
+    }
+
+    function loadRequestsView() {
+        var source = currentSource();
+        if (renderedLogSource !== source) resetLogsView();
+        else if (logLoaded[source]) pollLogs(false);
+        else pollLogs(true);
+        loadStreams();
     }
 
     function updateLogCount() {
@@ -326,17 +341,20 @@
         if (logBusy) return;
         logBusy = true;
         var source = currentSource();
-        // Fresh load omits `after`: the server answers newest-first from the database (the full
-        // retention window, even when the in-memory queue has rolled). Polls send the cursor.
+        var generation = logGeneration;
+        // Fresh load omits `after`: the server answers newest-first from the database. Polls send
+        // the cursor and preserve the already-rendered rows.
         var url = '/api/logs?source=' + encodeURIComponent(source) + '&limit=' + (initial ? MAX_LOG_ROWS : 200);
         if (!initial) url += '&after=' + logCursors[source];
         api('GET', url, undefined, { silent: true })
             .then(function (data) {
+                if (generation !== logGeneration || source !== currentSource()) return;
                 logCursors[source] = data.nextAfter || logCursors[source];
                 var $tbody = $('#log-table tbody');
                 var entries = data.entries || [];
                 if (initial) {
                     entries.forEach(function (entry) { $tbody.append(logRow(entry)); });
+                    logLoaded[source] = true;
                 } else {
                     // Incremental batches arrive oldest-first; prepend reversed so newest stays on top.
                     for (var i = entries.length - 1; i >= 0; i--) $tbody.prepend(logRow(entries[i]));
@@ -345,17 +363,26 @@
                 updateLogCount();
             })
             .catch(function () { /* transient poll failure — next tick retries */ })
-            .then(function () { logBusy = false; });
+            .then(function () {
+                logBusy = false;
+                var activeSource = currentSource();
+                if (activeTab === 'requests' && !logLoaded[activeSource]
+                    && (source !== activeSource || generation !== logGeneration))
+                    pollLogs(true);
+            });
     }
 
     function logRow(e) {
         var statusName = STATUS_NAMES[e.status] || String(e.status);
+        var timestamp = new Date(e.timestamp);
+        var dateText = (timestamp.getMonth() + 1) + '/' + String(timestamp.getDate()).padStart(2, '0');
         var $row = $('<tr>')
-            .append($('<td>').text(new Date(e.timestamp).toLocaleTimeString()))
+            .append($('<td>').text(dateText))
+            .append($('<td>').text(timestamp.toLocaleTimeString()))
             .append($('<td>').text(e.requestor || ''))
             .append($('<td>').text(e.method))
             .append($('<td>').text(e.ollamaPath))
-            .append($('<td>').text(e.model || '—'))
+            .append($('<td class="truncate log-model">').text(e.model || '—'))
             .append($('<td>').append($('<span class="pill">')
                 .addClass(e.status === 0 ? 'ok' : e.status === 1 ? 'err' : 'warn')
                 .text(e.statusCode + ' ' + statusName)))
@@ -413,7 +440,7 @@
         $('#modal-body').empty().append($body);
     }
 
-    loaders.requests = function () { resetLogsView(); loadStreams(); };
+    loaders.requests = loadRequestsView;
 
         // ------------------------------------------------------------------ live streams
         var streamCache = [];
@@ -1599,7 +1626,11 @@
             .on('change', function () { writeRefreshSeconds(REFRESH_STORAGE.requests, parseInt(this.value, 10) || 0); });
         $('#syslog-refresh').val(String(readRefreshSeconds(REFRESH_STORAGE.syslog)))
             .on('change', function () { writeRefreshSeconds(REFRESH_STORAGE.syslog, parseInt(this.value, 10) || 0); });
-        $('#btn-refresh-logs').on('click', function () { pollLogs(false); loadStreams(); });
+        $('#btn-refresh-logs').on('click', function () {
+            var source = currentSource();
+            pollLogs(!logLoaded[source]);
+            loadStreams();
+        });
         $('#btn-refresh-syslog').on('click', loadSyslog);
         $('#btn-clear-syslog').on('click', function () {
             $('#syslog-table tbody').empty();

@@ -232,6 +232,7 @@ tbody tr:hover { background: var(--row-hover); }
 /* Upstream model names are clipped to ~48 characters (the JS truncates the text as well) so a
    long name can never wrap onto a second line and grow the row. */
 td.truncate { max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#log-table td.log-model { max-width: 18ch; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* ---- streams panel (Requests tab) ---- */
