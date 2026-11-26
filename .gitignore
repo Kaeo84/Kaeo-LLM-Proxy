@@ -39,3 +39,6 @@ preprocessed.xml
 
 # Copilot agent session artifacts
 session-state/
+
+# Cross-platform publish output (see README "Running headless on Linux / macOS")
+artifacts/

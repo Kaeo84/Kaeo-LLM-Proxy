@@ -293,8 +293,42 @@ and configuration details.
 
 ## System Requirements
 
-- Windows 10 version 22000 (21H2) or later
+- Windows 10 version 22000 (21H2) or later for the tray app
 - [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+## Running headless on Linux / macOS
+
+The tray app is Windows-only, but the engine, the web dashboard, and the MCP server are all
+cross-platform. `Kaeo LLM Proxy Headless` runs the same `ProxyHostController` with no WinForms, so
+on Linux or macOS you get the proxy plus the full web dashboard (everything is managed from the
+browser, including model mappings and users).
+
+Publish a self-contained build for the target platform — this can be cross-published from Windows,
+so no .NET SDK is needed on the target machine:
+
+```bash
+# Apple Silicon
+dotnet publish "src/Kaeo LLM Proxy Headless/Kaeo LLM Proxy Headless.csproj" \
+  -c Release -r osx-arm64 --self-contained true -o artifacts/osx-arm64
+
+# Linux x64
+dotnet publish "src/Kaeo LLM Proxy Headless/Kaeo LLM Proxy Headless.csproj" \
+  -c Release -r linux-x64 --self-contained true -o artifacts/linux-x64
+```
+
+Copy the output folder to the target machine, then run `./Kaeo LLM Proxy Headless`. The same
+`Data/` folder layout is created next to the executable (`settings.jsonc`, the SQLite database,
+and the rolling logs), so the folder stays portable exactly as it does on Windows.
+
+On the first launch no dashboard account exists yet, so browse to the dashboard port
+(`ListenPort + 1`, e.g. <http://localhost:11435>) and the login page offers first-run setup. Setup
+is loopback-only by design; create additional accounts afterwards from the dashboard's **Users**
+tab. `SIGINT`/`SIGTERM` drains in-flight requests and shuts down cleanly.
+
+The Windows-only pieces (the tray app and the Visual Studio extension) are not part of the headless
+host. Module packages (`.kaeomod`) are per-platform; build them on the target platform with
+`./Kaeo LLM Proxy Headless --module-pack <module-dir>` (add `--module-sign --key <private-key.pem>`
+to sign), or leave them out and run with the built-in features.
 
 ## GitHub Pages
 
