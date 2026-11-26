@@ -762,12 +762,11 @@
                     $keys.append($('<p class="muted">').text('No API keys.'));
                 } else {
                     u.keys.forEach(function (k) {
-                        var $row = $('<div class="kv key-row">');
-                        var scope = (k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'all models';
-                        $row.append($('<span class="k">').text((k.label || '(unlabeled)') + ' · ' + k.keyPrefix + '…'));
-                        $row.append($('<span class="v">').text(scope
-                            + ' · last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
-                        var $keyActions = $('<span class="actions">');
+                        var $row = $('<div class="key-row">');
+                        var $head = $('<div class="key-head">')
+                            .append($('<span class="key-name">').text(k.label || '(unlabeled)'))
+                            .append($('<span class="key-prefix">').text(k.keyPrefix + '\u2026'));
+                        var $keyActions = $('<span class="key-actions">');
                         $('<button type="button" class="ghost">').text('Edit').on('click', function () {
                             keyDialog(u, k);
                         }).appendTo($keyActions);
@@ -776,7 +775,11 @@
                                 api('DELETE', '/api/keys/' + k.id).then(function () { toast('Key deleted.'); loadUsers(); });
                             });
                         }).appendTo($keyActions);
-                        $row.append($keyActions);
+                        $head.append($keyActions);
+                        $row.append($head);
+                        $row.append($('<div class="key-meta">').text(
+                            ((k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'all models')
+                            + ' \u00b7 last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
                         $keys.append($row);
                     });
                 }
@@ -1119,7 +1122,10 @@
     }
 
     function renderUsageDays(data) {
-        var $tbody = $('#usage-day-table tbody').empty();
+        // Direct child only: the expanded detail rows contain their own model tables, and a
+        // descendant selector would match those tbodies too — jQuery then clones the day rows
+        // into them and the visible copies lose their click handlers.
+        var $tbody = $('#usage-day-table').children('tbody').empty();
         var days = data.days || [];
         if (!days.length) {
             $tbody.append($('<tr>').append($('<td colspan="6" class="muted">').text('No token usage in this range.')));

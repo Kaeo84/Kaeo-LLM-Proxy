@@ -189,13 +189,22 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .card .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; font-size: 13px; }
 .card .kv .k { color: var(--fg-muted); }
 .card .kv .v { font-weight: 600; text-align: right; word-break: break-all; }
-.card .actions { margin-top: 10px; display: flex; gap: 8px; }
+/* Wraps instead of overflowing the card: the user-level button row is wider than a 280px card. */
+.card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ---- users tab ---- */
 .user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
-.user-keys .key-row { align-items: center; flex-wrap: wrap; }
-.user-keys .key-row .v { font-weight: 400; color: var(--fg-muted); }
-.user-keys .key-row .actions { margin-top: 0; }
+.user-keys .key-row { padding: 4px 0; }
+.user-keys .key-row + .key-row { border-top: 1px dashed var(--border); }
+/* One block per key: name + prefix on the first line with that key's Edit/Delete pinned right,
+   scope and last-used on the second. Long model lists and timestamps then wrap in their own line
+   instead of pushing the buttons out of the card or hiding the other keys' buttons. */
+.user-keys .key-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.user-keys .key-name { min-width: 0; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-keys .key-prefix { flex: none; font-family: Consolas, "SF Mono", monospace; font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
+.user-keys .key-actions { flex: none; margin-left: auto; display: flex; gap: 4px; }
+.user-keys .key-actions button { padding: 2px 8px; font-size: 12px; }
+.user-keys .key-meta { margin-top: 2px; font-size: 12px; color: var(--fg-muted); word-break: break-word; }
 .model-checks { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .model-checks .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 
