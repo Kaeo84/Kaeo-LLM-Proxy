@@ -25,8 +25,9 @@ partial class OllamaProxyHandler
     /// display name (e.g. <c>claude-fast</c>) while upstreams expect their own identifier
     /// (e.g. a <c>.gguf</c> path), so the field must be swapped before forwarding. The rest of
     /// the body is passed through untouched â€” compaction requests are already valid
-    /// chat-completion payloads and must not be reshaped. Returns the original text unchanged
-    /// when it is not valid JSON so the caller can surface the upstream's own error.
+    /// chat-completion payloads and must not be reshaped, except for the strict-provider content
+    /// repair described below. Returns the original text unchanged when it is not valid JSON so
+    /// the caller can surface the upstream's own error.
     /// </summary>
     /// <param name="bodyText">The original request body.</param>
     /// <param name="upstreamModelName">The target mapping's upstream model identifier.</param>
@@ -41,6 +42,16 @@ partial class OllamaProxyHandler
                 return bodyText;
 
             root["model"] = upstreamModelName;
+
+            // The compaction body is the client's conversation replayed verbatim, so it carries the
+            // same "content": null assistant tool-call turns an ordinary request does. This path
+            // bypasses NormalizeRequestBody and the payload pipeline by design, so without the
+            // repair a strict provider (Alibaba DashScope / Qwen Cloud) rejects the request with
+            // "The content field is a required field". The re-serialization below also drops JSON
+            // nulls, which would delete the member outright, so the repair has to run first.
+            if (root["messages"] is JsonArray messages && MessageContentRepair.NeedsRepair(messages))
+                MessageContentRepair.Repair(messages);
+
             return root.ToJsonString(_jsonOptions);
         }
         catch (JsonException)

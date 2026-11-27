@@ -280,7 +280,73 @@ public class MessageContentRepairTests
         Assert.Equal(Canonical(legacy), Canonical(pipeline.Body));
     }
 
-    private static string Canonical(string json) => Canonicalize(JsonNode.Parse(json)!);
+    // ── Manual compaction path ───────────────────────────────────────────
+
+        [Fact]
+        public void RewriteCompactTargetModel_RepairsNullContentOnAssistantToolCallTurn()
+        {
+            string body = """
+                {"model":"claude-fast","messages":[
+                  {"role":"user","content":"weather?"},
+                  {"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+                  {"role":"tool","tool_call_id":"c1","content":"sunny"}]}
+                """;
+
+            string result = OllamaProxyHandler.RewriteCompactTargetModel(body, "deepseek-v4.1-flash-1017");
+
+            JsonNode root = JsonNode.Parse(result)!;
+            Assert.Equal("deepseek-v4.1-flash-1017", (string?)root["model"]);
+            Assert.Equal(string.Empty, (string?)root["messages"]![1]!["content"]);
+            Assert.Equal("c1", (string?)root["messages"]![1]!["tool_calls"]![0]!["id"]);
+            Assert.Equal("weather?", (string?)root["messages"]![0]!["content"]);
+            Assert.Equal("sunny", (string?)root["messages"]![2]!["content"]);
+        }
+
+        [Fact]
+        public void RewriteCompactTargetModel_RepairsAbsentContent()
+        {
+            // An absent member is worse than a null one here: the writer ignores nulls, so without the
+            // repair the member would simply vanish rather than become "".
+            string body = """
+                {"model":"claude-fast","messages":[
+                  {"role":"user","content":"go"},
+                  {"role":"assistant","tool_calls":[{"id":"c1","type":"function"}]}]}
+                """;
+
+            string result = OllamaProxyHandler.RewriteCompactTargetModel(body, "upstream-model");
+
+            JsonNode messages = JsonNode.Parse(result)!["messages"]!;
+            Assert.True(messages[1]!.AsObject().ContainsKey("content"));
+            Assert.Equal(string.Empty, (string?)messages[1]!["content"]);
+        }
+
+        [Fact]
+        public void RewriteCompactTargetModel_LeavesAConformingBodyUnrepaired()
+        {
+            string body = """
+                {"model":"claude-fast","messages":[
+                  {"role":"user","content":"hi"},
+                  {"role":"assistant","content":"","tool_calls":[{"id":"c1"}]}]}
+                """;
+
+            string result = OllamaProxyHandler.RewriteCompactTargetModel(body, "upstream-model");
+
+            JsonNode root = JsonNode.Parse(result)!;
+            Assert.Equal("upstream-model", (string?)root["model"]);
+            Assert.Equal(string.Empty, (string?)root["messages"]![1]!["content"]);
+            Assert.Equal("hi", (string?)root["messages"]![0]!["content"]);
+            Assert.Equal("c1", (string?)root["messages"]![1]!["tool_calls"]![0]!["id"]);
+        }
+
+        [Fact]
+        public void RewriteCompactTargetModel_ReturnsNonJsonUnchanged()
+        {
+            const string body = "not json at all";
+
+            Assert.Equal(body, OllamaProxyHandler.RewriteCompactTargetModel(body, "upstream-model"));
+        }
+
+        private static string Canonical(string json) => Canonicalize(JsonNode.Parse(json)!);
 
     private static string Canonicalize(JsonNode node) => node switch
     {
