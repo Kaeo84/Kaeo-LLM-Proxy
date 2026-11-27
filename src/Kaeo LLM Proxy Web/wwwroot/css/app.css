@@ -211,6 +211,12 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 #status-cards .card .actions { margin-top: auto; padding-top: 10px; }
 /* Inline failure text under a card's action row (proxy start errors, degraded database). */
 .card-error { margin: 10px 0 0; font-size: 12px; color: var(--err); word-break: break-word; }
+/* Links to the API documents a card publishes. They sit above the action row so the buttons stay
+   pinned to the bottom of the card. */
+.card-links { margin: 8px 0 0; font-size: 12px; display: flex; flex-wrap: wrap; gap: 14px; }
+.card-links a { color: var(--accent); text-decoration: none; }
+.card-links a:hover { text-decoration: underline; }
+.explorer-off { color: var(--fg-muted); }
 
 /* ---- users tab ---- */
 .user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }

@@ -234,6 +234,54 @@ public sealed class WebRegistrationApiKeyTests
     }
 
     [Fact]
+    public async Task OpenApiDocument_IsNotServedWhenTheToggleIsOff()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        string key = await CreateServiceAccountKeyAsync(b, RegistrationReadRole);
+
+        // The document is advertised while it is published...
+        Assert.True(await RegistrationExplorerEnabledAsync(b));
+
+        b.Controller.Settings.EnableRegistrationApiSpec = false;
+
+        // ...and switching it off both stops serving it and hides it from the caller's explorer state.
+        Assert.Equal(HttpStatusCode.NotFound, (await GetAsync(b, "/api/mappings/openapi.json", key)).StatusCode);
+        Assert.False(await RegistrationExplorerEnabledAsync(b));
+
+        // The routes the document describes keep working; only the description goes away.
+        Assert.Equal(HttpStatusCode.OK, (await GetAsync(b, "/api/mappings", key)).StatusCode);
+    }
+
+    [Fact]
+    public async Task ExplorerState_IsReportedOnlyToSignedInCallers()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        // The login page probes this endpoint, so an anonymous caller must not learn the topology.
+        // A null property is omitted from the payload entirely, so both shapes mean "not told".
+        using (JsonDocument anonymous = JsonDocument.Parse(await (await b.Anonymous.GetAsync("/api/auth/me")).Content.ReadAsStringAsync()))
+        {
+            bool present = anonymous.RootElement.TryGetProperty("explorers", out JsonElement anonymousExplorers);
+            Assert.True(!present || anonymousExplorers.ValueKind == JsonValueKind.Null);
+        }
+
+        using JsonDocument signedIn = JsonDocument.Parse(await (await b.Client.GetAsync("/api/auth/me")).Content.ReadAsStringAsync());
+        JsonElement explorers = signedIn.RootElement.GetProperty("explorers");
+        Assert.Equal("proxy", explorers.EnumerateObject().Select(p => p.Name).First());
+
+        // The proxy explorer defaults to off; its paths are reported either way so the Dashboard card
+        // can show them as soon as the toggle is saved.
+        JsonElement proxy = explorers.GetProperty("proxy");
+        Assert.False(proxy.GetProperty("enabled").GetBoolean());
+        Assert.Equal("/scalar", proxy.GetProperty("scalarPath").GetString());
+        Assert.Equal("/openapi/v1/openapi.json", proxy.GetProperty("specPath").GetString());
+
+        JsonElement registration = explorers.GetProperty("registration");
+        Assert.True(registration.GetProperty("enabled").GetBoolean());
+        Assert.Equal("/api/mappings/openapi.json", registration.GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async Task RolesEndpoint_AdvertisesTheRegistrationRoles()
     {
         await using Bundle b = await CreateBundleAsync();
@@ -269,6 +317,18 @@ public sealed class WebRegistrationApiKeyTests
 
     private static Task<HttpResponseMessage> GetAsync(Bundle b, string path, string? key)
         => SendAsync(b, HttpMethod.Get, path, key, null);
+
+    /// <summary>
+    /// Reads the registration entry from the explorer state that /api/auth/me reports. The endpoint
+    /// resolves the session cookie itself and has no API-key fallback, so this reads it as the admin.
+    /// </summary>
+    private static async Task<bool> RegistrationExplorerEnabledAsync(Bundle b)
+    {
+        using JsonDocument doc = JsonDocument.Parse(await (await b.Client.GetAsync("/api/auth/me")).Content.ReadAsStringAsync());
+        JsonElement explorers = doc.RootElement.GetProperty("explorers");
+        return explorers.ValueKind == JsonValueKind.Object
+            && explorers.GetProperty("registration").GetProperty("enabled").GetBoolean();
+    }
 
     private static async Task<HttpResponseMessage> SendAsync(Bundle b, HttpMethod method, string path, string? key, object? body)
     {

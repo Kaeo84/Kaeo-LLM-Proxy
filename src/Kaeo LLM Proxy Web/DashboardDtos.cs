@@ -42,6 +42,7 @@ internal sealed class SettingsUpdate
     public int? ModelAutoDiscoveryOfflineMinutes { get; set; }
     public bool? EnablePerformanceSampling { get; set; }
     public bool? EnableApiExplorer { get; set; }
+    public bool? EnableRegistrationApiSpec { get; set; }
     public bool? AllowMultipleInstances { get; set; }
     public WebDashboardUpdate? WebDashboard { get; set; }
     public ProxySecurityUpdate? ProxySecurity { get; set; }

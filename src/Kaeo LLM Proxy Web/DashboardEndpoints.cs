@@ -29,7 +29,7 @@ internal static partial class DashboardEndpoints
         // controls the caller cannot use.
         app.MapGet("/api/auth/me", (HttpContext context) =>
         {
-            DashboardAuth.TryAuthorize(context, settings, controller.Database, controller.Access, out _);
+            bool signedIn = DashboardAuth.TryAuthorize(context, settings, controller.Database, controller.Access, out _);
             string roles = context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty;
             return Results.Json(new
             {
@@ -40,6 +40,9 @@ internal static partial class DashboardEndpoints
                 capabilities = DashboardRoles.CapabilityNames(roles),
                 username = context.Items[DashboardAuth.UserNameItemKey]?.ToString(),
                 loginRequired = settings.WebDashboard.RequireLogin,
+                // Only a resolved session is told where the API documents live; the login page has
+                // no use for the topology and must not be able to read it.
+                explorers = signedIn ? BuildExplorerState(settings, controller, roles) : null,
             });
         });
         // The role vocabulary the user editor renders, so the UI can never offer a role the
@@ -127,6 +130,46 @@ internal static partial class DashboardEndpoints
             databasePath = controller.Database.DatabasePath,
             databaseDegraded = controller.Database.IsDegraded,
         }));
+    }
+
+    /// <summary>
+    /// Which API documents this instance publishes, and where. The proxy and MCP explorers listen
+    /// on their own ports, so the browser rebuilds those absolute URLs from the address it used to
+    /// reach the dashboard; only the registration document shares the dashboard's origin.
+    /// <para>
+    /// The registration entry is reported as disabled unless the caller holds
+    /// <see cref="DashboardCapability.ViewRegistration"/>, so a role that could not read the
+    /// document is not told it exists.
+    /// </para>
+    /// </summary>
+    private static object BuildExplorerState(AppSettings settings, ProxyHostController controller, string roles)
+    {
+        McpServerSettings mcpSettings = controller.McpServer.LoadSettings();
+        return new
+        {
+            proxy = new
+            {
+                enabled = settings.EnableApiExplorer,
+                listenAddress = settings.ListenAddress,
+                listenPort = settings.ListenPort,
+                scalarPath = EndpointPaths.Scalar,
+                specPath = EndpointPaths.OpenApiSpec,
+            },
+            mcp = new
+            {
+                enabled = mcpSettings.EnableApiExplorer,
+                listenAddress = controller.McpServer.ListenAddress,
+                listenPort = controller.McpServer.ListenPort,
+                scalarPath = McpServerHost.ScalarPath,
+                specPath = McpServerHost.SpecPath,
+            },
+            registration = new
+            {
+                enabled = settings.EnableRegistrationApiSpec
+                    && DashboardRoles.HasCapability(roles, DashboardCapability.ViewRegistration),
+                path = RegistrationApiSpec.Path,
+            },
+        };
     }
 
     private static void MapProxy(WebApplication app, ProxyHostController controller)

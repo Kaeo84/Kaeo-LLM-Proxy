@@ -34,8 +34,11 @@ internal static partial class DashboardEndpoints
         // The OpenAPI contract for this surface, so a script author, a tool importer, or the Help
         // tab has one exact description to work from. Gated on ViewRegistration rather than being
         // open like the mapping list: it exists for the people and machines that use these routes.
-        app.MapGet(RegistrationApiSpec.Path,
-            () => Results.Text(RegistrationApiSpec.Build(), "application/json"));
+        // Switching it off answers 404 exactly as if the route were never mapped, so a deployment
+        // that does not want the contract published simply does not publish it.
+        app.MapGet(RegistrationApiSpec.Path, () => controller.Settings.EnableRegistrationApiSpec
+            ? Results.Text(RegistrationApiSpec.Build(), "application/json")
+            : Results.NotFound());
 
         // "Discover now": one synchronous scan, so the operator sees the outcome immediately instead
         // of waiting for the next tick.

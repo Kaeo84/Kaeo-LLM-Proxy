@@ -510,12 +510,18 @@ internal sealed class RuntimeSettings
 
         public bool EnablePerformanceSampling { get; set; } = true;
 
-    /// <summary>
-    /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
-    /// specification at /openapi/v1/openapi.json. Default: false.
-    /// </summary>
-    public bool EnableApiExplorer { get; set; } = false;
-}
+        /// <summary>
+        /// When true, the dashboard serves the registration API's OpenAPI document at
+        /// /api/mappings/openapi.json. Default: true.
+        /// </summary>
+        public bool EnableRegistrationApiSpec { get; set; } = true;
+
+        /// <summary>
+        /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
+        /// specification at /openapi/v1/openapi.json. Default: false.
+        /// </summary>
+        public bool EnableApiExplorer { get; set; } = false;
+    }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
 internal sealed class ModelMapping
@@ -1685,6 +1691,15 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
+    /// <summary>
+    /// When true, the dashboard serves the registration API's OpenAPI document at
+    /// /api/mappings/openapi.json and the dashboard and Help tabs link to it. Off answers 404 on
+    /// that path and hides every link, which is the way to keep the registration contract out of
+    /// reach on a locked-down deployment. Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableRegistrationApiSpec { get; set; } = true;
+
     // NOTE: There is deliberately no global compaction toggle. Compaction is configured
     // per model mapping only, via ModelMapping.AutoCompactPaths, the proactive overflow
     // thresholds, the compaction target (ModelMapping.ContextSummarizeModelId) and
@@ -2025,6 +2040,7 @@ internal sealed class AppSettings
             EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
             EnablePerformanceSampling = EnablePerformanceSampling,
             EnableApiExplorer = EnableApiExplorer,
+            EnableRegistrationApiSpec = EnableRegistrationApiSpec,
             Logging = new LoggingSettings
             {
                 MinimumLevel = Logging.MinimumLevel,
@@ -2102,6 +2118,7 @@ internal sealed class AppSettings
         CompactionTargetTokens = CompactionTargetTokens,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
+        EnableRegistrationApiSpec = EnableRegistrationApiSpec,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -2134,6 +2151,7 @@ internal sealed class AppSettings
         CompactionTargetTokens = runtimeSettings.CompactionTargetTokens;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
+        EnableRegistrationApiSpec = runtimeSettings.EnableRegistrationApiSpec;
     }
 
     /// <summary>

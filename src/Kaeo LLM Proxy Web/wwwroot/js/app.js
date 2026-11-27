@@ -175,6 +175,9 @@
     var activeTab = 'dashboard';
     var capabilities = { Admin: true };
     var currentIdentity = null;
+    // Which API documents this instance publishes, from /api/auth/me. Refreshed after a settings
+    // save because the two toggles live on the Settings tab.
+    var explorers = {};
     var loaders = {};
 
     // Tabs are gated by capability, not by a single role: a user may hold several roles at once and
@@ -223,6 +226,7 @@
         currentIdentity = identity || null;
         capabilities = {};
         ((currentIdentity && currentIdentity.capabilities) || []).forEach(function (name) { capabilities[name] = true; });
+        explorers = (currentIdentity && currentIdentity.explorers) || {};
         applyDashboardRole();
         var loginRequired = !currentIdentity || currentIdentity.loginRequired !== false;
         $('#btn-signin').toggle(loginRequired)
@@ -235,6 +239,12 @@
             ? 'API connection state'
             : 'Signed in. Connection state needs the Dashboard Read Only role.');
         if (!can('ViewDashboard')) setConn('signedin');
+    }
+
+    function refreshIdentity() {
+        return api('GET', '/api/auth/me', undefined, { silent: true })
+            .then(setIdentity)
+            .catch(function () { /* keep the identity already on screen */ });
     }
 
     function applyDashboardRole() {
@@ -282,6 +292,41 @@
         return $('<div class="kv">').append($('<span class="k">').text(k)).append($('<span class="v">').text(v));
     }
 
+    // The proxy and the MCP server listen on their own ports, so their explorers need absolute
+    // URLs. A wildcard listen address means every interface; the host this page was reached on is
+    // the one that will answer, so it is used instead.
+    function listenHost(address) {
+        var host = (address || '').trim();
+        if (!host || host === '0.0.0.0' || host === '::' || host === '[::]' || host === '*') {
+            host = location.hostname || 'localhost';
+        }
+        if (host.indexOf(':') >= 0 && host.charAt(0) !== '[') host = '[' + host + ']';
+        return host;
+    }
+
+    function explorerUrl(explorer, path) {
+        if (!explorer || !explorer.listenPort) return '';
+        return 'http://' + listenHost(explorer.listenAddress) + ':' + explorer.listenPort + (path || '');
+    }
+
+    function explorerLink(href, text, live) {
+        if (!href) return $();
+        if (live) {
+            return $('<a>').attr('href', href).attr('target', '_blank').attr('rel', 'noopener noreferrer').text(text);
+        }
+        return $('<span class="explorer-off">').text(text + ' (server stopped)');
+    }
+
+    // A Help link either names a fixed href or one of the published API documents, in which case
+    // it renders only while that document is actually being served.
+    function helpLinkHref(link) {
+        if (!link.explorer) return link.href || null;
+        var explorer = explorers[link.explorer] || {};
+        if (!explorer.enabled) return null;
+        if (link.explorer === 'registration') return explorer.path || null;
+        return explorerUrl(explorer, link.path || '') || null;
+    }
+
     function refreshDashboard() {
         Promise.all([api('GET', '/api/status', undefined, { silent: true }), api('GET', '/api/stats', undefined, { silent: true })])
             .then(function (results) {
@@ -309,8 +354,14 @@
             .on('click', function () { api('POST', '/api/proxy/stop').then(refreshDashboard); }).appendTo($proxyActions);
         $('<button type="button">').text('Restart').prop('disabled', !s.proxy.isRunning)
             .on('click', function () { api('POST', '/api/proxy/restart').then(refreshDashboard); }).appendTo($proxyActions);
-        if (can('DashboardControl')) $proxy.append($proxyActions);
         if (s.proxy.error) $proxy.append($('<p class="card-error">').text(s.proxy.error));
+        var proxyExplorer = explorers.proxy || {};
+        if (proxyExplorer.enabled) {
+            $proxy.append($('<p class="card-links">')
+                .append(explorerLink(explorerUrl(proxyExplorer, proxyExplorer.scalarPath), 'API explorer', s.proxy.isRunning))
+                .append(explorerLink(explorerUrl(proxyExplorer, proxyExplorer.specPath), 'OpenAPI spec', s.proxy.isRunning)));
+        }
+        if (can('DashboardControl')) $proxy.append($proxyActions);
         $cards.append($proxy);
 
         var $mcp = $('<div class="card">').append($('<h3>').text('MCP server ').append(pill(s.mcp.isRunning, 'running', 'stopped')))
@@ -323,6 +374,12 @@
             .on('click', function () { api('POST', '/api/mcp/stop').then(refreshDashboard); }).appendTo($mcpActions);
         $('<button type="button">').text('Restart').prop('disabled', !s.mcp.isRunning)
             .on('click', function () { api('POST', '/api/mcp/restart').then(refreshDashboard); }).appendTo($mcpActions);
+        var mcpExplorer = explorers.mcp || {};
+        if (mcpExplorer.enabled) {
+            $mcp.append($('<p class="card-links">')
+                .append(explorerLink(explorerUrl(mcpExplorer, mcpExplorer.scalarPath), 'API explorer', s.mcp.isRunning))
+                .append(explorerLink(explorerUrl(mcpExplorer, mcpExplorer.specPath), 'OpenAPI spec', s.mcp.isRunning)));
+        }
         if (can('DashboardControl')) $mcp.append($mcpActions);
         $cards.append($mcp);
 
@@ -352,6 +409,16 @@
         if (can('DashboardControl')) $web.append($webActions);
         if (web.error) $web.append($('<p class="card-error">').text(web.error));
         $cards.append($web);
+
+        // The registration document is served by this dashboard, so its link is a plain relative
+        // path. It is only reported for roles that can read it.
+        var registration = explorers.registration || {};
+        if (registration.enabled) {
+            $cards.append($('<div class="card">').append($('<h3>').text('Registration API'))
+                .append(kv('Document', registration.path))
+                .append($('<p class="card-links">').append(explorerLink(registration.path, 'OpenAPI document', true)))
+                .append($('<p class="muted">').text('Service-account keys drive /api/mappings from a script. Switch the document off on the Settings tab.')));
+        }
 
         var perf = s.performance || {};
         $cards.append($('<div class="card">').append($('<h3>').text('Performance'))
@@ -1828,9 +1895,10 @@
             ]
         },
         {
-            title: 'Diagnostics', fields: [
+            title: 'Diagnostics and API documents', fields: [
                 { path: 'enablePerformanceSampling', label: 'Performance sampling', type: 'bool' },
-                { path: 'enableApiExplorer', label: 'API explorer', type: 'bool' }
+                { path: 'enableApiExplorer', label: 'Proxy API explorer', type: 'bool', hint: 'Serves the proxy OpenAPI document and the Scalar UI at /scalar. The Dashboard card and Help link to them only while this is on.' },
+                { path: 'enableRegistrationApiSpec', label: 'Registration API document', type: 'bool', hint: 'Serves /api/mappings/openapi.json to the registration roles. Off answers 404 there and hides every link to it.' }
             ]
         },
         {
@@ -1947,6 +2015,9 @@
                 $('#settings-error').addClass('hidden');
                 toast('Settings saved.');
                 renderSettings(view);
+                // The API-document toggles change what the Dashboard and Help may link to, so the
+                // identity is refreshed before those tabs redraw.
+                refreshIdentity();
             })
             .catch(function (err) { $('#settings-error').removeClass('hidden').text(err.message); });
     }
@@ -2247,11 +2318,13 @@
                 if (section.links && section.links.length) {
                     var $links = $('<p class="help-links">');
                     section.links.forEach(function (link) {
+                        var href = helpLinkHref(link);
+                        if (!href) return;
                         $links.append($('<a target="_blank" rel="noopener noreferrer">')
-                            .attr('href', link.href)
+                            .attr('href', href)
                             .text(link.text));
                     });
-                    $card.append($links);
+                    if ($links.children().length) $card.append($links);
                 }
 
                 $sections.append($card);

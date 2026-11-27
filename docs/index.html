@@ -214,7 +214,7 @@
       <h3>MCP server and modules</h3>
       <ul>
         <li>Built-in <strong>Model Context Protocol</strong> server over Streamable HTTP at <code>/mcp</code></li>
-        <li>Optional Scalar API explorer and OpenAPI document</li>
+        <li>Optional Scalar API explorer and OpenAPI document, switched on and off independently of the proxy and registration documents</li>
         <li>Importable <code>.kaeomod</code> modules contributing tools in isolation (Web Search, SSH, Code Vector Store)</li>
         <li>Package signing, per-module configuration, and per-user MCP access</li>
         <li>Optional capture of MCP request/response details with field-level redaction</li>
@@ -345,6 +345,13 @@
     routes, and it needs the same grant they do: Admin, User Admin, Model Admin, Registration Read Only, and
     Registration Read-Write can read it, and every other role gets 403. The <strong>Help</strong> tab carries the
     same contract for whichever of those roles is signed in.
+  </p>
+  <p>
+    All three documents &mdash; the proxy's, the MCP server's, and this one &mdash; are switched on and off
+    separately. <strong>Settings</strong> &rarr; <em>Proxy API explorer</em> and <em>Registration API document</em>
+    each have their own toggle, and the MCP explorer follows the MCP server settings because it has nothing to
+    describe while that server is off. While a document is switched off its path answers 404 and every link to it
+    disappears from the Dashboard cards and the Help tab, so the UI never offers a page that would not load.
   </p>
   <p class="muted">
     Users, keys, settings, credentials, modules, logs, usage, and the dashboard tabs still answer 401 for a key, so

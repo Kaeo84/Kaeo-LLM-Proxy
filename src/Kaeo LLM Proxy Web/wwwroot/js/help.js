@@ -28,16 +28,17 @@ window.KaeoHelp = {
             id: 'dashboard',
             title: 'Dashboard',
             capability: 'ViewDashboard',
-            summary: 'Six cards: proxy, MCP server, web server, performance, modules, and dashboard identity. The card set refreshes every three seconds while the tab is open.',
+            summary: 'Six cards: proxy, MCP server, web server, performance, modules, and dashboard identity, plus a Registration API card when that document is published. The card set refreshes every three seconds while the tab is open.',
             items: [
-                { label: 'Proxy', text: 'Listen address, port, running state, and version, plus the last start error when a bind failed.' },
-                { label: 'MCP server', text: 'Running state, status text, and the endpoint URL clients connect to.' },
+                { label: 'Proxy', text: 'Listen address, port, running state, and version, plus the last start error when a bind failed. When the API explorer is enabled the card also links to the explorer and the OpenAPI document.' },
+                { label: 'MCP server', text: 'Running state, status text, and the endpoint URL clients connect to, with the same explorer links when the MCP explorer is enabled.' },
                 { label: 'Web server', text: 'State, URL, listen address, and the certificate credential in use (a dash means plain HTTP).' },
                 { label: 'Performance', text: 'Process CPU, working set, Gen 2 collections, and large-object-heap size.' },
                 { label: 'Modules', text: 'Registered, enabled, and running counts for the imported MCP modules.' },
-                { label: 'Dashboard', text: 'Auth mode (login or open), scheme, and the database path this instance is using.' }
+                { label: 'Dashboard', text: 'Auth mode (login or open), scheme, and the database path this instance is using.' },
+                { label: 'Registration API', text: 'The document path and a link, shown only to roles that can read it and only while it is published.' }
             ],
-            note: 'A red banner means the database could not be opened and this instance is running on a private in-memory store, so changes will not survive a restart.'
+            note: 'A red banner means the database could not be opened and this instance is running on a private in-memory store, so changes will not survive a restart. Explorer links disappear when the document is switched off on the Settings tab, and go grey while the server they belong to is stopped.'
         },
         {
             id: 'controls',
@@ -118,7 +119,10 @@ window.KaeoHelp = {
                 { label: 'Auto column', text: '“yes” means discovery registered the model, “off” means discovery disabled it because the model stayed missing. Hover the pill for the reason.' },
                 { label: 'Discover now', text: 'Runs one scan immediately instead of waiting for the interval. The result lists every model registered, re-enabled, or disabled.' }
             ],
-            note: 'Models Read Only shows every mapping; Own Models Read Only shows only the models granted to you. Neither can change anything — the toolbar buttons belong to Model Admin. A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name. Discovery only disables a model after a successful model-list read shows it missing for the whole offline grace period, so an upstream outage never unregisters everything. A model that comes back is re-enabled — but a model you switched off yourself stays off, and saving a model in the editor clears any discovery-applied disable.'
+            note: 'Models Read Only shows every mapping; Own Models Read Only shows only the models granted to you. Neither can change anything — the toolbar buttons belong to Model Admin. A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name. Discovery only disables a model after a successful model-list read shows it missing for the whole offline grace period, so an upstream outage never unregisters everything. A model that comes back is re-enabled — but a model you switched off yourself stays off, and saving a model in the editor clears any discovery-applied disable.',
+            links: [
+                { explorer: 'registration', text: 'Registration API document (the same mappings, described for scripts)' }
+            ]
         },
         {
             id: 'users',
@@ -177,9 +181,9 @@ window.KaeoHelp = {
                     text: 'curl -sS -X POST "$KAEO_URL/api/mappings/discover" \\\n  -H "Authorization: Bearer $KAEO_API_KEY"'
                 }
             ],
-            note: 'A registration role grants no dashboard tabs, so a service account that does sign in sees an empty dashboard \u2014 that is intentional. The document lives on the dashboard port rather than at the proxy\u2019s /openapi/v1/openapi.json because these are dashboard routes, and it needs the same grant they do.',
+            note: 'A registration role grants no dashboard tabs, so a service account that does sign in sees an empty dashboard — that is intentional. The document lives on the dashboard port rather than at the proxy’s /openapi/v1/openapi.json because these are dashboard routes, and it needs the same grant they do. It can be switched off on the Settings tab, which answers 404 here and hides this topic’s link.',
             links: [
-                { href: '/api/mappings/openapi.json', text: 'OpenAPI document (import into Postman, Insomnia, or Swagger Editor)' },
+                { explorer: 'registration', text: 'OpenAPI document (import into Postman, Insomnia, or Swagger Editor)' },
                 { href: '/api/mappings', text: 'Mapping list as JSON' }
             ]
         },
@@ -239,6 +243,7 @@ window.KaeoHelp = {
                 { label: 'Proxy', text: 'Listen address and port, plus the multi-instance setting.' },
                 { label: 'Web dashboard', text: 'Enabled, scheme, port, listen address, require login, and the HTTPS certificate credential.' },
                 { label: 'Model auto-discovery', text: 'The master switch, the scan interval, and the offline grace period. Changes apply to the running scan loop without a restart.' },
+                { label: 'API documents', text: 'Proxy API explorer serves /scalar and the proxy OpenAPI document; Registration API document serves /api/mappings/openapi.json. Each has its own switch, and the MCP explorer follows the MCP server settings instead \u2014 it has nothing to describe while that server is off.' },
                 { label: 'Applied when', text: 'Save applies what it can immediately; listen-address and web-port changes take effect on the next restart.' }
             ],
             note: 'Turning Require login off gives everyone who can reach the dashboard full Admin access. Only use it on an isolated, trusted network.'
@@ -252,7 +257,11 @@ window.KaeoHelp = {
                 { label: 'Server', text: 'State, endpoint, listen address, API explorer on or off, auth credential name, and the request/response detail collection flags.' },
                 { label: 'Tools', text: 'Every tool currently exposed, with the registry id of the module that contributed it.' }
             ],
-            note: 'MCP clients authenticate with a proxy API key or the shared bearer credential. A key whose user lacks MCP access gets 403.'
+            note: 'MCP clients authenticate with a proxy API key or the shared bearer credential. A key whose user lacks MCP access gets 403.',
+            links: [
+                { explorer: 'mcp', path: '/scalar', text: 'MCP API explorer (Scalar)' },
+                { explorer: 'mcp', path: '/openapi/v1/openapi.json', text: 'MCP OpenAPI document' }
+            ]
         },
         {
             id: 'modules',
@@ -276,7 +285,11 @@ window.KaeoHelp = {
                 { label: 'OpenAI-compatible clients', text: 'Base URL http://<host>:11434/v1. The /v1 prefix is optional; the proxy normalises either shape.' },
                 { label: 'Model name', text: 'Use the mapping\u2019s proxy name, which is what /api/tags and /v1/models report.' }
             ],
-            note: 'Clients authenticate with a proxy API key from the Users tab. A request that carries no key is logged as unattributed.'
+            note: 'Clients authenticate with a proxy API key from the Users tab. A request that carries no key is logged as unattributed.',
+            links: [
+                { explorer: 'proxy', path: '/scalar', text: 'Proxy API explorer (Scalar)' },
+                { explorer: 'proxy', path: '/openapi/v1/openapi.json', text: 'Proxy OpenAPI document' }
+            ]
         },
         {
             id: 'troubleshooting',

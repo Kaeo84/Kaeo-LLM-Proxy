@@ -64,6 +64,7 @@ internal static partial class DashboardEndpoints
             modelAutoDiscoveryOfflineMinutes = s.ModelAutoDiscoveryOfflineMinutes,
             enablePerformanceSampling = s.EnablePerformanceSampling,
             enableApiExplorer = s.EnableApiExplorer,
+            enableRegistrationApiSpec = s.EnableRegistrationApiSpec,
             allowMultipleInstances = s.AllowMultipleInstances,
             logging = new
             {
@@ -156,6 +157,7 @@ internal static partial class DashboardEndpoints
         if (u.ModelAutoDiscoveryOfflineMinutes is { } madm) s.ModelAutoDiscoveryOfflineMinutes = madm;
         if (u.EnablePerformanceSampling is { } eps) s.EnablePerformanceSampling = eps;
         if (u.EnableApiExplorer is { } eae) s.EnableApiExplorer = eae;
+        if (u.EnableRegistrationApiSpec is { } eras) s.EnableRegistrationApiSpec = eras;
         if (u.AllowMultipleInstances is { } ami) s.AllowMultipleInstances = ami;
 
         if (u.WebDashboard is { } wd)
