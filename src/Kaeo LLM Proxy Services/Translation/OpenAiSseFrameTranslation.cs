@@ -292,6 +292,12 @@ internal sealed class OpenAiSseFrameTranslation
         public void ApplyThinkTags(
             ThinkingMode mode, (string OpenTag, string CloseTag) tags, int index, ChoiceState state)
         {
+            // Strip drops native reasoning on every frame, including the reasoning-only frames a
+            // thinking model emits most often. Gating this on the presence of inline content let
+            // the reasoning through, which is precisely what Strip exists to prevent.
+            if (mode == ThinkingMode.StripFromOutput)
+                _reasoningIntent = FieldIntent.Remove;
+
             if (_contentIntent != FieldIntent.Set || _content.Length == 0)
                 return;
 
@@ -304,9 +310,7 @@ internal sealed class OpenAiSseFrameTranslation
             string incoming = _content;
             (string reasoning, string content) = extractor.Process(incoming);
 
-            if (mode == ThinkingMode.StripFromOutput)
-                _reasoningIntent = FieldIntent.Remove;
-            else if (reasoning.Length > 0)
+            if (mode != ThinkingMode.StripFromOutput && reasoning.Length > 0)
             {
                 _reasoning += reasoning;
                 _reasoningIntent = FieldIntent.Set;

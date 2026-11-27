@@ -203,6 +203,20 @@ public class OpenAiSseFrameParityTests
     }
 
     [Fact]
+    public void StripFromOutputRemovesNativeReasoningOnReasoningOnlyFrames()
+    {
+        // A thinking model emits its reasoning in frames that carry no content key at all, so the
+        // strip rule cannot be gated on content being present.
+        AssertParity(
+        [
+            Frame(Delta(reasoning: "thinking, part one")),
+            Frame(Delta(reasoning: "thinking, part two")),
+            Frame(Delta(content: "answer")),
+            Frame(Delta(), finishReason: "stop"),
+        ], ThinkingMode.StripFromOutput);
+    }
+
+    [Fact]
     public void QwenMarkersMatchLegacy()
     {
         AssertParity(
