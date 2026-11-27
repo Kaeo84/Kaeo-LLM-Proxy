@@ -70,7 +70,7 @@ what sits behind that port is now configurable, multi-protocol, and auditable.
   modules, and the HTTPS listener
 - Custom prompt injection — named instruction sets applied per mapping, plus a compaction set
 - Request logging to SQLite via [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)
-  (auto-archived by size, auto-expired by age), with redaction of sensitive fields
+  (auto-expired by age, configurable or forever), with redaction of sensitive fields
 - Application logging via [Serilog](https://serilog.net/) with rolling files
 - Live statistics — request/error/token totals, requests per second, CPU and memory, per-model
   connection health, token-usage reporting, and web-traffic accounting
