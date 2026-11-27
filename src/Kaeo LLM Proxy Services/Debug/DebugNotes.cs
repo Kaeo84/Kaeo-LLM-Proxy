@@ -156,7 +156,43 @@ internal static class DebugNotes
             ? $"translation ({surface}): IR pipeline (Microsoft.Extensions.AI intermediate representation)"
             : $"translation ({surface}): legacy implementation";
 
-    private static string DescribeFormats(ReasoningEffortFormat format)
+    /// <summary>
+    /// Describes the declared-tool sanitizer removing tool calls from the response: the function
+    /// names that were dropped and why, so a client that silently lost a call can be explained
+    /// without diffing the raw upstream capture against what the client received.
+    /// </summary>
+    /// <param name="droppedNames">Distinct function names, in the order they were dropped.</param>
+    /// <param name="clientDeclaredNone">
+    /// True when the client's <c>tools</c> array was present but empty, which is the Copilot Help
+    /// surface case: the client cannot execute any function, so every call is dropped.
+    /// </param>
+    /// <remarks>
+    /// "Dropped" means dropped from the tool-call surface the client can execute, which covers two
+    /// different codings: a structured call is removed from <c>message.tool_calls</c> / the stream's
+    /// tool-call deltas, while an inline XML call is simply not promoted, so it stays visible as
+    /// text in <c>content</c>. The line does not distinguish them because the outcome for the user
+    /// is the same — the function never runs.
+    /// </remarks>
+    public static string ToolCallSanitizer(IReadOnlyCollection<string> droppedNames, bool clientDeclaredNone)
+    {
+        if (droppedNames.Count == 0)
+            return "tools: no undeclared tool calls were dropped";
+
+        // Names are client-visible text from the upstream; cap the listing so a template that emits
+        // dozens of invented names cannot push the rest of the summary out of the log detail view.
+        const int MaxNames = 6;
+        string names = string.Join(", ", droppedNames.Take(MaxNames));
+        if (droppedNames.Count > MaxNames)
+            names += $", +{droppedNames.Count - MaxNames} more";
+
+        string reason = clientDeclaredNone
+            ? "the client declared no tools"
+            : "not in the client's declared tools";
+
+        return $"tools: dropped {droppedNames.Count} undeclared tool call(s) — {names} ({reason})";
+    }
+
+        private static string DescribeFormats(ReasoningEffortFormat format)
     {
         List<string> parts = [];
         if (format.HasFlag(ReasoningEffortFormat.Legacy))

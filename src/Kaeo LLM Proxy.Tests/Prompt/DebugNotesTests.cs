@@ -294,4 +294,63 @@ public class DebugNotesTests
 
         Assert.Null(log.DebugSummary);
     }
+
+    [Fact]
+    public void ToolCallSanitizerNamesDroppedCallsAndTheReason()
+    {
+        string line = DebugNotes.ToolCallSanitizer(["get_weather", "delete_repo"], clientDeclaredNone: false);
+
+        Assert.Contains("dropped 2", line);
+        Assert.Contains("get_weather, delete_repo", line);
+        Assert.Contains("not in the client's declared tools", line);
+    }
+
+    [Fact]
+    public void ToolCallSanitizerExplainsClientsThatDeclaredNoTools()
+    {
+        string line = DebugNotes.ToolCallSanitizer(["get_weather"], clientDeclaredNone: true);
+
+        Assert.Contains("the client declared no tools", line);
+        Assert.DoesNotContain("not in the client's declared tools", line);
+    }
+
+    [Fact]
+    public void ToolCallSanitizerTruncatesLongNameLists()
+    {
+        string[] names = [.. Enumerable.Range(1, 9).Select(i => $"fn{i}")];
+
+        string line = DebugNotes.ToolCallSanitizer(names, clientDeclaredNone: false);
+
+        Assert.Contains("fn6", line);
+        Assert.DoesNotContain("fn7", line);
+        Assert.Contains("+3 more", line);
+    }
+
+    [Fact]
+    public void ToolCallSanitizerReportsNothingDroppedExplicitly()
+    {
+        Assert.Contains("no undeclared tool calls", DebugNotes.ToolCallSanitizer([], clientDeclaredNone: false));
+    }
+
+    [Fact]
+    public void ToolCallSanitizerLogDedupesRepeatedNamesInFirstSeenOrder()
+    {
+        ToolCallSanitizerLog recorder = new(new HashSet<string>(StringComparer.Ordinal) { "a", "b" });
+
+        recorder.RecordDropped("b");
+        recorder.RecordDropped("a");
+        recorder.RecordDropped("b");
+        recorder.RecordDropped(null);
+
+        Assert.Equal(["b", "a", "(unnamed)"], recorder.Dropped);
+        Assert.Contains("dropped 3", recorder.Describe());
+    }
+
+    [Fact]
+    public void ToolCallSanitizerLogDescribesNothingWhenNothingWasDropped()
+    {
+        ToolCallSanitizerLog recorder = new(new HashSet<string>(StringComparer.Ordinal) { "a" });
+
+        Assert.Null(recorder.Describe());
+    }
 }

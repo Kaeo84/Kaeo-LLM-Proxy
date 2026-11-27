@@ -249,6 +249,25 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Logs_ClientTag_IsDerivedFromUserAgent_SoExtensionTrafficIsFilterable()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        DateTime start = DateTime.Today.AddHours(9);
+        b.Database.Insert(new RequestLog { Timestamp = start, Method = "POST", OllamaPath = "/api/chat", Model = "from-extension", StatusCode = 200, Status = RequestStatus.Success, UserAgent = "Kaeo-VSExt/1.2.3.4" });
+        b.Database.Insert(new RequestLog { Timestamp = start.AddMinutes(1), Method = "POST", OllamaPath = "/api/chat", Model = "from-copilot", StatusCode = 200, Status = RequestStatus.Success, UserAgent = "GitHubCopilotChat/0.26.7" });
+        b.Database.Insert(new RequestLog { Timestamp = start.AddMinutes(2), Method = "POST", OllamaPath = "/api/chat", Model = "anonymous", StatusCode = 200, Status = RequestStatus.Success });
+
+        using JsonDocument doc = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&limit=10"));
+        Dictionary<string, JsonElement> byModel = doc.RootElement.GetProperty("entries").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("model").GetString()!, StringComparer.Ordinal);
+
+        Assert.Equal("VS extension", byModel["from-extension"].GetProperty("clientTag").GetString());
+        Assert.Equal("Copilot", byModel["from-copilot"].GetProperty("clientTag").GetString());
+        // No User-Agent means no tag, not a guessed one.
+        Assert.True(!byModel["anonymous"].TryGetProperty("clientTag", out JsonElement none) || none.ValueKind == JsonValueKind.Null);
+    }
+
+    [Fact]
     public async Task Mappings_CrudRoundTrip_PersistsToDatabase()
     {
         await using Bundle b = await CreateBundleAsync();

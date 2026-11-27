@@ -37,12 +37,30 @@ catching the proxy GUI up, sequenced with Phase-B execution rather than as a sep
   Compliance tab) - this document is the queue that keeps them from being forgotten.
 
 ## Steps
-- [ ] 1. Emit sanitizer/system-merge notes into the passthrough debug summary; surface in log detail view
+- [x] 1. Emit sanitizer/system-merge notes into the passthrough debug summary; surface in log detail view
 - [ ] 2. Shared thinking-source naming table in the adapter project; align both dialogs' copy
 - [ ] 3. (with B4) UpstreamKind selector + per-upstream defaults in ModelMappingDialog
 - [ ] 4. (with B3) Dashboard "thinking delivered vs stripped" per-model stat
 - [ ] 5. (with B6) Compliance tab: spec-validation results grouped by provider folder
-- [ ] 6. Extension-traffic tagging in the request log
+- [x] 6. Extension-traffic tagging in the request log
+
+### Item 1 - done
+`Debug\ToolCallSanitizerLog.cs` records every dropped function name at the six
+`IsToolNameAllowed` decision points (non-streaming structured + inline XML, legacy streaming native +
+inline, IR `FilterNativeCalls`/`EmitInlineCall`) and `DebugNotes.ToolCallSanitizer` renders
+`tools: dropped N undeclared tool call(s) - a, b (not in the client's declared tools)`. The recorder is
+only allocated when `DebugMode` is on, and the note is appended to `DebugSummary` after the response
+body is forwarded, because drops are discovered as the response streams past. The system-merge note
+already existed in both `RequestPayloadPipeline.BuildDebugSummary` and `ComposeMessagesStep`; the
+dashboard detail heading now reads "Proxy notes" because the summary carries more than overrides.
+
+### Item 6 - done
+`HttpHelpers.StampClientIdentity` sends `User-Agent: Kaeo-VSExt/<version>` plus `X-Kaeo-Client: vsext`
+from both extension clients. `ClientTag.Classify` turns the stored User-Agent into `VS extension`,
+`Copilot`, `Ollama`, `OpenAI SDK`, `Python`, `curl`, or `Browser`; it is derived on read (like
+`Requestor`) so the rules improve historical rows, and the dashboard Requests tab filters loaded rows
+by it. `QueryRecent`/`LoadRecent` now select `user_agent` so a fresh load is tagged before the first
+poll. No schema change.
 
 ## Verification
 Run the proxy with DebugMode + a Copilot + an extension client against a thinking model; confirm notes,

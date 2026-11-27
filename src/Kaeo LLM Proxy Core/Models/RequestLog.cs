@@ -211,6 +211,19 @@ internal sealed class RequestLog
         /// </summary>
         public string? Requestor { get; set; }
 
+    /// <summary>
+    /// Short label naming the client that made the request — <c>VS extension</c>, <c>Copilot</c>,
+    /// <c>Ollama</c>, <c>Browser</c> — classified from <see cref="UserAgent"/>. Null when the request
+    /// carried no User-Agent or named a client this build does not recognise.
+    /// </summary>
+    /// <remarks>
+    /// Not persisted, for the same reason as <see cref="Requestor"/>: the label is a pure function of
+    /// the stored User-Agent, so classification rules improve every historical row at once. Callers
+    /// that serialize entries for a UI must populate it (see
+    /// <c>DashboardEndpoints.AttachDerivedFields</c>).
+    /// </remarks>
+    public string? ClientTag { get; set; }
+
         /// <summary>
         /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
     /// every log source. This is what makes an otherwise opaque request — an unknown app hitting the

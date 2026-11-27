@@ -955,7 +955,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n,
                     draft_n_accepted,
                     original_model,
-                    user_id
+                    user_id,
+                    user_agent
                 FROM {{RequestTable(source)}}
                 WHERE ($userId IS NULL OR user_id = $userId)
                 ORDER BY timestamp_utc DESC, id DESC
@@ -1074,7 +1075,8 @@ internal sealed class AppDatabase : IDisposable
                     draft_n,
                     draft_n_accepted,
                     original_model,
-                    user_id
+                    user_id,
+                    user_agent
                 FROM {{RequestTable(source)}}
                 ORDER BY timestamp_utc DESC, id DESC
                 LIMIT $count;
@@ -2428,6 +2430,11 @@ internal sealed class AppDatabase : IDisposable
     /// <c>request_body</c> and <c>response_body</c> columns (see <c>LoadRecent</c>).
     /// Column ordinals after <c>exception_id</c> shift down by two accordingly.
     /// </summary>
+    /// <remarks>
+    /// <c>user_agent</c> is included even though it is not a body: the Requests views derive a
+    /// client label from it, and without it a fresh load would show no client until the next
+    /// incremental poll replaced the row.
+    /// </remarks>
     private static RequestLog ReadRequestLogSummary(SqliteDataReader reader) => new()
     {
         Timestamp = ReadUtc(reader, 0).ToLocalTime(),
@@ -2457,6 +2464,7 @@ internal sealed class AppDatabase : IDisposable
         DraftNAccepted = reader.GetInt32(20),
         OriginalModel = reader.IsDBNull(21) ? string.Empty : reader.GetString(21),
         UserId = reader.IsDBNull(22) ? null : reader.GetInt32(22),
+        UserAgent = reader.IsDBNull(23) ? null : reader.GetString(23),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()

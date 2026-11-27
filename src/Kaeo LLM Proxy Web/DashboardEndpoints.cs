@@ -193,7 +193,7 @@ internal static partial class DashboardEndpoints
                     IReadOnlyList<RequestLog> recent = controller.Database.QueryRecent(take, LogSourceFor(source), filterUserId);
                     Dictionary<int, string> aliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
                     foreach (RequestLog entry in recent)
-                        AttachRequestor(entry, aliases);
+                        AttachDerivedFields(entry, aliases);
                     long newest = recent.Count > 0 ? recent[0].Timestamp.Ticks : 0;
                     return Results.Json(new { entries = recent, nextAfter = newest });
                 }
@@ -215,7 +215,7 @@ internal static partial class DashboardEndpoints
 
             Dictionary<int, string> requestorAliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
             foreach (RequestLog entry in entries)
-                AttachRequestor(entry, requestorAliases);
+                AttachDerivedFields(entry, requestorAliases);
 
             long next = entries.Count > 0 ? entries[^1].Timestamp.Ticks : cursor;
             return Results.Json(new { entries, nextAfter = next });
@@ -240,7 +240,7 @@ internal static partial class DashboardEndpoints
                 RequestLog? full = controller.Database.LoadFullLogEntry(parsed.ToLocalTime(), LogSourceFor(source));
                 if (full is null || (role == DashboardAuth.ReadOnlyRole && full.UserId != callerId))
                     return Results.Json(new { error = "Log entry not found." }, statusCode: StatusCodes.Status404NotFound);
-                AttachRequestor(full, BuildRequestorAliases(controller.Database.LoadProxyUsers()));
+                AttachDerivedFields(full, BuildRequestorAliases(controller.Database.LoadProxyUsers()));
                 return Results.Json(full);
             }
             catch (Exception ex) when (ex is IOException or SqliteException)
@@ -281,11 +281,12 @@ internal static partial class DashboardEndpoints
         return local.Length == 0 ? null : local;
     }
 
-    private static void AttachRequestor(RequestLog entry, IReadOnlyDictionary<int, string> aliases)
+    private static void AttachDerivedFields(RequestLog entry, IReadOnlyDictionary<int, string> aliases)
     {
         entry.Requestor = entry.UserId is int userId && aliases.TryGetValue(userId, out string? alias)
             ? alias
             : null;
+        entry.ClientTag = ClientTag.Classify(entry.UserAgent);
     }
 
     private static void MapStats(WebApplication app, ProxyHostController controller)

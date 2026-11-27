@@ -368,7 +368,20 @@
     }
 
     function updateLogCount() {
-        $('#log-count').text($('#log-table tbody tr').length + ' rows');
+        $('#log-count').text($('#log-table tbody tr:not(.hidden)').length + ' rows');
+    }
+
+    // The client filter hides loaded rows rather than re-querying: the tag is derived from the
+    // User-Agent at serialization time, so no server-side filter exists to ask for.
+    function clientFilter() { return $('#log-client').val() || ''; }
+
+    function applyClientFilter() {
+        var wanted = clientFilter();
+        $('#log-table tbody tr').each(function () {
+            var tag = $(this).attr('data-client') || '';
+            $(this).toggleClass('hidden', !!wanted && tag !== wanted);
+        });
+        updateLogCount();
     }
 
     function pollLogs(initial) {
@@ -424,6 +437,8 @@
             .append($('<td class="num">').text(fmt(e.promptTokens)))
             .append($('<td class="num">').text(fmt(e.completionTokens)))
             .append($('<td class="num">').text((e.tokensPerSecond || 0).toFixed(1)));
+        $row.attr('data-client', e.clientTag || '');
+        if (clientFilter() && clientFilter() !== (e.clientTag || '')) $row.addClass('hidden');
         $row.on('click', function () { logDetail(e); });
         return $row;
     }
@@ -450,7 +465,7 @@
             ['Cached prompt', fmt(e.cachedPromptTokens)], ['Reasoning tokens', fmt(e.reasoningTokens)],
             ['Tokens/s', (e.tokensPerSecond || 0).toFixed(2)], ['Stop reason', e.stopReason],
             ['Request bytes', fmt(e.requestBytes)], ['Response bytes', e.responseBytes < 0 ? 'unknown' : fmt(e.responseBytes)],
-            ['Client', e.clientAddress], ['User agent', e.userAgent]
+            ['Client', e.clientAddress], ['Client app', e.clientTag], ['User agent', e.userAgent]
         ].forEach(function (pair) {
             if (pair[1] === null || pair[1] === undefined || pair[1] === '') return;
             $grid.append($('<div class="field">').append($('<label>').text(pair[0])).append($('<div>').text(pair[1])));
@@ -458,7 +473,9 @@
         $body.append($grid);
 
         if (e.errorMessage) $body.append($('<h4>').text('Error')).append($('<pre>').text(e.errorMessage));
-        if (e.debugSummary) $body.append($('<h4>').text('Proxy overrides')).append($('<pre>').text(e.debugSummary));
+        // Not only overrides: the same summary carries transformation notes (system-message merge,
+        // dropped undeclared tool calls), so the heading names the whole audit trail.
+        if (e.debugSummary) $body.append($('<h4>').text('Proxy notes')).append($('<pre>').text(e.debugSummary));
 
         [
             ['Request body', e.requestBody], ['Upstream request body', e.upstreamRequestBody],
@@ -1746,6 +1763,7 @@
         $(document).on('keydown', function (e) { if (e.key === 'Escape' && modalOpen) closeModal(); });
 
         $('#log-source').on('change', resetLogsView);
+                $('#log-client').on('change', applyClientFilter);
         $('#btn-pause').on('click', function () {
             logsPaused = !logsPaused;
             $(this).text(logsPaused ? 'Resume' : 'Pause');

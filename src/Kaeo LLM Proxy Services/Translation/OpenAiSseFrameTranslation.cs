@@ -33,6 +33,7 @@ internal sealed class OpenAiSseFrameTranslation
 
     private readonly ThinkingMode _thinkingMode;
     private readonly IReadOnlySet<string>? _declaredToolNames;
+    private readonly ToolCallSanitizerLog? _sanitizerLog;
     private readonly (string OpenTag, string CloseTag) _thinkTags;
     private readonly Dictionary<int, ChoiceState> _states = [];
 
@@ -44,11 +45,17 @@ internal sealed class OpenAiSseFrameTranslation
     /// Creates a translator for one response stream. <paramref name="thinkingMode"/> selects how a
     /// reasoning part is rendered; <paramref name="declaredToolNames"/> is the declared-tool set
     /// driving the sanitizer, where null means "unknown, do not filter".
+    /// <paramref name="sanitizerLog"/> optionally records the calls the sanitizer drops so the
+    /// request's debug summary can name them; null skips the bookkeeping.
     /// </summary>
-    public OpenAiSseFrameTranslation(ThinkingMode thinkingMode, IReadOnlySet<string>? declaredToolNames)
+    public OpenAiSseFrameTranslation(
+        ThinkingMode thinkingMode,
+        IReadOnlySet<string>? declaredToolNames,
+        ToolCallSanitizerLog? sanitizerLog = null)
     {
         _thinkingMode = thinkingMode;
         _declaredToolNames = declaredToolNames;
+        _sanitizerLog = sanitizerLog;
         _thinkTags = ThinkTagExtractor.TagsFor(thinkingMode);
     }
 
@@ -164,7 +171,7 @@ internal sealed class OpenAiSseFrameTranslation
 
             List<JsonObject> extra = [];
             foreach (string block in blocks)
-                DeltaParts.EmitInlineCall(_declaredToolNames, state, template, index, extra, block);
+                DeltaParts.EmitInlineCall(_declaredToolNames, state, template, index, extra, block, _sanitizerLog);
             foreach (JsonObject extraFrame in extra)
                 frames.Add($"data: {extraFrame.ToJsonString(InlineXmlToolCall.JsonOptions)}");
         }
@@ -190,10 +197,10 @@ internal sealed class OpenAiSseFrameTranslation
 
         // Structured calls naming functions the client did not declare must be dropped: OpenAI
         // clients such as Copilot render them as function parts they cannot bind.
-        parts.FilterNativeCalls(_declaredToolNames, state);
+        parts.FilterNativeCalls(_declaredToolNames, state, _sanitizerLog);
 
         // Inline markup calls are lifted out of the answer text and re-emitted as structured ones.
-        parts.ExtractInlineCalls(_declaredToolNames, state, root, index, extraFrames);
+        parts.ExtractInlineCalls(_declaredToolNames, state, root, index, extraFrames, _sanitizerLog);
 
         parts.Write(delta);
     }
@@ -321,7 +328,10 @@ internal sealed class OpenAiSseFrameTranslation
         /// Applies the declared-tool filter to native fragments. An argument fragment of an
         /// already-judged call inherits that verdict, because only the first fragment carries a name.
         /// </summary>
-        public void FilterNativeCalls(IReadOnlySet<string>? declaredToolNames, ChoiceState state)
+        public void FilterNativeCalls(
+            IReadOnlySet<string>? declaredToolNames,
+            ChoiceState state,
+            ToolCallSanitizerLog? sanitizerLog = null)
         {
             if (_nativeCalls is null)
                 return;
@@ -343,6 +353,8 @@ internal sealed class OpenAiSseFrameTranslation
                     && !string.IsNullOrEmpty(callName))
                 {
                     valid = OllamaProxyHandler.IsToolNameAllowed(declaredToolNames, callName);
+                    if (!valid)
+                        sanitizerLog?.RecordDropped(callName);
                 }
                 else
                 {
@@ -373,7 +385,8 @@ internal sealed class OpenAiSseFrameTranslation
             ChoiceState state,
             JsonObject root,
             int index,
-            List<JsonObject> extraFrames)
+            List<JsonObject> extraFrames,
+            ToolCallSanitizerLog? sanitizerLog = null)
         {
             if (_contentIntent != FieldIntent.Set || _content.Length == 0)
                 return;
@@ -386,7 +399,7 @@ internal sealed class OpenAiSseFrameTranslation
                 _content = visible;
 
             foreach (string block in blocks)
-                EmitInlineCall(declaredToolNames, state, root, index, extraFrames, block);
+                EmitInlineCall(declaredToolNames, state, root, index, extraFrames, block, sanitizerLog);
         }
 
         public static void EmitInlineCall(
@@ -395,7 +408,8 @@ internal sealed class OpenAiSseFrameTranslation
             JsonObject root,
             int choiceIndex,
             List<JsonObject> extraFrames,
-            string block)
+            string block,
+            ToolCallSanitizerLog? sanitizerLog = null)
         {
             (string Name, Dictionary<string, object?> Arguments)? parsed = InlineXmlToolCall.Parse(block);
             if (parsed is null)
@@ -408,6 +422,7 @@ internal sealed class OpenAiSseFrameTranslation
 
             if (!OllamaProxyHandler.IsToolNameAllowed(declaredToolNames, parsed.Value.Name))
             {
+                sanitizerLog?.RecordDropped(parsed.Value.Name);
                 extraFrames.Add(ChoiceFrame.WithContent(root, choiceIndex, block.Trim()));
                 return;
             }

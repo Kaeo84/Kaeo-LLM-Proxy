@@ -1424,6 +1424,10 @@ internal partial class MainForm : Form
         // which otherwise give nothing to trace a source from.
         if (!string.IsNullOrEmpty(log.ClientAddress))
             sb.AppendLine($"Client    : {log.ClientAddress}");
+        // Derived from the agent string, so extension traffic is nameable without reading the header.
+        string? clientTag = ClientTag.Classify(log.UserAgent);
+        if (!string.IsNullOrEmpty(clientTag))
+            sb.AppendLine($"Client app: {clientTag}");
         if (!string.IsNullOrEmpty(log.UserAgent))
             sb.AppendLine($"Agent     : {log.UserAgent}");
         if (source == LogSource.Proxy)
