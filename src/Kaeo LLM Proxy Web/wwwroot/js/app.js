@@ -1014,8 +1014,14 @@
                             .append($('<span class="key-name">').text(k.label || '(unlabeled)'))
                             .append($('<span class="key-prefix">').text(k.keyPrefix + '\u2026'));
                         var $keyActions = $('<span class="key-actions">');
+                        $('<button type="button" class="ghost">').text('Reveal').on('click', function () {
+                            revealKey(u, k);
+                        }).appendTo($keyActions);
                         $('<button type="button" class="ghost">').text('Edit').on('click', function () {
                             keyDialog(u, k);
+                        }).appendTo($keyActions);
+                        $('<button type="button" class="ghost">').text('Regen').on('click', function () {
+                            regenerateKey(u, k);
                         }).appendTo($keyActions);
                         $('<button type="button" class="ghost danger">').text('Delete').on('click', function () {
                             confirmDialog('Delete API key', 'Delete key "' + (k.label || k.keyPrefix) + '" for ' + u.name + '? Clients using it lose access immediately.', function () {
@@ -1182,17 +1188,32 @@
     }
 
     function showNewKeyDialog(user, plainText) {
+        showKeyDialog('New API key', plainText,
+            'Copy this key now, or reveal it again later from the Users tab. Send it as "Authorization: Bearer <key>" or "x-api-key".',
+            false, user.name);
+    }
+
+    // Shared by create, reveal, and regenerate. When startMasked is set the value stays hidden
+    // until the operator asks for it, so a revealed key is not left on screen by accident.
+    function showKeyDialog(title, plainText, note, startMasked, subject) {
+        var masked = !!startMasked;
         var $input = $('<input type="text" readonly>').val(plainText).on('focus', function () { this.select(); });
+        if (masked) $input.attr('type', 'password');
+        var $showToggle = $('<input type="checkbox">').prop('checked', !masked).on('change', function () {
+            masked = !this.checked;
+            $input.attr('type', masked ? 'password' : 'text');
+        });
         var $body = $('<div>')
-            .append($('<p>').text('Copy this key now — it is stored hashed and cannot be shown again. Send it as "Authorization: Bearer <key>" or "x-api-key".'))
-            .append($('<div class="field">').append($('<label>').text('API key for ' + user.name)).append($input));
-        openModal('New API key', $body, [
+            .append($('<p>').text(note))
+            .append($('<div class="field">').append($('<label>').text(subject ? 'API key for ' + subject : 'API key')).append($input))
+            .append($('<div class="field bool">').append($showToggle).append($('<label>').text('Show key')));
+        openModal(title, $body, [
             {
                 label: 'Copy', cls: 'primary', onClick: function () {
                     function fallback() {
-                        $input.trigger('focus').trigger('select');
+                        $input.attr('type', 'text').trigger('focus').trigger('select');
                         try { document.execCommand('copy'); toast('Key copied to clipboard.'); }
-                        catch (e) { toast('Copy failed — select the text and copy manually.', true); }
+                        catch (e) { toast('Copy failed - select the text and copy manually.', true); }
                     }
                     if (navigator.clipboard && navigator.clipboard.writeText) {
                         navigator.clipboard.writeText(plainText).then(function () { toast('Key copied to clipboard.'); }, fallback);
@@ -1202,6 +1223,41 @@
                 }
             },
             { label: 'Done' }
+        ]);
+    }
+
+    function revealKey(user, key) {
+        api('GET', '/api/keys/' + key.id + '/reveal').then(function (result) {
+            showKeyDialog('API key', result.plainText,
+                'Key "' + (key.label || key.keyPrefix) + '". Anyone holding it can use this user\'s models, so share it carefully.',
+                true, user.name);
+        }).catch(function (err) {
+            if (err.status === 409) {
+                openModal('Key cannot be shown', $('<p>').text(err.message), [
+                    { label: 'Cancel' },
+                    { label: 'Regenerate', cls: 'primary', onClick: function () { closeModal(); regenerateKey(user, key); } }
+                ]);
+            } else {
+                toast(err.message, true);
+            }
+        });
+    }
+
+    function regenerateKey(user, key) {
+        openModal('Regenerate API key', $('<p>').text(
+            'Replace the key "' + (key.label || key.keyPrefix) + '" with a new one? The current key stops working immediately. The label, model grants, and MCP access stay the same.'), [
+            { label: 'Cancel' },
+            {
+                label: 'Regenerate', cls: 'danger', onClick: function () {
+                    closeModal();
+                    api('POST', '/api/keys/' + key.id + '/regenerate').then(function (result) {
+                        loadUsers();
+                        showKeyDialog('New API key', result.plainText,
+                            'This replaced the previous key. Copy it now, or reveal it again later from the Users tab.',
+                            false, user.name);
+                    }).catch(function (err) { toast(err.message, true); });
+                }
+            }
         ]);
     }
 

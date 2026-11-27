@@ -1,5 +1,6 @@
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Services;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -433,4 +434,53 @@ public class AppDatabaseSchemaTests
 
                     Assert.True(loaded.EnableCopilotCompactionRouting);
                 }
+
+    [Fact]
+    public void ProxyApiKeys_LegacyTableWithoutKeySecret_IsReconciledOnOpen()
+    {
+        // Keys created before reveal/regenerate existed have a hash and prefix only. Opening such a
+        // database must add key_secret (so new writes work) and read the old rows back as
+        // unrevealable rather than throwing "no such column".
+        string path = NewDatabasePath();
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand create = connection.CreateCommand();
+            create.CommandText =
+                """
+                CREATE TABLE proxy_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL DEFAULT '',
+                    created_utc TEXT NOT NULL,
+                    last_used_utc TEXT NULL,
+                    allowed_models TEXT NOT NULL DEFAULT '[]',
+                    mcp_access INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc)
+                VALUES (1, 'legacy', 'deadbeef', 'kaeo-legacy01', '2026-01-01T00:00:00.0000000Z');
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+
+        Assert.Contains("key_secret", ReadColumnNames(path, "proxy_api_keys"));
+        ProxyApiKey key = Assert.Single(database.LoadProxyApiKeys());
+        Assert.Equal("legacy", key.Label);
+        Assert.Null(key.KeySecret);
+
+        ProxyAccessService access = new(database);
+        Assert.Null(access.RevealKey(key));
+
+        // Regenerating the legacy row stores recoverable material in the reconciled column.
+        (string plainText, string hash, string prefix, string? secret) = access.GenerateKeyMaterial();
+        database.UpdateProxyApiKeyMaterial(key.Id, hash, prefix, secret, DateTime.UtcNow);
+
+        ProxyApiKey reloaded = Assert.Single(database.LoadProxyApiKeys());
+        Assert.Equal(plainText, access.RevealKey(reloaded));
+    }
             }

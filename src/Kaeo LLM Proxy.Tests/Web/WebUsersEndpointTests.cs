@@ -12,10 +12,10 @@ using Xunit;
 namespace Kaeo.LlmProxy.Tests.Web;
 
 /// <summary>
-/// Endpoint tests for the Users tab API: user CRUD, key create/update/delete, the write-only
-/// guarantee for key material (plaintext returned exactly once; hashes never exposed), and the
-/// proxySecurity settings toggle. Mirrors the Kestrel Bundle pattern of
-/// <see cref="WebDashboardEndpointTests"/>.
+/// Endpoint tests for the Users tab API: user CRUD, key create/update/delete/reveal/regenerate,
+/// the secret-hygiene guarantees for key material (hashes never exposed, plaintext only through
+/// the create/reveal responses), and the proxySecurity settings toggle. Mirrors the Kestrel Bundle
+/// pattern of <see cref="WebDashboardEndpointTests"/>.
 /// </summary>
 [Collection("AppLogger")]
 public sealed class WebUsersEndpointTests
@@ -307,6 +307,101 @@ public sealed class WebUsersEndpointTests
     }
 
     [Fact]
+    public async Task Keys_Reveal_ReturnsStoredPlaintext_AndRegenerateRetiresTheOldKey()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        int userId = await CreateUserAsync(b, "Alice");
+        (int keyId, string plainText) = await CreateKeyAsync(b, userId, ["alpha"]);
+
+        HttpResponseMessage reveal = await b.Client.GetAsync($"/api/keys/{keyId}/reveal");
+        Assert.Equal(HttpStatusCode.OK, reveal.StatusCode);
+        using JsonDocument revealDoc = JsonDocument.Parse(await reveal.Content.ReadAsStringAsync());
+        Assert.Equal(plainText, revealDoc.RootElement.GetProperty("plainText").GetString());
+        Assert.True(revealDoc.RootElement.GetProperty("key").GetProperty("canReveal").GetBoolean());
+
+        HttpResponseMessage regenerated = await b.Client.PostAsync($"/api/keys/{keyId}/regenerate", null);
+        Assert.Equal(HttpStatusCode.OK, regenerated.StatusCode);
+        using JsonDocument regeneratedDoc = JsonDocument.Parse(await regenerated.Content.ReadAsStringAsync());
+        string newPlainText = regeneratedDoc.RootElement.GetProperty("plainText").GetString()!;
+        Assert.NotEqual(plainText, newPlainText);
+        Assert.Matches("^kaeo-[0-9a-f]{48}$", newPlainText);
+
+        JsonElement regeneratedKey = regeneratedDoc.RootElement.GetProperty("key");
+        Assert.Equal(keyId, regeneratedKey.GetProperty("id").GetInt32());
+        Assert.Equal(newPlainText[..13], regeneratedKey.GetProperty("keyPrefix").GetString());
+        // Grants survive a regeneration; only the secret material changes.
+        Assert.Equal("test", regeneratedKey.GetProperty("label").GetString());
+        Assert.Equal(1, regeneratedKey.GetProperty("allowedModels").GetArrayLength());
+        Assert.Equal("alpha", regeneratedKey.GetProperty("allowedModels")[0].GetString());
+
+        Assert.Null(b.Controller.Access.Authenticate(plainText));
+        Assert.NotNull(b.Controller.Access.Authenticate(newPlainText));
+
+        using JsonDocument secondReveal = JsonDocument.Parse(
+            await (await b.Client.GetAsync($"/api/keys/{keyId}/reveal")).Content.ReadAsStringAsync());
+        Assert.Equal(newPlainText, secondReveal.RootElement.GetProperty("plainText").GetString());
+    }
+
+    [Fact]
+    public async Task Keys_Reveal_ReturnsConflict_WhenNoStoredSecretExists()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        int userId = await CreateUserAsync(b, "Alice");
+        (int keyId, string plainText) = await CreateKeyAsync(b, userId, []);
+
+        // A key created before recovery existed has a hash but no recoverable material.
+        ProxyApiKey key = b.Database.LoadProxyApiKeys().Single(k => k.Id == keyId);
+        b.Database.UpdateProxyApiKeyMaterial(key.Id, key.KeyHash, key.KeyPrefix, null, key.CreatedUtc);
+
+        HttpResponseMessage reveal = await b.Client.GetAsync($"/api/keys/{keyId}/reveal");
+        Assert.Equal(HttpStatusCode.Conflict, reveal.StatusCode);
+        string body = await reveal.Content.ReadAsStringAsync();
+        Assert.Contains("Regenerate", body);
+        Assert.DoesNotContain(plainText, body);
+
+        using JsonDocument usersDoc = JsonDocument.Parse(await (await b.Client.GetAsync("/api/users")).Content.ReadAsStringAsync());
+        JsonElement user = usersDoc.RootElement.EnumerateArray().Single(u => u.GetProperty("id").GetInt32() == userId);
+        Assert.False(user.GetProperty("keys")[0].GetProperty("canReveal").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Keys_RevealAndRegenerate_AreDeniedForReadOnlyDashboardRole()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        int userId = await CreateUserAsync(b, "Alice");
+        (int keyId, _) = await CreateKeyAsync(b, userId, []);
+
+        const string password = "read only password 1";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Read Only Person",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "readonly.person",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        using HttpClient readOnlyClient = DashboardTestSession.CreateClient(b.Host.Url!, useCookies: true);
+        HttpResponseMessage login = await readOnlyClient.PostAsJsonAsync("/api/auth/login",
+            new { username = "readonly.person", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await readOnlyClient.GetAsync($"/api/keys/{keyId}/reveal")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await readOnlyClient.PostAsync($"/api/keys/{keyId}/regenerate", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Keys_RevealAndRegenerate_MutationsOnMissingId_Return404()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        Assert.Equal(HttpStatusCode.NotFound, (await b.Client.GetAsync("/api/keys/9999/reveal")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await b.Client.PostAsync("/api/keys/9999/regenerate", null)).StatusCode);
+    }
+
+    [Fact]
     public async Task Settings_ProxySecurity_DefaultsOff_AndTogglesViaPut()
     {
         await using Bundle b = await CreateBundleAsync();
@@ -343,7 +438,11 @@ public sealed class WebUsersEndpointTests
 
     private static async Task<Bundle> CreateBundleAsync()
     {
-        string dbPath = Path.Combine(Path.GetTempPath(), $"kaeo-users-{Guid.NewGuid():N}.db");
+        // One directory per bundle: the API-key protection key file lives beside the database, so
+        // isolating the database keeps this bundle's recoverable keys away from every other test.
+        string dbDirectory = Path.Combine(Path.GetTempPath(), $"kaeo-users-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dbDirectory);
+        string dbPath = Path.Combine(dbDirectory, "kaeo.db");
         var settings = new AppSettings
         {
             ListenPort = GetFreePort(),
@@ -406,10 +505,16 @@ public sealed class WebUsersEndpointTests
             await Host.DisposeAsync();
             await Controller.DisposeAsync();
             Database.Dispose();
-            foreach (string path in new[] { DbPath, DbPath + "-shm", DbPath + "-wal" })
+            // The bundle directory also holds the API-key protection key file.
+            try
             {
-                try { if (File.Exists(path)) File.Delete(path); }
-                catch (IOException) { }
+                string? directory = Path.GetDirectoryName(DbPath);
+                if (directory is not null && Directory.Exists(directory))
+                    Directory.Delete(directory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // A lingering file handle is not worth failing teardown over.
             }
         }
     }

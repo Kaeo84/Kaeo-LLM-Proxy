@@ -1624,6 +1624,7 @@ internal sealed class AppDatabase : IDisposable
                     label TEXT NOT NULL DEFAULT '',
                     key_hash TEXT NOT NULL UNIQUE,
                     key_prefix TEXT NOT NULL DEFAULT '',
+                    key_secret TEXT NULL,
                     created_utc TEXT NOT NULL,
                     last_used_utc TEXT NULL,
                     allowed_models TEXT NOT NULL DEFAULT '[]',
@@ -1967,6 +1968,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "key_prefix", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_secret", "TEXT NULL"),
                                 ("proxy_api_keys", "created_utc", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "last_used_utc", "TEXT NULL"),
                                 ("proxy_api_keys", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
@@ -2896,7 +2898,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access, key_secret
                 FROM proxy_api_keys
                 ORDER BY id;
                 """;
@@ -2921,7 +2923,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access, key_secret
                 FROM proxy_api_keys
                 WHERE key_hash = $keyHash;
                 """;
@@ -3014,14 +3016,15 @@ internal sealed class AppDatabase : IDisposable
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
                 """
-                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access)
-                VALUES ($userId, $label, $keyHash, $keyPrefix, $createdUtc, $lastUsedUtc, $allowedModels, $mcpAccess);
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, key_secret, created_utc, last_used_utc, allowed_models, mcp_access)
+                VALUES ($userId, $label, $keyHash, $keyPrefix, $keySecret, $createdUtc, $lastUsedUtc, $allowedModels, $mcpAccess);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$userId", key.UserId);
             command.Parameters.AddWithValue("$label", key.Label);
             command.Parameters.AddWithValue("$keyHash", key.KeyHash);
             command.Parameters.AddWithValue("$keyPrefix", key.KeyPrefix);
+            command.Parameters.AddWithValue("$keySecret", (object?)key.KeySecret ?? DBNull.Value);
             command.Parameters.AddWithValue("$createdUtc", ToUtcText(key.CreatedUtc));
             command.Parameters.AddWithValue("$lastUsedUtc", key.LastUsedUtc is { } used ? ToUtcText(used) : DBNull.Value);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(key.AllowedModels, _jsonOptions));
@@ -3051,6 +3054,35 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$label", label);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(allowedModels, _jsonOptions));
             command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(mcpAccess));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Replaces an API key's secret material in place (the "regenerate" operation): new hash,
+    /// display prefix, protected plaintext, and creation time. The label, model grants, and MCP
+    /// grant stay untouched, and the previous key stops authenticating because its hash is gone.
+    /// </summary>
+    public void UpdateProxyApiKeyMaterial(int id, string keyHash, string keyPrefix, string? keySecret, DateTime createdUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyHash);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_api_keys
+                SET key_hash = $keyHash, key_prefix = $keyPrefix, key_secret = $keySecret,
+                    created_utc = $createdUtc, last_used_utc = NULL
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$keyHash", keyHash);
+            command.Parameters.AddWithValue("$keyPrefix", keyPrefix);
+            command.Parameters.AddWithValue("$keySecret", (object?)keySecret ?? DBNull.Value);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(createdUtc));
             command.ExecuteNonQuery();
         }
     }
@@ -3093,6 +3125,7 @@ internal sealed class AppDatabase : IDisposable
         LastUsedUtc = reader.IsDBNull(6) ? null : ReadUtc(reader, 6),
         AllowedModels = DeserializeAllowedModels(reader.IsDBNull(7) ? null : reader.GetString(7)),
         McpAccess = reader.FieldCount > 8 && !reader.IsDBNull(8) && ReadBoolean(reader, 8),
+        KeySecret = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
     };
 
     private static List<string> DeserializeAllowedModels(string? json)

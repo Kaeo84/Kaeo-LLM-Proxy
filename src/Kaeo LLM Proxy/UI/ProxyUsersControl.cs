@@ -46,12 +46,14 @@ internal sealed class ProxyUsersControl : UserControl
         Button refresh = MakeButton("Refresh", (_, _) => RefreshUsers());
         Button createKey = MakeButton("Create key", (_, _) => CreateKey());
         Button editKey = MakeButton("Edit key access", (_, _) => EditSelectedKey());
+        Button revealKey = MakeButton("Reveal key", (_, _) => RevealSelectedKey());
+        Button regenerateKey = MakeButton("Regenerate key", (_, _) => RegenerateSelectedKey());
         Button deleteKey = MakeButton("Delete key", (_, _) => DeleteSelectedKey());
 
         FlowLayoutPanel userActions = new() { Dock = DockStyle.Bottom, AutoSize = true, WrapContents = true, Padding = new Padding(0, 6, 0, 0) };
         userActions.Controls.AddRange([addUser, editUser, toggleUser, deleteUser, refresh]);
         FlowLayoutPanel keyActions = new() { Dock = DockStyle.Bottom, AutoSize = true, WrapContents = true, Padding = new Padding(0, 6, 0, 0) };
-        keyActions.Controls.AddRange([createKey, editKey, deleteKey]);
+        keyActions.Controls.AddRange([createKey, editKey, revealKey, regenerateKey, deleteKey]);
 
         Panel left = new() { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 6, 0) };
         left.Controls.Add(_users);
@@ -342,13 +344,14 @@ internal sealed class ProxyUsersControl : UserControl
 
         try
         {
-            (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
+            (string plainText, string hash, string prefix, string? secret) = _access.GenerateKeyMaterial();
             ProxyApiKey key = new()
             {
                 UserId = user.Id,
                 Label = dialog.Label,
                 KeyHash = hash,
                 KeyPrefix = prefix,
+                KeySecret = secret,
                 CreatedUtc = DateTime.UtcNow,
                 AllowedModels = dialog.AllowedModels,
                 McpAccess = dialog.McpAccess,
@@ -394,6 +397,72 @@ internal sealed class ProxyUsersControl : UserControl
             _database.UpdateProxyApiKeyAccess(key.Id, dialog.Label, dialog.AllowedModels, dialog.McpAccess);
             _access.InvalidateCache();
             RefreshKeys();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+        }
+    }
+
+    private void RevealSelectedKey()
+    {
+        ProxyApiKey? key = SelectedKey();
+        if (key is null)
+        {
+            MessageBox.Show(this, "Select an API key first.", "API keys", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        string? plainText = _access.RevealKey(key);
+        if (plainText is null)
+        {
+            if (MessageBox.Show(this,
+                    "This key cannot be shown: it was created before key recovery was available, or its protection key file changed.\n\nRegenerate it now to get a copyable key?",
+                    "Reveal API key", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                RegenerateSelectedKey();
+            }
+            return;
+        }
+
+        using OneTimeKeyDialog dialog = new(plainText,
+            title: "API key",
+            note: $"Key '{key.Label}' ({key.KeyPrefix}). Anyone holding it can use this user's models, so share it carefully.",
+            startMasked: true);
+        dialog.ShowDialog(this);
+    }
+
+    private void RegenerateSelectedKey()
+    {
+        ProxyApiKey? key = SelectedKey();
+        if (key is null)
+        {
+            MessageBox.Show(this, "Select an API key first.", "API keys", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (MessageBox.Show(this,
+                $"Replace the key '{key.Label}' ({key.KeyPrefix}) with a new one?\n\nThe current key stops working immediately. The label, model grants, and MCP access stay the same.",
+                "Regenerate API key", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            (string plainText, string hash, string prefix, string? secret) = _access.GenerateKeyMaterial();
+            DateTime createdUtc = DateTime.UtcNow;
+
+            _database.UpdateProxyApiKeyMaterial(key.Id, hash, prefix, secret, createdUtc);
+            _access.InvalidateCache();
+
+            key.KeyHash = hash;
+            key.KeyPrefix = prefix;
+            key.KeySecret = secret;
+            key.CreatedUtc = createdUtc;
+            key.LastUsedUtc = null;
+            RefreshKeys();
+
+            using OneTimeKeyDialog dialog = new(plainText, title: "Copy regenerated API key");
+            dialog.ShowDialog(this);
         }
         catch (Exception ex) when (ex is IOException or DbException)
         {
@@ -640,27 +709,33 @@ internal sealed class OneTimeKeyDialog : Form
 {
     private readonly TextBox _key;
 
-    public OneTimeKeyDialog(string key)
+    public OneTimeKeyDialog(
+        string key,
+        string title = "Copy new API key",
+        string note = "Copy this key now. You can reveal or regenerate it later from this tab.",
+        bool startMasked = false)
     {
-        Text = "Copy new API key";
+        Text = title;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(560, 145);
+        ClientSize = new Size(560, 160);
 
-        _key = new TextBox { Dock = DockStyle.Top, ReadOnly = true, Text = key, UseSystemPasswordChar = false };
+        _key = new TextBox { Dock = DockStyle.Top, ReadOnly = true, Text = key, UseSystemPasswordChar = startMasked };
         Label warning = new()
         {
             AutoSize = true,
             Dock = DockStyle.Top,
             Padding = new Padding(0, 8, 0, 8),
-            Text = "Copy this key now. It cannot be shown again; create a replacement if it is lost.",
+            Text = note,
         };
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft, Height = 38 };
         Button close = new() { AutoSize = true, Text = "Close", DialogResult = DialogResult.OK };
         Button copy = new() { AutoSize = true, Text = "Copy" };
+        CheckBox hide = new() { AutoSize = true, Text = "Hide", Checked = startMasked, Padding = new Padding(0, 6, 12, 0) };
+        hide.CheckedChanged += (_, _) => _key.UseSystemPasswordChar = hide.Checked;
         copy.Click += (_, _) =>
         {
             try
@@ -676,6 +751,7 @@ internal sealed class OneTimeKeyDialog : Form
         };
         buttons.Controls.Add(close);
         buttons.Controls.Add(copy);
+        buttons.Controls.Add(hide);
         Controls.Add(buttons);
         Controls.Add(warning);
         Controls.Add(_key);

@@ -163,6 +163,24 @@ MCP access (or an Admin key), or keep using the shared credential if one is conf
 > **Upgrade note:** before per-key grants were enforced, an empty allowed-model list meant *all
 > models*. It now means *no models*, so re-check existing Read Only keys after upgrading.
 
+## API Key Recovery (Reveal and Regenerate)
+
+Keys authenticate by hash, and the full value is also kept under reversible encryption so an
+**Admin** can read it back. Each key row in the **Users** tab carries:
+
+- **Reveal** (web) / **Reveal key** (Windows app) — shows the stored key, masked until you ask for
+  it, with one-click copy.
+- **Regen** (web) / **Regenerate key** (Windows app) — issues a new secret in place. The label,
+  model grants, and MCP grant all survive; the previous key stops working immediately.
+
+Read Only accounts cannot reveal or regenerate anything. Keys created before this feature have no
+stored secret, so revealing one offers to regenerate it instead.
+
+The encryption key is a random 32-byte file named `api-key-protection.key`, created next to the
+application database on first use. It keeps a copied or synced database from leaking usable keys,
+but it does not protect against someone who can read the whole data folder — protect that folder.
+If the file is lost or replaced, stored keys can no longer be revealed; regenerate them.
+
 Use HTTPS (or terminate TLS at a trusted proxy) before sharing the dashboard beyond localhost so
 credentials and session cookies are not sent over untrusted HTTP networks.
 

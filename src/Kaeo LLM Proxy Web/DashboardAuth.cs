@@ -52,7 +52,11 @@ internal static class DashboardAuth
         return null;
     }
 
-    public static bool TryAuthorize(HttpContext context, AppSettings settings, AppDatabase database, out string? error)
+    /// <summary>True when the authenticated dashboard session holds the Admin role.</summary>
+        public static bool IsAdmin(HttpContext context)
+            => string.Equals(context.Items[RoleItemKey] as string, AdminRole, StringComparison.Ordinal);
+
+        public static bool TryAuthorize(HttpContext context, AppSettings settings, AppDatabase database, out string? error)
     {
         error = null;
         if (!settings.WebDashboard.RequireLogin)

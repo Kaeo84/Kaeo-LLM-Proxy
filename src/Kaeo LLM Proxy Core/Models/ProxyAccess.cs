@@ -34,9 +34,10 @@ internal sealed class ProxyUser
 }
 
 /// <summary>
-/// An API key belonging to a <see cref="ProxyUser"/>. Only the SHA-256 hash of the full key is
-/// stored; the plaintext is shown exactly once at creation. <see cref="KeyPrefix"/> is a short
-/// non-secret fragment so the dashboard can tell keys apart.
+/// An API key belonging to a <see cref="ProxyUser"/>. Requests authenticate against the SHA-256
+/// hash in <see cref="KeyHash"/>; <see cref="KeySecret"/> additionally keeps the plaintext under
+/// reversible encryption so an administrator can reveal or regenerate the key later.
+/// <see cref="KeyPrefix"/> is a short non-secret fragment so the dashboard can tell keys apart.
 /// </summary>
 internal sealed class ProxyApiKey
 {
@@ -54,6 +55,14 @@ internal sealed class ProxyApiKey
 
     /// <summary>First characters of the key (non-secret) for display/identification.</summary>
     public string KeyPrefix { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The full plaintext key under reversible AES-GCM encryption (see <c>ApiKeyProtector</c>),
+    /// so an administrator can reveal or replace it from the dashboard. Null for keys created
+    /// before this was stored, or when the protection key file was unavailable at creation time;
+    /// such keys must be regenerated before they can be read back.
+    /// </summary>
+    public string? KeySecret { get; set; }
 
     /// <summary>When the key was created (UTC).</summary>
     public DateTime CreatedUtc { get; set; }

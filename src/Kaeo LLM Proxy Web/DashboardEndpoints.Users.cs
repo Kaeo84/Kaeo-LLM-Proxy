@@ -7,9 +7,10 @@ using Microsoft.Data.Sqlite;
 namespace Kaeo.LlmProxy.Web;
 
 /// <summary>
-/// Users tab API: proxy users (name/email contact records) and their API keys. Key material is
-/// write-only — the plaintext is returned exactly once, by the create-key response; every other
-/// surface exposes only the non-secret prefix. Hashes never leave the database layer.
+/// Users tab API: proxy users (name/email contact records) and their API keys. Keys authenticate
+/// by hash, and the plaintext is also kept under reversible encryption so an administrator can
+/// reveal it or replace it in place; every non-admin surface exposes only the non-secret prefix.
+/// Hashes never leave the database layer.
 /// </summary>
 internal static partial class DashboardEndpoints
 {
@@ -142,8 +143,9 @@ internal static partial class DashboardEndpoints
             }
         });
 
-        // Creates a key and returns the plaintext ONCE. There is no endpoint that can reveal it
-        // again — a lost key is deleted and replaced.
+        // Creates a key and returns the plaintext once. The plaintext is also stored under
+        // reversible encryption so an administrator can reveal it later (GET .../reveal) or
+        // replace it in place (POST .../regenerate).
         app.MapPost("/api/users/{id:int}/keys", (int id, KeyWrite write) =>
         {
             try
@@ -153,13 +155,14 @@ internal static partial class DashboardEndpoints
                     if (controller.Database.FindProxyUser(id) is null)
                         return Results.NotFound(new { error = $"User {id} not found." });
 
-                    (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
+                    (string plainText, string hash, string prefix, string? secret) = controller.Access.GenerateKeyMaterial();
                     ProxyApiKey key = new()
                     {
                         UserId = id,
                         Label = write.Label?.Trim() ?? string.Empty,
                         KeyHash = hash,
                         KeyPrefix = prefix,
+                        KeySecret = secret,
                         CreatedUtc = DateTime.UtcNow,
                         AllowedModels = NormalizeModelList(write.AllowedModels),
                         McpAccess = write.McpAccess ?? false,
@@ -173,6 +176,89 @@ internal static partial class DashboardEndpoints
                         key = KeyView(key),
                         plainText,
                     });
+                }
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        // Admin only: hands the stored plaintext key back. Read Only sessions never reach here
+        // (the middleware allow-list blocks the path) but the role check makes that explicit.
+        app.MapGet("/api/keys/{id:int}/reveal", (int id, HttpContext context) =>
+        {
+            if (!DashboardAuth.IsAdmin(context))
+                return Results.Json(new { error = "Only an Admin account can reveal API keys." },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            try
+            {
+                ProxyApiKey? key = controller.Database.LoadProxyApiKeys().FirstOrDefault(k => k.Id == id);
+                if (key is null)
+                    return Results.NotFound(new { error = $"Key {id} not found." });
+
+                string? plainText = controller.Access.RevealKey(key);
+                if (plainText is null)
+                {
+                    return Results.Json(
+                        new
+                        {
+                            error = "This key was created before key recovery was available (or its protection key file changed), so it cannot be shown. Regenerate it to get a key you can copy again.",
+                            canReveal = false,
+                        },
+                        statusCode: StatusCodes.Status409Conflict);
+                }
+
+                Serilog.Log.Information(
+                    "Dashboard admin {Admin} revealed API key {KeyId} ({KeyPrefix})",
+                    context.Items[DashboardAuth.UserNameItemKey]?.ToString() ?? "unknown",
+                    key.Id,
+                    key.KeyPrefix);
+
+                return Results.Json(new { key = KeyView(key), plainText });
+            }
+            catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
+            {
+                return DatabaseUnavailable(ex);
+            }
+        });
+
+        // Admin only: replaces a key's secret material in place. Label, model grants, and the MCP
+        // grant survive; the previous key stops authenticating immediately.
+        app.MapPost("/api/keys/{id:int}/regenerate", (int id, HttpContext context) =>
+        {
+            if (!DashboardAuth.IsAdmin(context))
+                return Results.Json(new { error = "Only an Admin account can regenerate API keys." },
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            try
+            {
+                lock (Sync)
+                {
+                    ProxyApiKey? key = controller.Database.LoadProxyApiKeys().FirstOrDefault(k => k.Id == id);
+                    if (key is null)
+                        return Results.NotFound(new { error = $"Key {id} not found." });
+
+                    (string plainText, string hash, string prefix, string? secret) = controller.Access.GenerateKeyMaterial();
+                    DateTime createdUtc = DateTime.UtcNow;
+
+                    controller.Database.UpdateProxyApiKeyMaterial(id, hash, prefix, secret, createdUtc);
+                    controller.Access.InvalidateCache();
+
+                    key.KeyHash = hash;
+                    key.KeyPrefix = prefix;
+                    key.KeySecret = secret;
+                    key.CreatedUtc = createdUtc;
+                    key.LastUsedUtc = null;
+
+                    Serilog.Log.Information(
+                        "Dashboard admin {Admin} regenerated API key {KeyId} ({KeyPrefix})",
+                        context.Items[DashboardAuth.UserNameItemKey]?.ToString() ?? "unknown",
+                        key.Id,
+                        key.KeyPrefix);
+
+                    return Results.Json(new { key = KeyView(key), plainText });
                 }
             }
             catch (Exception ex) when (ex is IOException or System.Data.Common.DbException)
@@ -286,6 +372,7 @@ internal static partial class DashboardEndpoints
     }
 
     // Metadata only: prefix is a short non-secret fragment; hash and plaintext never appear.
+    // canReveal tells the UI whether a reveal is possible or the key must be regenerated first.
     private static object KeyView(ProxyApiKey key) => new
     {
         id = key.Id,
@@ -296,6 +383,7 @@ internal static partial class DashboardEndpoints
         lastUsedUtc = key.LastUsedUtc,
         allowedModels = key.AllowedModels,
         mcpAccess = key.McpAccess,
+        canReveal = !string.IsNullOrEmpty(key.KeySecret),
     };
 
     private static List<string> NormalizeModelList(List<string>? models) =>
