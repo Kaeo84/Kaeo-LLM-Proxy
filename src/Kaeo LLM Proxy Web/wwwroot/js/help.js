@@ -73,8 +73,8 @@ window.KaeoHelp = {
             capability: 'Admin',
             summary: 'The Live streams panel at the top of Requests shows SSE streams in flight plus those that finished in the last fifteen minutes.',
             items: [
-                { label: 'Row', text: 'State, start time, kind, method, path, model, upstream and client byte counts, and frame counts.' },
-                { label: 'Detail', text: 'Click a row to load the captured raw upstream tail beside the bytes forwarded to the client.' }
+                { label: 'Row', text: 'State, start time, kind, method, path, model, upstream and client byte counts, and frame counts. The list shows fifteen rows at a time and scrolls for more.' },
+                { label: 'Detail', text: 'Click a row to open a dialog with the captured raw upstream tail beside the bytes forwarded to the client. Close it with the button, the ×, Escape, or a click outside.' }
             ],
             note: 'Admin-only: the panes contain other users\u2019 payload text.'
         },
@@ -97,7 +97,7 @@ window.KaeoHelp = {
             capability: 'ViewUsage',
             summary: 'Token consumption counted from the request-log database.',
             items: [
-                { label: 'Period', text: 'This or last month, this or last week, last 30 or 90 days. Group the stacked chart by day, week, or month.' },
+                { label: 'Period', text: 'This week (the default), last week, this or last month, last 30 or 90 days. Group the stacked chart by day, week, or month.' },
                 { label: 'Model', text: 'Filter to a single model, or All models.' },
                 { label: 'User', text: 'Admin only: All users, yourself, or one user, plus a Usage by user breakdown with per-user totals and share bars.' },
                 { label: 'By day', text: 'Click a day to expand its per-model rows: requests, prompt, completion, total, cached prompt, and reasoning tokens.' }

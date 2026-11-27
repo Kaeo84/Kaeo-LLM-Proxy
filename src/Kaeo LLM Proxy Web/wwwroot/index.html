@@ -85,13 +85,7 @@
                             <tbody></tbody>
                         </table>
                     </div>
-                    <div id="stream-detail" class="hidden">
-                        <div class="stream-panes">
-                            <div><h4>Raw upstream tail</h4><pre id="stream-raw"></pre></div>
-                            <div><h4>Forwarded to client</h4><pre id="stream-forwarded"></pre></div>
-                        </div>
-                    </div>
-                    <p class="muted">Live rows come first, then streams that finished in the last 15 minutes. Click a row to load its captured tails.</p>
+                    <p class="muted">Live rows come first, then streams that finished in the last 15 minutes. Click a row to open its captured tails in a dialog.</p>
                 </div>
             </details>
             <div class="table-wrap table-fill">
@@ -147,10 +141,10 @@
             <div class="toolbar">
                 <label>Period
                     <select id="usage-period">
-                        <option value="thisMonth">This month</option>
-                        <option value="lastMonth">Last month</option>
                         <option value="thisWeek">This week</option>
                         <option value="lastWeek">Last week</option>
+                        <option value="thisMonth">This month</option>
+                        <option value="lastMonth">Last month</option>
                         <option value="last30">Last 30 days</option>
                         <option value="last90">Last 90 days</option>
                     </select>

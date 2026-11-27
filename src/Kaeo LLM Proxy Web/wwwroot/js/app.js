@@ -62,8 +62,9 @@
 
     // ------------------------------------------------------------------ modal
     var modalOpen = false;
+    var modalOnClose = null;
 
-    function openModal(title, $body, buttons, wide) {
+    function openModal(title, $body, buttons, wide, onClose) {
         $('#modal-title').text(title);
         $('#modal-body').empty().append($body);
         $('#modal-error').addClass('hidden').text('');
@@ -79,6 +80,7 @@
         $('#modal').toggleClass('wide', !!wide);
         $('#modal-backdrop').removeClass('hidden');
         modalOpen = true;
+        modalOnClose = onClose || null;
         $('#modal-body').find('input,select,textarea').first().trigger('focus');
     }
 
@@ -86,6 +88,11 @@
         $('#modal-backdrop').addClass('hidden');
         $('#modal-body').empty();
         modalOpen = false;
+        // Runs for every close path (button, ×, backdrop, Escape) so callers can undo side effects
+        // such as the selected-row highlight.
+        var onClose = modalOnClose;
+        modalOnClose = null;
+        if (onClose) onClose();
     }
 
     function modalError(message) {
@@ -565,7 +572,6 @@
             if (!streamCache.length) {
                 $tbody.append($('<tr>').append($('<td colspan="9" class="muted">')
                     .text('No streams in flight and none finished in the last 15 minutes.')));
-                $('#stream-detail').addClass('hidden');
                 return;
             }
             streamCache.forEach(function (s) {
@@ -584,22 +590,41 @@
             });
         }
 
-        // The list omits the captured tails (up to 64 KB per stream); they load on row click.
+        // The list omits the captured tails (up to 64 KB per stream); they load in the dialog on row click.
         function openStreamDetail(id) {
             selectedStreamId = id;
             $('#stream-table tbody tr[data-id]').each(function () {
                 $(this).toggleClass('selected', $(this).attr('data-id') === id);
             });
-            $('#stream-detail').removeClass('hidden');
-            $('#stream-raw, #stream-forwarded').text('Loading\u2026');
+
+            var stream = null;
+            for (var i = 0; i < streamCache.length; i++) if (streamCache[i].requestId === id) { stream = streamCache[i]; break; }
+
+            var $raw = $('<pre>').text('Loading\u2026');
+            var $forwarded = $('<pre>').text('Loading\u2026');
+            var $body = $('<div class="stream-panes">')
+                .append($('<div>').append($('<h4>').text('Raw upstream tail')).append($raw))
+                .append($('<div>').append($('<h4>').text('Forwarded to client')).append($forwarded));
+            if (stream) {
+                $body.prepend($('<p class="muted">').text(
+                    stream.kind + ' \u00b7 ' + stream.method + ' ' + stream.path + ' \u00b7 ' + (stream.model || 'no model')));
+            }
+
+            openModal('Stream detail', $body, [{ label: 'Close' }], true, function () {
+                // Clear the highlight however the dialog was dismissed, then repaint the rows.
+                selectedStreamId = null;
+                $('#stream-table tbody tr[data-id]').removeClass('selected');
+            });
+
             api('GET', '/api/streams/detail?id=' + encodeURIComponent(id), undefined, { silent: true })
                 .then(function (s) {
-                    $('#stream-raw').text(s.rawUpstreamText || '(no upstream bytes captured yet)');
-                    $('#stream-forwarded').text(s.forwardedText || '(nothing forwarded to the client yet)');
+                    $raw.text(s.rawUpstreamText || '(no upstream bytes captured yet)');
+                    $forwarded.text(s.forwardedText || '(nothing forwarded to the client yet)');
                 })
                 .catch(function (err) {
-                    $('#stream-raw, #stream-forwarded').text('');
-                    toast(err.message, true);
+                    $raw.text('');
+                    $forwarded.text('');
+                    modalError(err.message);
                 });
         }
 
@@ -1420,7 +1445,7 @@
 
     // ------------------------------------------------------------------ usage tab
     var USAGE_COLORS = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2', '#db2777', '#65a30d', '#ea580c', '#475569', '#0d9488', '#9333ea'];
-    var usageState = { period: 'thisMonth', group: 'day', model: '', user: 'all' };
+    var usageState = { period: 'thisWeek', group: 'day', model: '', user: 'all' };
     var usageColorMap = {};
     var usageColorNext = 0;
     var lastUsageData = null;

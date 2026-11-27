@@ -23,7 +23,9 @@ internal static partial class DashboardEndpoints
         app.MapGet("/api/usage", (HttpContext context, string? from, string? to, string? groupBy, string? userId, string? model) =>
         {
             DateTime today = DateTime.Today;
-            DateTime rangeFrom = new(today.Year, today.Month, 1);
+            // Defaults to the current week (Monday-first, matching the week buckets below) because
+            // that is what people check first; longer ranges are one dropdown change away.
+            DateTime rangeFrom = StartOfWeek(today);
             DateTime rangeTo = today;
             if (from is not null && !TryParseDay(from, out rangeFrom))
                 return Results.Json(new { error = "from must be a date in yyyy-MM-dd format." }, statusCode: StatusCodes.Status400BadRequest);
@@ -78,9 +80,8 @@ internal static partial class DashboardEndpoints
                 IReadOnlyList<TokenUsageRow> rows = controller.Database.QueryTokenUsage(
                     DateTime.SpecifyKind(rangeFrom, DateTimeKind.Local),
                     DateTime.SpecifyKind(rangeTo.AddDays(1), DateTimeKind.Local),
-                    filterUserId);
-                if (!string.IsNullOrWhiteSpace(model))
-                    rows = rows.Where(r => string.Equals(r.Model, model, StringComparison.OrdinalIgnoreCase)).ToList();
+                    filterUserId,
+                    string.IsNullOrWhiteSpace(model) ? null : model);
 
                 List<ProxyUser> users = fullVisibility ? [.. controller.Database.LoadProxyUsers()] : [];
                 Dictionary<int, string> userNames = users.ToDictionary(u => u.Id, u => u.Name);
@@ -130,6 +131,10 @@ internal static partial class DashboardEndpoints
     private static bool TryParseDay(string text, out DateTime day) =>
         DateTime.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
 
+    /// <summary>Monday of the week containing <paramref name="day"/> (weeks are Monday-first here).</summary>
+    private static DateTime StartOfWeek(DateTime day) =>
+        day.Date.AddDays(-(((int)day.DayOfWeek + 6) % 7));
+
     private static object BuildDays(IReadOnlyList<TokenUsageRow> rows) =>
         rows.GroupBy(r => r.Day)
             .OrderBy(g => g.Key, StringComparer.Ordinal)
@@ -171,7 +176,7 @@ internal static partial class DashboardEndpoints
         }
         else if (groupBy == "week")
         {
-            DateTime monday = from.AddDays(-(((int)from.DayOfWeek + 6) % 7));
+            DateTime monday = StartOfWeek(from);
             for (DateTime cur = monday; cur <= to; cur = cur.AddDays(7))
             {
                 DateTime end = cur.AddDays(7);
@@ -187,21 +192,19 @@ internal static partial class DashboardEndpoints
                     cur.ToString("MMM d", CultureInfo.InvariantCulture), cur, cur.AddDays(1)));
         }
 
-        // Assign each row to its span once; rows outside the range cannot occur (SQL filtered).
+        // Assign each row to its span once. A day→span map is built from the spans themselves, so
+        // the lookup is O(1) per row instead of scanning every span for every row (which made a
+        // 366-day range cost rows × spans string parses).
         Dictionary<string, List<TokenUsageRow>> bySpan = spans.ToDictionary(s => s.Key, _ => new List<TokenUsageRow>());
+        Dictionary<string, string> spanKeyByDay = new(StringComparer.Ordinal);
+        foreach ((string key, _, DateTime start, DateTime end) in spans)
+            for (DateTime cur = start; cur < end; cur = cur.AddDays(1))
+                spanKeyByDay[cur.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)] = key;
+
+        // Rows outside the range cannot occur (SQL filtered), so a miss is simply skipped.
         foreach (TokenUsageRow row in rows)
-        {
-            if (!TryParseDay(row.Day, out DateTime day))
-                continue;
-            foreach ((string key, _, DateTime start, DateTime end) in spans)
-            {
-                if (day >= start && day < end)
-                {
-                    bySpan[key].Add(row);
-                    break;
-                }
-            }
-        }
+            if (spanKeyByDay.TryGetValue(row.Day, out string? spanKey))
+                bySpan[spanKey].Add(row);
 
         return spans.Select(s =>
         {

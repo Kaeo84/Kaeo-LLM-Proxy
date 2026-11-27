@@ -113,6 +113,25 @@ public class TokenUsageQueryTests
     }
 
     [Fact]
+    public void ModelFilterNarrowsToOneModel_IgnoringCase()
+    {
+        string path = NewDatabasePath();
+        using AppDatabase database = Open(path);
+        database.Insert(Row(Day1, "alpha", 1, prompt: 10, total: 10));
+        database.Insert(Row(Day1, "Alpha-2", 1, prompt: 20, total: 20));
+        database.Insert(Row(Day1, "beta", 1, prompt: 30, total: 30));
+
+        // The filter is applied in SQL, so the case-insensitive match has to hold there too.
+        TokenUsageRow filtered = Assert.Single(database.QueryTokenUsage(
+            Day1.ToUniversalTime(), Day2.ToUniversalTime(), model: "ALPHA"));
+        Assert.Equal("alpha", filtered.Model);
+        Assert.Equal(10, filtered.TotalTokens);
+
+        IReadOnlyList<TokenUsageRow> all = database.QueryTokenUsage(Day1.ToUniversalTime(), Day2.ToUniversalTime());
+        Assert.Equal(3, all.Count);
+    }
+
+    [Fact]
     public void RangeIsInclusiveFrom_ExclusiveTo()
     {
         string path = NewDatabasePath();

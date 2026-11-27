@@ -469,7 +469,9 @@ key, and what happened" is answerable without correlating files.
   shows up as a row instead of silently vanishing.
 - **Detail on demand** — the Requests table loads rows first and fetches bodies, headers, and error
   text only when a row is opened, so the list stays fast against a large database.
-- **Live streams** — the same tab tails active SSE/NDJSON streams as they are produced.
+- **Live streams** — the same tab tails active SSE/NDJSON streams as they are produced, capped to
+  fifteen rows so the request table stays visible; clicking a row opens the captured upstream and
+  forwarded tails in a dialog.
 - **Refresh** — manual by default, with optional auto-refresh at 5, 10, 30, or 60 seconds.
 - **Redaction** — per mapping, `RedactRequestBodies` and `RedactResponseBodies` replace captured
   bodies with a marker (both default **on**), and `RedactSensitiveJsonFields` scrubs keys, tokens,
@@ -509,9 +511,11 @@ The web dashboard's **Usage** tab reports token consumption from the request-log
 - **Admin** users see everyone's usage and can scope the view to *All users*, themselves, or any
   single user, plus a **Usage by user** breakdown with per-user totals and share bars.
 
-Pick a period (this/last month, this/last week, last 30/90 days), group the stacked chart by
-**day / week / month**, and optionally filter to one model. The **By day** table expands each row
-into per-model detail (requests, prompt, completion, total, cached prompt, and reasoning tokens).
+Pick a period — **This week** (the default), Last week, This month, Last month, Last 30 days, or
+Last 90 days — group the stacked chart by **day / week / month**, and optionally filter to one
+model. The **By day** table expands each row into per-model detail (requests, prompt, completion,
+total, cached prompt, and reasoning tokens). Week ranges start on Monday, and the queries run
+against an index that covers the Usage aggregate, so longer ranges stay fast as the log grows.
 
 Only requests that reported tokens are counted — zero-token probes are excluded. Requests made
 without an API key (or before attribution existed) appear as **Unattributed** in the admin

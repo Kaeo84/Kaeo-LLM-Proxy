@@ -258,9 +258,9 @@
   <table>
     <tr><th>Tab</th><th>What it shows</th></tr>
     <tr><td>Dashboard</td><td>Proxy, MCP server, and web server state; CPU, working set, and GC counters; per-source traffic totals; module counts; start / stop / restart for each listener</td></tr>
-    <tr><td>Requests</td><td>Newest-first request rows with date, time, requestor, method, path, model, status, duration, and token counts; live SSE streams; details fetched on demand as the modal opens</td></tr>
+    <tr><td>Requests</td><td>Newest-first request rows with date, time, requestor, method, path, model, status, duration, and token counts; details fetched on demand as the modal opens; live SSE streams in a collapsed panel capped to fifteen rows, with each stream's captured tails in their own dialog</td></tr>
     <tr><td>Sys Log</td><td>The application's own Serilog output with level filters, text search, and heartbeat hiding</td></tr>
-    <tr><td>Usage</td><td>Token consumption by period, model, and user, with a stacked chart and per-day drill-down</td></tr>
+    <tr><td>Usage</td><td>Token consumption by period (This week by default, then Last week, This month, Last month, Last 30 and Last 90 days), model, and user, with a stacked chart and per-day drill-down; the aggregate is served from a covering index so longer ranges stay quick as the log grows</td></tr>
     <tr><td>Models</td><td>Model mappings and the full editor: sampling, thinking handling, reasoning effort, context window, instruction sets, heartbeats, redaction, Copilot compatibility, and compaction</td></tr>
     <tr><td>Credentials</td><td>Named secrets and certificates, write-only after saving</td></tr>
     <tr><td>Users</td><td>Accounts, combinable roles, API keys, reveal/regenerate, and per-user model and MCP grants</td></tr>
@@ -317,7 +317,8 @@
         <td><strong>Requests</strong></td>
         <td>One row per request with date, time, requestor, client label, method, path, model, status, duration,
           and token counts. Bodies, headers, and error text are fetched only when a row is opened, so the list
-          stays fast against a large database. Live streams are tailed in the same tab.</td>
+          stays fast against a large database. Live streams are tailed in the same tab, capped to fifteen
+                    rows, and a click opens that stream's captured upstream and forwarded tails in a dialog.</td>
       </tr>
       <tr>
         <td><strong>Sources</strong></td>

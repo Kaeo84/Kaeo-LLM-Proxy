@@ -205,6 +205,10 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .role-pill { padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); color: var(--fg); font-size: 12px; font-weight: 600; white-space: nowrap; }
 /* Wraps instead of overflowing the card: the user-level button row is wider than a 280px card. */
 .card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* Dashboard status cards: cards in a grid row share a height, so pinning the Start/Stop/Restart row
+   to the bottom lines the three server cards up instead of leaving the button rows ragged. */
+#status-cards .card { display: flex; flex-direction: column; }
+#status-cards .card .actions { margin-top: auto; padding-top: 10px; }
 /* Inline failure text under a card's action row (proxy start errors, degraded database). */
 .card-error { margin: 10px 0 0; font-size: 12px; color: var(--err); word-break: break-word; }
 
@@ -347,13 +351,14 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .streams-panel > summary:hover { color: var(--fg); }
 .streams-panel .streams-body { display: flex; flex-direction: column; gap: 8px; }
-/* Capped so expanding the panel never squeezes the request table out of the viewport. */
-.streams-panel .streams-scroll { max-height: 32vh; overflow: auto; }
-.streams-panel #stream-detail {
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 12px;
+/* Show at most 15 stream rows, then scroll. Every stream cell is single-line, so a row is exactly
+   13px text at 1.45 line-height + 7px vertical padding + the 1px rule (33.85px) under a 32.4px
+   header; capping in those units lands on a row boundary instead of slicing one in half. The vh
+   clamp keeps the request table on screen in short windows. */
+.streams-panel .streams-scroll {
+    --stream-rows: 15;
+    max-height: min(calc(var(--stream-rows) * 33.85px + 32.4px), 42vh);
+    overflow: auto;
 }
 .stream-panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
 .stream-panes h4 { margin: 0 0 4px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .04em; }

@@ -608,7 +608,7 @@ public sealed class WebDashboardEndpointTests
         SeedUsage(b.Database, today, "m1", null, 7, 3, 10);
         SeedUsage(b.Database, lastMonth, "m1", admin.Id, 30, 10, 40);
 
-        // Default range is this month: everyone, including unattributed traffic.
+        // Default range is this week: everyone, including unattributed traffic.
         using JsonDocument all = JsonDocument.Parse(await b.Client.GetStringAsync("/api/usage"));
         Assert.Equal("all", all.RootElement.GetProperty("scope").GetString());
         Assert.Equal(175, all.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
@@ -637,6 +637,25 @@ public sealed class WebDashboardEndpointTests
         Assert.Equal(40, buckets[0].GetProperty("totalTokens").GetInt64());
         Assert.Equal(175, buckets[1].GetProperty("totalTokens").GetInt64());
         Assert.Equal(2, monthly.RootElement.GetProperty("days").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Usage_DefaultRangeIsThisWeek_AndLongerRangesAreOptIn()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        DateTime today = DateTime.Today.AddHours(9);
+        // Eight days back is always outside the current (Monday-first) week.
+        DateTime older = today.AddDays(-8);
+        SeedUsage(b.Database, today, "m1", null, 10, 5, 15);
+        SeedUsage(b.Database, older, "m1", null, 100, 50, 150);
+
+        using JsonDocument defaults = JsonDocument.Parse(await b.Client.GetStringAsync("/api/usage"));
+        Assert.Equal(DayString(today), defaults.RootElement.GetProperty("to").GetString());
+        Assert.Equal(15, defaults.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
+
+        string url = $"/api/usage?from={DayString(older)}&to={DayString(today)}";
+        using JsonDocument wider = JsonDocument.Parse(await b.Client.GetStringAsync(url));
+        Assert.Equal(165, wider.RootElement.GetProperty("totals").GetProperty("totalTokens").GetInt64());
     }
 
     [Fact]

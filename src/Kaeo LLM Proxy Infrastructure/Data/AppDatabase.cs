@@ -980,9 +980,18 @@ internal sealed class AppDatabase : IDisposable
     /// days so the grouping matches the timestamps shown in the GUI. Rows where no tokens were
     /// reported at all are excluded — usage means token consumption, and zero-token probes would
     /// otherwise inflate every request count. <paramref name="userId"/> narrows to one user;
-    /// null aggregates everyone (including unattributed rows).
+    /// null aggregates everyone (including unattributed rows). <paramref name="model"/> narrows to
+    /// one model name (case-insensitive); null covers every model.
     /// </summary>
-    public IReadOnlyList<TokenUsageRow> QueryTokenUsage(DateTime fromUtcInclusive, DateTime toUtcExclusive, int? userId = null)
+    /// <remarks>
+    /// Filtering happens in SQL rather than in the caller so a model or user filter cannot pull the
+    /// whole range across the boundary and then throw most of it away.
+    /// </remarks>
+    public IReadOnlyList<TokenUsageRow> QueryTokenUsage(
+        DateTime fromUtcInclusive,
+        DateTime toUtcExclusive,
+        int? userId = null,
+        string? model = null)
     {
         lock (_lock)
         {
@@ -1004,13 +1013,14 @@ internal sealed class AppDatabase : IDisposable
                 WHERE timestamp_utc >= $from AND timestamp_utc < $to
                     AND (prompt_tokens > 0 OR completion_tokens > 0 OR total_tokens > 0)
                     AND ($userId IS NULL OR user_id = $userId)
-                GROUP BY day, model, user_id
-                ORDER BY day;
+                    AND ($model IS NULL OR model = $model COLLATE NOCASE)
+                GROUP BY day, model, user_id;
                 """;
             // "O"-format UTC strings are fixed-length, so a lexicographic range is a time range.
             command.Parameters.AddWithValue("$from", ToUtcText(fromUtcInclusive));
             command.Parameters.AddWithValue("$to", ToUtcText(toUtcExclusive));
             command.Parameters.AddWithValue("$userId", userId.HasValue ? userId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$model", string.IsNullOrWhiteSpace(model) ? DBNull.Value : model);
 
             using SqliteDataReader reader = command.ExecuteReader();
             List<TokenUsageRow> rows = [];
@@ -1641,6 +1651,7 @@ internal sealed class AppDatabase : IDisposable
                         ReconcileExistingTables(connection);
                         EnsureModuleIdUniqueIndex(connection);
                         EnsureDashboardUsernameUniqueIndex(connection);
+                        EnsureUsageCoveringIndex(connection);
                     }
                 }
 
@@ -1670,6 +1681,36 @@ internal sealed class AppDatabase : IDisposable
                     using SqliteCommand command = connection.CreateCommand();
                     command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_proxy_users_dashboard_username ON proxy_users(dashboard_username COLLATE NOCASE) WHERE dashboard_login_enabled = 1;";
                     command.ExecuteNonQuery();
+                }
+
+                /// <summary>
+                /// Covering index for <see cref="QueryTokenUsage"/>: the Usage tab aggregates a date range
+                /// by day/model/user, and every column it reads is in this index, so SQLite can answer the
+                /// range scan from the index instead of following each rowid into the wide request table.
+                /// </summary>
+                /// <remarks>
+                /// Created after <see cref="ReconcileExistingTables"/> rather than in the baseline DDL,
+                /// because the index names <c>user_id</c> — a database written before API-key attribution
+                /// only gains that column during reconciliation, and an index over a column that is not
+                /// there yet would fail schema init on exactly the upgrade path reconciliation exists for.
+                /// </remarks>
+                private static void EnsureUsageCoveringIndex(SqliteConnection connection)
+                {
+                    try
+                    {
+                        using SqliteCommand command = connection.CreateCommand();
+                        command.CommandText =
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_requests_usage ON requests(
+                                timestamp_utc, model, user_id, prompt_tokens, completion_tokens, total_tokens,
+                                cached_prompt_tokens, reasoning_tokens);
+                            """;
+                        command.ExecuteNonQuery();
+                    }
+                    catch (SqliteException ex)
+                    {
+                        Log.Warning(ex, "Could not create the usage covering index; Usage queries fall back to the table");
+                    }
                 }
 
                 /// <summary>

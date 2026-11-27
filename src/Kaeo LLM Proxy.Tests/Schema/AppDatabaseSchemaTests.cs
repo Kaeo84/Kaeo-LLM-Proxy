@@ -107,6 +107,50 @@ public class AppDatabaseSchemaTests
     }
 
     [Fact]
+    public void UsageCoveringIndex_IsCreatedOnFreshAndLegacyDatabases()
+    {
+        // The Usage aggregate reads the request range straight out of this index; if it is ever
+        // dropped from the startup path the report still works, just by scanning the whole table.
+        string fresh = NewDatabasePath();
+        using (AppDatabase database = OpenDatabase(fresh)) { }
+        Assert.Contains("idx_requests_usage", ReadIndexNames(fresh, "requests"));
+
+        // A database written before user_id existed must still end up with the index: it is built
+        // after column reconciliation, not with the baseline DDL that runs before it.
+        string legacy = NewDatabasePath();
+        using (AppDatabase database = OpenDatabase(legacy)) { }
+        using (SqliteConnection connection = new($"Data Source={legacy}"))
+        {
+            connection.Open();
+            using SqliteCommand drop = connection.CreateCommand();
+            drop.CommandText = "DROP INDEX IF EXISTS idx_requests_usage; ALTER TABLE requests DROP COLUMN user_id;";
+            drop.ExecuteNonQuery();
+        }
+        Assert.DoesNotContain("user_id", ReadColumnNames(legacy, "requests"));
+
+        using (AppDatabase upgraded = OpenDatabase(legacy)) { }
+        Assert.Contains("user_id", ReadColumnNames(legacy, "requests"));
+        Assert.Contains("idx_requests_usage", ReadIndexNames(legacy, "requests"));
+    }
+
+    private static List<string> ReadIndexNames(string path, string table)
+    {
+        using SqliteConnection connection = new($"Data Source={path}");
+        connection.Open();
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = $table;";
+        command.Parameters.AddWithValue("$table", table);
+
+        List<string> indexes = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+            indexes.Add(reader.GetString(0));
+
+        return indexes;
+    }
+
+    [Fact]
     public void RequestTables_LegacyWithoutUserId_AreReconciledOnOpen()
     {
         string path = NewDatabasePath();
@@ -119,6 +163,14 @@ public class AppDatabaseSchemaTests
         using (SqliteConnection connection = new($"Data Source={path}"))
         {
             connection.Open();
+            // A database from before API-key attribution has neither the column nor any index that
+            // names it, so the usage covering index goes first — SQLite refuses to drop a column an
+            // index still references.
+            using (SqliteCommand dropIndex = connection.CreateCommand())
+            {
+                dropIndex.CommandText = "DROP INDEX IF EXISTS idx_requests_usage;";
+                dropIndex.ExecuteNonQuery();
+            }
             foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
             {
                 using SqliteCommand command = connection.CreateCommand();
