@@ -113,6 +113,85 @@ public sealed class DashboardRolesTests
     }
 
     [Fact]
+    public void ModelReadOnlyRoles_GrantVisibilityWithoutTheModelAdminRights()
+    {
+        // "Models Read Only" sees every mapping; "Own Models Read Only" only the user's own grants.
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.ModelsReadOnly, DashboardCapability.ViewModels));
+        Assert.False(DashboardRoles.HasCapability(DashboardRoles.ModelsReadOnly, DashboardCapability.ViewOwnModels));
+        Assert.False(DashboardRoles.HasCapability(DashboardRoles.ModelsReadOnly, DashboardCapability.ManageModels));
+
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.OwnModelsReadOnly, DashboardCapability.ViewOwnModels));
+        Assert.False(DashboardRoles.HasCapability(DashboardRoles.OwnModelsReadOnly, DashboardCapability.ViewModels));
+        Assert.False(DashboardRoles.HasCapability(DashboardRoles.OwnModelsReadOnly, DashboardCapability.ManageModels));
+
+        // Both keep the Read Only baseline and nothing else.
+        foreach (string role in new[] { DashboardRoles.ModelsReadOnly, DashboardRoles.OwnModelsReadOnly })
+        {
+            Assert.True(DashboardRoles.HasCapability(role, DashboardCapability.ViewLogs), role);
+            Assert.True(DashboardRoles.HasCapability(role, DashboardCapability.ViewUsage), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ManageUsers), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ManageSettings), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.DashboardControl), role);
+        }
+
+        // Holding both is the wider grant: the full list wins over the own-models list.
+        string both = $"{DashboardRoles.OwnModelsReadOnly},{DashboardRoles.ModelsReadOnly}";
+        Assert.True(DashboardRoles.HasCapability(both, DashboardCapability.ViewModels));
+        Assert.True(DashboardRoles.HasCapability(both, DashboardCapability.ViewOwnModels));
+    }
+
+    [Fact]
+    public void ModelReadOnlyRoles_ParseAndDescribeLikeEveryOtherRole()
+    {
+        Assert.Equal([DashboardRoles.ModelsReadOnly, DashboardRoles.OwnModelsReadOnly],
+            DashboardRoles.Parse("ownModelsReadOnly,modelsReadOnly"));
+        Assert.Equal("modelsReadOnly", DashboardRoles.Normalize("MODELSREADONLY"));
+        Assert.Equal("Models Read Only, Own Models Read Only",
+            DashboardRoles.Describe($"{DashboardRoles.ModelsReadOnly},{DashboardRoles.OwnModelsReadOnly}"));
+        Assert.Equal("Models Read Only", DashboardRoles.Find(DashboardRoles.ModelsReadOnly)?.Label);
+        Assert.Equal("Own Models Read Only", DashboardRoles.Find(DashboardRoles.OwnModelsReadOnly)?.Label);
+    }
+
+    [Fact]
+    public void RegistrationRoles_GrantOnlyTheRegistrationSurface()
+    {
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.RegistrationReadOnly, DashboardCapability.ViewRegistration));
+        Assert.False(DashboardRoles.HasCapability(DashboardRoles.RegistrationReadOnly, DashboardCapability.ManageRegistration));
+
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.RegistrationReadWrite, DashboardCapability.ViewRegistration));
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.RegistrationReadWrite, DashboardCapability.ManageRegistration));
+
+        // A service account gets the registration API and nothing that a person would use.
+        foreach (string role in new[] { DashboardRoles.RegistrationReadOnly, DashboardRoles.RegistrationReadWrite })
+        {
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ViewLogs), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ViewUsage), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ViewDashboard), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.DashboardControl), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ManageUsers), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ManageModels), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ManageSettings), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.TestConsole), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ViewModels), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.ViewOwnModels), role);
+            Assert.False(DashboardRoles.HasCapability(role, DashboardCapability.Admin), role);
+        }
+    }
+
+    [Fact]
+    public void RegistrationRoles_ParseAndDescribeLikeEveryOtherRole()
+    {
+        Assert.Equal([DashboardRoles.RegistrationReadOnly, DashboardRoles.RegistrationReadWrite],
+            DashboardRoles.Parse("registrationReadWrite,registrationReadOnly"));
+        Assert.Equal("registrationReadWrite", DashboardRoles.Normalize("REGISTRATIONREADWRITE"));
+        Assert.Equal("Registration Read Only", DashboardRoles.Find(DashboardRoles.RegistrationReadOnly)?.Label);
+        Assert.Equal("Registration Read-Write", DashboardRoles.Find(DashboardRoles.RegistrationReadWrite)?.Label);
+
+        // Model Admin keeps writing the registration surface even though it does not name the role.
+        Assert.True(DashboardRoles.HasCapability(DashboardRoles.ModelAdmin, DashboardCapability.ManageRegistration));
+    }
+
+    [Fact]
     public void MultipleRoles_UnionTheirCapabilities()
     {
         string combined = $"{DashboardRoles.UserAdmin},{DashboardRoles.TestConsole}";

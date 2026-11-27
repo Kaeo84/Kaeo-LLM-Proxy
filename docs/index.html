@@ -291,11 +291,15 @@
     <tr><th>Role</th><th>What it adds</th></tr>
     <tr><td>Admin</td><td>Everything: every model, every MCP tool, every tab, and every action</td></tr>
     <tr><td>Read Only</td><td>The Requests log and Usage, limited to that user's own traffic</td></tr>
+    <tr><td>Models Read Only</td><td>Read Only plus the Models tab in read-only form, listing every model mapping</td></tr>
+    <tr><td>Own Models Read Only</td><td>Read Only plus the Models tab in read-only form, limited to the mappings granted to that user</td></tr>
     <tr><td>Dashboard Read Only</td><td>The Dashboard tab &mdash; state, performance, and traffic totals, without the control buttons</td></tr>
     <tr><td>Dashboard Read-Write</td><td>Dashboard Read Only plus start, stop, and restart for the proxy, the MCP server, and the web server</td></tr>
     <tr><td>User Admin</td><td>Read Only plus adding, updating, and removing users, roles, API keys, and grants</td></tr>
     <tr><td>Model Admin</td><td>Read Only plus adding, updating, and removing model mappings</td></tr>
     <tr><td>Test Console</td><td>The Test Console tab, limited to the models that user can access</td></tr>
+    <tr><td>Registration Read Only</td><td>The model registration API in read-only form, for a service account's API key. Grants no dashboard tabs</td></tr>
+    <tr><td>Registration Read-Write</td><td>Registration Read Only plus registering, updating, and removing models and running a discovery scan. Grants no dashboard tabs</td></tr>
   </table>
   <p class="muted">
     Sys Log, the live stream panes, and the Settings, Credentials, and Modules surfaces stay Admin-only whatever
@@ -308,13 +312,46 @@
       and the grants that decide what their API keys can reach.</li>
     <li><strong>Model and MCP access belong to the user</strong>, not to an individual key, so every key that
       user holds has the same reach. An empty allowed-model list means <em>no models</em>, not all models.</li>
+    <li><strong>MCP modules</strong> narrow the MCP grant further: leave every box clear to allow every module, or
+      tick specific modules to limit the user to exactly those. A tool from an unticked module is not listed and
+      calling it is refused. Unlike models, an empty module list means <em>every</em> module.</li>
     <li><strong>API keys</strong> are hashed for authentication and also kept under reversible encryption, so an
       Admin can reveal or regenerate one. Regenerating keeps the label and the grants and invalidates the old
       secret immediately.</li>
     <li><strong>Card actions</strong> live behind a 3-dot overflow menu, so a card stays readable however many
       keys it holds.</li>
-    <li>Proxy API keys never grant dashboard access &mdash; they authenticate model and MCP requests only.</li>
+    <li>Proxy API keys are not a dashboard login: they authenticate model and MCP requests, plus the model
+      registration API, and nothing else &mdash; even when the key belongs to an Admin user.</li>
   </ul>
+
+  <h3>Service accounts and the registration API</h3>
+  <p>
+    A machine that registers models &mdash; a startup script on a model server, a CI job, a scheduled task &mdash;
+    should not hold a dashboard password. Create a user with <strong>Registration Read-Write</strong>, leave its
+    dashboard login off, and give it one API key. That key then drives
+    <code>/api/mappings</code> with <code>Authorization: Bearer &lt;key&gt;</code> (or <code>x-api-key</code>),
+    and nothing outside it:
+  </p>
+  <table>
+    <tr><th>Call</th><th>Needs</th></tr>
+    <tr><td><code>GET /api/mappings</code>, <code>GET /api/mappings/discovery</code></td><td>Registration Read Only</td></tr>
+    <tr><td><code>GET /api/mappings/openapi.json</code></td><td>Registration Read Only</td></tr>
+    <tr><td><code>POST /api/mappings</code>, <code>PUT /api/mappings/{id}</code>, <code>DELETE /api/mappings/{id}</code>, <code>POST /api/mappings/discover</code></td><td>Registration Read-Write</td></tr>
+  </table>
+  <p>
+    The whole surface is described by an OpenAPI 3 document at <code>/api/mappings/openapi.json</code>, which the
+    same key can fetch and which imports straight into Postman, Insomnia, or Swagger Editor. It lives on the
+    dashboard port rather than at the proxy's <code>/openapi/v1/openapi.json</code> because these are dashboard
+    routes, and it needs the same grant they do: Admin, User Admin, Model Admin, Registration Read Only, and
+    Registration Read-Write can read it, and every other role gets 403. The <strong>Help</strong> tab carries the
+    same contract for whichever of those roles is signed in.
+  </p>
+  <p class="muted">
+    Users, keys, settings, credentials, modules, logs, usage, and the dashboard tabs still answer 401 for a key, so
+    a leaked service-account key cannot pivot into administration. Deleting the key or disabling the user revokes
+    it within seconds, and dashboard-login settings never apply to a key. <code>scripts/register-auto-managed-models.sh</code>
+    uses this path when <code>KAEO_API_KEY</code> is set.
+  </p>
 
   <h2>Logging, reporting, and statistics</h2>
     <p>

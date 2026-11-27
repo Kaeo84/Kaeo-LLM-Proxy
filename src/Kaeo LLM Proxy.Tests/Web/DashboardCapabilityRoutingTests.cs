@@ -35,8 +35,13 @@ public sealed class DashboardCapabilityRoutingTests
             ("/api/keys/7/reveal", "GET", DashboardCapability.ManageUsers),
             ("/api/keys/7/regenerate", "POST", DashboardCapability.ManageUsers),
             ("/api/mappings", "GET", DashboardCapability.None),
-            ("/api/mappings", "POST", DashboardCapability.ManageModels),
-            ("/api/mappings/2", "DELETE", DashboardCapability.ManageModels),
+            ("/api/mappings/discovery", "GET", DashboardCapability.None),
+            ("/api/mappings/openapi.json", "GET", DashboardCapability.ViewRegistration),
+            ("/api/mappings", "POST", DashboardCapability.ManageRegistration),
+            ("/api/mappings/2", "PUT", DashboardCapability.ManageRegistration),
+            ("/api/mappings/2", "DELETE", DashboardCapability.ManageRegistration),
+            ("/api/mappings/discover", "POST", DashboardCapability.ManageRegistration),
+            ("/api/users/mcp-modules", "GET", DashboardCapability.ManageUsers),
             ("/api/proxy/start", "POST", DashboardCapability.DashboardControl),
             ("/api/proxy/stop", "POST", DashboardCapability.DashboardControl),
             ("/api/webdashboard/restart", "POST", DashboardCapability.DashboardControl),
@@ -67,14 +72,94 @@ public sealed class DashboardCapabilityRoutingTests
     public void RequiredCapability_IsCaseInsensitive()
     {
         Assert.Equal(DashboardCapability.ManageUsers, Required("/API/Users"));
-        Assert.Equal(DashboardCapability.ManageModels, Required("/Api/Mappings", "PUT"));
+        Assert.Equal(DashboardCapability.ManageRegistration, Required("/Api/Mappings", "PUT"));
     }
 
     [Fact]
     public void RequiredCapability_TreatsHeadLikeRead()
     {
         Assert.Equal(DashboardCapability.None, Required("/api/mappings", "HEAD"));
-        Assert.Equal(DashboardCapability.ManageModels, Required("/api/mappings", "PATCH"));
+        Assert.Equal(DashboardCapability.ManageRegistration, Required("/api/mappings", "PATCH"));
+    }
+
+    [Fact]
+    public void RegistrationRoutes_AreTheOnlyOnesAnApiKeyMayReach()
+    {
+        DefaultHttpContext context = new();
+
+        Assert.True(DashboardAuth.IsRegistrationApiRequest(Request("/api/mappings")));
+        Assert.True(DashboardAuth.IsRegistrationApiRequest(Request("/api/mappings/discover", "POST")));
+        Assert.True(DashboardAuth.IsRegistrationApiRequest(Request("/api/mappings/openapi.json")));
+        Assert.False(DashboardAuth.IsRegistrationApiRequest(Request("/api/mappingsExtra")));
+        Assert.False(DashboardAuth.IsRegistrationApiRequest(Request("/api/users")));
+        Assert.False(DashboardAuth.IsRegistrationApiRequest(Request("/api/settings")));
+
+        // Only the document itself is the spec; the data routes are not.
+        Assert.True(DashboardAuth.IsRegistrationSpecRequest(Request("/api/mappings/openapi.json")));
+        Assert.True(DashboardAuth.IsRegistrationSpecRequest(Request("/api/mappings/openapi.json", "HEAD")));
+        Assert.False(DashboardAuth.IsRegistrationSpecRequest(Request("/api/mappings")));
+        Assert.False(DashboardAuth.IsRegistrationSpecRequest(Request("/api/mappings/discovery")));
+        Assert.False(DashboardAuth.IsRegistrationSpecRequest(Request("/api/mappings/openapi.json", "POST")));
+
+        // Reads need the read half of the registration grant, everything else the write half.
+        Assert.Equal(DashboardCapability.ViewRegistration,
+            DashboardAuth.RequiredRegistrationCapability(Request("/api/mappings")));
+        Assert.Equal(DashboardCapability.ViewRegistration,
+            DashboardAuth.RequiredRegistrationCapability(Request("/api/mappings", "HEAD")));
+        Assert.Equal(DashboardCapability.ManageRegistration,
+            DashboardAuth.RequiredRegistrationCapability(Request("/api/mappings", "POST")));
+        Assert.Equal(DashboardCapability.ManageRegistration,
+            DashboardAuth.RequiredRegistrationCapability(Request("/api/mappings/9", "DELETE")));
+        Assert.False(DashboardAuth.IsApiKeyCaller(context));
+    }
+
+    [Fact]
+    public void ReadApiKey_PrefersBearer_ThenFallsBackToTheApiKeyHeader()
+    {
+        DefaultHttpContext bearer = new();
+        bearer.Request.Headers.Authorization = "Bearer kaeo-abc";
+        Assert.Equal("kaeo-abc", DashboardAuth.ReadApiKey(bearer.Request));
+
+        DefaultHttpContext lower = new();
+        lower.Request.Headers.Authorization = "bearer   kaeo-abc  ";
+        Assert.Equal("kaeo-abc", DashboardAuth.ReadApiKey(lower.Request));
+
+        DefaultHttpContext header = new();
+        header.Request.Headers["x-api-key"] = "kaeo-xyz";
+        Assert.Equal("kaeo-xyz", DashboardAuth.ReadApiKey(header.Request));
+
+        // Bearer wins when both are present, matching the proxy's own extraction order.
+        DefaultHttpContext both = new();
+        both.Request.Headers.Authorization = "Bearer kaeo-first";
+        both.Request.Headers["x-api-key"] = "kaeo-second";
+        Assert.Equal("kaeo-first", DashboardAuth.ReadApiKey(both.Request));
+
+        DefaultHttpContext none = new();
+        Assert.Null(DashboardAuth.ReadApiKey(none.Request));
+
+        DefaultHttpContext other = new();
+        other.Request.Headers.Authorization = "Basic dXNlcjpwYXNz";
+        Assert.Null(DashboardAuth.ReadApiKey(other.Request));
+    }
+
+    [Fact]
+    public void Authorize_NamesTheRegistrationRoles()
+    {
+        DefaultHttpContext context = new();
+        context.Items[DashboardAuth.RoleItemKey] = DashboardRoles.RegistrationReadOnly;
+
+        Assert.Null(DashboardAuth.Authorize(context, DashboardCapability.ViewRegistration));
+        string? denied = DashboardAuth.Authorize(context, DashboardCapability.ManageRegistration);
+        Assert.NotNull(denied);
+        Assert.Contains("Registration Read-Write", denied);
+    }
+
+    private static HttpRequest Request(string path, string method = "GET")
+    {
+        DefaultHttpContext context = new();
+        context.Request.Path = path;
+        context.Request.Method = method;
+        return context.Request;
     }
 
     [Fact]
@@ -93,6 +178,21 @@ public sealed class DashboardCapabilityRoutingTests
 
         Assert.Equal("This action requires the Admin role.",
             DashboardAuth.Authorize(context, DashboardCapability.Admin));
+    }
+
+    [Fact]
+    public void Authorize_NamesTheReadOnlyModelRoles()
+    {
+        DefaultHttpContext context = new();
+        context.Items[DashboardAuth.RoleItemKey] = DashboardRoles.ReadOnly;
+
+        string? models = DashboardAuth.Authorize(context, DashboardCapability.ViewModels);
+        Assert.NotNull(models);
+        Assert.Contains("Models Read Only", models);
+
+        string? own = DashboardAuth.Authorize(context, DashboardCapability.ViewOwnModels);
+        Assert.NotNull(own);
+        Assert.Contains("Own Models Read Only", own);
     }
 
     [Fact]

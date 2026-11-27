@@ -152,6 +152,7 @@
         $c.removeClass('ok err warn');
         if (state === 'ok') $c.addClass('ok').text('connected');
         else if (state === 'key') $c.addClass('warn').text('sign-in required');
+        else if (state === 'signedin') $c.addClass('warn').text('signed in');
         else $c.addClass('err').text('offline');
     }
 
@@ -183,7 +184,7 @@
         requests: 'ViewLogs',
         syslog: 'Admin',
         usage: 'ViewUsage',
-        models: 'ManageModels',
+        models: ['ManageModels', 'ViewModels', 'ViewOwnModels'],
         credentials: 'ManageSettings',
         users: 'ManageUsers',
         settings: 'ManageSettings',
@@ -195,17 +196,28 @@
 
     function can(capability) { return !!capabilities[capability]; }
 
+    // A tab may list several acceptable capabilities; holding any one of them shows the tab.
+    function canAny(needed) {
+        if (!needed) return true;
+        if (typeof needed === 'string') return can(needed);
+        return needed.some(can);
+    }
+
         // Mirrors DashboardRoles.All on the server. /api/auth/roles replaces this at boot; the copy is
-        // only a fallback so the user editor still renders if that call fails.
-        var DASHBOARD_ROLES = [
-            { key: 'admin', label: 'Admin', description: 'Everything, including all models and MCP tools.' },
-            { key: 'readOnly', label: 'Read Only', description: 'View request logs and usage.' },
-            { key: 'dashboardReadOnly', label: 'Dashboard Read Only', description: 'View the dashboard and status.' },
-            { key: 'dashboardReadWrite', label: 'Dashboard Read-Write', description: 'View the dashboard and use the start/stop/restart controls.' },
-            { key: 'userAdmin', label: 'User Admin', description: 'Read Only plus add, update and remove users and permissions.' },
-            { key: 'modelAdmin', label: 'Model Admin', description: 'Read Only plus add, update and remove models.' },
-            { key: 'testConsole', label: 'Test Console', description: 'Use the Test Console with the models this user can access.' }
-        ];
+            // only a fallback so the user editor still renders if that call fails.
+            var DASHBOARD_ROLES = [
+                { key: 'admin', label: 'Admin', description: 'Everything, including all models and MCP tools.' },
+                { key: 'readOnly', label: 'Read Only', description: 'View request logs and usage.' },
+                { key: 'modelsReadOnly', label: 'Models Read Only', description: 'Read Only plus the Models tab in read-only form, listing every model.' },
+                { key: 'ownModelsReadOnly', label: 'Own Models Read Only', description: 'Read Only plus the Models tab in read-only form, limited to the models granted to this user.' },
+                { key: 'dashboardReadOnly', label: 'Dashboard Read Only', description: 'View the dashboard and status.' },
+                { key: 'dashboardReadWrite', label: 'Dashboard Read-Write', description: 'View the dashboard and use the start/stop/restart controls.' },
+                { key: 'userAdmin', label: 'User Admin', description: 'Read Only plus add, update and remove users and permissions.' },
+                { key: 'modelAdmin', label: 'Model Admin', description: 'Read Only plus add, update and remove models.' },
+                { key: 'testConsole', label: 'Test Console', description: 'Use the Test Console with the models this user can access.' },
+                { key: 'registrationReadOnly', label: 'Registration Read Only', description: 'The model registration API in read-only form, for a service account API key. No dashboard tabs.' },
+                { key: 'registrationReadWrite', label: 'Registration Read-Write', description: 'Registration Read Only plus registering, updating and removing models by API key. No dashboard tabs.' }
+            ];
 
     function setIdentity(identity) {
         currentIdentity = identity || null;
@@ -216,6 +228,13 @@
         $('#btn-signin').toggle(loginRequired)
             .text(currentIdentity && currentIdentity.username ? 'Sign out' : 'Sign in')
             .attr('title', currentIdentity && currentIdentity.username ? 'Signed in as ' + currentIdentity.username : 'Sign in to the dashboard');
+
+        // Connection state comes from /api/status, which needs Dashboard Read Only. Without that role
+        // the pill says so instead of sitting on a placeholder forever.
+        $('#conn-state').attr('title', can('ViewDashboard')
+            ? 'API connection state'
+            : 'Signed in. Connection state needs the Dashboard Read Only role.');
+        if (!can('ViewDashboard')) setConn('signedin');
     }
 
     function applyDashboardRole() {
@@ -225,11 +244,15 @@
         $('#tabs a').each(function () {
             var $a = $(this);
             var needed = TAB_CAPABILITY[$a.attr('data-tab')];
-            var visible = !needed || can(needed);
+            var visible = canAny(needed);
             $a.toggle(visible);
             if (visible) allowed.push($a.attr('data-tab'));
         });
         $('#topbar').toggleClass('read-only', !can('DashboardControl'));
+
+        // Model writes belong to the Model Admin; the read-only model roles see the table alone.
+        $('#btn-add-mapping, #btn-remove-mapping, #btn-duplicate-mapping, #btn-configure-mapping, ' +
+            '#btn-toggle-mapping, #btn-discover-models').toggle(can('ManageModels'));
 
         if (allowed.length && allowed.indexOf(activeTab) < 0) {
             var next = allowed.indexOf('requests') >= 0 ? 'requests' : allowed[0];
@@ -239,7 +262,7 @@
     }
 
     function activateTab(name) {
-        if (TAB_CAPABILITY[name] && !can(TAB_CAPABILITY[name])) {
+        if (!canAny(TAB_CAPABILITY[name])) {
             name = can('ViewLogs') ? 'requests' : 'dashboard';
         }
         if (!loaders[name]) name = 'dashboard';
@@ -266,7 +289,11 @@
                 renderStatus(results[0]);
                 renderStats(results[1]);
             })
-            .catch(function (err) { setConn(err.status === 401 ? 'key' : 'err'); });
+            .catch(function (err) {
+                // 401 = no session; 403 = signed in but the role cannot read status, which is not
+                // the same thing as the proxy being unreachable.
+                setConn(err.status === 401 ? 'key' : err.status === 403 ? 'signedin' : 'err');
+            });
     }
 
     function renderStatus(s) {
@@ -886,6 +913,8 @@
     }
 
     function mappingDialog(existing) {
+        // Read-only model roles get the table but not the editor.
+        if (!can('ManageModels')) return;
         var base = existing ? JSON.parse(JSON.stringify(existing)) : {};
         var $body = $('<div>');
 
@@ -1211,7 +1240,11 @@
         function grantSummary(user) {
                 if ((user.dashboardRoles || []).indexOf('admin') >= 0) return 'Admin: all models + MCP';
                 var models = user.allowedModels || [];
-                return (models.length ? models.join(', ') : 'no models') + ' · MCP ' + (user.mcpAccess ? 'allowed' : 'denied');
+                var modules = user.allowedMcpModules || [];
+                var mcp = user.mcpAccess
+                    ? (modules.length ? 'allowed (' + modules.length + ' module' + (modules.length === 1 ? '' : 's') + ')' : 'allowed (all modules)')
+                    : 'denied';
+                return (models.length ? models.join(', ') : 'no models') + ' · MCP ' + mcp;
             }
 
         function loadUsers() {
@@ -1318,8 +1351,9 @@
 
             var $models = null;
             var $mcpAccess = null;
+            var $mcpModules = null;
 
-            function buildGrants(models) {
+            function buildGrants(models, modules) {
                 var granted = (existing && existing.allowedModels) || [];
                 var $wrap = $('<div class="field">').append($('<label>').text('Model access'))
                     .append($('<span class="hint">').text('Every API key this user holds inherits these grants. Admin users always have access to every model.'));
@@ -1338,7 +1372,24 @@
                 $mcpAccess = $('<input type="checkbox">').prop('checked', !!(existing && existing.mcpAccess));
                 $wrap.append($('<div class="field bool">').append($mcpAccess)
                     .append($('<label>').text('Allow MCP server access'))
-                    .append($('<span class="hint">').text('Grants this user the MCP server and all enabled MCP tools.')));
+                    .append($('<span class="hint">').text('Grants this user the MCP server and its tools.')));
+
+                var grantedModules = (existing && existing.allowedMcpModules) || [];
+                var $moduleList = $('<div class="model-checks">');
+                if (!modules.length) {
+                    $moduleList.append($('<p class="muted">').text('No MCP modules are registered.'));
+                }
+                modules.forEach(function (m) {
+                    var checked = grantedModules.some(function (g) { return g.toLowerCase() === m.key.toLowerCase(); });
+                    var $cb = $('<input type="checkbox">').val(m.key).prop('checked', checked);
+                    $moduleList.append($('<label class="check">').append($cb)
+                        .append($('<span>').text(m.name + (m.isEnabled ? '' : ' (disabled)'))));
+                });
+                $wrap.append($('<div class="field">').append($('<label>').text('MCP modules'))
+                    .append($('<span class="hint">').text('Leave every box clear to allow every module. Ticking any box limits the user to exactly those modules, and a tool from any other module is refused.'))
+                    .append($moduleList));
+                $mcpModules = $moduleList;
+
                 $body.append($wrap);
             }
 
@@ -1368,6 +1419,7 @@
                 if ($models) {
                     payload.allowedModels = $models.find('input:checked').map(function () { return $(this).val(); }).get();
                     payload.mcpAccess = $mcpAccess.prop('checked');
+                    payload.allowedMcpModules = $mcpModules.find('input:checked').map(function () { return $(this).val(); }).get();
                 }
                 if (password) payload.dashboardPassword = password;
                 var request = existing
@@ -1380,18 +1432,19 @@
                 }).catch(function (err) { modalError(err.message); });
             }
 
-            // The role vocabulary and the model list both come from the server so the dialog can never
-            // drift from what the endpoints accept.
+            // The role vocabulary, the model list, and the MCP module list all come from the server so
+            // the dialog can never drift from what the endpoints accept.
             $.when(
                 api('GET', '/api/auth/roles', undefined, { silent: true }).catch(function () { return { roles: DASHBOARD_ROLES }; }),
-                api('GET', '/api/mappings', undefined, { silent: true }).catch(function () { return []; })
-            ).then(function (rolesResult, mappings) {
+                api('GET', '/api/mappings', undefined, { silent: true }).catch(function () { return []; }),
+                api('GET', '/api/users/mcp-modules', undefined, { silent: true }).catch(function () { return []; })
+            ).then(function (rolesResult, mappings, modules) {
                 if (rolesResult && rolesResult.roles && rolesResult.roles.length) DASHBOARD_ROLES = rolesResult.roles;
                 var models = (mappings || [])
                     .filter(function (m) { return m.IsEnabled !== false && m.OllamaName; })
                     .map(function (m) { return m.OllamaName; })
                     .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
-                buildGrants(models);
+                buildGrants(models, modules || []);
                 openModal(existing ? 'Edit user' : 'Add user', $body, [
                     { label: 'Cancel' },
                     { label: 'Save', cls: 'primary', onClick: save }
@@ -2104,6 +2157,10 @@
             DashboardControl: 'Proxy controls',
             ManageUsers: 'Users and keys',
             ManageModels: 'Models',
+            ViewModels: 'Models (read only)',
+            ViewOwnModels: 'Your models (read only)',
+            ViewRegistration: 'Registration API (read only)',
+            ManageRegistration: 'Registration API (read-write)',
             TestConsole: 'Test Console',
             ManageSettings: 'Settings, credentials, and modules',
             Admin: 'Everything (Admin)'
@@ -2139,10 +2196,13 @@
             var shown = 0;
 
             sections.forEach(function (section) {
-                if (section.capability && !can(section.capability)) return;
+                if (!canAny(section.capability)) return;
                 shown++;
 
-                var $card = $('<div class="help-card">').append($('<h3>').text(section.title));
+                var $card = $('<div class="help-card">');
+                // A topic with command examples needs the full width; the grid is multi-column.
+                if (section.wide) $card.addClass('wide');
+                $card.append($('<h3>').text(section.title));
                 if (section.summary) $card.append($('<p>').text(section.summary));
 
                 if (section.table) {
@@ -2173,7 +2233,27 @@
                     $card.append($list);
                 }
 
+                if (section.code && section.code.length) {
+                    section.code.forEach(function (block) {
+                        var $block = $('<div class="help-code-block">');
+                        if (block.label) $block.append($('<p class="help-code-label">').text(block.label));
+                        $block.append($('<pre class="help-code">').text(block.text));
+                        $card.append($block);
+                    });
+                }
+
                 if (section.note) $card.append($('<p class="help-note">').text(section.note));
+
+                if (section.links && section.links.length) {
+                    var $links = $('<p class="help-links">');
+                    section.links.forEach(function (link) {
+                        $links.append($('<a target="_blank" rel="noopener noreferrer">')
+                            .attr('href', link.href)
+                            .text(link.text));
+                    });
+                    $card.append($links);
+                }
+
                 $sections.append($card);
             });
 

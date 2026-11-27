@@ -185,6 +185,47 @@ public sealed class UserGrantMigrationTests
     }
 
     [Fact]
+    public void AllowedMcpModules_RoundTripAndDefaultToEmpty()
+    {
+        string path = NewDatabasePath();
+        int grantedId;
+        int defaultId;
+
+        using (AppDatabase database = OpenDatabase(path))
+        {
+            ProxyUser granted = new()
+            {
+                Name = "Scoped Modules",
+                CreatedUtc = DateTime.UtcNow,
+                AllowedMcpModules = ["web-search", "Notes"],
+            };
+            database.InsertProxyUser(granted);
+            grantedId = granted.Id;
+
+            ProxyUser everything = new() { Name = "Every Module", CreatedUtc = DateTime.UtcNow };
+            database.InsertProxyUser(everything);
+            defaultId = everything.Id;
+        }
+
+        using (AppDatabase reopened = OpenDatabase(path))
+        {
+            Assert.Equal(["web-search", "Notes"], reopened.FindProxyUser(grantedId)!.AllowedMcpModules);
+            Assert.Empty(reopened.FindProxyUser(defaultId)!.AllowedMcpModules);
+
+            // Updating the user replaces the grant, and clearing it restores "every module".
+            ProxyUser user = reopened.FindProxyUser(grantedId)!;
+            user.AllowedMcpModules = ["web-search"];
+            reopened.UpdateProxyUser(user);
+            Assert.Equal(["web-search"], reopened.FindProxyUser(grantedId)!.AllowedMcpModules);
+
+            user = reopened.FindProxyUser(grantedId)!;
+            user.AllowedMcpModules = [];
+            reopened.UpdateProxyUser(user);
+            Assert.Empty(reopened.FindProxyUser(grantedId)!.AllowedMcpModules);
+        }
+    }
+
+    [Fact]
     public void AdminRole_SurvivesTheRoleColumnUnchanged()
     {
         string path = NewDatabasePath();

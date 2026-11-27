@@ -145,7 +145,7 @@ internal sealed class WebDashboardHost : IWebDashboardHost
 
                 if (request.Path.StartsWithSegments("/api"))
                 {
-                    if (!DashboardAuth.TryAuthorize(context, _settings, _controller.Database, out string? error))
+                    if (!DashboardAuth.TryAuthorize(context, _settings, _controller.Database, _controller.Access, out string? error))
                     {
                         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                         await context.Response.WriteAsJsonAsync(new { error });
@@ -153,6 +153,10 @@ internal sealed class WebDashboardHost : IWebDashboardHost
                     }
 
                     string? denied = DashboardAuth.Authorize(context, DashboardAuth.RequiredCapability(request));
+                    // A proxy API key only ever buys the registration surface, and only the half
+                    // its user's roles carry — the cookie route table stays unchanged for people.
+                    if (denied is null && DashboardAuth.IsApiKeyCaller(context))
+                        denied = DashboardAuth.Authorize(context, DashboardAuth.RequiredRegistrationCapability(request));
                     if (denied is not null)
                     {
                         context.Response.StatusCode = StatusCodes.Status403Forbidden;

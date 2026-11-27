@@ -316,40 +316,73 @@ Tick **Auto-managed by upstream** on any mapping in the Models tab, or create th
 dashboard API. `scripts/register-auto-managed-models.sh` does it from a shell (macOS, Linux, WSL):
 
 ```sh
-KAEO_PASSWORD='your-dashboard-password' \
+KAEO_API_KEY='kaeo-…' \
 KAEO_UPSTREAM='http://127.0.0.1:11434' \
 ./scripts/register-auto-managed-models.sh
 ```
 
-It reads the first model id from the upstream's `/v1/models` (or takes `KAEO_SEED_MODEL`), signs in
-to the dashboard, creates one mapping named `kaeo-auto` with `autoManaged: true`, and runs a scan
-immediately. Re-running it is safe — the seed is skipped when it already exists. Other overrides:
-`KAEO_DASHBOARD` (default `http://127.0.0.1:11435`), `KAEO_USER`, `KAEO_UPSTREAM_TYPE` (`1`
-OpenAI-compatible, `2` Ollama, `3` Anthropic), `KAEO_CREDENTIAL` (a stored credential for the
-upstream), `KAEO_SEED_NAME`, and `KAEO_SEED_HIDDEN`.
+It reads the first model id from the upstream's `/v1/models` (or takes `KAEO_SEED_MODEL`), creates
+one mapping named `kaeo-auto` with `autoManaged: true`, and runs a scan immediately. Re-running it
+is safe — the seed is skipped when it already exists. Other overrides: `KAEO_DASHBOARD` (default
+`http://127.0.0.1:11435`), `KAEO_UPSTREAM_TYPE` (`1` OpenAI-compatible, `2` Ollama, `3` Anthropic),
+`KAEO_CREDENTIAL` (a stored credential for the upstream), `KAEO_SEED_NAME`, and `KAEO_SEED_HIDDEN`.
 
-The same thing with plain `curl`:
+`KAEO_API_KEY` is a service account's key and needs no password anywhere — see
+[Service Accounts and the Registration API](#service-accounts-and-the-registration-api). Without
+it the script falls back to a dashboard login:
 
 ```sh
-# 1. Sign in. The session cookie authorises every later call.
-curl -sS -c cookies.txt -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"your-dashboard-password"}' \
-  http://localhost:11435/api/auth/login
+KAEO_PASSWORD='your-dashboard-password' KAEO_USER='admin' \
+./scripts/register-auto-managed-models.sh
+```
 
-# 2. One auto-managed seed mapping. OllamaName is the proxy name and LlamaCppName is
+The same thing with plain `curl`, authenticated by API key:
+
+```sh
+# 1. One auto-managed seed mapping. OllamaName is the proxy name and LlamaCppName is
 #    the upstream model name — historical wire names that predate the JSON contract.
-curl -sS -b cookies.txt -H 'Content-Type: application/json' \
+curl -sS -H "Authorization: Bearer $KAEO_API_KEY" -H 'Content-Type: application/json' \
   -d '{"OllamaName":"kaeo-auto","LlamaCppName":"llama3.2","upstreamUrl":"http://127.0.0.1:11434","upstreamType":2,"autoManaged":true,"isEnabled":true}' \
   http://localhost:11435/api/mappings
 
-# 3. Scan now instead of waiting for the next tick, then read the outcome.
-curl -sS -b cookies.txt -X POST http://localhost:11435/api/mappings/discover
-curl -sS -b cookies.txt http://localhost:11435/api/mappings/discovery
+# 2. Scan now instead of waiting for the next tick, then read the outcome.
+curl -sS -H "Authorization: Bearer $KAEO_API_KEY" -X POST http://localhost:11435/api/mappings/discover
+curl -sS -H "Authorization: Bearer $KAEO_API_KEY" http://localhost:11435/api/mappings/discovery
 ```
 
-Creating or changing mappings needs the **Admin** or **Model Admin** role. The dashboard listens on
-the proxy port + 1 (11435 by default) and requires sign-in unless that is switched off. On a machine
-that also runs the proxy, move the proxy's `ListenPort` off 11434 so it does not collide with Ollama.
+Swap the header for `-b cookies.txt` (after `/api/auth/login`) to do the same with a dashboard
+session instead. Creating or changing mappings needs **Registration Read-Write** for an API key, or
+**Admin** / **Model Admin** for a dashboard login. The dashboard listens on the proxy port + 1 (11435
+by default) and requires sign-in unless that is switched off. On a machine that also runs the proxy,
+move the proxy's `ListenPort` off 11434 so it does not collide with Ollama.
+
+## Service Accounts and the Registration API
+
+A machine that registers models — a startup script on a model server, a CI job, a scheduled task —
+should not hold a dashboard password. Give it a **service account** instead:
+
+1. **Users** tab → **Add user**. A name is enough; leave **Enable dashboard login** off, since the
+   account exists only for its key.
+2. Give it **Registration Read-Write** (or **Registration Read Only** if it only reads).
+3. Open the card's ⋮ menu → **Create API key**, and copy the key.
+
+That key authenticates `/api/mappings` and nothing else:
+
+| Call | Needs |
+|------|-------|
+| `GET /api/mappings`, `GET /api/mappings/discovery` | Registration Read Only |
+| `POST /api/mappings`, `PUT /api/mappings/{id}`, `DELETE /api/mappings/{id}`, `POST /api/mappings/discover` | Registration Read-Write |
+
+Send it as `Authorization: Bearer <key>` (or `x-api-key: <key>` — the same two forms the proxy
+accepts for model traffic). Everything outside `/api/mappings` still answers `401` for a key: users,
+keys, settings, credentials, modules, logs, usage, and the dashboard tabs are reachable only with a
+dashboard session, so a leaked service-account key cannot pivot into administration. That holds even
+when the key belongs to an **Admin** user.
+
+Revoking is immediate: delete the key, or disable the user, and the next call fails. Dashboard-login
+settings do not apply to a key, so a service account never needs a password, and turning a login off
+cannot lock a key out. Registration roles grant no dashboard tabs at all — a service account that
+does sign in sees an empty dashboard, which is intentional.
 
 ## Custom Prompt Injection (Instruction Sets)
 
@@ -376,6 +409,9 @@ a user can be, say, *User Admin* plus *Dashboard Read Only*:
 
 - **Admin** — everything: every model, every MCP tool, every tab, and every action.
 - **Read Only** — their own request logs (attributed by API key) and their own token usage.
+- **Models Read Only** — Read Only plus the Models tab in read-only form, listing every mapping.
+- **Own Models Read Only** — Read Only plus the Models tab in read-only form, limited to the
+  mappings granted to that user.
 - **Dashboard Read Only** — the Dashboard tab: proxy/MCP/web-server state, performance, and
   traffic totals, without the control buttons.
 - **Dashboard Read-Write** — Dashboard Read Only plus start/stop/restart of the proxy, the MCP
@@ -384,6 +420,10 @@ a user can be, say, *User Admin* plus *Dashboard Read Only*:
   keys, and their access grants.
 - **Model Admin** — Read Only plus adding, updating, and removing model mappings.
 - **Test Console** — the **Test Console** tab, limited to the models that user can access.
+- **Registration Read Only** — the model registration API in read-only form, for a service
+  account's API key. Grants no dashboard tabs.
+- **Registration Read-Write** — Registration Read Only plus registering, updating, and removing
+  models and running a discovery scan. Grants no dashboard tabs.
 
 Admin always holds every permission, and a user with no valid role has no dashboard access at all
 rather than falling back to Read Only. The **Sys Log** tab, the live stream panes, and the
@@ -411,7 +451,11 @@ reason, and the Windows app's Users tab has an **Account enabled** checkbox to r
 shows a *Create administrator account* setup page that creates the first Admin login. Remote
 machines cannot claim a fresh instance; create logins from the Windows app's Users tab instead.
 
-Proxy **API keys never grant dashboard access** — they authenticate model and MCP requests only.
+Proxy **API keys are not a dashboard login.** They authenticate model and MCP requests, plus the
+model registration API described in
+[Service Accounts and the Registration API](#service-accounts-and-the-registration-api) — and
+nothing else. A key cannot open a dashboard tab, read another user's logs, or change settings, even
+when it belongs to an Admin user.
 
 ## User Grants (Models and MCP)
 
@@ -421,8 +465,13 @@ app: the user editor dialog) next to each other:
 
 - **Allowed models** — one checkbox per configured model. A user with no boxes checked gets **no**
   model access, including model discovery, `/api/show`, chat, and passthrough.
-- **Allow MCP server access** — a single on/off grant for the MCP server. A user without it gets
+- **Allow MCP server access** — the on/off grant for the MCP server. A user without it gets
   `403 Forbidden` from the MCP endpoint, while a valid key without any grants still authenticates.
+- **MCP modules** — with MCP access on, one checkbox per module. **Leave every box clear to allow
+  every module**; ticking any narrows the user to exactly those modules. A tool from an unticked
+  module is not listed by `tools/list` and a `tools/call` for it is refused, so the limit holds even
+  if a client already knows the tool's name. Note the deliberate asymmetry with models: an empty
+  model list means *no models*, an empty module list means *every module*.
 
 Roles decide the defaults:
 
@@ -454,6 +503,7 @@ its traffic under the **MCP** source so tool calls are visible next to chat traf
 
 Authentication is a bearer token: either the configured shared credential or any proxy API key whose
 user holds the MCP grant (see [User Grants](#user-grants-models-and-mcp)). Only `/health` is open.
+Per-module grants narrow which tools that key can see and call.
 
 Built-in and module-provided tools:
 

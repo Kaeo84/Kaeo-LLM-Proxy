@@ -216,6 +216,97 @@ public sealed class WebUsersEndpointTests
     }
 
     [Fact]
+    public async Task Users_McpModuleGrant_RoundTripsAndEmptyMeansEveryModule()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Carol",
+            email = "carol@example.com",
+            allowedMcpModules = new[] { "web-search", "ssh", "web-search" },
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int id = createdDoc.RootElement.GetProperty("id").GetInt32();
+
+        // Trimmed and de-duplicated, and visible in the projection the Users tab reads.
+        string[] stored = [.. createdDoc.RootElement.GetProperty("allowedMcpModules")
+            .EnumerateArray().Select(e => e.GetString()!)];
+        Assert.Equal(["web-search", "ssh"], stored);
+        Assert.Equal(stored, b.Database.FindProxyUser(id)!.AllowedMcpModules);
+
+        // Omitting the field on an update leaves the grant untouched.
+        HttpResponseMessage renamed = await b.Client.PutAsJsonAsync($"/api/users/{id}", new { name = "Caroline" });
+        Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+        Assert.Equal(["web-search", "ssh"], b.Database.FindProxyUser(id)!.AllowedMcpModules);
+
+        // An explicit empty list restores "every module".
+        HttpResponseMessage cleared = await b.Client.PutAsJsonAsync($"/api/users/{id}",
+            new { allowedMcpModules = Array.Empty<string>() });
+        Assert.Equal(HttpStatusCode.OK, cleared.StatusCode);
+        Assert.Empty(b.Database.FindProxyUser(id)!.AllowedMcpModules);
+    }
+
+    [Fact]
+    public async Task McpModules_ListsRegistryKeysForTheUserAdmin_ButNotForReadOnly()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        b.Database.InsertModuleRegistry(new ModuleRegistryEntry
+        {
+            AssemblyPath = Path.Combine(Path.GetTempPath(), "web-search.dll"),
+            ModuleId = "web-search",
+            Name = "Web Search",
+            IsEnabled = true,
+            RegisteredUtc = DateTime.UtcNow,
+        });
+        // No module id: the grant names the module by its display name instead.
+        b.Database.InsertModuleRegistry(new ModuleRegistryEntry
+        {
+            AssemblyPath = Path.Combine(Path.GetTempPath(), "notes.dll"),
+            Name = "Notes",
+            IsEnabled = false,
+            RegisteredUtc = DateTime.UtcNow,
+        });
+
+        using JsonDocument listed = JsonDocument.Parse(await b.Client.GetStringAsync("/api/users/mcp-modules"));
+        JsonElement[] modules = [.. listed.RootElement.EnumerateArray()];
+        Assert.Equal(2, modules.Length);
+
+        JsonElement search = Assert.Single(modules, m => m.GetProperty("key").GetString() == "web-search");
+        Assert.Equal("Web Search", search.GetProperty("name").GetString());
+        Assert.True(search.GetProperty("isEnabled").GetBoolean());
+
+        JsonElement notes = Assert.Single(modules, m => m.GetProperty("key").GetString() == "Notes");
+        Assert.False(notes.GetProperty("isEnabled").GetBoolean());
+
+        // Only the key/label pair leaks: the module inventory's paths stay behind ManageSettings.
+        Assert.False(search.TryGetProperty("assemblyPath", out _));
+
+        // A User Admin may scope MCP grants, but a Read Only user may not enumerate modules.
+        const string password = "read only module password";
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Read Only Modules",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "readonly.modules",
+            dashboardPassword = password,
+            dashboardRole = "readOnly",
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "readonly.modules", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage denied = new(HttpMethod.Get, "/api/users/mcp-modules");
+        denied.Headers.Add("Cookie", cookie);
+        Assert.Equal(HttpStatusCode.Forbidden, (await b.Anonymous.SendAsync(denied)).StatusCode);
+    }
+
+    [Fact]
     public async Task Users_Validation_RejectsMissingNameAndBadEmail()
     {
         await using Bundle b = await CreateBundleAsync();

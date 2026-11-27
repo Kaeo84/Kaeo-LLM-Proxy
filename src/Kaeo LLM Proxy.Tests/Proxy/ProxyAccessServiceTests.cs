@@ -268,4 +268,50 @@ public sealed class ProxyAccessServiceTests : IDisposable
         (ProxyApiKey adminKey, _) = CreateKey(admin.Id);
         Assert.True(ProxyAccessService.IsMcpAllowed(new ProxyAccessPrincipal(admin, adminKey)));
     }
+
+    [Fact]
+    public void IsMcpModuleAllowed_EmptyGrantMeansEveryModule()
+    {
+        ProxyUser user = CreateUser();
+        (ProxyApiKey key, _) = CreateKey(user.Id);
+        ProxyAccessPrincipal principal = new(user, key);
+
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(null, "web-search"));
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(principal, "web-search"));
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(principal, null));
+        Assert.Null(ProxyAccessService.AllowedMcpModules(principal));
+    }
+
+    [Fact]
+    public void IsMcpModuleAllowed_NarrowedGrant_MatchesCaseInsensitively_AndFailsClosed()
+    {
+        ProxyUser user = CreateUser();
+        user.AllowedMcpModules = ["Web-Search", "ssh"];
+        _database.UpdateProxyUser(user);
+        (ProxyApiKey key, _) = CreateKey(user.Id);
+        ProxyAccessPrincipal principal = new(user, key);
+
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(principal, "web-search"));
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(principal, "SSH"));
+        Assert.False(ProxyAccessService.IsMcpModuleAllowed(principal, "code-vector"));
+
+        // A target whose module cannot be identified is outside a narrowed grant.
+        Assert.False(ProxyAccessService.IsMcpModuleAllowed(principal, null));
+        Assert.False(ProxyAccessService.IsMcpModuleAllowed(principal, "  "));
+
+        Assert.Equal(["Web-Search", "ssh"], ProxyAccessService.AllowedMcpModules(principal));
+    }
+
+    [Fact]
+    public void IsMcpModuleAllowed_AdminAndAnonymous_BypassTheNarrowedGrant()
+    {
+        ProxyUser admin = CreateUser(name: "Boss", email: "boss@example.com", role: "admin");
+        admin.AllowedMcpModules = ["web-search"];
+        _database.UpdateProxyUser(admin);
+        (ProxyApiKey adminKey, _) = CreateKey(admin.Id);
+
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(new ProxyAccessPrincipal(admin, adminKey), "code-vector"));
+        Assert.True(ProxyAccessService.IsMcpModuleAllowed(null, "code-vector"));
+        Assert.Null(ProxyAccessService.AllowedMcpModules(new ProxyAccessPrincipal(admin, adminKey)));
+    }
 }

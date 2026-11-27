@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Web;
 using Microsoft.Data.Sqlite;
@@ -14,17 +15,19 @@ internal sealed class ProxyUsersControl : UserControl
     private readonly AppDatabase _database;
     private readonly ProxyAccessService _access;
     private readonly AppSettings _settings;
+    private readonly ModuleHost _moduleHost;
     private readonly Func<bool, bool> _saveRequireApiKey;
     private readonly CheckBox _requireApiKey = new() { AutoSize = true, Text = "Require API key for proxy requests" };
     private readonly ListView _users = new() { Dock = DockStyle.Fill, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, View = View.Details };
     private readonly ListView _keys = new() { Dock = DockStyle.Fill, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, View = View.Details };
     private bool _loadingSecuritySetting;
 
-    public ProxyUsersControl(AppDatabase database, ProxyAccessService access, AppSettings settings, Func<bool, bool> saveRequireApiKey)
+    public ProxyUsersControl(AppDatabase database, ProxyAccessService access, AppSettings settings, ModuleHost moduleHost, Func<bool, bool> saveRequireApiKey)
     {
         _database = database;
         _access = access;
         _settings = settings;
+        _moduleHost = moduleHost;
         _saveRequireApiKey = saveRequireApiKey;
         Dock = DockStyle.Fill;
         Padding = new Padding(8);
@@ -70,7 +73,7 @@ internal sealed class ProxyUsersControl : UserControl
             AutoSize = true,
             Dock = DockStyle.Top,
             Padding = new Padding(0, 6, 0, 8),
-            Text = "Create users and keys, and grant each user access to selected models and the MCP server. No selected models means no model access. Admin users always have full access. Model and MCP access belong to the user, so every key they hold shares it.",
+            Text = "Create users and keys, and grant each user access to selected models, the MCP server, and specific MCP modules. No selected models means no model access, and no selected modules means every module. Admin users always have full access. Model and MCP access belong to the user, so every key they hold shares it.",
         };
         FlowLayoutPanel security = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
         security.Controls.Add(_requireApiKey);
@@ -182,7 +185,11 @@ internal sealed class ProxyUsersControl : UserControl
         if (DashboardRoles.HasRole(user.DashboardRole, DashboardRoles.Admin))
             return "All models (admin)";
         string models = user.AllowedModels.Count == 0 ? "No models" : string.Join(", ", user.AllowedModels);
-        return models + (user.McpAccess ? " + MCP" : string.Empty);
+        if (!user.McpAccess)
+            return models;
+        return models + (user.AllowedMcpModules.Count == 0
+            ? " + MCP (all modules)"
+            : $" + MCP ({user.AllowedMcpModules.Count} module{(user.AllowedMcpModules.Count == 1 ? string.Empty : "s")})");
     }
 
     /// <summary>Enabled model mappings for the grant pickers, or null when the database read failed.</summary>
@@ -199,6 +206,34 @@ internal sealed class ProxyUsersControl : UserControl
         }
     }
 
+    /// <summary>
+    /// The MCP module keys a per-user grant can name. A registry read failure yields an empty list,
+    /// which the editor treats as "leave the grant alone" rather than "clear it".
+    /// </summary>
+    private IReadOnlyList<McpModuleChoice> LoadMcpModules()
+    {
+        try
+        {
+            List<McpModuleChoice> modules = [];
+            HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+            foreach (ModuleRegistryEntry entry in _moduleHost.GetRegistryEntries())
+            {
+                string? key = ModuleHost.ModuleKeyFor(entry);
+                if (string.IsNullOrWhiteSpace(key) || !seen.Add(key))
+                    continue;
+                modules.Add(new McpModuleChoice(key, entry.Name ?? key, entry.IsEnabled));
+            }
+
+            return [.. modules.OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase)];
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            // Sharing violation with another instance: degrade to "no module list" instead of
+            // blocking user administration.
+            return [];
+        }
+    }
+
     private void AddUser()
     {
         Func<string, bool>? usernameTaken = TryBuildUsernameCheck(null);
@@ -208,7 +243,7 @@ internal sealed class ProxyUsersControl : UserControl
         if (mappings is null)
             return;
 
-        using UserEditorDialog dialog = new("Add user", new ProxyUser(), usernameTaken, mappings);
+        using UserEditorDialog dialog = new("Add user", new ProxyUser(), usernameTaken, mappings, LoadMcpModules());
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -246,7 +281,7 @@ internal sealed class ProxyUsersControl : UserControl
         if (mappings is null)
             return;
 
-        using UserEditorDialog dialog = new("Edit user", selected, usernameTaken, mappings);
+        using UserEditorDialog dialog = new("Edit user", selected, usernameTaken, mappings, LoadMcpModules());
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -505,6 +540,12 @@ internal sealed class ProxyUsersControl : UserControl
             "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
 }
 
+/// <summary>One selectable MCP module for a user's per-module grant.</summary>
+internal sealed record McpModuleChoice(string Key, string Name, bool IsEnabled)
+{
+    public override string ToString() => IsEnabled ? Name : Name + " (disabled)";
+}
+
 internal sealed class UserEditorDialog : Form
 {
     private readonly ProxyUser _original;
@@ -516,6 +557,7 @@ internal sealed class UserEditorDialog : Form
     private readonly TextBox _loginPassword = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly CheckedListBox _roles = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
     private readonly CheckedListBox _models = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
+    private readonly CheckedListBox _mcpModules = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
     private readonly CheckBox _mcpAccess = new() { AutoSize = true, Text = "Allow MCP server access" };
 
     public ProxyUser User => new()
@@ -528,12 +570,22 @@ internal sealed class UserEditorDialog : Form
         DashboardRole = string.Join(',', SelectedRoles()),
         AllowedModels = _models.CheckedItems.Cast<ModelChoice>().Select(m => m.Name).ToList(),
         McpAccess = _mcpAccess.Checked,
+        // An unreadable module registry leaves the list empty; keep whatever the user already had
+        // instead of silently widening their access to every module.
+        AllowedMcpModules = _mcpModules.Items.Count == 0
+            ? _original.AllowedMcpModules
+            : [.. _mcpModules.CheckedItems.Cast<McpModuleChoice>().Select(m => m.Key)],
         DashboardPasswordHash = _loginPassword.Text.Length > 0
             ? DashboardPasswords.Hash(_original, _loginPassword.Text)
             : _original.DashboardPasswordHash,
     };
 
-    public UserEditorDialog(string title, ProxyUser user, Func<string, bool> usernameTaken, IReadOnlyList<ModelMapping> mappings)
+    public UserEditorDialog(
+        string title,
+        ProxyUser user,
+        Func<string, bool> usernameTaken,
+        IReadOnlyList<ModelMapping> mappings,
+        IReadOnlyList<McpModuleChoice> mcpModules)
     {
         _original = user;
         Text = title;
@@ -542,7 +594,7 @@ internal sealed class UserEditorDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(560, 620);
+        ClientSize = new Size(560, 720);
 
         _name.Text = user.Name;
         _email.Text = user.Email;
@@ -570,10 +622,18 @@ internal sealed class UserEditorDialog : Form
                 _models.SetItemChecked(index, true);
         }
 
+        HashSet<string> grantedModules = new(user.AllowedMcpModules, StringComparer.OrdinalIgnoreCase);
+        foreach (McpModuleChoice module in mcpModules)
+        {
+            int index = _mcpModules.Items.Add(module);
+            if (grantedModules.Contains(module.Key))
+                _mcpModules.SetItemChecked(index, true);
+        }
+
         _loginEnabled.CheckedChanged += (_, _) => UpdateLoginFieldState();
         UpdateLoginFieldState();
 
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 11 };
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 12 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
@@ -596,11 +656,14 @@ internal sealed class UserEditorDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Model access", Anchor = AnchorStyles.Left }, 0, 7);
         layout.Controls.Add(_models, 1, 7);
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
-        layout.Controls.Add(_mcpAccess, 0, 8);
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
+        layout.Controls.Add(new Label { AutoSize = true, Text = "MCP modules", Anchor = AnchorStyles.Left }, 0, 8);
+        layout.Controls.Add(_mcpModules, 1, 8);
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
+        layout.Controls.Add(_mcpAccess, 0, 9);
         layout.SetColumnSpan(_mcpAccess, 2);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Label hint = new()
@@ -610,9 +673,9 @@ internal sealed class UserEditorDialog : Form
             Text = "Passwords need 12+ characters. Leave blank to keep the current password.\n"
                 + "Check every role that applies; permissions are combined and Admin already includes everything.\n"
                 + "Model and MCP access belong to the user, so every API key they hold shares it. Leave every\n"
-                + "model unchecked to grant no model access.",
+                + "model unchecked to grant no model access. Leave every MCP module unchecked to allow all of them.",
         };
-        layout.Controls.Add(hint, 0, 9);
+        layout.Controls.Add(hint, 0, 10);
         layout.SetColumnSpan(hint, 2);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
@@ -665,7 +728,7 @@ internal sealed class UserEditorDialog : Form
         };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 10);
+        layout.Controls.Add(buttons, 0, 11);
         layout.SetColumnSpan(buttons, 2);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(layout);

@@ -2,12 +2,20 @@
 # Seeds ONE auto-managed model mapping so Kaeo LLM Proxy starts discovering the rest of that
 # upstream's models by itself. Re-running is safe: it never creates a second seed.
 #
+# Preferred: a service account's API key, so no dashboard password is needed anywhere.
+#
+#   KAEO_API_KEY='kaeo-...' ./register-auto-managed-models.sh
+#
+# The key's user needs the Registration Read-Write role (Users tab -> Add user). Falling back to a
+# dashboard login also works:
+#
 #   KAEO_PASSWORD='your-dashboard-password' ./register-auto-managed-models.sh
 #
 # Every value below can be overridden from the environment:
 #   KAEO_DASHBOARD      dashboard base URL            (http://127.0.0.1:11435)
+#   KAEO_API_KEY        service account API key       (none; takes priority over the login)
 #   KAEO_USER           dashboard username            (admin)
-#   KAEO_PASSWORD       dashboard password            (required unless dashboard sign-in is off)
+#   KAEO_PASSWORD       dashboard password            (none)
 #   KAEO_UPSTREAM       upstream base URL             (http://127.0.0.1:11434)
 #   KAEO_UPSTREAM_TYPE  1=OpenAI 2=Ollama 3=Anthropic (2)
 #   KAEO_CREDENTIAL     stored credential name for the upstream (none)
@@ -17,6 +25,7 @@
 set -eu
 
 DASHBOARD=${KAEO_DASHBOARD:-http://127.0.0.1:11435}
+API_KEY=${KAEO_API_KEY:-}
 USER_NAME=${KAEO_USER:-admin}
 PASSWORD=${KAEO_PASSWORD:-}
 UPSTREAM=${KAEO_UPSTREAM:-http://127.0.0.1:11434}
@@ -38,6 +47,20 @@ die() {
 	exit 1
 }
 
+# One call shape for both credentials: the API key rides in an Authorization header, the dashboard
+# login in a session cookie. The body lands in $WORK/out.json; the HTTP status comes back on stdout.
+request() {
+	method=$1
+	path=$2
+	shift 2
+	if [ -n "$API_KEY" ]; then
+		set -- -H "Authorization: Bearer $API_KEY" "$@"
+	else
+		set -- -b "$COOKIE" "$@"
+	fi
+	curl -sS -o "$WORK/out.json" -w '%{http_code}' -X "$method" "$@" "$DASHBOARD$path"
+}
+
 # The seed must name a model the upstream really serves, otherwise discovery switches it off once
 # the offline grace period elapses. Ask the upstream which models it has rather than guessing.
 if [ -z "$SEED_MODEL" ]; then
@@ -52,7 +75,9 @@ Set KAEO_SEED_MODEL to a model the upstream serves, or fix KAEO_UPSTREAM."
 	printf '%s\n' "$SEED_MODEL"
 fi
 
-if [ -n "$PASSWORD" ]; then
+if [ -n "$API_KEY" ]; then
+	printf 'Using a service account API key against %s.\n' "$DASHBOARD"
+elif [ -n "$PASSWORD" ]; then
 	cat > "$WORK/login.json" <<EOF
 {"username":"$USER_NAME","password":"$PASSWORD"}
 EOF
@@ -65,11 +90,16 @@ EOF
 	fi
 	printf 'Signed in to %s as %s.\n' "$DASHBOARD" "$USER_NAME"
 else
-	printf 'KAEO_PASSWORD is empty: assuming dashboard sign-in is switched off.\n'
+	printf 'No KAEO_API_KEY or KAEO_PASSWORD set: assuming dashboard sign-in is switched off.\n'
 fi
 
-mappings=$(curl -sS -f -b "$COOKIE" "$DASHBOARD/api/mappings") \
-	|| die "Could not list model mappings. HTTP 401 means the dashboard needs a password; HTTP 403 means this account is neither Admin nor Model Admin."
+status=$(request GET /api/mappings) || die "Could not reach the dashboard at $DASHBOARD."
+if [ "$status" != "200" ]; then
+	die "Could not list model mappings (HTTP $status): $(cat "$WORK/out.json")
+HTTP 401 means the key or the session was refused; HTTP 403 means the account lacks Registration
+Read-Write (a dashboard login needs Model Admin instead)."
+fi
+mappings=$(cat "$WORK/out.json")
 
 if printf '%s' "$mappings" | grep -q "\"OllamaName\":\"$SEED_NAME\""; then
 	printf 'Seed mapping "%s" already exists, leaving it alone.\n' "$SEED_NAME"
@@ -92,13 +122,19 @@ else
   "hidden": $hidden
 }
 EOF
-	curl -sS -f -o "$WORK/seed-out.json" -b "$COOKIE" -H 'Content-Type: application/json' \
-		--data-binary "@$WORK/seed.json" "$DASHBOARD/api/mappings" \
-		|| die "Creating the seed mapping failed: $(cat "$WORK/seed-out.json" 2>/dev/null)"
+	status=$(request POST /api/mappings -H 'Content-Type: application/json' \
+		--data-binary "@$WORK/seed.json") \
+		|| die "Could not reach the dashboard at $DASHBOARD."
+	if [ "$status" != "200" ]; then
+		die "Creating the seed mapping failed (HTTP $status): $(cat "$WORK/out.json")"
+	fi
 	printf 'Created seed mapping "%s" -> %s (%s).\n' "$SEED_NAME" "$SEED_MODEL" "$UPSTREAM"
 fi
 
 printf 'Running a discovery scan ...\n'
-curl -sS -f -b "$COOKIE" -X POST "$DASHBOARD/api/mappings/discover" \
-	|| die 'The discovery scan failed; see the dashboard Models tab for the reason.'
-printf '\n'
+status=$(request POST /api/mappings/discover) || die "Could not reach the dashboard at $DASHBOARD."
+if [ "$status" != "200" ]; then
+	die "The discovery scan failed (HTTP $status): $(cat "$WORK/out.json")
+See the dashboard Models tab for the reason."
+fi
+cat "$WORK/out.json"

@@ -93,6 +93,12 @@ internal sealed class UserWrite
 
     /// <summary>Whether this user may use the MCP server. Null leaves the grant untouched.</summary>
     public bool? McpAccess { get; set; }
+
+    /// <summary>
+    /// Which MCP modules this user may reach, identified by module registry id (or name when the
+    /// module reports no id). An empty list means every module; null leaves the list untouched.
+    /// </summary>
+    public List<string>? AllowedMcpModules { get; set; }
 }
 
 internal sealed class DashboardLoginWrite

@@ -9,7 +9,15 @@ internal static partial class DashboardEndpoints
 {
     private static void MapMappings(WebApplication app, ProxyHostController controller)
     {
-        app.MapGet("/api/mappings", () => Results.Json(controller.Settings.ModelMappings));
+        // The list is scoped by role: an Admin, a Model Admin, or a Models Read Only holder sees every
+        // mapping, while an Own Models Read Only holder sees only the mappings granted to them. Users
+        // with no model grant at all keep the full list, because the Usage filters and the user
+        // editor's model picker are built from it.
+        app.MapGet("/api/mappings", (HttpContext context) =>
+        {
+            IReadOnlyList<ModelMapping> mappings = controller.Settings.ModelMappings;
+            return Results.Json(VisibleMappings(context, controller, mappings));
+        });
 
         // Auto-discovery state for the Models tab: the master switch, the cadence, and what the last
         // scan did. Readable by anyone who can read the mapping list.
@@ -22,6 +30,12 @@ internal static partial class DashboardEndpoints
             lastScanUtc = controller.ModelDiscovery.LastScanUtc,
             lastResult = controller.ModelDiscovery.LastResult,
         }));
+
+        // The OpenAPI contract for this surface, so a script author, a tool importer, or the Help
+        // tab has one exact description to work from. Gated on ViewRegistration rather than being
+        // open like the mapping list: it exists for the people and machines that use these routes.
+        app.MapGet(RegistrationApiSpec.Path,
+            () => Results.Text(RegistrationApiSpec.Build(), "application/json"));
 
         // "Discover now": one synchronous scan, so the operator sees the outcome immediately instead
         // of waiting for the next tick.
@@ -89,6 +103,32 @@ internal static partial class DashboardEndpoints
             }
             return Results.Ok();
         });
+    }
+
+    /// <summary>
+    /// The mappings the signed-in user may see. A user whose only model grant is
+    /// <see cref="DashboardCapability.ViewOwnModels"/> is limited to their own grants; everyone else
+    /// (Admin, Model Admin, Models Read Only, or no model grant at all) gets the full list.
+    /// </summary>
+    private static IReadOnlyList<ModelMapping> VisibleMappings(
+        HttpContext context,
+        ProxyHostController controller,
+        IReadOnlyList<ModelMapping> mappings)
+    {
+        if (!DashboardAuth.Can(context, DashboardCapability.ViewOwnModels)
+            || DashboardAuth.Can(context, DashboardCapability.ViewModels)
+            || DashboardAuth.Can(context, DashboardCapability.ManageModels))
+        {
+            return mappings;
+        }
+
+        ProxyUser? user = CallerUser(context, controller);
+        if (user is null || user.AllowedModels.Count == 0)
+            return [];
+
+        return [.. mappings.Where(m =>
+            user.AllowedModels.Contains(m.ProxyName, StringComparer.OrdinalIgnoreCase)
+            || user.AllowedModels.Contains(m.ModelName, StringComparer.OrdinalIgnoreCase))];
     }
 
     /// <summary>

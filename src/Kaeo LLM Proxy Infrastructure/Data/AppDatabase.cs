@@ -2053,6 +2053,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("proxy_users", "dashboard_role", "TEXT NOT NULL DEFAULT 'readOnly'"),
                                 ("proxy_users", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("proxy_users", "mcp_access", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_users", "allowed_mcp_modules", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("proxy_api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"),
                                 ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
@@ -2957,7 +2958,7 @@ internal sealed class AppDatabase : IDisposable
                 """
                 SELECT id, name, email, created_utc, is_enabled,
                        dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
-                       allowed_models, mcp_access
+                       allowed_models, mcp_access, allowed_mcp_modules
                 FROM proxy_users
                 ORDER BY name COLLATE NOCASE, id;
                 """;
@@ -2994,9 +2995,9 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 INSERT INTO proxy_users
-                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access)
+                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access, allowed_mcp_modules)
                 VALUES
-                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole, $allowedModels, $mcpAccess);
+                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole, $allowedModels, $mcpAccess, $allowedMcpModules);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$name", user.Name);
@@ -3009,6 +3010,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
             command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
+            command.Parameters.AddWithValue("$allowedMcpModules", JsonSerializer.Serialize(user.AllowedMcpModules, _jsonOptions));
 
             object? scalar = command.ExecuteScalar();
             user.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
@@ -3033,7 +3035,8 @@ internal sealed class AppDatabase : IDisposable
                     dashboard_password_hash = $dashboardPasswordHash,
                     dashboard_role = $dashboardRole,
                     allowed_models = $allowedModels,
-                    mcp_access = $mcpAccess
+                    mcp_access = $mcpAccess,
+                    allowed_mcp_modules = $allowedMcpModules
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", user.Id);
@@ -3046,6 +3049,7 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
             command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
             command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
+            command.Parameters.AddWithValue("$allowedMcpModules", JsonSerializer.Serialize(user.AllowedMcpModules, _jsonOptions));
             command.ExecuteNonQuery();
         }
     }
@@ -3133,7 +3137,7 @@ internal sealed class AppDatabase : IDisposable
                 """
                 SELECT id, name, email, created_utc, is_enabled,
                        dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
-                       allowed_models, mcp_access
+                       allowed_models, mcp_access, allowed_mcp_modules
                 FROM proxy_users
                 WHERE id = $id;
                 """;
@@ -3158,7 +3162,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
+                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access, allowed_mcp_modules FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
             command.Parameters.AddWithValue("$username", username.Trim());
 
             using SqliteDataReader reader = command.ExecuteReader();
@@ -3288,6 +3292,9 @@ internal sealed class AppDatabase : IDisposable
             DashboardRole = reader.GetString(8),
             AllowedModels = DeserializeAllowedModels(reader.IsDBNull(9) ? null : reader.GetString(9)),
             McpAccess = reader.FieldCount > 10 && !reader.IsDBNull(10) && ReadBoolean(reader, 10),
+            AllowedMcpModules = reader.FieldCount > 11 && !reader.IsDBNull(11)
+                ? DeserializeAllowedModels(reader.GetString(11))
+                : [],
         };
 
         private static ProxyApiKey ReadProxyApiKey(SqliteDataReader reader) => new()

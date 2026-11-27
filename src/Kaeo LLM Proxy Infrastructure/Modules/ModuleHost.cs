@@ -128,10 +128,18 @@ internal sealed class ModuleHost
     /// breaks the MCP server.
     /// </summary>
     public IReadOnlyList<object> GetMcpToolTargets(McpSessionInfo session)
+        => [.. GetMcpToolTargetsByModule(session).Select(t => t.Target)];
+
+    /// <summary>
+    /// The same collection, paired with the key of the module that contributed each target
+    /// (registry module id, falling back to the module name) so per-user MCP grants can be
+    /// enforced per module. The key is null for a module that reports neither.
+    /// </summary>
+    public IReadOnlyList<(string? ModuleKey, object Target)> GetMcpToolTargetsByModule(McpSessionInfo session)
     {
         ArgumentNullException.ThrowIfNull(session);
 
-        List<object> targets = [];
+        List<(string? ModuleKey, object Target)> targets = [];
 
         // Snapshot before enumerating: module code may call back into the host (or another thread
         // may enable/disable modules) while targets are being created.
@@ -170,7 +178,9 @@ internal sealed class ModuleHost
                     continue;
                 }
 
-                targets.AddRange(produced);
+                string? moduleKey = ModuleKeyFor(loaded.Entry);
+                foreach (object target in produced)
+                    targets.Add((moduleKey, target));
             }
             catch (Exception ex)
             {
@@ -179,6 +189,19 @@ internal sealed class ModuleHost
         }
 
         return targets;
+    }
+
+    /// <summary>
+    /// The stable key a per-user MCP grant names a module by: the module id it reports, or its
+    /// display name when it reports no id. Null when the module reports neither, which makes it
+    /// unreachable for users with a narrowed module grant (default deny).
+    /// </summary>
+    public static string? ModuleKeyFor(ModuleRegistryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (!string.IsNullOrWhiteSpace(entry.ModuleId))
+            return entry.ModuleId.Trim();
+        return string.IsNullOrWhiteSpace(entry.Name) ? null : entry.Name.Trim();
     }
 
     /// <summary>

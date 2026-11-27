@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Core.Modules;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Services.Mcp;
 using ModelContextProtocol.Protocol;
@@ -15,7 +17,8 @@ namespace Kaeo.LlmProxy.Tests;
 /// <summary>
 /// HTTP-level tests for MCP authentication: the configured shared credential keeps full access,
 /// proxy API keys are accepted as bearer tokens, an ungranted Read Only key is refused with 403,
-/// and Admin keys bypass the per-key MCP grant.
+/// Admin keys bypass the per-key MCP grant, and a narrowed module grant is enforced again on
+/// every tool call so a revoked module stops working without a reconnect.
 /// </summary>
 [Collection("AppLogger")]
 public sealed class McpAccessAuthorizationTests : IAsyncLifetime
@@ -49,10 +52,7 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
         _host = new McpServerHost(
             mcpSettings,
             new FakeSecrets(),
-            static _ => new McpServerOptions
-            {
-                ServerInfo = new Implementation { Name = "test", Version = "1.0.0" },
-            },
+            static _ => BuildSessionOptions(),
             _stats,
             _access);
 
@@ -61,7 +61,7 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
 
     public async Task InitializeAsync() => await _host.StartAsync();
 
-    private string CreateKey(string role = "readOnly", bool mcpAccess = false)
+    private string CreateKey(string role = "readOnly", bool mcpAccess = false, params string[] allowedMcpModules)
     {
         // MCP access is a user-level grant; the key inherits it.
         ProxyUser user = new()
@@ -73,6 +73,7 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
             DashboardRole = role,
             AllowedModels = [],
             McpAccess = mcpAccess,
+            AllowedMcpModules = [.. allowedMcpModules],
         };
         _database.InsertProxyUser(user);
 
@@ -93,8 +94,12 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
     {
         HttpRequestMessage request = new(HttpMethod.Post, McpServerHost.McpPath)
         {
+            // A full handshake: the SDK rejects an initialize whose params omit protocolVersion,
+            // capabilities, or clientInfo once the session registers tools.
             Content = new StringContent(
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":" +
+                "{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}," +
+                "\"clientInfo\":{\"name\":\"kaeo-mcp-tests\",\"version\":\"1.0\"}}}",
                 Encoding.UTF8,
                 "application/json"),
         };
@@ -142,6 +147,108 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
         using HttpResponseMessage response = await PostInitializeAsync(key);
         Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.NotEqual(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ToolCall_FromAModuleOutsideTheGrant_IsRefused403()
+    {
+        string key = CreateKey(mcpAccess: true, allowedMcpModules: ["web-search"]);
+        string sessionId = await OpenSessionAsync(key);
+
+        using HttpResponseMessage response = await PostToolCallAsync(key, sessionId, ScopedToolName);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("not granted access to the module", body);
+        Assert.Contains(ScopedToolName, body);
+    }
+
+    [Fact]
+    public async Task ToolCall_FromAGrantedModule_ReachesTheTool()
+    {
+        string key = CreateKey(mcpAccess: true, allowedMcpModules: [ScopedToolModule]);
+        string sessionId = await OpenSessionAsync(key);
+
+        using HttpResponseMessage response = await PostToolCallAsync(key, sessionId, ScopedToolName);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(ScopedToolResult, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task ToolCall_ForAUserWithNoNarrowingGrant_ReachesTheTool()
+    {
+        string key = CreateKey(mcpAccess: true);
+        string sessionId = await OpenSessionAsync(key);
+
+        using HttpResponseMessage response = await PostToolCallAsync(key, sessionId, ScopedToolName);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(ScopedToolResult, await response.Content.ReadAsStringAsync());
+    }
+
+    private const string ScopedToolName = "scoped_tool";
+    private const string ScopedToolModule = "code-vector";
+    private const string ScopedToolResult = "scoped-tool-result";
+
+    /// <summary>
+    /// One session's options: a single tool bound to a known module key, so the per-call module
+    /// re-check has something to refuse.
+    /// </summary>
+    private static McpSessionOptions BuildSessionOptions()
+    {
+        McpServerOptions options = new()
+        {
+            ServerInfo = new Implementation { Name = "test", Version = "1.0.0" },
+        };
+        MethodInfo method = typeof(ScopedToolTarget).GetMethod(nameof(ScopedToolTarget.Scoped))!;
+        (options.ToolCollection ??= []).Add(McpServerTool.Create(method, new ScopedToolTarget()));
+        return new McpSessionOptions(options, new Dictionary<string, string?>(StringComparer.Ordinal)
+        {
+            [ScopedToolName] = ScopedToolModule,
+        });
+    }
+
+    private async Task<string> OpenSessionAsync(string bearer)
+    {
+        using HttpResponseMessage initialize = await PostInitializeAsync(bearer);
+        Assert.True(initialize.IsSuccessStatusCode,
+            $"initialize returned {(int)initialize.StatusCode}: {await initialize.Content.ReadAsStringAsync()}");
+        string sessionId = Assert.Single(initialize.Headers.GetValues("Mcp-Session-Id"));
+
+        HttpRequestMessage initialized = new(HttpMethod.Post, McpServerHost.McpPath)
+        {
+            Content = new StringContent(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+                Encoding.UTF8,
+                "application/json"),
+        };
+        initialized.Headers.TryAddWithoutValidation("Accept", "application/json, text/event-stream");
+        initialized.Headers.TryAddWithoutValidation("Authorization", "Bearer " + bearer);
+        initialized.Headers.TryAddWithoutValidation("Mcp-Session-Id", sessionId);
+        using HttpResponseMessage notification = await _client.SendAsync(initialized);
+        Assert.True(notification.IsSuccessStatusCode,
+            $"initialized notification returned {(int)notification.StatusCode}: {await notification.Content.ReadAsStringAsync()}");
+        return sessionId;
+    }
+
+    private async Task<HttpResponseMessage> PostToolCallAsync(string bearer, string sessionId, string tool)
+    {
+        HttpRequestMessage request = new(HttpMethod.Post, McpServerHost.McpPath)
+        {
+            Content = new StringContent(
+                $"{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"{tool}\",\"arguments\":{{}}}}}}",
+                Encoding.UTF8,
+                "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Accept", "application/json, text/event-stream");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + bearer);
+        request.Headers.TryAddWithoutValidation("Mcp-Session-Id", sessionId);
+        return await _client.SendAsync(request);
+    }
+
+    /// <summary>Target for the synthetic tool the module-grant tests call.</summary>
+    public sealed class ScopedToolTarget
+    {
+        [McpServerTool(Name = ScopedToolName)]
+        public string Scoped() => ScopedToolResult;
     }
 
     private static int GetFreePort()

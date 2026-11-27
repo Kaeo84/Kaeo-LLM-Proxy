@@ -36,6 +36,28 @@ internal enum DashboardCapability
 
     /// <summary>Held only by the Admin role; implies every other capability.</summary>
     Admin = 1 << 8,
+
+    /// <summary>The Models tab in read-only form, listing every model mapping on the host.</summary>
+    ViewModels = 1 << 9,
+
+    /// <summary>
+    /// The Models tab in read-only form, limited to the models granted to the signed-in user.
+    /// The wider <see cref="ViewModels"/> grant wins when a user holds both.
+    /// </summary>
+    ViewOwnModels = 1 << 10,
+
+    /// <summary>
+    /// The model registration API in read-only form: list model mappings, read the discovery
+    /// state, and read the registration OpenAPI document. This is the surface a service account's
+    /// API key may reach.
+    /// </summary>
+    ViewRegistration = 1 << 11,
+
+    /// <summary>
+    /// Register, update, and unregister model mappings and trigger a discovery scan — the
+    /// machine-facing registration surface a service account's API key drives.
+    /// </summary>
+    ManageRegistration = 1 << 12,
 }
 
 /// <summary>
@@ -58,11 +80,15 @@ internal static class DashboardRoles
 {
     public const string Admin = "admin";
     public const string ReadOnly = "readOnly";
+    public const string ModelsReadOnly = "modelsReadOnly";
+    public const string OwnModelsReadOnly = "ownModelsReadOnly";
     public const string DashboardReadOnly = "dashboardReadOnly";
     public const string DashboardReadWrite = "dashboardReadWrite";
     public const string UserAdmin = "userAdmin";
     public const string ModelAdmin = "modelAdmin";
     public const string TestConsole = "testConsole";
+    public const string RegistrationReadOnly = "registrationReadOnly";
+    public const string RegistrationReadWrite = "registrationReadWrite";
 
     private const DashboardCapability AllCapabilities =
         DashboardCapability.ViewLogs
@@ -73,7 +99,11 @@ internal static class DashboardRoles
         | DashboardCapability.ManageModels
         | DashboardCapability.TestConsole
         | DashboardCapability.ManageSettings
-        | DashboardCapability.Admin;
+        | DashboardCapability.Admin
+        | DashboardCapability.ViewModels
+        | DashboardCapability.ViewOwnModels
+        | DashboardCapability.ViewRegistration
+        | DashboardCapability.ManageRegistration;
 
     /// <summary>Roles in display order: the broad ones first, then the additive ones.</summary>
     public static IReadOnlyList<DashboardRoleDefinition> All { get; } =
@@ -86,6 +116,14 @@ internal static class DashboardRoles
             "The Requests log and Usage, limited to this user's own traffic.",
             DashboardCapability.ViewLogs | DashboardCapability.ViewUsage),
 
+        new(ModelsReadOnly, "Models Read Only",
+            "Read Only plus the Models tab in read-only form, listing every model mapping.",
+            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ViewModels),
+
+        new(OwnModelsReadOnly, "Own Models Read Only",
+            "Read Only plus the Models tab in read-only form, limited to the models granted to this user.",
+            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ViewOwnModels),
+
         new(DashboardReadOnly, "Dashboard Read Only",
             "See the Dashboard: proxy/MCP/web-server state, performance, and traffic totals. No control buttons.",
             DashboardCapability.ViewDashboard),
@@ -96,15 +134,27 @@ internal static class DashboardRoles
 
         new(UserAdmin, "User Admin",
             "Read Only plus adding, updating, and removing users, their roles, their API keys, and their access grants.",
-            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ManageUsers),
+            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ManageUsers
+            | DashboardCapability.ViewRegistration),
 
         new(ModelAdmin, "Model Admin",
             "Read Only plus adding, updating, and removing model mappings.",
-            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ManageModels),
+            DashboardCapability.ViewLogs | DashboardCapability.ViewUsage | DashboardCapability.ManageModels
+            | DashboardCapability.ViewRegistration | DashboardCapability.ManageRegistration),
 
         new(TestConsole, "Test Console",
             "Send test prompts through the proxy from the Test Console tab, using only the models this user can access.",
             DashboardCapability.TestConsole),
+
+        new(RegistrationReadOnly, "Registration Read Only",
+            "The model registration API in read-only form: list model mappings and read discovery state. " +
+            "For a service account's API key, not a person at the dashboard.",
+            DashboardCapability.ViewRegistration),
+
+        new(RegistrationReadWrite, "Registration Read-Write",
+            "Registration Read Only plus registering, updating, and unregistering model mappings and " +
+            "triggering a discovery scan. For a service account's API key, not a person at the dashboard.",
+            DashboardCapability.ViewRegistration | DashboardCapability.ManageRegistration),
     ];
 
     private static readonly Dictionary<string, DashboardRoleDefinition> ByKey =

@@ -1,4 +1,6 @@
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Modules;
+using Kaeo.LlmProxy.Infrastructure.Modules;
 using Kaeo.LlmProxy.Services;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -16,6 +18,24 @@ internal static partial class DashboardEndpoints
 {
     private static void MapUsers(WebApplication app, ProxyHostController controller)
     {
+        // The module keys a per-user MCP grant can name. Deliberately narrow (key + label only) and
+        // gated by ManageUsers rather than ManageSettings, so a User Admin can scope MCP access
+        // without being handed the module inventory's paths and signature state.
+        app.MapGet("/api/users/mcp-modules", () =>
+        {
+            List<McpModuleOption> modules = [];
+            HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+            foreach (ModuleRegistryEntry entry in controller.ModuleHost.GetRegistryEntries())
+            {
+                string? key = ModuleHost.ModuleKeyFor(entry);
+                if (string.IsNullOrWhiteSpace(key) || !seen.Add(key))
+                    continue;
+                modules.Add(new McpModuleOption(key, entry.Name ?? key, entry.IsEnabled));
+            }
+
+            return Results.Json(modules);
+        });
+
         app.MapGet("/api/users", () =>
         {
             try
@@ -52,6 +72,7 @@ internal static partial class DashboardEndpoints
                 DashboardRole = dashboardRoles,
                 AllowedModels = NormalizeModelList(write.AllowedModels),
                 McpAccess = write.McpAccess ?? false,
+                AllowedMcpModules = NormalizeModuleList(write.AllowedMcpModules),
             };
             if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
                 return Results.BadRequest(new { error = credentialError });
@@ -107,6 +128,7 @@ internal static partial class DashboardEndpoints
                     }
                     if (write.AllowedModels is not null) user.AllowedModels = NormalizeModelList(write.AllowedModels);
                     if (write.McpAccess is { } mcpAccess) user.McpAccess = mcpAccess;
+                    if (write.AllowedMcpModules is not null) user.AllowedMcpModules = NormalizeModuleList(write.AllowedMcpModules);
                     if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
                         return Results.BadRequest(new { error = credentialError });
                     if (!ValidateDashboardLogin(user, controller.Database.LoadProxyUsers(), id, out credentialError))
@@ -315,6 +337,9 @@ internal static partial class DashboardEndpoints
         });
     }
 
+    /// <summary>One selectable MCP module for a user's per-module grant.</summary>
+    private sealed record McpModuleOption(string Key, string Name, bool IsEnabled);
+
     private static object UserView(ProxyUser user, IEnumerable<ProxyApiKey> keys) => new
     {
         id = user.Id,
@@ -329,6 +354,7 @@ internal static partial class DashboardEndpoints
         roleLabel = DashboardRoles.Describe(user.DashboardRole),
         allowedModels = user.AllowedModels,
         mcpAccess = user.McpAccess,
+        allowedMcpModules = user.AllowedMcpModules,
         hasDashboardPassword = !string.IsNullOrEmpty(user.DashboardPasswordHash),
         keys = keys.Select(KeyView).ToList(),
     };
@@ -386,8 +412,10 @@ internal static partial class DashboardEndpoints
         canReveal = !string.IsNullOrEmpty(key.KeySecret),
     };
 
-    private const string RolesError =
-        "Dashboard roles must be any of: Admin, Read Only, Dashboard Read Only, Dashboard Read-Write, User Admin, Model Admin, Test Console.";
+    // Built from the role vocabulary so a new role can never be missing from the message.
+        private static readonly string RolesError =
+            "Dashboard roles must be any of: "
+            + string.Join(", ", DashboardRoles.All.Select(role => role.Label)) + ".";
 
     /// <summary>
     /// Resolves the role list from a write payload: the array wins, then the legacy single value,
@@ -407,6 +435,15 @@ internal static partial class DashboardEndpoints
         models is null
             ? []
             : [.. models.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).Distinct(StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>
+    /// Canonical module allow-list. An empty result means "every module", matching the grant's
+    /// semantics in <see cref="ProxyAccessService.IsMcpModuleAllowed"/>.
+    /// </summary>
+    private static List<string> NormalizeModuleList(List<string>? modules) =>
+        modules is null
+            ? []
+            : [.. modules.Where(m => !string.IsNullOrWhiteSpace(m)).Select(m => m.Trim()).Distinct(StringComparer.OrdinalIgnoreCase)];
 
     private static IResult DatabaseUnavailable(Exception ex) =>
         Results.Json(new { error = $"The application database is unavailable: {ex.Message}" },

@@ -177,6 +177,38 @@ internal sealed class ProxyAccessService(AppDatabase database, ApiKeyProtector? 
     internal static bool IsMcpAllowed(ProxyAccessPrincipal? principal) =>
         principal is null || IsAdmin(principal) || principal.User.McpAccess;
 
+    /// <summary>
+    /// Whether the principal may use the MCP module identified by <paramref name="moduleKey"/>
+    /// (the module's registry id, or its name when it reports no id). Open-proxy requests, Admin
+    /// users, and users with no narrowing list may use every module; a non-empty list is an
+    /// allow-list, and an unidentifiable module fails closed.
+    /// </summary>
+    internal static bool IsMcpModuleAllowed(ProxyAccessPrincipal? principal, string? moduleKey)
+    {
+        if (principal is null || IsAdmin(principal))
+            return true;
+
+        List<string> allowed = principal.User.AllowedMcpModules;
+        if (allowed.Count == 0)
+            return true;
+
+        return !string.IsNullOrWhiteSpace(moduleKey)
+            && allowed.Contains(moduleKey, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The module keys an MCP session for this principal is limited to, or null when every module
+    /// is allowed. Used when the session is built so a narrowed user's tool list is filtered too.
+    /// </summary>
+    internal static IReadOnlyCollection<string>? AllowedMcpModules(ProxyAccessPrincipal? principal)
+    {
+        if (principal is null || IsAdmin(principal))
+            return null;
+
+        List<string> allowed = principal.User.AllowedMcpModules;
+        return allowed.Count == 0 ? null : allowed;
+    }
+
     private static bool IsAdmin(ProxyAccessPrincipal principal) =>
         DashboardRoles.HasRole(principal.User.DashboardRole, DashboardRoles.Admin);
 

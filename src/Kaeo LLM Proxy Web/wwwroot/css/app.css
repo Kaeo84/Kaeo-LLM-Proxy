@@ -321,6 +321,25 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .help-table { margin: 0 0 8px; }
 .help-table td, .help-table th { white-space: normal; }
 .help-roles { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+/* Command examples need the whole width and never wrap mid-command. */
+.help-card.wide { grid-column: 1 / -1; }
+.help-code-block { margin: 0 0 10px; }
+.help-code-label { margin: 0 0 4px !important; font-size: 12px; color: var(--fg-muted); }
+.help-code {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-x: auto;
+    white-space: pre;
+}
+.help-links { margin: 8px 0 0; font-size: 12px; display: flex; flex-wrap: wrap; gap: 14px; }
+.help-links a { color: var(--accent); text-decoration: none; }
+.help-links a:hover { text-decoration: underline; }
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }

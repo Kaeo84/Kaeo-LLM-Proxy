@@ -107,7 +107,7 @@ window.KaeoHelp = {
         {
             id: 'models',
             title: 'Models',
-            capability: 'ManageModels',
+            capability: ['ManageModels', 'ViewModels', 'ViewOwnModels'],
             summary: 'The model mappings clients see and what each one points at.',
             items: [
                 { label: 'Add model', text: 'Proxy name (what clients request), upstream model, upstream URL, credential, and type.' },
@@ -118,7 +118,7 @@ window.KaeoHelp = {
                 { label: 'Auto column', text: '“yes” means discovery registered the model, “off” means discovery disabled it because the model stayed missing. Hover the pill for the reason.' },
                 { label: 'Discover now', text: 'Runs one scan immediately instead of waiting for the interval. The result lists every model registered, re-enabled, or disabled.' }
             ],
-            note: 'A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name. Discovery only disables a model after a successful model-list read shows it missing for the whole offline grace period, so an upstream outage never unregisters everything. A model that comes back is re-enabled — but a model you switched off yourself stays off, and saving a model in the editor clears any discovery-applied disable.'
+            note: 'Models Read Only shows every mapping; Own Models Read Only shows only the models granted to you. Neither can change anything — the toolbar buttons belong to Model Admin. A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name. Discovery only disables a model after a successful model-list read shows it missing for the whole offline grace period, so an upstream outage never unregisters everything. A model that comes back is re-enabled — but a model you switched off yourself stays off, and saving a model in the editor clears any discovery-applied disable.'
         },
         {
             id: 'users',
@@ -129,10 +129,59 @@ window.KaeoHelp = {
                 { label: 'Add user', text: 'Name (required), email, dashboard login with username and password, roles, model access, and MCP access.' },
                 { label: 'Roles combine', text: 'The permissions are the union of the roles held. Admin always holds everything, and a user with no valid role has no dashboard access at all.' },
                 { label: 'Grants belong to the user', text: 'Model and MCP access sit on the user record, so every API key that user holds inherits them.' },
+                { label: 'MCP modules', text: 'With MCP access on, leave every module box clear to allow every module, or tick specific modules to limit the user to exactly those. A tool from an unticked module is not even listed, and calling it is refused.' },
                 { label: 'Card menu', text: 'The 3-dot button holds Create API key, Edit user, Enable or Disable user, and Delete user.' },
-                { label: 'Key menu', text: 'The 3-dot button on a key holds Reveal key, Edit label, Regenerate key, and Delete key.' }
+                { label: 'Key menu', text: 'The 3-dot button on a key holds Reveal key, Edit label, Regenerate key, and Delete key.' },
+                { label: 'Service accounts', text: 'Create a user with only Registration Read Only or Registration Read-Write, turn dashboard login off, and give it one API key. That key can then call /api/mappings with an Authorization: Bearer header and nothing else.' }
             ],
             note: 'An empty model list means no models, not all models. An Admin user always reaches every model and the MCP server regardless of their grants.'
+        },
+        {
+            id: 'registration',
+            title: 'Registration API for service accounts',
+            capability: ['ViewRegistration', 'ManageRegistration', 'ManageUsers', 'ManageModels'],
+            wide: true,
+            summary: 'Register and unregister models from a script or a machine that cannot hold a dashboard login. This topic and its OpenAPI document are shown only to the roles that use them: Admin, User Admin, Model Admin, Registration Read Only, and Registration Read-Write. Every other role gets a 403 from the routes, not just a hidden topic.',
+            table: {
+                head: ['Call', 'Capability it needs'],
+                rows: [
+                    ['GET /api/mappings', 'Registration Read Only'],
+                    ['GET /api/mappings/discovery', 'Registration Read Only'],
+                    ['GET /api/mappings/openapi.json', 'Registration Read Only'],
+                    ['POST /api/mappings', 'Registration Read-Write'],
+                    ['PUT /api/mappings/{id}', 'Registration Read-Write'],
+                    ['DELETE /api/mappings/{id}', 'Registration Read-Write'],
+                    ['POST /api/mappings/discover', 'Registration Read-Write']
+                ]
+            },
+            items: [
+                { label: 'Credentials', text: 'Send the key as an Authorization: Bearer header or as x-api-key. A dashboard session cookie works too, but a service account never needs one.' },
+                { label: 'Create', text: 'POST a mapping with OllamaName (the name clients request) and LlamaCppName (the upstream model), plus upstreamUrl, upstreamType, credentialName, and whatever else you want. The reply carries the id the proxy assigned.' },
+                { label: 'Update', text: 'PUT is a full replace, not a patch: read the mapping, change what you need, and send the whole object back. The id in the path wins over any id in the body.' },
+                { label: 'Delete', text: 'Unregisters the model, so clients asking for that proxy name get 404 from then on.' },
+                { label: 'Discovery', text: 'GET /api/mappings/discovery reports the settings, whether a scan is running, and what the last one did; POST /api/mappings/discover runs one scan immediately.' },
+                { label: 'Scope', text: 'The key reaches /api/mappings and nothing else: users, keys, settings, credentials, modules, logs, and the dashboard tabs all stay refused even for an Admin user\u2019s key.' },
+                { label: 'Revoking', text: 'Disabling the user or deleting the key takes effect within a few seconds, and dashboard-login settings never apply to a key.' }
+            ],
+            code: [
+                {
+                    label: 'Register a model from a startup script',
+                    text: 'export KAEO_URL="https://proxy.example.com:8443"\nexport KAEO_API_KEY="kaeo-..."\n\ncurl -sS -X POST "$KAEO_URL/api/mappings" \\\n  -H "Authorization: Bearer $KAEO_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"OllamaName":"qwen3-8b","LlamaCppName":"qwen3-8b","upstreamUrl":"http://10.0.0.5:11434","upstreamType":2,"credentialName":"mac-studio"}\''
+                },
+                {
+                    label: 'Unregister it again',
+                    text: 'curl -sS -X DELETE "$KAEO_URL/api/mappings/42" \\\n  -H "Authorization: Bearer $KAEO_API_KEY"'
+                },
+                {
+                    label: 'Run a discovery scan now instead of waiting for the interval',
+                    text: 'curl -sS -X POST "$KAEO_URL/api/mappings/discover" \\\n  -H "Authorization: Bearer $KAEO_API_KEY"'
+                }
+            ],
+            note: 'A registration role grants no dashboard tabs, so a service account that does sign in sees an empty dashboard \u2014 that is intentional. The document lives on the dashboard port rather than at the proxy\u2019s /openapi/v1/openapi.json because these are dashboard routes, and it needs the same grant they do.',
+            links: [
+                { href: '/api/mappings/openapi.json', text: 'OpenAPI document (import into Postman, Insomnia, or Swagger Editor)' },
+                { href: '/api/mappings', text: 'Mapping list as JSON' }
+            ]
         },
         {
             id: 'roles',
@@ -144,11 +193,15 @@ window.KaeoHelp = {
                 rows: [
                     ['Admin', 'Everything: every model, every MCP tool, every tab, and every action.'],
                     ['Read Only', 'The Requests log and Usage, limited to that user\u2019s own traffic.'],
+                    ['Models Read Only', 'Read Only plus the Models tab in read-only form, listing every model mapping.'],
+                    ['Own Models Read Only', 'Read Only plus the Models tab in read-only form, limited to the models granted to that user.'],
                     ['Dashboard Read Only', 'The Dashboard tab: state, performance, and traffic totals, without the control buttons.'],
                     ['Dashboard Read-Write', 'Dashboard Read Only plus start, stop, and restart for the proxy, the MCP server, and the web server.'],
                     ['User Admin', 'Read Only plus adding, updating, and removing users, roles, API keys, and grants.'],
                     ['Model Admin', 'Read Only plus adding, updating, and removing model mappings.'],
-                    ['Test Console', 'The Test Console tab, limited to the models that user can access.']
+                    ['Test Console', 'The Test Console tab, limited to the models that user can access.'],
+                    ['Registration Read Only', 'The model registration API in read-only form. No dashboard tabs; intended for a service account API key.'],
+                    ['Registration Read-Write', 'Registration Read Only plus registering, updating, and removing models and running a discovery scan. No dashboard tabs; intended for a service account API key.']
                 ]
             },
             note: 'Sys Log, the live stream panes, Settings, Credentials, and Modules stay Admin-only whatever else is granted, because they expose payload text and stored secrets.'

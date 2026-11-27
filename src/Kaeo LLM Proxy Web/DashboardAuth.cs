@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Services;
 using Microsoft.AspNetCore.Http;
 
 namespace Kaeo.LlmProxy.Web;
@@ -9,9 +11,11 @@ namespace Kaeo.LlmProxy.Web;
 /// <summary>
 /// Dashboard authentication is login-based: every request must carry a valid dashboard session
 /// cookie issued by /api/auth/login (or first-run /api/auth/setup) unless the RequireLogin setting
-/// is turned off, in which case every caller gets full admin access. Proxy API keys authenticate
-/// model requests only and never grant dashboard access. Sessions are re-validated against the
-/// user record on every API request so disabling a user, changing the password, or turning off
+/// is turned off, in which case every caller gets full admin access. Proxy API keys never grant
+/// general dashboard access; they may stand in for the cookie on the model registration surface
+/// (<c>/api/mappings</c>) only, and only for the bits their user's roles carry, so a service
+/// account can register models without a password. Sessions and API keys are re-validated against
+/// the user record on every request so disabling a user, changing the password, or turning off
 /// the login revokes access immediately.
 /// </summary>
 internal static class DashboardAuth
@@ -30,6 +34,8 @@ internal static class DashboardAuth
     internal const string RoleItemKey = "Kaeo.DashboardRole";
     internal const string UserNameItemKey = "Kaeo.DashboardUsername";
     internal const string PasswordHashClaim = "Kaeo.DashboardPasswordHash";
+    internal const string ApiKeyItemKey = "Kaeo.DashboardApiKeyId";
+    internal const string ApiKeyAuthenticationType = "Kaeo.DashboardApiKey";
     internal const string AdminRole = DashboardRoles.Admin;
     internal const string ReadOnlyRole = DashboardRoles.ReadOnly;
 
@@ -54,7 +60,18 @@ internal static class DashboardAuth
         => context.Items[RoleItemKey] is string roles
             && DashboardRoles.HasRole(roles, DashboardRoles.Admin);
 
-    public static bool TryAuthorize(HttpContext context, AppSettings settings, AppDatabase database, out string? error)
+    /// <summary>
+    /// True when the caller authenticated with a proxy API key rather than a dashboard session
+    /// cookie. Such a caller is confined to the registration surface.
+    /// </summary>
+    public static bool IsApiKeyCaller(HttpContext context) => context.Items.ContainsKey(ApiKeyItemKey);
+
+    public static bool TryAuthorize(
+        HttpContext context,
+        AppSettings settings,
+        AppDatabase database,
+        ProxyAccessService access,
+        out string? error)
     {
         error = null;
         if (!settings.WebDashboard.RequireLogin)
@@ -84,8 +101,87 @@ internal static class DashboardAuth
             }
         }
 
+        // No usable session: a service account may drive the registration surface with an API key.
+        if (IsRegistrationApiRequest(context.Request) && TryAuthorizeApiKey(context, access))
+            return true;
+
         error = "Sign in with a dashboard username and password.";
         return false;
+    }
+
+    /// <summary>
+    /// Resolves a proxy API key into dashboard roles for the registration surface. The user needs
+    /// to be enabled and to hold dashboard roles; a dashboard password is deliberately not
+    /// required, because a service account exists only to call the API.
+    /// </summary>
+    private static bool TryAuthorizeApiKey(HttpContext context, ProxyAccessService access)
+    {
+        string? plainText = ReadApiKey(context.Request);
+        if (plainText is null)
+            return false;
+
+        ProxyAccessPrincipal? principal = access.Authenticate(plainText);
+        string? roles = principal is null ? null : DashboardRoles.Normalize(principal.User.DashboardRole);
+        if (principal is null || roles is null)
+            return false;
+
+        context.Items[RoleItemKey] = roles;
+        context.Items[UserNameItemKey] = principal.User.Name;
+        context.Items[ApiKeyItemKey] = principal.Key.Id;
+        // A claims principal lets the endpoints attribute the call to this user in the audit log.
+        context.User = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim(ClaimTypes.NameIdentifier,
+                principal.User.Id.ToString(CultureInfo.InvariantCulture)),
+            new Claim(ClaimTypes.Name, principal.User.Name),
+        ], ApiKeyAuthenticationType));
+        return true;
+    }
+
+    /// <summary>
+    /// The proxy API key a request carries, if any. Mirrors the proxy's own extraction order so a
+    /// client that already talks to the proxy can point at the dashboard unchanged.
+    /// </summary>
+    public static string? ReadApiKey(HttpRequest request)
+    {
+        string authorization = request.Headers.Authorization.ToString();
+        const string bearer = "Bearer ";
+        if (authorization.StartsWith(bearer, StringComparison.OrdinalIgnoreCase))
+        {
+            string token = authorization[bearer.Length..].Trim();
+            if (token.Length > 0)
+                return token;
+        }
+
+        string apiKey = request.Headers["x-api-key"].ToString().Trim();
+        return apiKey.Length > 0 ? apiKey : null;
+    }
+
+    /// <summary>
+    /// The routes an API key may reach: the model registration surface and nothing else. Kept
+    /// deliberately narrow so a leaked service-account key cannot touch users, settings, or logs.
+    /// </summary>
+    public static bool IsRegistrationApiRequest(HttpRequest request)
+        => request.Path.StartsWithSegments("/api/mappings", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True for the registration API's OpenAPI document, which is the one route on this surface
+    /// that is not open to every signed-in session. Only reads count, so a write aimed at this
+    /// path still needs the registration write grant instead of the read one.
+    /// </summary>
+    public static bool IsRegistrationSpecRequest(HttpRequest request)
+        => (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method))
+            && request.Path.Equals(RegistrationApiSpec.Path, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The capability an API-key caller needs on the registration surface. Reading needs
+    /// <see cref="DashboardCapability.ViewRegistration"/>; changing anything needs
+    /// <see cref="DashboardCapability.ManageRegistration"/>.
+    /// </summary>
+    public static DashboardCapability RequiredRegistrationCapability(HttpRequest request)
+    {
+        bool write = !HttpMethods.IsGet(request.Method) && !HttpMethods.IsHead(request.Method);
+        return write ? DashboardCapability.ManageRegistration : DashboardCapability.ViewRegistration;
     }
 
     public static bool IsAuthenticationEndpoint(HttpRequest request)
@@ -133,9 +229,16 @@ internal static class DashboardAuth
 
         if (path.StartsWith("/api/mappings", StringComparison.OrdinalIgnoreCase))
         {
+            // The OpenAPI contract is the one part of this surface with a deliberate grant: it
+            // describes what a service account may call, so only the roles that hand those keys out
+            // or use them need to read it. An API key needs the same bit, which is why the spec is
+            // kept under /api/mappings rather than beside the dashboard's other routes.
+            if (IsRegistrationSpecRequest(request))
+                return DashboardCapability.ViewRegistration;
+
             // Reading the mapping list is harmless and the Usage filters need it; changing it is
-            // the Model Admin's job.
-            return write ? DashboardCapability.ManageModels : DashboardCapability.None;
+            // the registration job. The list itself is scoped per role by the endpoint.
+            return write ? DashboardCapability.ManageRegistration : DashboardCapability.None;
         }
 
         if (path.StartsWith("/api/settings", StringComparison.OrdinalIgnoreCase)
@@ -200,6 +303,10 @@ internal static class DashboardAuth
         DashboardCapability.ManageUsers => "User Admin",
         DashboardCapability.ManageModels => "Model Admin",
         DashboardCapability.TestConsole => "Test Console",
+        DashboardCapability.ViewModels => "Models Read Only",
+        DashboardCapability.ViewOwnModels => "Own Models Read Only",
+        DashboardCapability.ViewRegistration => "Registration Read Only",
+        DashboardCapability.ManageRegistration => "Registration Read-Write",
         _ => "Admin",
     };
 }

@@ -41,6 +41,13 @@ internal sealed class ProxyUser
         public bool McpAccess { get; set; }
 
         /// <summary>
+        /// MCP module ids (registry <c>module_id</c>, falling back to the module name) this user may
+        /// reach through the MCP server. Empty means every module, so a user who is granted MCP
+        /// access without narrowing it keeps the pre-existing behaviour; Admin users bypass the list.
+        /// </summary>
+        public List<string> AllowedMcpModules { get; set; } = [];
+
+        /// <summary>
         /// Disabled users keep their record and keys but every key authenticates as rejected,
         /// so access can be suspended without destroying the key material clients still hold.
         /// </summary>

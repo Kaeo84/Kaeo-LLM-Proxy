@@ -320,6 +320,63 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Mappings_OwnModelsReadOnly_SeesOnlyTheModelsTheyCanCall()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        const string password = "own models password";
+
+        foreach (string name in new[] { "alpha", "beta" })
+        {
+            HttpResponseMessage seeded = await b.Client.PostAsJsonAsync("/api/mappings", new ModelMapping
+            {
+                ProxyName = name,
+                ModelName = $"{name}-upstream",
+                UpstreamUrl = "http://localhost:1",
+            });
+            Assert.Equal(HttpStatusCode.OK, seeded.StatusCode);
+        }
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/users", new
+        {
+            name = "Own Models",
+            dashboardLoginEnabled = true,
+            dashboardUsername = "own.models",
+            dashboardPassword = password,
+            dashboardRole = "ownModelsReadOnly",
+            allowedModels = new[] { "alpha" },
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using JsonDocument createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int ownerId = createdDoc.RootElement.GetProperty("id").GetInt32();
+
+        HttpResponseMessage login = await b.Anonymous.PostAsJsonAsync("/api/auth/login",
+            new { username = "own.models", password });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        string cookie = login.Headers.GetValues("Set-Cookie").Single().Split(';', 2)[0];
+
+        using HttpRequestMessage scoped = new(HttpMethod.Get, "/api/mappings");
+        scoped.Headers.Add("Cookie", cookie);
+        HttpResponseMessage scopedResponse = await b.Anonymous.SendAsync(scoped);
+        Assert.Equal(HttpStatusCode.OK, scopedResponse.StatusCode);
+        using JsonDocument scopedDoc = JsonDocument.Parse(await scopedResponse.Content.ReadAsStringAsync());
+        JsonElement only = Assert.Single(scopedDoc.RootElement.EnumerateArray());
+        Assert.Equal("alpha", only.GetProperty("OllamaName").GetString());
+
+        // The full-list role and Admin still see every mapping.
+        HttpResponseMessage widened = await b.Client.PutAsJsonAsync($"/api/users/{ownerId}",
+            new { dashboardRole = "modelsReadOnly" });
+        Assert.Equal(HttpStatusCode.OK, widened.StatusCode);
+
+        using HttpRequestMessage full = new(HttpMethod.Get, "/api/mappings");
+        full.Headers.Add("Cookie", cookie);
+        using JsonDocument fullDoc = JsonDocument.Parse(await (await b.Anonymous.SendAsync(full)).Content.ReadAsStringAsync());
+        Assert.Equal(2, fullDoc.RootElement.GetArrayLength());
+
+        using JsonDocument adminDoc = JsonDocument.Parse(await b.Client.GetStringAsync("/api/mappings"));
+        Assert.Equal(2, adminDoc.RootElement.GetArrayLength());
+    }
+
+    [Fact]
     public async Task Settings_Put_ValidatesAndApplies()
     {
         await using Bundle b = await CreateBundleAsync();

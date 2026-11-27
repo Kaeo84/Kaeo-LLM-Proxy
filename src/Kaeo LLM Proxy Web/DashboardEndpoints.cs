@@ -29,7 +29,7 @@ internal static partial class DashboardEndpoints
         // controls the caller cannot use.
         app.MapGet("/api/auth/me", (HttpContext context) =>
         {
-            DashboardAuth.TryAuthorize(context, settings, controller.Database, out _);
+            DashboardAuth.TryAuthorize(context, settings, controller.Database, controller.Access, out _);
             string roles = context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty;
             return Results.Json(new
             {

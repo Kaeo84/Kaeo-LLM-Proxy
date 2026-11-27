@@ -142,7 +142,7 @@ internal partial class MainForm : Form
         Icon = Program.GetApplicationIcon();
 
         TabPage usersPage = new("Users");
-        usersPage.Controls.Add(new ProxyUsersControl(_database, _access, _settings, SaveProxyApiKeyRequirement));
+        usersPage.Controls.Add(new ProxyUsersControl(_database, _access, _settings, _moduleHost, SaveProxyApiKeyRequirement));
         _tabControl.TabPages.Insert(_tabControl.TabPages.IndexOf(_tabCredentials) + 1, usersPage);
 
         // Inject configuration tabs for already-loaded modules and track module registry
