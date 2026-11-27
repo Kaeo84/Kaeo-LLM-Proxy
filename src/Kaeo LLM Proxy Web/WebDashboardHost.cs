@@ -187,7 +187,7 @@ internal sealed class WebDashboardHost : IWebDashboardHost
             await app.StartAsync(cancellationToken);
             _app = app;
 
-            string host = DashboardAuth.IsLoopbackAddress(wd.ListenAddress) ? "localhost" : wd.ListenAddress;
+            string host = NetworkingHelpers.ResolveBrowsableHost(wd.ListenAddress);
             Url = $"{(https ? "https" : "http")}://{host}:{port}";
             _controller.WebDashboard.Attach(this);
             Log.Information("Web dashboard listening on {Url} ({LoginMode})", Url,
@@ -250,9 +250,9 @@ internal sealed class WebDashboardHost : IWebDashboardHost
 
         if (address.Equals("localhost", StringComparison.OrdinalIgnoreCase))
             options.ListenLocalhost(port, configure);
-        else if (address is "*" or "+" or "0.0.0.0" || address.Equals("any", StringComparison.OrdinalIgnoreCase))
+        else if (address is "*" or "+" or "0.0.0.0" or "::" or "[::]" || address.Equals("any", StringComparison.OrdinalIgnoreCase))
             options.ListenAnyIP(port, configure);
-        else if (IPAddress.TryParse(address, out IPAddress? ip))
+        else if (IPAddress.TryParse(address.Trim('[', ']'), out IPAddress? ip))
             options.Listen(ip, port, configure);
         else
             options.ListenLocalhost(port, configure);

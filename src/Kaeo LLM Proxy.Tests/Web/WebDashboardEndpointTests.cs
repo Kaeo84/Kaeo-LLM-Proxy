@@ -42,6 +42,21 @@ public sealed class WebDashboardEndpointTests
         Assert.False(doc.RootElement.GetProperty("databaseDegraded").GetBoolean());
     }
 
+    /// <summary>
+    /// A loopback bind is reported as "localhost" so the URL handed to the browser (tray menu,
+    /// Windows dashboard tab) is always clickable; a wildcard bind collapses the same way.
+    /// </summary>
+    [Fact]
+    public async Task Url_ReportsABrowsableHost_ForLoopbackAndWildcardBinds()
+    {
+        await using Bundle loopback = await CreateBundleAsync(wd => wd.ListenAddress = "127.0.0.1");
+        Assert.StartsWith("http://localhost:", loopback.Host.Url);
+
+        await using Bundle wildcard = await CreateBundleAsync(wd => wd.ListenAddress = "0.0.0.0");
+        Assert.StartsWith("http://localhost:", wildcard.Host.Url);
+        Assert.DoesNotContain("0.0.0.0", wildcard.Host.Url);
+    }
+
     [Fact]
     public async Task Root_ServesDashboardIndexHtml()
     {

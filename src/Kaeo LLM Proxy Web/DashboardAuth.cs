@@ -16,15 +16,6 @@ namespace Kaeo.LlmProxy.Web;
 /// </summary>
 internal static class DashboardAuth
 {
-    public static bool IsLoopbackAddress(string? address)
-    {
-        if (string.IsNullOrWhiteSpace(address))
-            return true;
-        if (address.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-            return true;
-        return IPAddress.TryParse(address, out IPAddress? ip) && IPAddress.IsLoopback(ip);
-    }
-
     /// <summary>True when the request originates from the local machine (first-run setup guard).</summary>
     public static bool IsRequestLoopback(HttpContext context)
         => context.Connection.RemoteIpAddress is null || IPAddress.IsLoopback(context.Connection.RemoteIpAddress);

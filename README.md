@@ -1,29 +1,126 @@
 # Kaeo LLM Proxy
 
-A Windows system-tray application that acts as an Ollama API-compatible proxy, translating
-requests from any Ollama client to one or more [llama.cpp](https://github.com/ggml-org/llama.cpp)
-servers running their built-in OpenAI-compatible `/v1/` API.
+A cross-platform LLM proxy with a built-in web dashboard. It speaks the **Ollama**, **OpenAI**, and
+**Anthropic** APIs on the front door and forwards each request to whatever your backends actually
+speak — llama.cpp or any other OpenAI-compatible server, Ollama, or the Anthropic Messages API —
+translating requests, responses, and streams in both directions. Around that engine it adds user
+administration, API keys, a credential store, per-user model and tool grants, prompt injection,
+and full logging, reporting, and statistics.
+
+## Platform support
+
+| Platform | What you get |
+|----------|--------------|
+| **Windows** | Full engine, web dashboard, MCP server, system-tray app, and Visual Studio extension |
+| **macOS** (Apple Silicon, Intel) | Full engine, web dashboard, and MCP server via the headless host |
+| **Linux** (x64, ARM64) | Full engine, web dashboard, and MCP server via the headless host |
+
+**The web GUI is the cross-platform GUI.** The engine — proxy, MCP server, dashboard, users, keys,
+logging, statistics — is identical on Windows, macOS, and Linux, and so is the dashboard served from
+it. Only the two desktop front ends are Windows-only: the system-tray application and the Visual
+Studio extension. On macOS and Linux the headless host runs the same engine and the same dashboard,
+so there is nothing to give up but the tray icon (see
+[Running headless on Linux / macOS](#running-headless-on-linux--macos)).
 
 ## Why this exists
 
-[Ollama](https://ollama.com/) clients (Open WebUI, Continue, etc.) expect the Ollama REST API.
-[llama.cpp](https://github.com/ggml-org/llama.cpp) speaks a slightly different OpenAI-compatible
-API. This proxy sits in between — you point your clients at `localhost:11434` and it routes each
-request to the right llama.cpp instance, doing all format translation transparently.
+It started as a bridge: [Ollama](https://ollama.com/) clients (Open WebUI, Continue, etc.) expect
+the Ollama REST API while [llama.cpp](https://github.com/ggml-org/llama.cpp) speaks a slightly
+different OpenAI-compatible API, so this proxy sat in between and translated. The same idea turned
+out to be useful for everything else — ChatGPT-style clients, Anthropic clients, several backends at
+once, per-user access control, and one place to see what every client is actually doing — so the
+translation core grew a management plane around it. You still point clients at `localhost:11434`;
+what sits behind that port is now configurable, multi-protocol, and auditable.
 
 ## Features
 
-- Translates the Ollama API to llama.cpp's OpenAI-compatible format
-- Supports streaming (NDJSON) and non-streaming completions
+**Protocol translation**
+
+- One listener speaks **Ollama** (`/api/*`), **OpenAI/ChatGPT-style** (`/v1/*`), and **Anthropic**
+  (`/v1/messages`) — see [API Translation](#api-translation-anthropic-openai-ollama)
+- Every model mapping chooses its own upstream protocol: any OpenAI-compatible server (llama.cpp,
+  vLLM, LM Studio, OpenRouter, OpenAI), a real Ollama server, or the Anthropic Messages API
+- Bidirectional translation of requests, responses, and streams, including tool/function calls,
+  images, system prompts, stop sequences, sampling parameters, and token usage
+- Streaming (NDJSON for Ollama, SSE for OpenAI and Anthropic) and non-streaming, for chat, text
+  completions, embeddings, and responses
 - Copilot-compatible streaming — well-formed SSE (`data: [DONE]`, synthesized usage chunk, in-band
   errors) so `Microsoft.Extensions.AI` clients never hang awaiting a stream end
-- Model name mapping — map any Ollama model name to the actual model loaded in llama.cpp
+- Anthropic `max_tokens` and `anthropic-version` defaults supplied when the client omits them
+
+**Models and routing**
+
+- Model name mapping — map any client model name to the model actually loaded on the backend
 - Per-mapping upstream URL and timeout — route different models to different servers
+- Per-model enable/disable, display name, and context length for `/v1/models`
+- Context compaction — manual `/compact` endpoints plus automatic, threshold-driven summarisation
+
+**Access security**
+
+- User administration with name, email, notes, and multiple roles per user
+- Per-user API keys — create, delete, regenerate, and (Admin only) reveal; masked by default
+- Per-user model grants and per-user MCP tool grants; Admin always gets everything
+- Dashboard login with optional HTTPS served from a certificate in the credential store
+
+**Operations**
+
+- Cross-platform web dashboard — Windows, macOS, and Linux serve the identical GUI
+- Start, stop, and restart for the proxy, the MCP server, and the web server, from either GUI
+- Credential store for central model management — one named, encrypted secret reused by mappings,
+  modules, and the HTTPS listener
+- Custom prompt injection — named instruction sets applied per mapping, plus a compaction set
 - Request logging to SQLite via [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)
-  (auto-archived by size, auto-expired by age)
+  (auto-archived by size, auto-expired by age), with redaction of sensitive fields
 - Application logging via [Serilog](https://serilog.net/) with rolling files
-- System tray application — no console window, always available in the background
+- Live statistics — request/error/token totals, requests per second, CPU and memory, per-model
+  connection health, token-usage reporting, and web-traffic accounting
+- Windows system-tray application — no console window, always available in the background
+- Headless host for Windows services, macOS, and Linux
 - Portable deployment — all data stored alongside the executable, easy to move or back up
+
+## API Translation (Anthropic, OpenAI, Ollama)
+
+The proxy is not tied to one protocol on either side. Clients may speak **any** of the three
+supported protocols and each model mapping may point at **any** of the three, so one listener can
+serve an Ollama client, a ChatGPT-style client, and an Anthropic client at the same time while
+fronting a mixed fleet of backends.
+
+### Inbound — what clients call
+
+| Client protocol | Endpoints | Details |
+|-----------------|-----------|---------|
+| **Ollama** | `GET /api/tags`, `GET /api/ps`, `GET /api/version`, `POST /api/show`, `POST /api/chat`, `POST /api/generate`, `POST /api/embeddings`, `POST /api/embed` | [Supported Ollama Endpoints](#supported-ollama-endpoints) |
+| **OpenAI / ChatGPT-style** | `GET /v1/models`, `GET /v1/models/{model}`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `POST /v1/responses`, other `/v1/*` passthrough | [OpenAI-Compatible Endpoints](#openai-compatible-endpoints) |
+| **Anthropic** | `POST /v1/messages`, `POST /messages` | [Anthropic Messages Endpoint](#anthropic-messages-endpoint) |
+
+### Upstream — what a mapping points at
+
+Set `UpstreamType` on the mapping:
+
+| `UpstreamType` | Display name | Upstream API | Typical target |
+|----------------|--------------|--------------|----------------|
+| `OpenAI` | OpenAI Compatible | `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `GET /v1/models` | llama.cpp, vLLM, LM Studio, OpenRouter, OpenAI |
+| `Ollama` | Ollama | `POST /api/chat`, `/api/generate`, `/api/embeddings`, `GET /api/tags` | a real Ollama server |
+| `Anthropic` | Anthropic | `POST /v1/messages` | `https://api.anthropic.com`, or a gateway in front of it |
+
+`LlamaCpp` is still accepted as a legacy alias for `OpenAI`, so older settings files keep working.
+
+### Translation is per mapping
+
+`EnableApiTranslation` (default `true`) on each mapping switches bidirectional translation on:
+
+- An Ollama or Anthropic request is rewritten into the upstream's native shape, and the upstream's
+  answer — streaming or not — is rewritten back into the shape the client asked for. That covers
+  tool/function calls (`tool_calls` ↔ `tool_use`/`tool_result`), base64 images, system prompts,
+  stop sequences, sampling parameters, finish reasons, and token usage.
+- With translation **off** the request is forwarded verbatim, which is what you want when client and
+  upstream already speak the same protocol and you only need routing and logging.
+- Anything the target protocol cannot express is dropped rather than sent as an invalid field, so a
+  translation mismatch degrades instead of failing the request.
+
+**Anthropic-specific defaults.** Anthropic requires `max_tokens`, so a mapping to an Anthropic
+upstream supplies `AnthropicMaxTokens` (default `4096`) when the client omits it, and sends
+`anthropic-version: 2023-06-01` (configurable via `AnthropicApiVersion`) on every call.
 
 ## Supported Ollama Endpoints
 
@@ -46,9 +143,11 @@ The proxy also exposes an OpenAI-compatible `/v1/` API so clients such as Visual
 |--------------------------|--------|------------------------------------------------------------------------------|
 | `/v1/models`             | GET    | Lists enabled model mappings in OpenAI format, including `context_length`.   |
 | `/v1/models/{model}`     | GET    | Returns a single enabled model mapping in OpenAI format.                     |
-| `/v1/chat/completions`   | POST   | Forwards chat completion requests to the selected upstream llama.cpp server. |
-| `/v1/completions`        | POST   | Forwards completion requests to the selected upstream llama.cpp server.      |
-| `/v1/embeddings`         | POST   | Forwards embedding requests to the selected upstream llama.cpp server.       |
+| `/v1/chat/completions`   | POST   | Forwards chat completion requests to the selected upstream.                  |
+| `/v1/completions`        | POST   | Forwards completion requests to the selected upstream.                       |
+| `/v1/embeddings`         | POST   | Forwards embedding requests to the selected upstream.                        |
+| `/v1/responses`          | POST   | Forwards Responses-API requests to the selected upstream.                    |
+| `/v1/*` (anything else)  | any    | Transparent passthrough to the upstream's own `/v1/` surface.                |
 
 ### The `/v1` prefix is optional
 
@@ -71,6 +170,23 @@ be re-pointed just to add `/v1`.
 
 Any other path is still rejected with `404`, so the normalisation cannot silently redirect an
 unrecognised endpoint onto the upstream.
+
+## Anthropic Messages Endpoint
+
+The proxy accepts the Anthropic Messages API, so an Anthropic SDK client — or Claude Code, or any
+tool that speaks `/v1/messages` — can be pointed at it and reach a model served by an
+OpenAI-compatible or Ollama backend. The translation is complete in both directions, including
+streaming, `tool_use`/`tool_result` blocks, images, system prompts, and usage counters.
+
+| Endpoint                | Method | Purpose                                                                          |
+|-------------------------|--------|----------------------------------------------------------------------------------|
+| `/v1/messages`          | POST   | Accepts an Anthropic request, translates it to the mapping's upstream, and translates the answer (streaming or not) back into Anthropic events. |
+| `/messages`             | POST   | The same endpoint without the `/v1` prefix.                                      |
+
+Point an Anthropic client at the proxy with a base URL of `http://localhost:11434` and use any
+mapped model name. Set the mapping's `UpstreamType` to `Anthropic` to forward to
+`https://api.anthropic.com` instead — the request then passes through as-is, with
+`AnthropicMaxTokens` and `AnthropicApiVersion` filling in anything the client left out.
 
 ## Portable Folder Structure
 
@@ -104,6 +220,10 @@ Edit `Data/settings.jsonc` to configure:
   - Timeout in seconds (default: 300)
 - **Logging preferences** — minimum log level, file size limits, retention period
 
+Everything in `settings.jsonc` has a GUI: the Windows app's **Settings** tab and the web
+dashboard's **Settings**, **Models**, **Credentials**, and **Users** tabs edit the same file and the
+same SQLite database, so the two front ends always agree.
+
 ### Network Access Note
 
 To allow connections from other machines on your network:
@@ -113,6 +233,56 @@ To allow connections from other machines on your network:
    netsh http add urlacl url=http://+:11434/ user=DOMAIN\username
    ```
    Replace `DOMAIN\username` with your Windows account name.
+
+### Wildcard addresses and the browser
+
+`0.0.0.0` (and `::`, `*`, `+`) is an instruction to *listen on every interface*, not a destination
+you can browse to. Whenever the app has to hand you a URL — the tray menu's **Open Web Dashboard**,
+the Windows Dashboard tab, or the headless host's startup line — a wildcard or loopback bind is
+reported as `http://localhost:<port>`, and any other bind is reported as-is (IPv6 literals are
+bracketed so the URL stays valid). The listener itself still binds the wildcard, so remote clients
+keep working; only the displayed URL is normalised.
+
+## Credential Store (Central Model Management)
+
+API keys, bearer tokens, usernames/passwords, SSH private keys, and HTTPS certificates are stored
+**once**, in the credential store, and referenced **by name** from wherever they are needed. That
+keeps a fleet of mappings on one rotating secret instead of N copies of it.
+
+- **One named entry, many consumers.** A credential is referenced by `CredentialName` from model
+  mappings, from module providers (Web Search, Code Vector Store, Chat Interface), and from the
+  HTTPS listener (`WebDashboard.CertificateCredentialName`). Rotate the secret in one place and
+  every consumer picks it up.
+- **Encrypted at rest.** Secrets are encrypted with AES-256-GCM using a key derived from your
+  **security passphrase** via PBKDF2-SHA256 (600,000 iterations). The plaintext never lands in
+  `settings.jsonc`, and the passphrase itself is never stored — only its SHA-256 hash, which is
+  DPAPI-protected on Windows. On macOS and Linux the hash is stored without DPAPI, so protect the
+  `Data` folder with filesystem permissions and use a passphrase you do not reuse elsewhere.
+- **Write-only after save.** Once stored, a secret is never sent back to a GUI in clear text — the
+  dashboard shows only a masked value and whether it is set. Leave the field blank while editing to
+  keep the existing secret, or supply a new value to replace it.
+- **Certificate credentials** carry a PEM/PFX certificate and private key, which is how HTTPS for
+  the dashboard, proxy, and MCP endpoint is configured — see
+  [HTTPS Certificate and Web Server Control](#https-certificate-and-web-server-control).
+- **Managed in both GUIs.** The **Credentials** tab (web) and the Windows **Credentials** tab list,
+  add, edit, and delete entries; the name is the contract, so a rename is a breaking change for
+  every consumer and the GUI warns before doing it.
+
+## Custom Prompt Injection (Instruction Sets)
+
+Named **instruction sets** inject your own system prompt into every request that a mapping serves,
+without editing each client. Define them once and attach them per model:
+
+- An instruction set is a name, a description, and the instruction text.
+- A mapping selects one with `InstructionSetName`; mappings that name none are untouched.
+- The text is applied by `SystemPromptComposer`, which merges the instruction text with any
+  leading `system` messages the client already sent into **exactly one** system message, separated
+  by blank lines. Strict chat templates — Qwen3, for example — reject a second system message, so
+  folding rather than prepending is what keeps those models working.
+- A separate **compaction** instruction set (`CompactionInstructionSetName`) controls the prompt
+  used when the proxy summarises a conversation, so you can tune summary style independently of
+  the answering prompt.
+- Editable on the **Models** tab next to the mapping it applies to.
 
 ## Web Dashboard Access
 
@@ -136,6 +306,12 @@ Admin always holds every permission, and a user with no valid role has no dashbo
 rather than falling back to Read Only. The **Sys Log** tab, the live stream panes, and the
 **Settings**, **Credentials**, and **Modules** surfaces stay Admin-only because they expose payload
 text and other users' traffic.
+
+The **Help** tab is always present and is filtered by your roles, so it documents only the surfaces
+you can actually reach: it opens with a *Your access* card listing your roles and the capabilities
+they grant, then shows one topic per tab, control, and concept your roles unlock. The role names
+shown in the dashboard and in Help come from the server, so they cannot drift from the roles the
+API enforces.
 
 The **Requests** view loads newest-first from the full logged history in the database (not just
 the small in-memory window), then polls for new entries at the top. A **Requestor** column shows
@@ -185,6 +361,30 @@ MCP access (or an Admin key), or keep using the shared credential if one is conf
 
 > **Upgrade note:** before grants were enforced, an empty allowed-model list meant *all* models. It
 > now means *no models*, so re-check existing users after upgrading.
+
+## MCP Server and Modules
+
+The app is also an **MCP (Model Context Protocol) server**, so an MCP-capable client — Visual Studio
+Copilot agent mode, Claude Desktop, or anything else that speaks MCP — can call tools that the proxy
+hosts. It listens on its own port, has its own start/stop/restart controls in both GUIs, and logs
+its traffic under the **MCP** source so tool calls are visible next to chat traffic.
+
+Authentication is a bearer token: either the configured shared credential or any proxy API key whose
+user holds the MCP grant (see [User Grants](#user-grants-models-and-mcp)). Only `/health` is open.
+
+Built-in and module-provided tools:
+
+| Module | Tools | What it does |
+|--------|-------|--------------|
+| **Web Search** | `web_search`, `web_fetch` | Search the web and fetch a page as clean text for the model to read. |
+| **SSH** | `ssh_connect`, `ssh_exec`, `ssh_disconnect`, `ssh_list` | Run commands on remote hosts over SSH, with connection reuse. |
+| **Code Vector Store** | `code_search`, `code_index`, `code_sync_repo`, `code_list_collections`, `code_status`, `code_remove`, `code_reindex` | Index a codebase into embeddings and answer "where is X handled?" with real file/line evidence. Supports remote HTTP embedding endpoints and a local ONNX CPU backend, agent-pushed indexing, and server-side git mirrors. |
+| **Chat Interface** | `chat_send`, `chat_ask`, `chat_read`, `chat_channels` | Bridge the model to Discord, Microsoft Teams, Slack, Google Chat, and Zoom channels. |
+
+Modules are packaged as `.kaeomod` files (signed when you want tamper detection) and managed on the
+**Modules** tab. They are per-platform when they carry native dependencies — see
+[docs/Module-Packaging.md](docs/Module-Packaging.md) and the `--module-pack` / `--module-sign`
+verbs of the headless host.
 
 ## API Key Recovery (Reveal and Regenerate)
 
@@ -252,6 +452,55 @@ with the same retention and pruning as proxy logs. Static assets and the dashboa
 endpoints (`/api/status`, `/api/stats`, `/api/logs`, ...) are skipped so the table stays readable,
 but an error response is always recorded.
 
+## Logging, Reporting, and Statistics
+
+Every request is logged — nothing lives only in memory. Four independent sources share one SQLite
+database and one set of retention rules, so "who called what, when, from which client, with which
+key, and what happened" is answerable without correlating files.
+
+### Request log
+
+- **One row per request** — timestamp, model, client model, upstream URL and path, HTTP status,
+  duration, streaming or not, prompt/completion/total tokens, the user and API key that made the
+  call, the calling client's address, and a **client label** derived from `User-Agent` (VS
+  extension, Copilot, browser, script).
+- **Source** separates **Proxy** traffic, **MCP** tool calls, **Web** dashboard traffic, and
+  **Non-proxied** requests that were refused or not handled, so a scanner hitting an unknown path
+  shows up as a row instead of silently vanishing.
+- **Detail on demand** — the Requests table loads rows first and fetches bodies, headers, and error
+  text only when a row is opened, so the list stays fast against a large database.
+- **Live streams** — the same tab tails active SSE/NDJSON streams as they are produced.
+- **Refresh** — manual by default, with optional auto-refresh at 5, 10, 30, or 60 seconds.
+- **Redaction** — per mapping, `RedactRequestBodies` and `RedactResponseBodies` replace captured
+  bodies with a marker (both default **on**), and `RedactSensitiveJsonFields` scrubs keys, tokens,
+  and passwords while leaving prompt text readable for diagnostics. `Authorization` headers are
+  always redacted.
+- **Retention** — `LogRetentionHours` (default `72`) expires rows automatically; `0` keeps them
+  forever. Only the newest `MaxLogEntriesWithBodies` entries retain bodies, which bounds memory
+  without losing metadata.
+
+### System log
+
+[Serilog](https://serilog.net/) writes rolling files under `Data/logs/app/`
+(`AppLogFileSizeLimitMb`, default `10`; `AppLogRetainedFileCount`, default `7`), and the same
+events stream into the dashboard's **Sys Log** tab and the Windows app's **Logs → Sys Log** view —
+filterable by level, model, and text, with a **Hide heartbeats** switch. Heartbeat ping failures
+have their own threshold (`HeartbeatMinimumLevel`, default `Debug`) so an upstream that is simply
+switched off cannot bury real errors. Sys Log is Admin-only because it can contain payload
+fragments.
+
+### Usage, statistics, and reporting
+
+- **Usage** — token consumption grouped by day, week, or month and by model, scoped to your own
+  traffic or, for Admin, to any user with a per-user share breakdown.
+- **Statistics** — total requests, total errors, prompt and completion tokens, requests per second,
+  and per-model counts, plus a live **connection health** snapshot of heartbeat probes and failures
+  for each model.
+- **Performance** — CPU, working set, GC gen2 collections, and LOH size sampled for the Dashboard.
+- **Web traffic** — dashboard page loads, API calls, and rejected requests (401/403) are logged
+  under the **Web** source with the same retention as proxy traffic.
+- **Token usage** — the dedicated Usage report described below.
+
 ## Token Usage (Web Dashboard)
 
 The web dashboard's **Usage** tab reports token consumption from the request-log database:
@@ -287,12 +536,18 @@ fixes that value, so the console cannot send a setting the proxy would overwrite
 
 ## Usage
 
-1. Run `Kaeo LLM Proxy.exe` — it starts minimised to the system tray
-2. Double-click the tray icon (or right-click → Open) to open the dashboard
-3. Add model mappings with the name your clients will use and the upstream llama.cpp URL
-4. Use **Fetch Models** to pull available model names from a running llama.cpp server
-5. Point your Ollama-compatible client at `http://localhost:11434` (or your configured port)
-6. The proxy routes each request to the correct llama.cpp instance and translates the response
+1. Run `Kaeo LLM Proxy.exe` (Windows) or `./Kaeo LLM Proxy Headless` (macOS/Linux) — the Windows
+   build starts minimised to the system tray, the headless build keeps running in the foreground
+2. Open the dashboard — double-click the tray icon on Windows, or browse to
+   `http://localhost:11435` anywhere
+3. Add model mappings with the name your clients will use, the upstream URL, and the upstream
+   protocol the backend speaks
+4. Use **Fetch Models** to pull available model names from a running backend
+5. Create users and API keys on the **Users** tab, and grant each user the models and MCP access
+   they should have
+6. Point your client at `http://localhost:11434` (or your configured port) — Ollama, OpenAI, and
+   Anthropic clients all work against the same listener
+7. The proxy routes each request to the correct backend, translates it, and logs it
 
 Multiple instances are allowed by default (handy when the tray app and the headless host share a
 machine). To enforce a single instance, turn off **Allow multiple instances** in the Settings tab

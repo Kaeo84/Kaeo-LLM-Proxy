@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 
 namespace Kaeo.LlmProxy.Core.Models;
 
@@ -8,6 +9,39 @@ namespace Kaeo.LlmProxy.Core.Models;
 /// </summary>
 internal static class NetworkingHelpers
 {
+    /// <summary>
+    /// The host to put in a browser-facing URL for a configured listen address.
+    /// </summary>
+    /// <remarks>
+    /// A wildcard bind (<c>0.0.0.0</c>, <c>::</c>, <c>*</c>, <c>+</c>, <c>any</c>, or blank) is a
+    /// "listen on everything" instruction, not a routable destination, so it collapses to
+    /// <c>localhost</c> — the address most likely to resolve and reach the listener from this
+    /// machine. A literal IPv6 address is bracketed so the resulting URL stays valid.
+    /// </remarks>
+    public static string ResolveBrowsableHost(string? address)
+    {
+        string host = (address ?? string.Empty).Trim();
+        if (host.Length == 0
+            || host is "*" or "+"
+            || host.Equals("any", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return "localhost";
+        }
+
+        // Accept the bracketed IPv6 form ("[::1]") as well as the bare form.
+        string bare = host.Length > 1 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+        if (IPAddress.TryParse(bare, out IPAddress? ip))
+        {
+            if (IPAddress.IsLoopback(ip) || ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any))
+                return "localhost";
+
+            return ip.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{ip}]" : ip.ToString();
+        }
+
+        return host;
+    }
+
     /// <summary>
     /// Whether a URL's host names this machine rather than a remote host.
     /// </summary>

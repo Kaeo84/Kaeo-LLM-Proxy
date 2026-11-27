@@ -220,6 +220,10 @@ internal partial class MainForm : Form
         _txtWebDashboardAddress.TextChanged += (_, _) => UpdateWebDashboardUrlLabel();
         _cmbWebDashboardScheme.SelectedIndexChanged += (_, _) => UpdateWebDashboardUrlLabel();
 
+        // The Dashboard tab shows the browsable URL for the running listener; clicking it opens
+        // the browser, which is the same address the tray menu uses.
+        _lblDashWebUrlValue.Click += LblDashWebUrlValue_Click;
+
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
         if (_webDashboard is not null)
@@ -564,11 +568,7 @@ internal partial class MainForm : Form
         /// </summary>
         private static string FormatLocalBaseUrl(string host, int port, string path)
         {
-            string h = (host ?? "").Trim();
-            if (h is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
-                h = "localhost";
-
-            return $"http://{h}:{port}{path}";
+            return $"http://{NetworkingHelpers.ResolveBrowsableHost(host)}:{port}{path}";
         }
 
     /// <summary>
@@ -841,6 +841,7 @@ internal partial class MainForm : Form
         {
             _lblDashWebStatusValue.Text = "Not available";
             _lblDashWebUrlValue.Text = "-";
+            _lblDashWebUrlValue.Cursor = Cursors.Default;
             _lblDashWebPortValue.Text = "-";
             _btnDashWebStart.Enabled = false;
             _btnDashWebStop.Enabled = false;
@@ -858,12 +859,21 @@ internal partial class MainForm : Form
                 ? Color.Red
                 : SystemColors.ControlText;
 
-        _lblDashWebUrlValue.Text = running ? _webDashboard.Url ?? "-" : "-";
+        string? url = _webDashboard.Url;
+        _lblDashWebUrlValue.Text = running ? url ?? "-" : "-";
+        _lblDashWebUrlValue.Cursor = running && url is not null ? Cursors.Hand : Cursors.Default;
+        _lblDashWebUrlValue.ForeColor = running && url is not null ? SystemColors.Highlight : SystemColors.ControlText;
         _lblDashWebPortValue.Text = $"{_webDashboard.ListenAddress}:{_webDashboard.ListenPort}";
 
         _btnDashWebStart.Enabled = !running && _webDashboard.CanControl && !_webDashOperationInProgress;
         _btnDashWebStop.Enabled = running && !_webDashOperationInProgress;
         _btnDashWebRestart.Enabled = running && !_webDashOperationInProgress;
+    }
+
+    private void LblDashWebUrlValue_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is { IsRunning: true } dashboard && dashboard.Url is { Length: > 0 } url)
+            OpenUrlInBrowser(url);
     }
 
     private async void BtnDashWebStart_Click(object? sender, EventArgs e)
@@ -2570,9 +2580,7 @@ internal partial class MainForm : Form
             : _settings.ListenPort + 1;
         string address = _txtWebDashboardAddress.Text.Trim();
         // Wildcard binds are not browsable addresses; show loopback like the tray log does.
-        string host = address.Length == 0 || address is "*" or "+" or "0.0.0.0" || address.Equals("any", StringComparison.OrdinalIgnoreCase)
-            ? "localhost"
-            : address;
+        string host = NetworkingHelpers.ResolveBrowsableHost(address);
         string scheme = _cmbWebDashboardScheme.SelectedIndex == 1 ? "https" : "http";
         _lblWebDashboardUrl.Text = $"Configured URL: {scheme}://{host}:{port}";
     }
