@@ -37,6 +37,7 @@ partial class MainForm
         _chkMcpCollectResponse = new CheckBox();
         _lblMcpApiExplorerUrl = new Label();
         _lblMcpSpecUrl = new Label();
+        _lblMcpAccessHint = new Label();
         _lblMcpListenAddress = new Label();
         _cboMcpListenAddress = new ComboBox();
         _lblMcpPort = new Label();
@@ -93,6 +94,20 @@ partial class MainForm
         _btnDashMcpStart = new Button();
         _btnDashMcpStop = new Button();
         _btnDashMcpRestart = new Button();
+
+        // Dashboard web server status controls
+        _grpDashWeb = new GroupBox();
+        _tlpDashWeb = new TableLayoutPanel();
+        _lblDashWebStatusCaption = new Label();
+        _lblDashWebStatusValue = new Label();
+        _lblDashWebUrlCaption = new Label();
+        _lblDashWebUrlValue = new Label();
+        _lblDashWebPortCaption = new Label();
+        _lblDashWebPortValue = new Label();
+        _flpDashWebButtons = new FlowLayoutPanel();
+        _btnDashWebStart = new Button();
+        _btnDashWebStop = new Button();
+        _btnDashWebRestart = new Button();
 
         // Stats panel
         _tlpStats = new TableLayoutPanel();
@@ -172,6 +187,18 @@ partial class MainForm
         _colMcpStatus = new ColumnHeader();
         _colMcpDuration = new ColumnHeader();
         _colMcpBytes = new ColumnHeader();
+        _logWebPage = new TabPage();
+        _tlpWebLogs = new TableLayoutPanel();
+        _flpWebLogTop = new FlowLayoutPanel();
+        _lblWebLogFilter = new Label();
+        _txtWebLogFilter = new TextBox();
+        _lstWebLogs = new ListView();
+        _colWebTime = new ColumnHeader();
+        _colWebMethod = new ColumnHeader();
+        _colWebPath = new ColumnHeader();
+        _colWebStatus = new ColumnHeader();
+        _colWebDuration = new ColumnHeader();
+        _colWebBytes = new ColumnHeader();
         _chkAutoRefresh = new CheckBox();
         _lblRefreshInterval = new Label();
         _cmbRefreshInterval = new ComboBox();
@@ -222,9 +249,25 @@ partial class MainForm
         _colModelName = new DataGridViewTextBoxColumn();
         _colInstructionSet = new DataGridViewTextBoxColumn();
         _colReasoningEffort = new DataGridViewTextBoxColumn();
+        _colMappingAuto = new DataGridViewTextBoxColumn();
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
+        _grpWebDashboard = new GroupBox();
+        _tlpWebDashboard = new TableLayoutPanel();
+        _chkWebDashboardEnabled = new CheckBox();
+        _chkWebDashboardRequireLogin = new CheckBox();
+        _lblWebDashboardPort = new Label();
+        _txtWebDashboardPort = new TextBox();
+        _lblWebDashboardAddress = new Label();
+        _txtWebDashboardAddress = new TextBox();
+        _lblWebDashboardScheme = new Label();
+        _cmbWebDashboardScheme = new ComboBox();
+        _lblWebDashboardCertPath = new Label();
+        _cmbWebDashboardCertCredential = new ComboBox();
+        _lblWebDashboardLoginNote = new Label();
+        _btnSaveWebDashboard = new Button();
+        _lblWebDashboardUrl = new Label();
         _flpMappingButtons = new FlowLayoutPanel();
         _btnAddMapping = new Button();
         _btnRemoveMapping = new Button();
@@ -234,6 +277,7 @@ partial class MainForm
         _chkAutoStart = new CheckBox();
         _chkStartWithDashboard = new CheckBox();
         _chkRunAsAdmin = new CheckBox();
+        _chkAllowMultipleInstances = new CheckBox();
         _chkCollectDetails = new CheckBox();
         _chkCollectResponseDetails = new CheckBox();
         _chkDebugMode = new CheckBox();
@@ -331,6 +375,15 @@ partial class MainForm
         _tlpHeartbeats = new TableLayoutPanel();
         _lblHeartbeatInterval = new Label();
         _txtHeartbeatInterval = new TextBox();
+        _grpModelDiscovery = new GroupBox();
+        _tlpModelDiscovery = new TableLayoutPanel();
+        _chkEnableModelDiscovery = new CheckBox();
+        _lblDiscoveryInterval = new Label();
+        _txtDiscoveryInterval = new TextBox();
+        _lblDiscoveryOffline = new Label();
+        _txtDiscoveryOffline = new TextBox();
+        _lblDiscoveryStatus = new Label();
+        _btnDiscoverModelsNow = new Button();
         _grpPings = new GroupBox();
         _lstPings = new ListView();
         _colPingModel = new ColumnHeader();
@@ -359,6 +412,8 @@ partial class MainForm
 
         _grpListener.SuspendLayout();
         _tlpListener.SuspendLayout();
+        _grpWebDashboard.SuspendLayout();
+        _tlpWebDashboard.SuspendLayout();
         _grpLogging.SuspendLayout();
         _tlpLogging.SuspendLayout();
         _grpPerf.SuspendLayout();
@@ -382,6 +437,9 @@ partial class MainForm
         _logNonProxiedPage.SuspendLayout();
         _tlpNonProxiedLogs.SuspendLayout();
         _flpNonProxiedLogTop.SuspendLayout();
+        _logWebPage.SuspendLayout();
+        _tlpWebLogs.SuspendLayout();
+        _flpWebLogTop.SuspendLayout();
         _tlpLogs.SuspendLayout();
         _flpLogsButtons.SuspendLayout();
         _tabSettings.SuspendLayout();
@@ -413,6 +471,8 @@ partial class MainForm
         _tabHelp.SuspendLayout();
         _helpTabs.SuspendLayout();
         _tlpHeartbeats.SuspendLayout();
+        _grpModelDiscovery.SuspendLayout();
+        _tlpModelDiscovery.SuspendLayout();
         _flpHeartbeatButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).BeginInit();
         ((System.ComponentModel.ISupportInitialize)_nudTestRepeatPenalty).BeginInit();
@@ -421,6 +481,9 @@ partial class MainForm
         _grpDashMcp.SuspendLayout();
         _tlpDashMcp.SuspendLayout();
         _flpDashMcpButtons.SuspendLayout();
+        _grpDashWeb.SuspendLayout();
+        _tlpDashWeb.SuspendLayout();
+        _flpDashWebButtons.SuspendLayout();
         _flpStatusButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_dgvMappings).BeginInit();
         SuspendLayout();
@@ -460,9 +523,11 @@ partial class MainForm
         _tlpDashboard.Controls.Add(_grpPerf, 0, 0);
         _tlpDashboard.Controls.Add(_grpStatus, 0, 1);
         _tlpDashboard.Controls.Add(_grpDashMcp, 0, 2);
+        _tlpDashboard.Controls.Add(_grpDashWeb, 0, 3);
         _tlpDashboard.Dock = DockStyle.Top;
         _tlpDashboard.Name = "_tlpDashboard";
-        _tlpDashboard.RowCount = 4;
+        _tlpDashboard.RowCount = 5;
+        _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpDashboard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -657,6 +722,95 @@ partial class MainForm
         _btnDashMcpRestart.Size = new Size(88, 28);
         _btnDashMcpRestart.Text = "Restart";
         _btnDashMcpRestart.Click += BtnDashMcpRestart_Click;
+
+        // _grpDashWeb — runtime status of the web dashboard listener
+        _grpDashWeb.AutoSize = true;
+        _grpDashWeb.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpDashWeb.Controls.Add(_tlpDashWeb);
+        _grpDashWeb.Dock = DockStyle.Fill;
+        _grpDashWeb.Margin = new Padding(0, 0, 0, 8);
+        _grpDashWeb.Name = "_grpDashWeb";
+        _grpDashWeb.Padding = new Padding(6, 2, 6, 4);
+        _grpDashWeb.Text = "Web Server Status";
+
+        // _tlpDashWeb — 2 columns: caption AutoSize | value Percent; final row is the button strip
+        _tlpDashWeb.AutoSize = true;
+        _tlpDashWeb.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpDashWeb.ColumnCount = 2;
+        _tlpDashWeb.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpDashWeb.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpDashWeb.Controls.Add(_lblDashWebStatusCaption, 0, 0);
+        _tlpDashWeb.Controls.Add(_lblDashWebStatusValue, 1, 0);
+        _tlpDashWeb.Controls.Add(_lblDashWebUrlCaption, 0, 1);
+        _tlpDashWeb.Controls.Add(_lblDashWebUrlValue, 1, 1);
+        _tlpDashWeb.Controls.Add(_lblDashWebPortCaption, 0, 2);
+        _tlpDashWeb.Controls.Add(_lblDashWebPortValue, 1, 2);
+        _tlpDashWeb.Controls.Add(_flpDashWebButtons, 0, 3);
+        _tlpDashWeb.Dock = DockStyle.Fill;
+        _tlpDashWeb.Name = "_tlpDashWeb";
+        _tlpDashWeb.SetColumnSpan(_flpDashWebButtons, 2);
+
+        // _flpDashWebButtons
+        _flpDashWebButtons.AutoSize = true;
+        _flpDashWebButtons.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _flpDashWebButtons.Controls.Add(_btnDashWebStart);
+        _flpDashWebButtons.Controls.Add(_btnDashWebStop);
+        _flpDashWebButtons.Controls.Add(_btnDashWebRestart);
+        _flpDashWebButtons.Dock = DockStyle.Fill;
+        _flpDashWebButtons.Margin = new Padding(2, 6, 2, 0);
+        _flpDashWebButtons.Name = "_flpDashWebButtons";
+
+        _lblDashWebStatusCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebStatusCaption.AutoSize = true;
+        _lblDashWebStatusCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebStatusCaption.Name = "_lblDashWebStatusCaption";
+        _lblDashWebStatusCaption.Text = "Status:";
+
+        _lblDashWebStatusValue.AutoSize = true;
+        _lblDashWebStatusValue.Font = BoldValueFont;
+        _lblDashWebStatusValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebStatusValue.Name = "_lblDashWebStatusValue";
+        _lblDashWebStatusValue.Text = "Stopped";
+
+        _lblDashWebUrlCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebUrlCaption.AutoSize = true;
+        _lblDashWebUrlCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebUrlCaption.Name = "_lblDashWebUrlCaption";
+        _lblDashWebUrlCaption.Text = "URL:";
+
+        _lblDashWebUrlValue.AutoSize = true;
+        _lblDashWebUrlValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebUrlValue.Name = "_lblDashWebUrlValue";
+        _lblDashWebUrlValue.Text = "-";
+
+        _lblDashWebPortCaption.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDashWebPortCaption.AutoSize = true;
+        _lblDashWebPortCaption.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebPortCaption.Name = "_lblDashWebPortCaption";
+        _lblDashWebPortCaption.Text = "Listen IP / Port:";
+
+        _lblDashWebPortValue.AutoSize = true;
+        _lblDashWebPortValue.Margin = new Padding(4, 6, 4, 4);
+        _lblDashWebPortValue.Name = "_lblDashWebPortValue";
+        _lblDashWebPortValue.Text = "-";
+
+        _btnDashWebStart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebStart.Name = "_btnDashWebStart";
+        _btnDashWebStart.Size = new Size(80, 28);
+        _btnDashWebStart.Text = "Start";
+        _btnDashWebStart.Click += BtnDashWebStart_Click;
+
+        _btnDashWebStop.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebStop.Name = "_btnDashWebStop";
+        _btnDashWebStop.Size = new Size(80, 28);
+        _btnDashWebStop.Text = "Stop";
+        _btnDashWebStop.Click += BtnDashWebStop_Click;
+
+        _btnDashWebRestart.Margin = new Padding(2, 0, 2, 0);
+        _btnDashWebRestart.Name = "_btnDashWebRestart";
+        _btnDashWebRestart.Size = new Size(88, 28);
+        _btnDashWebRestart.Text = "Restart";
+        _btnDashWebRestart.Click += BtnDashWebRestart_Click;
 
         // _tlpStats
         _tlpStats.AutoSize = true;
@@ -885,6 +1039,7 @@ partial class MainForm
         _logSubTabs.Controls.Add(_logProxyPage);
         _logSubTabs.Controls.Add(_logMcpPage);
         _logSubTabs.Controls.Add(_logNonProxiedPage);
+        _logSubTabs.Controls.Add(_logWebPage);
         _logSubTabs.Controls.Add(_tabSysLogs);
                 _logSubTabs.Controls.Add(_logStreamsPage);
         _logSubTabs.Dock = DockStyle.Fill;
@@ -1044,6 +1199,76 @@ partial class MainForm
         _colNpDuration.Width = 60;
         _colNpBytes.Text = "Bytes (req/resp)";
         _colNpBytes.Width = 110;
+
+        // _logWebPage
+        _logWebPage.Controls.Add(_tlpWebLogs);
+        _logWebPage.Dock = DockStyle.Fill;
+        _logWebPage.Name = "_logWebPage";
+        _logWebPage.Padding = new Padding(3);
+        _logWebPage.Text = "Web";
+
+        // _tlpWebLogs — 1 column: filter bar AutoSize | list fills
+        _tlpWebLogs.ColumnCount = 1;
+        _tlpWebLogs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpWebLogs.Controls.Add(_flpWebLogTop, 0, 0);
+        _tlpWebLogs.Controls.Add(_lstWebLogs, 0, 1);
+        _tlpWebLogs.Dock = DockStyle.Fill;
+        _tlpWebLogs.Name = "_tlpWebLogs";
+        _tlpWebLogs.RowCount = 2;
+        _tlpWebLogs.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpWebLogs.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        // _flpWebLogTop
+        _flpWebLogTop.AutoSize = true;
+        _flpWebLogTop.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _flpWebLogTop.Controls.Add(_lblWebLogFilter);
+        _flpWebLogTop.Controls.Add(_txtWebLogFilter);
+        _flpWebLogTop.Dock = DockStyle.Fill;
+        _flpWebLogTop.FlowDirection = FlowDirection.LeftToRight;
+        _flpWebLogTop.Margin = new Padding(0, 0, 0, 4);
+        _flpWebLogTop.Name = "_flpWebLogTop";
+        _flpWebLogTop.WrapContents = false;
+
+        _lblWebLogFilter.Anchor = AnchorStyles.Left;
+        _lblWebLogFilter.AutoSize = true;
+        _lblWebLogFilter.Margin = new Padding(0, 5, 4, 0);
+        _lblWebLogFilter.Name = "_lblWebLogFilter";
+        _lblWebLogFilter.Text = "Filter:";
+
+        _txtWebLogFilter.Anchor = AnchorStyles.Left;
+        _txtWebLogFilter.Margin = new Padding(0, 0, 0, 0);
+        _txtWebLogFilter.Name = "_txtWebLogFilter";
+        _txtWebLogFilter.PlaceholderText = "Filter by method, path, or status";
+        _txtWebLogFilter.Size = new Size(320, 23);
+        _txtWebLogFilter.TextChanged += LogFilter_TextChanged;
+
+        // _lstWebLogs
+        _lstWebLogs.Columns.Add(_colWebTime);
+        _lstWebLogs.Columns.Add(_colWebMethod);
+        _lstWebLogs.Columns.Add(_colWebPath);
+        _lstWebLogs.Columns.Add(_colWebStatus);
+        _lstWebLogs.Columns.Add(_colWebDuration);
+        _lstWebLogs.Columns.Add(_colWebBytes);
+        _lstWebLogs.FullRowSelect = true;
+        _lstWebLogs.GridLines = true;
+        _lstWebLogs.Dock = DockStyle.Fill;
+        _lstWebLogs.Margin = new Padding(0);
+        _lstWebLogs.Name = "_lstWebLogs";
+        _lstWebLogs.View = View.Details;
+        _lstWebLogs.DoubleClick += LstWebLogs_DoubleClick;
+
+        _colWebTime.Text = "Time";
+        _colWebTime.Width = 105;
+        _colWebMethod.Text = "Method";
+        _colWebMethod.Width = 55;
+        _colWebPath.Text = "Path";
+        _colWebPath.Width = 260;
+        _colWebStatus.Text = "Status";
+        _colWebStatus.Width = 60;
+        _colWebDuration.Text = "ms";
+        _colWebDuration.Width = 60;
+        _colWebBytes.Text = "Bytes (req/resp)";
+        _colWebBytes.Width = 110;
 
         // _logStreamsPage
         _logStreamsPage.Controls.Add(_tlpStreams);
@@ -1276,7 +1501,7 @@ partial class MainForm
         _tlpSettings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpSettings.Location = new Point(8, 8);
         _tlpSettings.Name = "_tlpSettings";
-        _tlpSettings.RowCount = 25;
+        _tlpSettings.RowCount = 27;
         _tlpSettings.Size = new Size(660, 460);
 
         _tlpSettings.SetColumnSpan(_grpListener, 2);
@@ -1297,38 +1522,42 @@ partial class MainForm
         _tlpSettings.Controls.Add(_chkStartWithDashboard, 0, 7);
         _tlpSettings.SetColumnSpan(_chkRunAsAdmin, 2);
         _tlpSettings.Controls.Add(_chkRunAsAdmin, 0, 8);
+        _tlpSettings.SetColumnSpan(_chkAllowMultipleInstances, 2);
+        _tlpSettings.Controls.Add(_chkAllowMultipleInstances, 0, 9);
         _tlpSettings.SetColumnSpan(_chkCollectDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 9);
+        _tlpSettings.Controls.Add(_chkCollectDetails, 0, 10);
         _tlpSettings.SetColumnSpan(_chkCollectResponseDetails, 2);
-        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 10);
+        _tlpSettings.Controls.Add(_chkCollectResponseDetails, 0, 11);
         _tlpSettings.SetColumnSpan(_chkDebugMode, 2);
-        _tlpSettings.Controls.Add(_chkDebugMode, 0, 11);
+        _tlpSettings.Controls.Add(_chkDebugMode, 0, 12);
         _tlpSettings.SetColumnSpan(_chkIrTranslation, 2);
-        _tlpSettings.Controls.Add(_chkIrTranslation, 0, 13);
+        _tlpSettings.Controls.Add(_chkIrTranslation, 0, 14);
         _tlpSettings.SetColumnSpan(_grpNonProxiedCapture, 2);
-        _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 12);
+        _tlpSettings.Controls.Add(_grpNonProxiedCapture, 0, 13);
         _tlpSettings.SetColumnSpan(_chkPerformanceSampling, 2);
-        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 14);
+        _tlpSettings.Controls.Add(_chkPerformanceSampling, 0, 15);
         _tlpSettings.SetColumnSpan(_chkApiExplorer, 2);
-        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 15);
+        _tlpSettings.Controls.Add(_chkApiExplorer, 0, 16);
         _tlpSettings.SetColumnSpan(_lblApiExplorerUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 16);
+        _tlpSettings.Controls.Add(_lblApiExplorerUrl, 0, 17);
         _tlpSettings.SetColumnSpan(_lblApiSpecUrl, 2);
-        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 17);
+        _tlpSettings.Controls.Add(_lblApiSpecUrl, 0, 18);
         _tlpSettings.SetColumnSpan(_grpSseKeepAlive, 2);
-        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 18);
+        _tlpSettings.Controls.Add(_grpSseKeepAlive, 0, 19);
         _tlpSettings.SetColumnSpan(_grpLogging, 2);
-        _tlpSettings.Controls.Add(_grpLogging, 0, 19);
-        _tlpSettings.Controls.Add(_lblCompactionInstructionSet, 0, 20);
-        _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 20);
-        _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 21);
-        _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 21);
-        _tlpSettings.Controls.Add(_lblMaxConcurrentCompactions, 0, 22);
-        _tlpSettings.Controls.Add(_txtMaxConcurrentCompactions, 1, 22);
-        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 23);
+        _tlpSettings.Controls.Add(_grpLogging, 0, 20);
+        _tlpSettings.Controls.Add(_lblCompactionInstructionSet, 0, 21);
+        _tlpSettings.Controls.Add(_cmbCompactionInstructionSet, 1, 21);
+        _tlpSettings.Controls.Add(_lblCompactionTarget, 0, 22);
+        _tlpSettings.Controls.Add(_txtCompactionTarget, 1, 22);
+        _tlpSettings.Controls.Add(_lblMaxConcurrentCompactions, 0, 23);
+        _tlpSettings.Controls.Add(_txtMaxConcurrentCompactions, 1, 23);
+        _tlpSettings.Controls.Add(_chkCopilotCompactionRouting, 0, 24);
         _tlpSettings.SetColumnSpan(_chkCopilotCompactionRouting, 2);
-        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 24);
-        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 24);
+        _tlpSettings.Controls.Add(_lblCopilotCompactionModel, 0, 25);
+        _tlpSettings.Controls.Add(_cmbCopilotCompactionModel, 1, 25);
+        _tlpSettings.SetColumnSpan(_grpWebDashboard, 2);
+        _tlpSettings.Controls.Add(_grpWebDashboard, 0, 26);
 
         // _grpListener
         _grpListener.AutoSize = true;
@@ -1458,6 +1687,11 @@ partial class MainForm
         _chkRunAsAdmin.Margin = new Padding(4, 4, 4, 4);
         _chkRunAsAdmin.Name = "_chkRunAsAdmin";
         _chkRunAsAdmin.Text = "Run as administrator on launch (required to listen on addresses other than localhost)";
+
+        _chkAllowMultipleInstances.AutoSize = true;
+        _chkAllowMultipleInstances.Margin = new Padding(4, 4, 4, 4);
+        _chkAllowMultipleInstances.Name = "_chkAllowMultipleInstances";
+        _chkAllowMultipleInstances.Text = "Allow multiple instances (restart the application to apply)";
 
         _chkCollectDetails.AutoSize = true;
         _chkCollectDetails.Margin = new Padding(4, 4, 4, 4);
@@ -1592,6 +1826,7 @@ partial class MainForm
         _dgvMappings.Columns.Add(_colModelName);
         _dgvMappings.Columns.Add(_colInstructionSet);
         _dgvMappings.Columns.Add(_colReasoningEffort);
+        _dgvMappings.Columns.Add(_colMappingAuto);
         _dgvMappings.Dock = DockStyle.Fill;
         _dgvMappings.Margin = new Padding(4, 4, 4, 4);
         _dgvMappings.MinimumSize = new Size(0, 120);
@@ -1619,6 +1854,11 @@ partial class MainForm
         _colReasoningEffort.Name = "_colReasoningEffort";
         _colReasoningEffort.FillWeight = 90;
         _colReasoningEffort.DefaultCellStyle.NullValue = string.Empty;
+
+        _colMappingAuto.HeaderText = "Auto";
+        _colMappingAuto.Name = "_colMappingAuto";
+        _colMappingAuto.FillWeight = 55;
+        _colMappingAuto.DefaultCellStyle.NullValue = string.Empty;
 
         _flpMappingButtons.AutoSize = true;
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -1669,6 +1909,113 @@ partial class MainForm
         _btnSaveListener.Name = "_btnSaveListener";
         _btnSaveListener.Text = "Save";
         _btnSaveListener.Click += BtnSaveListener_Click;
+
+        // _grpWebDashboard
+        _grpWebDashboard.AutoSize = true;
+        _grpWebDashboard.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _grpWebDashboard.Controls.Add(_tlpWebDashboard);
+        _grpWebDashboard.Dock = DockStyle.Fill;
+        _grpWebDashboard.Margin = new Padding(4, 4, 4, 4);
+        _grpWebDashboard.Name = "_grpWebDashboard";
+        _grpWebDashboard.Text = "Web Dashboard";
+
+        // _tlpWebDashboard
+        _tlpWebDashboard.AutoSize = true;
+        _tlpWebDashboard.AutoSizeMode = AutoSizeMode.GrowOnly;
+        _tlpWebDashboard.ColumnCount = 2;
+        _tlpWebDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpWebDashboard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _tlpWebDashboard.Dock = DockStyle.Fill;
+        _tlpWebDashboard.Margin = new Padding(4);
+        _tlpWebDashboard.Name = "_tlpWebDashboard";
+        _tlpWebDashboard.RowCount = 9;
+        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardEnabled, 2);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardEnabled, 0, 0);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardPort, 0, 1);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardPort, 1, 1);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardAddress, 0, 2);
+        _tlpWebDashboard.Controls.Add(_txtWebDashboardAddress, 1, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardScheme, 0, 3);
+        _tlpWebDashboard.Controls.Add(_cmbWebDashboardScheme, 1, 3);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardCertPath, 0, 4);
+        _tlpWebDashboard.Controls.Add(_cmbWebDashboardCertCredential, 1, 4);
+        _tlpWebDashboard.SetColumnSpan(_chkWebDashboardRequireLogin, 2);
+        _tlpWebDashboard.Controls.Add(_chkWebDashboardRequireLogin, 0, 5);
+        _tlpWebDashboard.SetColumnSpan(_lblWebDashboardLoginNote, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardLoginNote, 0, 6);
+        _tlpWebDashboard.SetColumnSpan(_btnSaveWebDashboard, 2);
+        _tlpWebDashboard.Controls.Add(_btnSaveWebDashboard, 0, 7);
+        _tlpWebDashboard.SetColumnSpan(_lblWebDashboardUrl, 2);
+        _tlpWebDashboard.Controls.Add(_lblWebDashboardUrl, 0, 8);
+
+        _chkWebDashboardEnabled.AutoSize = true;
+        _chkWebDashboardEnabled.Margin = new Padding(4, 8, 4, 4);
+        _chkWebDashboardEnabled.Name = "_chkWebDashboardEnabled";
+        _chkWebDashboardEnabled.Text = "Enable web dashboard (restart the application to apply)";
+
+        _chkWebDashboardRequireLogin.AutoSize = true;
+        _chkWebDashboardRequireLogin.Margin = new Padding(4, 8, 4, 4);
+        _chkWebDashboardRequireLogin.Name = "_chkWebDashboardRequireLogin";
+        _chkWebDashboardRequireLogin.Text = "Require login (username/password) for the web dashboard";
+
+        _lblWebDashboardPort.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardPort.AutoSize = true;
+        _lblWebDashboardPort.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardPort.Name = "_lblWebDashboardPort";
+        _lblWebDashboardPort.Text = "Port (0 = proxy port + 1):";
+
+        _txtWebDashboardPort.Dock = DockStyle.Fill;
+        _txtWebDashboardPort.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardPort.Name = "_txtWebDashboardPort";
+
+        _lblWebDashboardAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardAddress.AutoSize = true;
+        _lblWebDashboardAddress.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardAddress.Name = "_lblWebDashboardAddress";
+        _lblWebDashboardAddress.Text = "Listen Address:";
+
+        _txtWebDashboardAddress.Dock = DockStyle.Fill;
+        _txtWebDashboardAddress.Margin = new Padding(4, 6, 4, 4);
+        _txtWebDashboardAddress.Name = "_txtWebDashboardAddress";
+
+        _lblWebDashboardScheme.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardScheme.AutoSize = true;
+        _lblWebDashboardScheme.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardScheme.Name = "_lblWebDashboardScheme";
+        _lblWebDashboardScheme.Text = "Scheme:";
+
+        _cmbWebDashboardScheme.Dock = DockStyle.Fill;
+        _cmbWebDashboardScheme.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbWebDashboardScheme.Items.AddRange(new object[] { "Http", "Https" });
+        _cmbWebDashboardScheme.Margin = new Padding(4, 6, 4, 4);
+        _cmbWebDashboardScheme.Name = "_cmbWebDashboardScheme";
+
+        _lblWebDashboardCertPath.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblWebDashboardCertPath.AutoSize = true;
+        _lblWebDashboardCertPath.Margin = new Padding(4, 8, 8, 4);
+        _lblWebDashboardCertPath.Name = "_lblWebDashboardCertPath";
+        _lblWebDashboardCertPath.Text = "Certificate Credential (HTTPS only):";
+
+                _cmbWebDashboardCertCredential.Dock = DockStyle.Fill;
+                _cmbWebDashboardCertCredential.DropDownStyle = ComboBoxStyle.DropDownList;
+                _cmbWebDashboardCertCredential.Margin = new Padding(4, 6, 4, 4);
+                _cmbWebDashboardCertCredential.Name = "_cmbWebDashboardCertCredential";
+
+                _lblWebDashboardLoginNote.AutoSize = true;
+        _lblWebDashboardLoginNote.Margin = new Padding(4, 8, 4, 4);
+        _lblWebDashboardLoginNote.Name = "_lblWebDashboardLoginNote";
+        _lblWebDashboardLoginNote.Text = "Manage dashboard logins in the Users tab; API keys grant model access only. Turning off login gives full dashboard access to anyone who can reach it.";
+
+        _btnSaveWebDashboard.Anchor = AnchorStyles.Right;
+        _btnSaveWebDashboard.AutoSize = true;
+        _btnSaveWebDashboard.Margin = new Padding(4, 8, 4, 4);
+        _btnSaveWebDashboard.Name = "_btnSaveWebDashboard";
+        _btnSaveWebDashboard.Text = "Save";
+        _btnSaveWebDashboard.Click += BtnSaveWebDashboard_Click;
+
+        _lblWebDashboardUrl.AutoSize = true;
+        _lblWebDashboardUrl.Margin = new Padding(4, 4, 4, 8);
+        _lblWebDashboardUrl.Name = "_lblWebDashboardUrl";
 
         // _grpLogging
         _grpLogging.AutoSize = true;
@@ -2088,6 +2435,7 @@ partial class MainForm
         _tlpMcp.Controls.Add(_chkMcpCollectResponse, 0, 7);
         _tlpMcp.Controls.Add(_lblMcpStatusCaption, 0, 8);
         _tlpMcp.Controls.Add(_lblMcpStatus, 1, 8);
+        _tlpMcp.Controls.Add(_lblMcpAccessHint, 0, 9);
         _tlpMcp.Controls.Add(_flpMcpButtons, 0, 10);
         _tlpMcp.Dock = DockStyle.Fill;
         _tlpMcp.Name = "_tlpMcp";
@@ -2109,6 +2457,7 @@ partial class MainForm
         _tlpMcp.SetColumnSpan(_chkMcpCollectResponse, 2);
         _tlpMcp.SetColumnSpan(_lblMcpApiExplorerUrl, 2);
         _tlpMcp.SetColumnSpan(_lblMcpSpecUrl, 2);
+        _tlpMcp.SetColumnSpan(_lblMcpAccessHint, 2);
         _tlpMcp.SetColumnSpan(_flpMcpButtons, 2);
 
         _chkMcpEnabled.AccessibleName = "Enable MCP server";
@@ -2134,6 +2483,14 @@ partial class MainForm
         _lblMcpSpecUrl.Margin = new Padding(0, 0, 0, 8);
         _lblMcpSpecUrl.Name = "_lblMcpSpecUrl";
         _lblMcpSpecUrl.Text = "OpenAPI Spec URL: (enable to see URL)";
+
+        _lblMcpAccessHint.AutoSize = false;
+        _lblMcpAccessHint.Dock = DockStyle.Fill;
+        _lblMcpAccessHint.ForeColor = SystemColors.GrayText;
+        _lblMcpAccessHint.Margin = new Padding(0, 8, 0, 0);
+        _lblMcpAccessHint.Name = "_lblMcpAccessHint";
+        _lblMcpAccessHint.Text = "Clients authenticate with the configured shared credential or with a proxy API key "
+            + "granted MCP access in the Users tab. Admin users always have access; Read Only keys need the grant.";
 
         _lblMcpListenAddress.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblMcpListenAddress.AutoSize = true;
@@ -2458,19 +2815,89 @@ partial class MainForm
         _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpHeartbeats.Dock = DockStyle.Fill;
         _tlpHeartbeats.Name = "_tlpHeartbeats";
-        _tlpHeartbeats.RowCount = 4;
+        _tlpHeartbeats.RowCount = 5;
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.Controls.Add(_lblHeartbeatInterval, 0, 0);
         _tlpHeartbeats.Controls.Add(_txtHeartbeatInterval, 1, 0);
+        _tlpHeartbeats.SetColumnSpan(_grpModelDiscovery, 2);
+        _tlpHeartbeats.Controls.Add(_grpModelDiscovery, 0, 1);
         _tlpHeartbeats.SetColumnSpan(_grpPings, 2);
-        _tlpHeartbeats.Controls.Add(_grpPings, 0, 1);
+        _tlpHeartbeats.Controls.Add(_grpPings, 0, 2);
         _tlpHeartbeats.SetColumnSpan(_grpKeepAlives, 2);
-        _tlpHeartbeats.Controls.Add(_grpKeepAlives, 0, 2);
+        _tlpHeartbeats.Controls.Add(_grpKeepAlives, 0, 3);
         _tlpHeartbeats.SetColumnSpan(_flpHeartbeatButtons, 2);
-        _tlpHeartbeats.Controls.Add(_flpHeartbeatButtons, 0, 3);
+        _tlpHeartbeats.Controls.Add(_flpHeartbeatButtons, 0, 4);
+
+        // Model auto-discovery: the same three knobs the web dashboard exposes. They live on this
+        // tab because it is the app's "background polling" surface.
+        _grpModelDiscovery.Dock = DockStyle.Fill;
+        _grpModelDiscovery.Margin = new Padding(4, 4, 4, 4);
+        _grpModelDiscovery.Name = "_grpModelDiscovery";
+        _grpModelDiscovery.Padding = new Padding(8);
+        _grpModelDiscovery.Text = "Model Auto-Discovery (register an upstream's models automatically)";
+
+        _tlpModelDiscovery.ColumnCount = 4;
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        _tlpModelDiscovery.Dock = DockStyle.Fill;
+        _tlpModelDiscovery.Name = "_tlpModelDiscovery";
+        _tlpModelDiscovery.RowCount = 3;
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.Controls.Add(_chkEnableModelDiscovery, 0, 0);
+        _tlpModelDiscovery.SetColumnSpan(_chkEnableModelDiscovery, 4);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryInterval, 0, 1);
+        _tlpModelDiscovery.Controls.Add(_txtDiscoveryInterval, 1, 1);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryOffline, 2, 1);
+        _tlpModelDiscovery.Controls.Add(_txtDiscoveryOffline, 3, 1);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryStatus, 0, 2);
+        _tlpModelDiscovery.SetColumnSpan(_lblDiscoveryStatus, 3);
+        _tlpModelDiscovery.Controls.Add(_btnDiscoverModelsNow, 3, 2);
+        _grpModelDiscovery.Controls.Add(_tlpModelDiscovery);
+
+        _chkEnableModelDiscovery.AutoSize = true;
+        _chkEnableModelDiscovery.Margin = new Padding(0, 4, 0, 4);
+        _chkEnableModelDiscovery.Name = "_chkEnableModelDiscovery";
+        _chkEnableModelDiscovery.Text = "Enable auto-discovery for models marked auto-managed";
+
+        _lblDiscoveryInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryInterval.AutoSize = true;
+        _lblDiscoveryInterval.Margin = new Padding(0, 8, 8, 4);
+        _lblDiscoveryInterval.Name = "_lblDiscoveryInterval";
+        _lblDiscoveryInterval.Text = "Scan interval (seconds):";
+
+        _txtDiscoveryInterval.Dock = DockStyle.Fill;
+        _txtDiscoveryInterval.Margin = new Padding(0, 6, 12, 6);
+        _txtDiscoveryInterval.Name = "_txtDiscoveryInterval";
+
+        _lblDiscoveryOffline.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryOffline.AutoSize = true;
+        _lblDiscoveryOffline.Margin = new Padding(0, 8, 8, 4);
+        _lblDiscoveryOffline.Name = "_lblDiscoveryOffline";
+        _lblDiscoveryOffline.Text = "Disable after missing (minutes):";
+
+        _txtDiscoveryOffline.Dock = DockStyle.Fill;
+        _txtDiscoveryOffline.Margin = new Padding(0, 6, 0, 6);
+        _txtDiscoveryOffline.Name = "_txtDiscoveryOffline";
+
+        _lblDiscoveryStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryStatus.AutoEllipsis = true;
+        _lblDiscoveryStatus.Margin = new Padding(0, 6, 8, 0);
+        _lblDiscoveryStatus.Name = "_lblDiscoveryStatus";
+        _lblDiscoveryStatus.Text = "Auto-discovery has not scanned yet.";
+
+        _btnDiscoverModelsNow.AutoSize = true;
+        _btnDiscoverModelsNow.Margin = new Padding(0, 4, 0, 0);
+        _btnDiscoverModelsNow.Name = "_btnDiscoverModelsNow";
+        _btnDiscoverModelsNow.Text = "Discover Now";
+        _btnDiscoverModelsNow.Click += BtnDiscoverModelsNow_Click;
 
         _lblHeartbeatInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblHeartbeatInterval.AutoSize = true;
@@ -2637,6 +3064,11 @@ partial class MainForm
         _tabDashboard.ResumeLayout(false);
         _logProxyPage.ResumeLayout(false);
         _logMcpPage.ResumeLayout(false);
+        _logWebPage.ResumeLayout(false);
+        _tlpWebLogs.ResumeLayout(false);
+        _tlpWebLogs.PerformLayout();
+        _flpWebLogTop.ResumeLayout(false);
+        _flpWebLogTop.PerformLayout();
         _splitStreams.ResumeLayout(false);
         _tlpStreams.ResumeLayout(false);
         _logStreamsPage.ResumeLayout(false);
@@ -2679,6 +3111,10 @@ partial class MainForm
         _tlpDashMcp.PerformLayout();
         _grpDashMcp.ResumeLayout(false);
         _grpDashMcp.PerformLayout();
+        _tlpDashWeb.ResumeLayout(false);
+        _tlpDashWeb.PerformLayout();
+        _grpDashWeb.ResumeLayout(false);
+        _grpDashWeb.PerformLayout();
         _tabTest.ResumeLayout(false);
         _tlpTestOuter.ResumeLayout(false);
         _tlpTestOuter.PerformLayout();
@@ -2717,8 +3153,16 @@ partial class MainForm
         _grpListener.PerformLayout();
         _tlpListener.ResumeLayout(false);
         _tlpListener.PerformLayout();
+        _grpWebDashboard.ResumeLayout(false);
+        _grpWebDashboard.PerformLayout();
+        _tlpWebDashboard.ResumeLayout(false);
+        _tlpWebDashboard.PerformLayout();
         _tlpHeartbeats.ResumeLayout(false);
         _tlpHeartbeats.PerformLayout();
+        _tlpModelDiscovery.ResumeLayout(false);
+        _tlpModelDiscovery.PerformLayout();
+        _grpModelDiscovery.ResumeLayout(false);
+        _grpModelDiscovery.PerformLayout();
         _grpPings.ResumeLayout(false);
         _grpKeepAlives.ResumeLayout(false);
         _flpHeartbeatButtons.ResumeLayout(false);
@@ -2763,6 +3207,19 @@ partial class MainForm
     private Button _btnDashMcpStart;
     private Button _btnDashMcpStop;
     private Button _btnDashMcpRestart;
+
+    private GroupBox _grpDashWeb;
+    private TableLayoutPanel _tlpDashWeb;
+    private Label _lblDashWebStatusCaption;
+    private Label _lblDashWebStatusValue;
+    private Label _lblDashWebUrlCaption;
+    private Label _lblDashWebUrlValue;
+    private Label _lblDashWebPortCaption;
+    private Label _lblDashWebPortValue;
+    private FlowLayoutPanel _flpDashWebButtons;
+    private Button _btnDashWebStart;
+    private Button _btnDashWebStop;
+    private Button _btnDashWebRestart;
     private TableLayoutPanel _tlpStats;
     private Label _lblTotalRequestsCaption;
     private Label _lblTotalRequestsValue;
@@ -2827,6 +3284,18 @@ partial class MainForm
     private ColumnHeader _colNpStatus;
     private ColumnHeader _colNpDuration;
     private ColumnHeader _colNpBytes;
+    private TabPage _logWebPage;
+    private TableLayoutPanel _tlpWebLogs;
+    private FlowLayoutPanel _flpWebLogTop;
+    private Label _lblWebLogFilter;
+    private TextBox _txtWebLogFilter;
+    private ListView _lstWebLogs;
+    private ColumnHeader _colWebTime;
+    private ColumnHeader _colWebMethod;
+    private ColumnHeader _colWebPath;
+    private ColumnHeader _colWebStatus;
+    private ColumnHeader _colWebDuration;
+    private ColumnHeader _colWebBytes;
         private TabPage _logStreamsPage;
         private TableLayoutPanel _tlpStreams;
         private ListView _lstStreams;
@@ -2880,6 +3349,7 @@ partial class MainForm
     private DataGridViewTextBoxColumn _colModelName;
     private DataGridViewTextBoxColumn _colInstructionSet;
     private DataGridViewTextBoxColumn _colReasoningEffort;
+    private DataGridViewTextBoxColumn _colMappingAuto;
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
@@ -2889,9 +3359,25 @@ partial class MainForm
     private GroupBox _grpListener;
     private TableLayoutPanel _tlpListener;
     private Button _btnSaveListener;
+    private GroupBox _grpWebDashboard;
+    private TableLayoutPanel _tlpWebDashboard;
+    private CheckBox _chkWebDashboardEnabled;
+    private CheckBox _chkWebDashboardRequireLogin;
+    private Label _lblWebDashboardPort;
+    private TextBox _txtWebDashboardPort;
+    private Label _lblWebDashboardAddress;
+    private TextBox _txtWebDashboardAddress;
+    private Label _lblWebDashboardScheme;
+    private ComboBox _cmbWebDashboardScheme;
+    private Label _lblWebDashboardCertPath;
+    private ComboBox _cmbWebDashboardCertCredential;
+    private Label _lblWebDashboardLoginNote;
+    private Button _btnSaveWebDashboard;
+    private Label _lblWebDashboardUrl;
     private CheckBox _chkAutoStart;
     private CheckBox _chkStartWithDashboard;
     private CheckBox _chkRunAsAdmin;
+    private CheckBox _chkAllowMultipleInstances;
     private CheckBox _chkCollectDetails;
     private CheckBox _chkCollectResponseDetails;
     private CheckBox _chkDebugMode;
@@ -2986,6 +3472,7 @@ partial class MainForm
     private CheckBox _chkMcpCollectResponse;
     private Label _lblMcpApiExplorerUrl;
     private Label _lblMcpSpecUrl;
+    private Label _lblMcpAccessHint;
     private Label _lblMcpListenAddress;
     private ComboBox _cboMcpListenAddress;
     private Label _lblMcpPort;
@@ -3036,6 +3523,15 @@ partial class MainForm
     private TableLayoutPanel _tlpHeartbeats;
     private Label _lblHeartbeatInterval;
     private TextBox _txtHeartbeatInterval;
+    private GroupBox _grpModelDiscovery;
+    private TableLayoutPanel _tlpModelDiscovery;
+    private CheckBox _chkEnableModelDiscovery;
+    private Label _lblDiscoveryInterval;
+    private TextBox _txtDiscoveryInterval;
+    private Label _lblDiscoveryOffline;
+    private TextBox _txtDiscoveryOffline;
+    private Label _lblDiscoveryStatus;
+    private Button _btnDiscoverModelsNow;
     private GroupBox _grpPings;
     private ListView _lstPings;
     private ColumnHeader _colPingModel;

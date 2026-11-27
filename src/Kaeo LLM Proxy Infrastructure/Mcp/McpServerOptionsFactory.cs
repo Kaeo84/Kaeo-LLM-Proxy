@@ -9,6 +9,15 @@ using Serilog;
 namespace Kaeo.LlmProxy.Infrastructure.Mcp;
 
 /// <summary>
+/// What one MCP session is built with: its server options, plus the module key behind every
+/// registered tool name so the host can re-check the caller's per-module MCP grant on each call
+/// (a grant revoked mid-session must take effect without waiting for a client reconnect).
+/// </summary>
+public sealed record McpSessionOptions(
+    McpServerOptions Options,
+    IReadOnlyDictionary<string, string?> ToolModules);
+
+/// <summary>
 /// Builds fresh <see cref="McpServerOptions"/> for each new MCP session: server info plus every
 /// <c>[McpServerTool]</c> method found on the tool targets contributed by loaded modules.
 /// Targets read their own enabled/disabled state live at invocation time, so on-the-fly toggling
@@ -28,8 +37,10 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
     /// <summary>
     /// Builds options for the session described by <paramref name="session"/>, handing the
     /// session info to each module so targets can attribute activity to the calling client.
+    /// Targets from modules outside the session's <see cref="McpSessionInfo.AllowedModules"/>
+    /// grant are not registered, so a narrowed user never sees those tools in <c>tools/list</c>.
     /// </summary>
-    public McpServerOptions Build(McpSessionInfo session)
+    public McpSessionOptions Build(McpSessionInfo session)
     {
         var options = new McpServerOptions
         {
@@ -43,14 +54,25 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                 "explain when and how to call it.",
         };
 
+        Dictionary<string, string?> toolModules = new(StringComparer.Ordinal);
+
         // L27: track registered tool names so a cross-module duplicate is reported explicitly
         // (naming the conflict) rather than silently first-wins via the collection's Add throw.
         // Descriptors are not cached across sessions: McpServerTool.Create binds the per-session
         // target instance and the SDK exposes no target-rebinding API.
         HashSet<string> registeredToolNames = new(StringComparer.Ordinal);
 
-        foreach (object target in _moduleHost.GetMcpToolTargets(session))
+        foreach ((string? moduleKey, object target) in _moduleHost.GetMcpToolTargetsByModule(session))
         {
+            if (!IsModuleAllowed(session, moduleKey))
+            {
+                Log.Debug(
+                    "Skipping MCP tool target {Target}: module {Module} is outside this session's MCP grant.",
+                    target.GetType().FullName,
+                    moduleKey ?? "(unidentified)");
+                continue;
+            }
+
             MethodInfo[] methods;
             try
             {
@@ -83,6 +105,7 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
                     McpServerPrimitiveCollection<McpServerTool> toolCollection =
                         options.ToolCollection ??= [];
                     toolCollection.Add(McpServerTool.Create(method, target));
+                    toolModules[toolName] = moduleKey;
                 }
                 catch (Exception ex)
                 {
@@ -92,6 +115,21 @@ internal sealed class McpServerOptionsFactory(ModuleHost moduleHost)
             }
         }
 
-        return options;
+        return new McpSessionOptions(options, toolModules);
+    }
+
+    /// <summary>
+    /// True when the session may use the module. A null grant means every module; otherwise the
+    /// module key must be listed, and a target whose module cannot be identified fails closed.
+    /// </summary>
+    internal static bool IsModuleAllowed(McpSessionInfo session, string? moduleKey)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        if (session.AllowedModules is not { Count: > 0 } allowed)
+            return true;
+
+        return !string.IsNullOrWhiteSpace(moduleKey)
+            && allowed.Contains(moduleKey, StringComparer.OrdinalIgnoreCase);
     }
 }

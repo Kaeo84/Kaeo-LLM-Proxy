@@ -220,6 +220,56 @@ public class PassthroughToolCallExtractionTests
     }
 
     [Fact]
+    public void SanitizerLogRecordsStructuredCallsItStrips()
+    {
+        string body =
+            "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"test-model\"," +
+            "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"two calls\"," +
+            "\"tool_calls\":[" +
+            "{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{}\"}}," +
+            "{\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"delete_repo\",\"arguments\":\"{}\"}}]}," +
+            "\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}";
+
+        ToolCallSanitizerLog recorder = new(new HashSet<string>(StringComparer.Ordinal) { "get_weather" });
+        OllamaProxyHandler.TransformNonStreamingChatBody(
+            body, ThinkingMode.LeaveInline, extractToolCalls: true,
+            declaredToolNames: new HashSet<string>(StringComparer.Ordinal) { "get_weather" },
+            sanitizerLog: recorder);
+
+        Assert.Equal(["delete_repo"], recorder.Dropped);
+        Assert.Contains("delete_repo", recorder.Describe());
+    }
+
+    [Fact]
+    public void SanitizerLogRecordsInlineCallsItRefusesToPromote()
+    {
+        ToolCallSanitizerLog recorder = new(new HashSet<string>(StringComparer.Ordinal) { "get_weather" });
+        OllamaProxyHandler.TransformNonStreamingChatBody(
+            ChatBody("ok " + WeatherToolCall + OtherToolCall),
+            ThinkingMode.LeaveInline,
+            extractToolCalls: true,
+            declaredToolNames: new HashSet<string>(StringComparer.Ordinal) { "get_weather" },
+            sanitizerLog: recorder);
+
+        Assert.Equal(["lookup_time"], recorder.Dropped);
+    }
+
+    [Fact]
+    public void SanitizerLogStaysEmptyWhenEveryCallIsDeclared()
+    {
+        ToolCallSanitizerLog recorder = new(new HashSet<string>(StringComparer.Ordinal) { "get_weather" });
+        OllamaProxyHandler.TransformNonStreamingChatBody(
+            ChatBody("ok " + WeatherToolCall),
+            ThinkingMode.LeaveInline,
+            extractToolCalls: true,
+            declaredToolNames: new HashSet<string>(StringComparer.Ordinal) { "get_weather" },
+            sanitizerLog: recorder);
+
+        Assert.Empty(recorder.Dropped);
+        Assert.Null(recorder.Describe());
+    }
+
+    [Fact]
     public void ExtractDeclaredToolNamesReadsRequestToolFunctions()
     {
         string request =

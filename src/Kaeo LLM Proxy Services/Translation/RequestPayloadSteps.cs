@@ -442,3 +442,31 @@ internal sealed class ComposeMessagesStep : IRequestPayloadStep
     private static void Note(RequestPayloadContext context, string note)
         => context.PendingNotes.Add(note);
 }
+
+/// <summary>
+/// Guarantees a <c>content</c> member on every message. Runs after the conversation-shape step so the
+/// prefill rule still sees the client's original turn, and only rewrites a body that actually needs
+/// it — see <see cref="MessageContentRepair"/> for why a null or absent content is a hard 400 on
+/// strict providers.
+/// </summary>
+internal sealed class MessageContentStep : IRequestPayloadStep
+{
+    public string Name => "message-content";
+
+    public bool Applies(RequestPayloadContext context)
+        => context.Payload["messages"] is JsonArray messages && MessageContentRepair.NeedsRepair(messages);
+
+    public void Apply(RequestPayloadContext context)
+    {
+        if (context.Payload["messages"] is not JsonArray messages)
+            return;
+
+        int repaired = MessageContentRepair.Repair(messages);
+        if (repaired == 0)
+            return;
+
+        context.Rewritten = true;
+        context.PendingNotes.Add(
+            $"messages: added an empty content field to {repaired} message(s) that had none (strict upstream compatibility)");
+    }
+}

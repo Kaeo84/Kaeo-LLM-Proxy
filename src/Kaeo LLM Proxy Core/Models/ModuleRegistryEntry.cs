@@ -29,4 +29,13 @@ internal sealed class ModuleRegistryEntry
 
     /// <summary>Last load/initialization error, if any; null when the module loads cleanly.</summary>
     public string? LastError { get; set; }
+
+    /// <summary>
+    /// Signature state at the last successful verification: Unsigned, Signed, or Invalid
+    /// (see <see cref="Kaeo.LlmProxy.Core.Modules.ModuleSignatureStates"/>).
+    /// </summary>
+    public string SignatureState { get; set; } = Kaeo.LlmProxy.Core.Modules.ModuleSignatureStates.Unsigned;
+
+    /// <summary>Key id (SHA-256 prefix of the signer's public key) when signed; otherwise null.</summary>
+    public string? SignerKeyId { get; set; }
 }

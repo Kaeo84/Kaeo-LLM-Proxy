@@ -27,7 +27,10 @@ internal sealed class PerformanceService : IDisposable
     /// <summary>CPU usage as a percentage (0–100) sampled over the last interval.</summary>
     public double CpuPercent { get; private set; }
 
-    /// <summary>Private memory set of the current process in megabytes.</summary>
+    /// <summary>
+    /// Memory used by the current process in megabytes: private bytes on Windows, resident set
+    /// size elsewhere (macOS/Linux report 0 for <see cref="Process.PrivateMemorySize64"/>).
+    /// </summary>
     public double MemoryMb { get; private set; }
 
     /// <summary>Gen-2 GC collection count at the last sample.</summary>
@@ -102,7 +105,13 @@ internal sealed class PerformanceService : IDisposable
             _lastCpuTime = cpuNow;
             _lastSampleTime = now;
 
-            MemoryMb = _process.PrivateMemorySize64 / (1024.0 * 1024.0);
+            // PrivateMemorySize64 only reports on Windows; macOS and Linux return 0, so fall
+            // back to the resident set size to keep the dashboard readout meaningful there.
+            long memoryBytes = _process.PrivateMemorySize64;
+            if (memoryBytes <= 0)
+                memoryBytes = _process.WorkingSet64;
+
+            MemoryMb = memoryBytes / (1024.0 * 1024.0);
 
             Gen2Collections = GC.CollectionCount(2);
 
@@ -117,7 +126,7 @@ internal sealed class PerformanceService : IDisposable
             if (_sampleCount % DiagLogEveryNSamples == 0)
             {
                 Log.Debug(
-                    "Perf diag: PrivateMem={PrivateMemMb:F1}MB Heap={HeapMb:F1}MB LOH={LohMb:F1}MB " +
+                    "Perf diag: Mem={MemMb:F1}MB Heap={HeapMb:F1}MB LOH={LohMb:F1}MB " +
                     "Gen0={Gen0} Gen1={Gen1} Gen2={Gen2} CPU={Cpu:F1}%",
                     MemoryMb,
                     GC.GetTotalMemory(false) / (1024.0 * 1024.0),

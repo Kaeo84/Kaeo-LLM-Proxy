@@ -69,7 +69,7 @@ public sealed class HeartbeatMonitorDisposalTests : IDisposable
         _database = new AppDatabase(settings.Logging);
         _statistics = new StatisticsService(maxEntries: 50);
         _moduleHost = new ModuleHost(_database, settings);
-        _mcpServer = new McpServerService(_database, settings, _moduleHost, _statistics);
+        _mcpServer = new McpServerService(_database, settings, _moduleHost, _statistics, new ProxyAccessService(_database));
         _handler = new OllamaProxyHandler(settings, _statistics, _moduleHost, _mcpServer);
     }
 

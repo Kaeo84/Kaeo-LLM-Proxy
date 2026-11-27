@@ -52,7 +52,7 @@ public sealed class RequestLoggingCoverageTests : IAsyncDisposable
         _statistics = new StatisticsService(maxEntries: 500, store: _database);
         _nonProxiedStatistics = new StatisticsService(maxEntries: 500, store: _database, source: LogSource.NonProxied);
         _moduleHost = new ModuleHost(_database, _settings);
-        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _statistics);
+        _mcpServer = new McpServerService(_database, _settings, _moduleHost, _statistics, new ProxyAccessService(_database));
 
         _handler = new OllamaProxyHandler(_settings, _statistics, _moduleHost, _mcpServer, _nonProxiedStatistics);
         _server = new ProxyServer(_handler);

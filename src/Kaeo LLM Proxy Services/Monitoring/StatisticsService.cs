@@ -282,6 +282,7 @@ internal class StatisticsService : IDisposable
         OllamaPath = source.OllamaPath,
         UpstreamPath = source.UpstreamPath,
         Model = source.Model,
+        UserId = source.UserId,
         // Carried so the log list can show "Original → Effective (compact redirect)" for entries
         // still only in memory; dropping it here made the redirect visible only after a reload.
         OriginalModel = source.OriginalModel,
@@ -620,6 +621,22 @@ internal class StatisticsService : IDisposable
         {
             Log.Warning(ex, "Log retention cleanup failed");
         }
+    }
+
+    /// <summary>
+    /// Waits (briefly) for queued log entries to reach the database. Best effort by design: a
+    /// caller shutting down its own logging path wants its last entries persisted, but must never
+    /// hang on a stalled writer. No-op when the service has no store.
+    /// </summary>
+    public async Task FlushAsync(TimeSpan? timeout = null)
+    {
+        if (_persistChannel is null)
+            return;
+
+        TimeSpan limit = timeout ?? TimeSpan.FromSeconds(2);
+        long deadline = Stopwatch.GetTimestamp() + (long)(limit.TotalSeconds * Stopwatch.Frequency);
+        while (_persistChannel.Reader.Count > 0 && Stopwatch.GetTimestamp() < deadline)
+            await Task.Delay(15).ConfigureAwait(false);
     }
 
     public void Dispose()

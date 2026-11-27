@@ -94,6 +94,7 @@ internal sealed class OllamaChatClient : IChatClient
             HttpMethod.Post,
             BuildEndpointUri("/api/chat"));
         request.Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+        HttpHelpers.StampClientIdentity(request);
         if (!string.IsNullOrWhiteSpace(_apiKey))
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
 

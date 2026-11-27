@@ -1,0 +1,535 @@
+/* Kaeo LLM Proxy dashboard. Theme via CSS variables: auto (prefers-color-scheme) with a
+   manual light/dark override on <html data-theme>. No frameworks, no build step. */
+
+:root {
+    --bg: #f4f5f7;
+    --bg-panel: #ffffff;
+    --bg-inset: #eceef1;
+    --fg: #1c1e21;
+    --fg-muted: #5c6370;
+    --border: #d4d8de;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --err: #dc2626;
+    --pill-bg: #e5e9ef;
+    --row-hover: #eef2f7;
+    --shadow: 0 4px 18px rgba(0, 0, 0, .12);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg: #16181d;
+        --bg-panel: #1f2229;
+        --bg-inset: #262a33;
+        --fg: #e6e8ec;
+        --fg-muted: #9aa3b2;
+        --border: #363c48;
+        --accent: #4f8ef7;
+        --accent-fg: #0b1220;
+        --ok: #34d399;
+        --warn: #fbbf24;
+        --err: #f87171;
+        --pill-bg: #2c313c;
+        --row-hover: #262b35;
+        --shadow: 0 4px 18px rgba(0, 0, 0, .5);
+    }
+}
+
+:root[data-theme="dark"] {
+    --bg: #16181d;
+    --bg-panel: #1f2229;
+    --bg-inset: #262a33;
+    --fg: #e6e8ec;
+    --fg-muted: #9aa3b2;
+    --border: #363c48;
+    --accent: #4f8ef7;
+    --accent-fg: #0b1220;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --pill-bg: #2c313c;
+    --row-hover: #262b35;
+    --shadow: 0 4px 18px rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* ---- top bar ---- */
+#topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 8px 16px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+}
+
+.brand { font-weight: 700; font-size: 16px; white-space: nowrap; }
+.brand span { color: var(--accent); }
+
+#tabs { display: flex; gap: 2px; flex-wrap: wrap; }
+#tabs a {
+    padding: 6px 12px;
+    border-radius: 6px;
+    color: var(--fg-muted);
+    text-decoration: none;
+    font-weight: 600;
+    white-space: nowrap;
+}
+#tabs a:hover { background: var(--row-hover); color: var(--fg); }
+#tabs a.active { background: var(--accent); color: var(--accent-fg); }
+
+.top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* ---- layout ---- */
+main { padding: 16px; max-width: 1400px; margin: 0 auto; }
+.tab { display: none; }
+.tab.active { display: block; }
+h2 { font-size: 15px; margin: 20px 0 8px; }
+.muted { color: var(--fg-muted); font-size: 12px; }
+.hidden { display: none !important; }
+
+/* The dashboard page fills the viewport so a tab's table can stretch to the bottom edge
+   (a horizontal scrollbar parked mid-page looks like a half-finished layout). Tabs scroll
+   themselves vertically when their content is taller than the window. */
+body.dashboard { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+body.dashboard #topbar { flex: none; }
+body.dashboard main {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+body.dashboard .tab.active {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+.toolbar label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.toolbar .toolbar-right { margin-left: auto; }
+
+/* ---- controls ---- */
+button {
+    font: inherit;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--fg);
+    cursor: pointer;
+}
+button:hover { background: var(--row-hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary:hover { filter: brightness(1.1); }
+button.ghost { border-color: transparent; background: transparent; }
+button.ghost:hover { background: var(--row-hover); }
+button.danger { color: var(--err); border-color: var(--err); }
+button:disabled { opacity: .5; cursor: default; }
+
+input, select, textarea {
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", monospace; font-size: 12px; }
+
+/* ---- pills / badges ---- */
+.pill {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: var(--pill-bg);
+    color: var(--fg-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+.pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.err { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+.pill.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+/* Serilog level badges: only the levels that need attention are coloured. */
+.pill.syslog-level.verbose,
+.pill.syslog-level.debug,
+.pill.syslog-level.information { background: var(--pill-bg); color: var(--fg-muted); }
+.pill.syslog-level.warning { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.pill.syslog-level.error,
+.pill.syslog-level.fatal { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+
+/* ---- cards ---- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+}
+.card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.card .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 2px 0; font-size: 13px; }
+/* The label never wraps; the value wraps only between words, so "Test Console" is never split
+   mid-word into "Test Co / nsole" the way break-all did. */
+.card .kv .k { color: var(--fg-muted); flex: none; white-space: nowrap; }
+.card .kv .v { font-weight: 600; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+/* Role lists are pills rather than one long comma string: they wrap at pill boundaries and stay
+   legible however many roles a user holds. */
+.card .kv .v.role-list { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.role-pill { padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); color: var(--fg); font-size: 12px; font-weight: 600; white-space: nowrap; }
+/* Wraps instead of overflowing the card: the user-level button row is wider than a 280px card. */
+.card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* Dashboard status cards: cards in a grid row share a height, so pinning the Start/Stop/Restart row
+   to the bottom lines the three server cards up instead of leaving the button rows ragged. */
+#status-cards .card { display: flex; flex-direction: column; }
+#status-cards .card .actions { margin-top: auto; padding-top: 10px; }
+/* Inline failure text under a card's action row (proxy start errors, degraded database). */
+.card-error { margin: 10px 0 0; font-size: 12px; color: var(--err); word-break: break-word; }
+/* Links to the API documents a card publishes. They sit above the action row so the buttons stay
+   pinned to the bottom of the card. */
+.card-links { margin: 8px 0 0; font-size: 12px; display: flex; flex-wrap: wrap; gap: 14px; }
+.card-links a { color: var(--accent); text-decoration: none; }
+.card-links a:hover { text-decoration: underline; }
+.explorer-off { color: var(--fg-muted); }
+
+/* ---- users tab ---- */
+.user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.user-keys .key-row { padding: 4px 0; }
+.user-keys .key-row + .key-row { border-top: 1px dashed var(--border); }
+/* One block per key: name + prefix on the first line with that key's overflow menu pinned right,
+   last-used on the second. Long labels and timestamps then wrap in their own line instead of
+   pushing anything out of the card. */
+.user-keys .key-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.user-keys .key-name { min-width: 0; flex: 1 1 auto; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-keys .key-prefix { flex: none; font-family: Consolas, "SF Mono", monospace; font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
+.user-keys .key-meta { margin-top: 2px; font-size: 12px; color: var(--fg-muted); word-break: break-word; }
+.model-checks { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.model-checks .check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.model-checks .check input { margin-top: 3px; }
+.model-checks .check span { min-width: 0; word-break: break-word; }
+
+/* ---- overflow (kebab) menu ---- */
+/* One 3-dot button per card/key keeps a card's action surface a fixed size. The popup is appended
+   to <body> and positioned against the button, so it is never clipped by a card's padding. */
+.card-title { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-kebab { flex: none; margin-left: auto; display: flex; }
+.kebab {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    width: 26px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.kebab span { display: block; width: 3px; height: 3px; border-radius: 50%; background: var(--fg-muted); }
+.kebab:hover, .kebab[aria-expanded="true"] { background: var(--row-hover); border-color: var(--border); }
+.kebab:hover span { background: var(--fg); }
+.kebab-menu {
+    position: fixed;
+    z-index: 300;
+    min-width: 170px;
+    padding: 4px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    display: flex;
+    flex-direction: column;
+}
+.kebab-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--fg);
+    cursor: pointer;
+}
+.kebab-menu button:hover { background: var(--row-hover); }
+.kebab-menu button.danger { color: var(--err); }
+.kebab-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+
+/* ---- test console tab ---- */
+/* The pane fills the tab and scrolls with it; its children keep their natural height so a textarea
+   or output block is never squeezed into a few pixels on a short window. */
+.tc-pane { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
+.tc-pane > * { flex: none; }
+.tc-pane textarea {
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+.tc-params { display: flex; gap: 16px; flex-wrap: wrap; }
+.tc-params label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+.tc-params input { width: 90px; }
+/* Long model ids must not push the Send/Cancel buttons off the row. */
+#tc-model { max-width: 320px; }
+#tc-status { min-width: 0; overflow-wrap: anywhere; }
+.tc-block { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.tc-block h3 { margin: 0 0 6px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .04em; }
+.tc-block pre {
+    margin: 0;
+    max-height: 34vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 13px;
+}
+.tc-response { min-height: 8em; }
+#tc-status.err { color: var(--err); }
+
+/* ---- help tab ---- */
+.help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.help-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.help-card h3 { margin: 0 0 8px; font-size: 14px; }
+.help-card p { margin: 0 0 8px; font-size: 13px; }
+.help-card ul { margin: 0 0 8px; padding-left: 1.15rem; font-size: 13px; }
+.help-card li { margin: 2px 0; overflow-wrap: anywhere; }
+.help-card li > strong { font-weight: 600; }
+.help-card code { font-family: Consolas, "SF Mono", monospace; font-size: 12px; background: var(--bg-inset); padding: 1px 5px; border-radius: 4px; }
+.help-note { margin: 0; font-size: 12px; color: var(--fg-muted); border-top: 1px solid var(--border); padding-top: 8px; }
+.help-table { margin: 0 0 8px; }
+.help-table td, .help-table th { white-space: normal; }
+.help-roles { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+/* Command examples need the whole width and never wrap mid-command. */
+.help-card.wide { grid-column: 1 / -1; }
+.help-code-block { margin: 0 0 10px; }
+.help-code-label { margin: 0 0 4px !important; font-size: 12px; color: var(--fg-muted); }
+.help-code {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-x: auto;
+    white-space: pre;
+}
+.help-links { margin: 8px 0 0; font-size: 12px; display: flex; flex-wrap: wrap; gap: 14px; }
+.help-links a { color: var(--accent); text-decoration: none; }
+.help-links a:hover { text-decoration: underline; }
+
+/* ---- tables ---- */
+.table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
+.table-wrap.table-fill { flex: 1 1 auto; min-height: 120px; overflow: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--fg-muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--row-hover); }
+#log-table tbody tr { cursor: pointer; }
+#mapping-table tbody tr { cursor: pointer; }
+#mapping-table tbody tr.selected,
+#mapping-table tbody tr.selected:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* Upstream model names are clipped to ~48 characters (the JS truncates the text as well) so a
+   long name can never wrap onto a second line and grow the row. */
+td.truncate { max-width: 48ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#log-table td.log-model { max-width: 18ch; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---- streams panel (Requests tab) ---- */
+.streams-panel { flex: none; margin-bottom: 12px; }
+.streams-panel > summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 6px 2px;
+    color: var(--fg-muted);
+}
+.streams-panel > summary:hover { color: var(--fg); }
+.streams-panel .streams-body { display: flex; flex-direction: column; gap: 8px; }
+/* Show at most 15 stream rows, then scroll. Every stream cell is single-line, so a row is exactly
+   13px text at 1.45 line-height + 7px vertical padding + the 1px rule (33.85px) under a 32.4px
+   header; capping in those units lands on a row boundary instead of slicing one in half. The vh
+   clamp keeps the request table on screen in short windows. */
+.streams-panel .streams-scroll {
+    --stream-rows: 15;
+    max-height: min(calc(var(--stream-rows) * 33.85px + 32.4px), 42vh);
+    overflow: auto;
+}
+.stream-panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.stream-panes h4 { margin: 0 0 4px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .04em; }
+.stream-panes pre {
+    margin: 0;
+    max-height: 26vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 12px;
+}
+#stream-table tbody tr { cursor: pointer; }
+#stream-table tbody tr.selected,
+#stream-table tbody tr.selected:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
+/* ---- sys log tab ---- */
+.level-checks { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#syslog-health { margin-bottom: 8px; }
+#syslog-table tbody tr { cursor: pointer; }
+/* Messages are the only column worth wrapping; the rest stay on one line so rows stay compact. */
+#syslog-table td.msg { white-space: normal; word-break: break-word; min-width: 320px; }
+
+/* ---- forms ---- */
+fieldset.group {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-panel);
+    margin: 0 0 14px;
+    padding: 12px 16px 14px;
+}
+fieldset.group legend { font-weight: 700; padding: 0 6px; }
+.field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px 20px; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > label { font-weight: 600; font-size: 12px; color: var(--fg-muted); }
+.field.bool { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.field.bool > label { font-size: 13px; color: var(--fg); }
+.field.bool > .hint { flex-basis: 100%; margin-left: 24px; }
+.field .hint { font-size: 11px; color: var(--fg-muted); }
+.field input[type="text"], .field input[type="number"], .field input[type="password"], .field input[type="email"], .field select { width: 100%; }
+
+/* ---- banners / toasts ---- */
+.banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 13px; }
+.banner.error { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); border: 1px solid var(--err); }
+
+#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; max-width: 420px; }
+.toast {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--ok);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 10px 14px;
+    font-size: 13px;
+    word-break: break-word;
+}
+.toast.error { border-left-color: var(--err); }
+
+/* ---- modal ---- */
+#modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .45);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 6vh 16px 16px;
+    z-index: 50;
+    overflow-y: auto;
+}
+#modal {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    width: 640px;
+    max-width: 100%;
+    padding: 16px 18px;
+}
+#modal.wide { width: 900px; }
+#modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+#modal-title { font-weight: 700; font-size: 15px; }
+#modal-close { font-size: 18px; line-height: 1; padding: 2px 8px; }
+#modal-body { max-height: 65vh; overflow-y: auto; }
+#modal-body .field { margin-bottom: 10px; }
+#modal-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+#modal-body pre {
+    background: var(--bg-inset);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+}
+#modal-body details { margin: 8px 0; }
+#modal-body summary { cursor: pointer; font-weight: 600; color: var(--fg-muted); }
+#modal-body h4 { margin: 12px 0 4px; font-size: 13px; }
+
+@media (max-width: 720px) {
+    #topbar { gap: 8px; }
+    .top-actions { margin-left: 0; }
+    main { padding: 10px; }
+}
+
+/* ---- login page ---- */
+.login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.login-card { width: 100%; max-width: 420px; padding: 28px; }
+.login-card .brand { font-size: 20px; margin-bottom: 14px; }
+.login-card h1 { margin: 0 0 6px; font-size: 18px; }
+.login-card form { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.login-card button[type="submit"] { width: 100%; margin-top: 4px; }
+.login-note { margin-top: 14px; }
+
+/* ---- usage tab ---- */
+.usage-chart {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin: 12px 0 4px;
+    overflow-x: auto;
+}
+.usage-chart svg { display: block; max-width: 100%; }
+.usage-grid { stroke: var(--border); stroke-width: 1; }
+.usage-axis { fill: var(--fg-muted); font-size: 11px; }
+.usage-bar { stroke: var(--bg-panel); stroke-width: .5; }
+.usage-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 2px 12px; }
+.usage-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-muted); }
+.usage-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.usage-card .usage-big { font-size: 26px; font-weight: 600; }
+.usage-share-col { width: 22%; }
+.usage-share { background: var(--bg-inset); border-radius: 4px; height: 12px; overflow: hidden; }
+.usage-share-fill { background: var(--accent); height: 100%; }
+.usage-day-row { cursor: pointer; }
+.usage-day-row:hover { background: var(--row-hover); }
+.usage-caret { width: 22px; color: var(--fg-muted); }
+.usage-day-detail > td { background: var(--bg-inset); padding: 8px 12px 12px 34px; }
+.usage-model-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.usage-model-table th, .usage-model-table td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.usage-model-table th.num, .usage-model-table td.num { text-align: right; }

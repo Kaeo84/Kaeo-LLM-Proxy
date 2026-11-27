@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Infrastructure.Mcp;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Core.Modules;
 using ModelContextProtocol;
@@ -30,7 +31,14 @@ internal sealed class McpHttpSession
 
     public required CancellationTokenSource LifetimeCts { get; init; }
 
-    public Task ServerRunTask { get; set; } = Task.CompletedTask;
+        /// <summary>
+        /// Module key behind each tool registered for this session (null when the module reports no
+        /// id or name), so a tool call can re-check the caller's per-module MCP grant.
+        /// </summary>
+        public IReadOnlyDictionary<string, string?> ToolModules { get; init; } =
+            new Dictionary<string, string?>(StringComparer.Ordinal);
+
+        public Task ServerRunTask { get; set; } = Task.CompletedTask;
 
     public DateTime LastActivityUtc { get; private set; } = DateTime.UtcNow;
 
@@ -75,8 +83,9 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     private readonly McpServerSettings _settings;
     private readonly ISecretProvider _secrets;
-    private readonly Func<McpSessionInfo, McpServerOptions> _serverOptionsFactory;
+    private readonly Func<McpSessionInfo, McpSessionOptions> _serverOptionsFactory;
     private readonly StatisticsService _statistics;
+    private readonly ProxyAccessService? _access;
     private readonly ConcurrentDictionary<string, McpHttpSession> _sessions = new(StringComparer.Ordinal);
 
     private HttpListener? _listener;
@@ -120,18 +129,20 @@ internal sealed class McpServerHost : IAsyncDisposable
     /// <summary>
     /// Creates a host bound to <paramref name="settings"/>. <paramref name="serverOptionsFactory"/>
     /// builds fresh <see cref="McpServerOptions"/> (server info + currently enabled tools) for
-    /// each new session.
+    /// each new session, together with the module key behind each tool it registers.
     /// </summary>
     public McpServerHost(
         McpServerSettings settings,
         ISecretProvider secrets,
-        Func<McpSessionInfo, McpServerOptions> serverOptionsFactory,
-        StatisticsService statistics)
+        Func<McpSessionInfo, McpSessionOptions> serverOptionsFactory,
+        StatisticsService statistics,
+        ProxyAccessService? access = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _secrets = secrets ?? throw new ArgumentNullException(nameof(secrets));
         _serverOptionsFactory = serverOptionsFactory ?? throw new ArgumentNullException(nameof(serverOptionsFactory));
         _statistics = statistics ?? throw new ArgumentNullException(nameof(statistics));
+        _access = access;
     }
 
     public bool IsRunning { get; private set; }
@@ -176,9 +187,12 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
         catch (HttpListenerException ex)
         {
+            string guidance = OperatingSystem.IsWindows()
+                ? "Non-localhost bindings may require elevation or a netsh urlacl rule."
+                : "Non-localhost bindings may require additional privileges; ports below 1024 need root or cap_net_bind_service.";
             throw new IOException(
                 $"Could not bind the MCP server to {prefix} ({ex.Message}, error code {ex.ErrorCode}). " +
-                "Non-localhost bindings may require elevation or a netsh urlacl rule.",
+                guidance,
                 ex);
         }
 
@@ -192,13 +206,21 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         Log.Information("MCP server listening at {EndpointUrl}", EndpointUrl);
 
-        // Fail-open auth is only defensible on a loopback bind; warn prominently otherwise.
+                if (_access is not null)
+                {
+                    Log.Information(
+                        "MCP requests require a bearer token: the configured shared credential or a proxy API key granted MCP access " +
+                        "(Admin keys always pass).");
+                }
+
+        // Requests are only anonymous when there is nothing to authenticate against (no shared
+        // credential and no key store). Warn prominently when such a server is exposed.
         bool loopbackBind = listenerHost is not ("+" or "[::]")
             && (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
                 || host is "127.0.0.1" or "::1" or "[::1]"
                 || (IPAddress.TryParse(host.Trim('[', ']'), out IPAddress? bindAddress) && IPAddress.IsLoopback(bindAddress)));
         _loopbackBind = loopbackBind;
-        if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName))
+        if (!loopbackBind && string.IsNullOrWhiteSpace(_settings.AuthCredentialName) && _access is null)
         {
             Log.Warning(
                 "MCP server is listening on non-loopback address {Host}:{Port} with authentication DISABLED. " +
@@ -436,10 +458,10 @@ internal sealed class McpServerHost : IAsyncDisposable
         if (method == "GET" && path == SpecPath && ApiExplorer is not null)
         {
             // The spec lists every tool name/description: reconnaissance aid when auth is on.
-            if (!IsAuthorized(request, out string? specAuthError))
+            if (!IsAuthorized(request, out string? specAuthError, out int specAuthStatus))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                response.StatusCode = 401;
+                response.StatusCode = specAuthStatus;
                 await WriteTextAsync(response, specAuthError ?? "Unauthorized", ct);
                 return;
             }
@@ -454,10 +476,10 @@ internal sealed class McpServerHost : IAsyncDisposable
 
         if (method == "GET" && path == ScalarPath && ApiExplorer is not null)
         {
-            if (!IsAuthorized(request, out string? scalarAuthError))
+            if (!IsAuthorized(request, out string? scalarAuthError, out int scalarAuthStatus))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                response.StatusCode = 401;
+                response.StatusCode = scalarAuthStatus;
                 await WriteTextAsync(response, scalarAuthError ?? "Unauthorized", ct);
                 return;
             }
@@ -474,17 +496,17 @@ internal sealed class McpServerHost : IAsyncDisposable
         // URL and cannot be pointed at the /mcp suffix, so serve the endpoint on the root too.
         if (path is McpPath or "/")
         {
-            if (!IsAuthorized(request, out string? authError))
+            if (!IsAuthorized(request, out string? authError, out int authStatus, out ProxyAccessPrincipal? principal))
             {
                 response.Headers[HttpResponseHeader.WwwAuthenticate] = "Bearer";
-                await WriteJsonRpcErrorAsync(response, 401, TryProbeRequestId(request, ct), -32001, authError ?? "Unauthorized", ct);
+                await WriteJsonRpcErrorAsync(response, authStatus, TryProbeRequestId(request, ct), -32001, authError ?? "Unauthorized", ct);
                 return;
             }
 
             switch (method)
             {
                 case "POST":
-                    await HandleMcpPostAsync(context, log, ct);
+                    await HandleMcpPostAsync(context, log, principal, ct);
                     return;
                 case "GET":
                     await HandleMcpGetAsync(context, ct);
@@ -507,7 +529,7 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     // ── Streamable HTTP verbs ───────────────────────────────────────────────
 
-    private async Task HandleMcpPostAsync(HttpListenerContext context, RequestLog log, CancellationToken ct)
+    private async Task HandleMcpPostAsync(HttpListenerContext context, RequestLog log, ProxyAccessPrincipal? principal, CancellationToken ct)
     {
         HttpListenerRequest request = context.Request;
         HttpListenerResponse response = context.Response;
@@ -581,7 +603,7 @@ internal sealed class McpServerHost : IAsyncDisposable
         McpHttpSession? session;
         if (message is JsonRpcRequest { Method: RequestMethods.Initialize } && string.IsNullOrEmpty(sessionIdHeader))
         {
-            session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
+            session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint), principal);
             if (session is null)
             {
                 await WriteSessionUnavailableAsync(response, ct);
@@ -603,7 +625,7 @@ internal sealed class McpServerHost : IAsyncDisposable
             // initialize instead of failing the reconnect with 404.
             if (message is JsonRpcRequest { Method: RequestMethods.Initialize })
             {
-                session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint));
+                session = await TryCreateSessionAsync(GetClientAddress(request.RemoteEndPoint), principal);
                 if (session is null)
                 {
                     await WriteSessionUnavailableAsync(response, ct);
@@ -626,7 +648,7 @@ internal sealed class McpServerHost : IAsyncDisposable
                     return;
                 }
 
-                session = await TryCreateSessionAsync(recoveryClientAddress);
+                session = await TryCreateSessionAsync(recoveryClientAddress, principal);
                 if (session is null)
                 {
                     await WriteSessionUnavailableAsync(response, ct);
@@ -653,6 +675,23 @@ internal sealed class McpServerHost : IAsyncDisposable
         }
 
         session.Touch();
+
+        // Per-module MCP grants are re-checked on every tool call rather than trusted from the
+        // session's tool list, so revoking a module in the dashboard takes effect on the caller's
+        // next call instead of waiting for the client to reconnect.
+        if (message is JsonRpcRequest { Method: RequestMethods.ToolsCall } toolCallRequest
+            && ExtractToolName(toolCallRequest) is { } calledTool
+            && session.ToolModules.TryGetValue(calledTool, out string? calledToolModule)
+            && !ProxyAccessService.IsMcpModuleAllowed(principal, calledToolModule))
+        {
+            Log.Warning(
+                "MCP tool call {Tool} rejected: the caller's API key is not granted module {Module}",
+                calledTool,
+                calledToolModule ?? "(unidentified)");
+            await WriteJsonRpcErrorAsync(response, 403, requestId, (int)McpErrorCode.InvalidRequest,
+                $"Tool '{calledTool}' is not available: this API key is not granted access to the module that provides it.", ct);
+            return;
+        }
 
         // Response headers are committed lazily: the callback runs immediately before the
         // transport writes its first byte, so status/content type land on the real response.
@@ -792,9 +831,11 @@ internal sealed class McpServerHost : IAsyncDisposable
 
     /// <summary>
     /// Creates a session unless the concurrent-session cap is reached or the host is stopping,
-    /// in which case null is returned and the caller answers 503.
+    /// in which case null is returned and the caller answers 503. <paramref name="principal"/> is
+    /// the authenticated API key behind the request, if any; its per-module MCP grant limits which
+    /// modules contribute tools to the session.
     /// </summary>
-    private async Task<McpHttpSession?> TryCreateSessionAsync(string? clientAddress)
+    private async Task<McpHttpSession?> TryCreateSessionAsync(string? clientAddress, ProxyAccessPrincipal? principal)
     {
         // L1: reserve an admission slot atomically before any creation work. Wait(0) is a
         // non-blocking try-enter; failure means the cap is genuinely reached right now.
@@ -827,12 +868,17 @@ internal sealed class McpServerHost : IAsyncDisposable
                 return null;
             }
 
-            McpSessionInfo sessionInfo = new(sessionId, clientAddress);
+            McpSessionInfo sessionInfo = new(sessionId, clientAddress)
+            {
+                AllowedModules = ProxyAccessService.AllowedMcpModules(principal),
+            };
             StreamableHttpServerTransport transport = new() { SessionId = sessionId };
             McpServer server;
+            McpSessionOptions sessionOptions;
             try
             {
-                server = McpServer.Create(transport, _serverOptionsFactory(sessionInfo), loggerFactory: null, serviceProvider: null);
+                sessionOptions = _serverOptionsFactory(sessionInfo);
+                server = McpServer.Create(transport, sessionOptions.Options, loggerFactory: null, serviceProvider: null);
             }
             catch
             {
@@ -858,6 +904,7 @@ internal sealed class McpServerHost : IAsyncDisposable
                 Transport = transport,
                 Server = server,
                 LifetimeCts = lifetimeCts,
+                ToolModules = sessionOptions.ToolModules,
             };
 
             session.ServerRunTask = Task.Run(() => RunSessionServerAsync(session));
@@ -1092,19 +1139,27 @@ internal sealed class McpServerHost : IAsyncDisposable
     // ── Auth & responses ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Enforces optional bearer-token authentication. The expected token is resolved live from
-    /// the host's credential store on every request, so credential edits apply immediately.
+    /// Accepts the configured shared bearer credential or an API key with MCP access. The shared
+    /// credential retains full access; Read Only API keys require an explicit MCP grant.
     /// </summary>
-    private bool IsAuthorized(HttpListenerRequest request, out string? error)
+    private bool IsAuthorized(HttpListenerRequest request, out string? error, out int failureStatus)
+        => IsAuthorized(request, out error, out failureStatus, out _);
+
+    /// <summary>
+    /// The same check, also reporting the authenticated API-key principal (null for the shared
+    /// credential and for the open server) so the caller's per-module MCP grant can be applied.
+    /// </summary>
+    private bool IsAuthorized(HttpListenerRequest request, out string? error, out int failureStatus, out ProxyAccessPrincipal? principal)
     {
         error = null;
+        failureStatus = 401;
+        principal = null;
 
         string? credentialName = _settings.AuthCredentialName;
-        if (string.IsNullOrWhiteSpace(credentialName))
-            return true;
+        bool hasCredential = !string.IsNullOrWhiteSpace(credentialName);
+        string? expected = hasCredential ? _secrets.ResolveSecret(credentialName!) : null;
 
-        string? expected = _secrets.ResolveSecret(credentialName);
-        if (string.IsNullOrWhiteSpace(expected))
+        if (hasCredential && string.IsNullOrWhiteSpace(expected))
         {
             // L5: keep the configured credential name server-side; the caller gets a generic message
             // so an unauthenticated client cannot enumerate which credential is misconfigured.
@@ -1116,18 +1171,53 @@ internal sealed class McpServerHost : IAsyncDisposable
         string? header = request.Headers["Authorization"];
         if (string.IsNullOrEmpty(header) || !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
-            error = "A bearer token is required. Send 'Authorization: Bearer <token>'.";
+            // No credential and no key store to check against: nothing can be authenticated, so the
+            // server stays open exactly as it was before key-based MCP access existed.
+            if (!hasCredential && _access is null)
+                return true;
+
+            Log.Warning("MCP request rejected: no bearer token was supplied");
+            error = "A bearer token is required. Send 'Authorization: Bearer <token>' using a proxy API key "
+                + "with MCP access enabled (Admin keys always work) or the configured shared credential.";
             return false;
         }
 
         string token = header["Bearer ".Length..].Trim();
-        bool match = CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected));
 
-        if (!match)
+        if (!string.IsNullOrWhiteSpace(expected) && CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(expected)))
+        {
+            return true;
+        }
+
+        if (_access is null)
+        {
+            if (!hasCredential)
+                return true;
+
+            Log.Warning("MCP request rejected: the supplied bearer token is not valid");
             error = "The supplied bearer token is not valid.";
+            return false;
+        }
 
-        return match;
+        ProxyAccessPrincipal? resolved = _access.Authenticate(token);
+        if (resolved is null)
+        {
+            Log.Warning("MCP request rejected: the supplied bearer token is not a valid API key");
+            error = "The supplied bearer token is not valid.";
+            return false;
+        }
+
+        if (!ProxyAccessService.IsMcpAllowed(resolved))
+        {
+            Log.Warning("MCP request rejected: API key '{KeyLabel}' is not granted MCP access", resolved.Key.Label);
+            failureStatus = 403;
+            error = "This API key is not authorized to access the MCP server.";
+            return false;
+        }
+
+        principal = resolved;
+        return true;
     }
 
     /// <summary>

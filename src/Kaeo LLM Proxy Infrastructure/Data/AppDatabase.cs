@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Modules;
 using Microsoft.Data.Sqlite;
 using Serilog;
 
@@ -31,6 +32,14 @@ internal sealed class AppDatabase : IDisposable
     /// private in-memory database. Reads return empty/seed data and writes will NOT persist.
     /// </summary>
     public bool IsDegraded { get; private set; }
+
+        /// <summary>
+        /// Raised after <see cref="SaveModelMappings"/> rewrites the mapping table. The Windows GUI
+        /// renders mappings into a grid and rebuilds <c>AppSettings.ModelMappings</c> from those rows on
+        /// every edit, so it must re-sync when another in-process caller (the web dashboard) changes
+        /// them — otherwise the next GUI edit silently discards the dashboard's change.
+        /// </summary>
+        public event Action? ModelMappingsSaved;
 
     public AppDatabase(LoggingSettings settings)
     {
@@ -240,7 +249,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address,
                     user_agent,
                     request_headers,
-                    response_headers
+                    response_headers,
+                    user_id
                 )
                 VALUES (
                     $timestampUtc,
@@ -274,7 +284,8 @@ internal sealed class AppDatabase : IDisposable
                     $clientAddress,
                     $userAgent,
                     $requestHeaders,
-                    $responseHeaders
+                    $responseHeaders,
+                    $userId
                 );
                 """;
 
@@ -331,7 +342,11 @@ internal sealed class AppDatabase : IDisposable
                     forward_client_authorization,
                     enable_api_translation,
                     anthropic_max_tokens,
-                    anthropic_api_version
+                    anthropic_api_version,
+                    auto_managed,
+                    auto_missing_since_utc,
+                    auto_disabled_utc,
+                    auto_disabled_reason
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -414,7 +429,11 @@ internal sealed class AppDatabase : IDisposable
                         forward_client_authorization,
                         enable_api_translation,
                         anthropic_max_tokens,
-                        anthropic_api_version
+                        anthropic_api_version,
+                        auto_managed,
+                        auto_missing_since_utc,
+                        auto_disabled_utc,
+                        auto_disabled_reason
                     )
                     VALUES (
                         $id,
@@ -454,7 +473,11 @@ internal sealed class AppDatabase : IDisposable
                         $forwardClientAuthorization,
                         $enableApiTranslation,
                         $anthropicMaxTokens,
-                        $anthropicApiVersion
+                        $anthropicApiVersion,
+                        $autoManaged,
+                        $autoMissingSinceUtc,
+                        $autoDisabledUtc,
+                        $autoDisabledReason
                     );
                     """;
 
@@ -464,6 +487,11 @@ internal sealed class AppDatabase : IDisposable
 
             transaction.Commit();
         }
+
+        // Raised outside the lock: the Windows GUI keeps its own grid of mappings and rebuilds
+        // AppSettings.ModelMappings from those rows on every edit, so it has to re-sync whenever
+        // another in-process caller (the web dashboard) rewrites the table.
+        ModelMappingsSaved?.Invoke();
     }
 
     public IReadOnlyList<InstructionSet> LoadInstructionSets()
@@ -709,7 +737,11 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name,
                     compaction_target_tokens,
                     max_concurrent_compactions,
-                    hide_heartbeat_logs
+                    hide_heartbeat_logs,
+                    allow_multiple_instances_v2,
+                    enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -723,7 +755,9 @@ internal sealed class AppDatabase : IDisposable
             {
                 AutoStartProxy = ReadBoolean(reader, 0),
                 StartWithDashboardOpen = ReadBoolean(reader, 1),
-                AllowMultipleInstances = ReadBoolean(reader, 2),
+                // Ordinal 2 (allow_multiple_instances) is superseded by the nullable v2 column:
+                // NULL means the preference was never set, which reads as the new default (true).
+                // The legacy column stays in the SELECT to keep the ordinals below stable.
                 ShowCloseToTrayNotification = ReadBoolean(reader, 3),
                 CollectRequestDetails = ReadBoolean(reader, 4),
                 CollectResponseDetails = ReadBoolean(reader, 5),
@@ -748,6 +782,10 @@ internal sealed class AppDatabase : IDisposable
                 CompactionTargetTokens = reader.GetInt32(20),
                 MaxConcurrentCompactions = reader.GetInt32(21),
                 HideHeartbeatLogs = ReadBoolean(reader, 22),
+                AllowMultipleInstances = reader.IsDBNull(23) || ReadBoolean(reader, 23),
+                EnableModelAutoDiscovery = ReadBoolean(reader, 24),
+                ModelAutoDiscoveryIntervalSeconds = reader.GetInt32(25),
+                ModelAutoDiscoveryOfflineMinutes = reader.GetInt32(26),
             };
         }
     }
@@ -767,6 +805,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_start_proxy,
                     start_with_dashboard_open,
                     allow_multiple_instances,
+                    allow_multiple_instances_v2,
                     show_close_to_tray_notification,
                     collect_request_details,
                     collect_response_details,
@@ -786,13 +825,17 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name,
                     compaction_target_tokens,
                     max_concurrent_compactions,
-                    hide_heartbeat_logs
+                    hide_heartbeat_logs,
+                    enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes
                 )
                 VALUES (
                     $id,
                     $autoStartProxy,
                     $startWithDashboardOpen,
                     $allowMultipleInstances,
+                    $allowMultipleInstancesV2,
                     $showCloseToTrayNotification,
                     $collectRequestDetails,
                     $collectResponseDetails,
@@ -812,12 +855,16 @@ internal sealed class AppDatabase : IDisposable
                     $compactionInstructionSetName,
                     $compactionTargetTokens,
                     $maxConcurrentCompactions,
-                    $hideHeartbeatLogs
+                    $hideHeartbeatLogs,
+                    $enableModelAutoDiscovery,
+                    $modelAutoDiscoveryIntervalSeconds,
+                    $modelAutoDiscoveryOfflineMinutes
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
                     start_with_dashboard_open = excluded.start_with_dashboard_open,
                     allow_multiple_instances = excluded.allow_multiple_instances,
+                    allow_multiple_instances_v2 = excluded.allow_multiple_instances_v2,
                     show_close_to_tray_notification = excluded.show_close_to_tray_notification,
                     collect_request_details = excluded.collect_request_details,
                     collect_response_details = excluded.collect_response_details,
@@ -837,13 +884,19 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name = excluded.compaction_instruction_set_name,
                     compaction_target_tokens = excluded.compaction_target_tokens,
                     max_concurrent_compactions = excluded.max_concurrent_compactions,
-                    hide_heartbeat_logs = excluded.hide_heartbeat_logs;
+                    hide_heartbeat_logs = excluded.hide_heartbeat_logs,
+                    enable_model_auto_discovery = excluded.enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds = excluded.model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes = excluded.model_auto_discovery_offline_minutes;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
             command.Parameters.AddWithValue("$autoStartProxy", ToSqliteBoolean(settings.AutoStartProxy));
             command.Parameters.AddWithValue("$startWithDashboardOpen", ToSqliteBoolean(settings.StartWithDashboardOpen));
+            // Both columns are written: v2 is authoritative for this build; the legacy column keeps
+            // a sensible value for an older build reading the same file.
             command.Parameters.AddWithValue("$allowMultipleInstances", ToSqliteBoolean(settings.AllowMultipleInstances));
+            command.Parameters.AddWithValue("$allowMultipleInstancesV2", ToSqliteBoolean(settings.AllowMultipleInstances));
             command.Parameters.AddWithValue("$showCloseToTrayNotification", ToSqliteBoolean(settings.ShowCloseToTrayNotification));
             command.Parameters.AddWithValue("$collectRequestDetails", ToSqliteBoolean(settings.CollectRequestDetails));
             command.Parameters.AddWithValue("$collectResponseDetails", ToSqliteBoolean(settings.CollectResponseDetails));
@@ -868,6 +921,9 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$compactionTargetTokens", settings.CompactionTargetTokens);
             command.Parameters.AddWithValue("$maxConcurrentCompactions", settings.MaxConcurrentCompactions);
             command.Parameters.AddWithValue("$hideHeartbeatLogs", ToSqliteBoolean(settings.HideHeartbeatLogs));
+            command.Parameters.AddWithValue("$enableModelAutoDiscovery", ToSqliteBoolean(settings.EnableModelAutoDiscovery));
+            command.Parameters.AddWithValue("$modelAutoDiscoveryIntervalSeconds", settings.ModelAutoDiscoveryIntervalSeconds);
+            command.Parameters.AddWithValue("$modelAutoDiscoveryOfflineMinutes", settings.ModelAutoDiscoveryOfflineMinutes);
             command.ExecuteNonQuery();
         }
     }
@@ -895,16 +951,17 @@ internal sealed class AppDatabase : IDisposable
     /// <summary>
     /// Returns the most recent <paramref name="count"/> log entries from the active database,
     /// newest first. Summary columns only — bodies and headers are loaded on demand via
-    /// <see cref="LoadFullLogEntry"/>.
+    /// <see cref="LoadFullLogEntry"/>. <paramref name="userId"/> narrows to one user's attributed
+    /// requests (unattributed rows are excluded); null returns everyone's.
     /// </summary>
-    public IReadOnlyList<RequestLog> QueryRecent(int count)
+    public IReadOnlyList<RequestLog> QueryRecent(int count, LogSource source = LogSource.Proxy, int? userId = null)
     {
         lock (_lock)
         {
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                """
+                $$"""
                 SELECT
                     timestamp_utc,
                     method,
@@ -927,12 +984,16 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_tokens,
                     draft_n,
                     draft_n_accepted,
-                    original_model
-                FROM requests
-                ORDER BY timestamp_utc DESC
+                    original_model,
+                    user_id,
+                    user_agent
+                FROM {{RequestTable(source)}}
+                WHERE ($userId IS NULL OR user_id = $userId)
+                ORDER BY timestamp_utc DESC, id DESC
                 LIMIT $count;
                 """;
             command.Parameters.AddWithValue("$count", count);
+            command.Parameters.AddWithValue("$userId", userId.HasValue ? userId.Value : DBNull.Value);
 
             using SqliteDataReader reader = command.ExecuteReader();
             List<RequestLog> entries = [];
@@ -940,6 +1001,74 @@ internal sealed class AppDatabase : IDisposable
                 entries.Add(ReadRequestLogSummary(reader));
 
             return entries;
+        }
+    }
+
+    /// <summary>
+    /// Aggregates token-bearing proxy requests into (local day, model, user) rows for the
+    /// dashboard Usage view. The range is UTC inclusive/exclusive; days are server-local calendar
+    /// days so the grouping matches the timestamps shown in the GUI. Rows where no tokens were
+    /// reported at all are excluded — usage means token consumption, and zero-token probes would
+    /// otherwise inflate every request count. <paramref name="userId"/> narrows to one user;
+    /// null aggregates everyone (including unattributed rows). <paramref name="model"/> narrows to
+    /// one model name (case-insensitive); null covers every model.
+    /// </summary>
+    /// <remarks>
+    /// Filtering happens in SQL rather than in the caller so a model or user filter cannot pull the
+    /// whole range across the boundary and then throw most of it away.
+    /// </remarks>
+    public IReadOnlyList<TokenUsageRow> QueryTokenUsage(
+        DateTime fromUtcInclusive,
+        DateTime toUtcExclusive,
+        int? userId = null,
+        string? model = null)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    date(timestamp_utc, 'localtime') AS day,
+                    model,
+                    user_id,
+                    COUNT(*),
+                    SUM(prompt_tokens),
+                    SUM(completion_tokens),
+                    SUM(CASE WHEN total_tokens > 0 THEN total_tokens ELSE prompt_tokens + completion_tokens END),
+                    SUM(cached_prompt_tokens),
+                    SUM(reasoning_tokens)
+                FROM requests
+                WHERE timestamp_utc >= $from AND timestamp_utc < $to
+                    AND (prompt_tokens > 0 OR completion_tokens > 0 OR total_tokens > 0)
+                    AND ($userId IS NULL OR user_id = $userId)
+                    AND ($model IS NULL OR model = $model COLLATE NOCASE)
+                GROUP BY day, model, user_id;
+                """;
+            // "O"-format UTC strings are fixed-length, so a lexicographic range is a time range.
+            command.Parameters.AddWithValue("$from", ToUtcText(fromUtcInclusive));
+            command.Parameters.AddWithValue("$to", ToUtcText(toUtcExclusive));
+            command.Parameters.AddWithValue("$userId", userId.HasValue ? userId.Value : DBNull.Value);
+            command.Parameters.AddWithValue("$model", string.IsNullOrWhiteSpace(model) ? DBNull.Value : model);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<TokenUsageRow> rows = [];
+            while (reader.Read())
+            {
+                rows.Add(new TokenUsageRow(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetInt32(2),
+                    reader.GetInt32(3),
+                    reader.GetInt64(4),
+                    reader.GetInt64(5),
+                    reader.GetInt64(6),
+                    reader.GetInt64(7),
+                    reader.GetInt64(8)));
+            }
+
+            return rows;
         }
     }
 
@@ -985,7 +1114,9 @@ internal sealed class AppDatabase : IDisposable
                     reasoning_tokens,
                     draft_n,
                     draft_n_accepted,
-                    original_model
+                    original_model,
+                    user_id,
+                    user_agent
                 FROM {{RequestTable(source)}}
                 ORDER BY timestamp_utc DESC, id DESC
                 LIMIT $count;
@@ -1051,7 +1182,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address,
                     user_agent,
                     request_headers,
-                    response_headers
+                    response_headers,
+                    user_id
                 FROM {{RequestTable(source)}}
                 WHERE timestamp_utc BETWEEN $timestampLo AND $timestampHi
                 ORDER BY id DESC
@@ -1172,6 +1304,7 @@ internal sealed class AppDatabase : IDisposable
     {
         LogSource.Mcp => "mcp_requests",
         LogSource.NonProxied => "non_proxied_requests",
+        LogSource.Web => "web_requests",
         _ => "requests",
     };
 
@@ -1280,7 +1413,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address TEXT NULL,
                     user_agent TEXT NULL,
                     request_headers TEXT NULL,
-                    response_headers TEXT NULL
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_requests_timestamp_utc ON requests(timestamp_utc);
@@ -1320,7 +1454,8 @@ internal sealed class AppDatabase : IDisposable
                     client_address TEXT NULL,
                     user_agent TEXT NULL,
                     request_headers TEXT NULL,
-                    response_headers TEXT NULL
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_requests_timestamp_utc ON mcp_requests(timestamp_utc);
@@ -1358,10 +1493,50 @@ internal sealed class AppDatabase : IDisposable
                                     client_address TEXT NULL,
                                     user_agent TEXT NULL,
                                     request_headers TEXT NULL,
-                                    response_headers TEXT NULL
+                                    response_headers TEXT NULL,
+                                    user_id INTEGER NULL
                                 );
 
                                 CREATE INDEX IF NOT EXISTS idx_non_proxied_requests_timestamp_utc ON non_proxied_requests(timestamp_utc);
+
+                CREATE TABLE IF NOT EXISTS web_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    ollama_path TEXT NOT NULL,
+                    upstream_path TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    original_model TEXT NULL,
+                    streaming INTEGER NOT NULL,
+                    status INTEGER NOT NULL,
+                    error_message TEXT NULL,
+                    status_code INTEGER NOT NULL,
+                    duration_ms REAL NOT NULL,
+                    prompt_tokens INTEGER NOT NULL,
+                    completion_tokens INTEGER NOT NULL,
+                    tokens_per_second REAL NOT NULL,
+                    exception_id INTEGER NULL,
+                    request_body TEXT NULL,
+                    upstream_request_body TEXT NULL,
+                    response_body TEXT NULL,
+                    request_bytes INTEGER NOT NULL,
+                    response_bytes INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    draft_n INTEGER NOT NULL DEFAULT 0,
+                    draft_n_accepted INTEGER NOT NULL DEFAULT 0,
+                    debug_summary TEXT NULL,
+                    upstream_response_body TEXT NULL,
+                    stop_reason TEXT NULL,
+                    client_address TEXT NULL,
+                    user_agent TEXT NULL,
+                    request_headers TEXT NULL,
+                    response_headers TEXT NULL,
+                    user_id INTEGER NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_web_requests_timestamp_utc ON web_requests(timestamp_utc);
 
                 CREATE TABLE IF NOT EXISTS model_mappings (
                     id INTEGER NOT NULL DEFAULT 0,
@@ -1401,7 +1576,11 @@ internal sealed class AppDatabase : IDisposable
                     forward_client_authorization INTEGER NOT NULL DEFAULT 0,
                     enable_api_translation INTEGER NOT NULL DEFAULT 1,
                     anthropic_max_tokens INTEGER NOT NULL DEFAULT 4096,
-                    anthropic_api_version TEXT NOT NULL DEFAULT '2023-06-01'
+                    anthropic_api_version TEXT NOT NULL DEFAULT '2023-06-01',
+                    auto_managed INTEGER NOT NULL DEFAULT 0,
+                    auto_missing_since_utc TEXT NULL,
+                    auto_disabled_utc TEXT NULL,
+                    auto_disabled_reason TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1432,6 +1611,7 @@ internal sealed class AppDatabase : IDisposable
                     auto_start_proxy INTEGER NOT NULL,
                     start_with_dashboard_open INTEGER NOT NULL,
                     allow_multiple_instances INTEGER NOT NULL,
+                    allow_multiple_instances_v2 INTEGER NULL,
                     show_close_to_tray_notification INTEGER NOT NULL,
                     collect_request_details INTEGER NOT NULL,
                     collect_response_details INTEGER NOT NULL,
@@ -1451,7 +1631,10 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name TEXT NULL,
                     compaction_target_tokens INTEGER NOT NULL DEFAULT 0,
                     max_concurrent_compactions INTEGER NOT NULL DEFAULT 1,
-                    hide_heartbeat_logs INTEGER NOT NULL DEFAULT 0
+                    hide_heartbeat_logs INTEGER NOT NULL DEFAULT 0,
+                    enable_model_auto_discovery INTEGER NOT NULL DEFAULT 1,
+                    model_auto_discovery_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                    model_auto_discovery_offline_minutes INTEGER NOT NULL DEFAULT 10
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1462,19 +1645,50 @@ internal sealed class AppDatabase : IDisposable
                     version TEXT NULL,
                     is_enabled INTEGER NOT NULL DEFAULT 1,
                     registered_utc TEXT NOT NULL,
-                    last_error TEXT NULL
+                    last_error TEXT NULL,
+                    signature_state TEXT NOT NULL DEFAULT 'Unsigned',
+                    signer_key_id TEXT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS mcp_server_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS proxy_users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    email TEXT NOT NULL DEFAULT '',
+                    created_utc TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    dashboard_login_enabled INTEGER NOT NULL DEFAULT 0,
+                    dashboard_username TEXT NOT NULL DEFAULT '',
+                    dashboard_password_hash TEXT NOT NULL DEFAULT '',
+                    dashboard_role TEXT NOT NULL DEFAULT 'readOnly'
+                );
+
+                CREATE TABLE IF NOT EXISTS proxy_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL DEFAULT '',
+                    key_secret TEXT NULL,
+                    created_utc TEXT NOT NULL,
+                    last_used_utc TEXT NULL,
+                    allowed_models TEXT NOT NULL DEFAULT '[]',
+                    mcp_access INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_proxy_api_keys_user_id ON proxy_api_keys(user_id);
                 """ + SystemLogSchema.CreateSql;
             command.ExecuteNonQuery();
             transaction.Commit();
 
                         ReconcileExistingTables(connection);
                         EnsureModuleIdUniqueIndex(connection);
+                        EnsureDashboardUsernameUniqueIndex(connection);
+                        EnsureUsageCoveringIndex(connection);
                     }
                 }
 
@@ -1496,6 +1710,43 @@ internal sealed class AppDatabase : IDisposable
                     catch (SqliteException ex)
                     {
                         Log.Warning(ex, "Could not enforce unique module_id index; existing duplicate module registrations were left intact");
+                    }
+                }
+
+                private static void EnsureDashboardUsernameUniqueIndex(SqliteConnection connection)
+                {
+                    using SqliteCommand command = connection.CreateCommand();
+                    command.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_proxy_users_dashboard_username ON proxy_users(dashboard_username COLLATE NOCASE) WHERE dashboard_login_enabled = 1;";
+                    command.ExecuteNonQuery();
+                }
+
+                /// <summary>
+                /// Covering index for <see cref="QueryTokenUsage"/>: the Usage tab aggregates a date range
+                /// by day/model/user, and every column it reads is in this index, so SQLite can answer the
+                /// range scan from the index instead of following each rowid into the wide request table.
+                /// </summary>
+                /// <remarks>
+                /// Created after <see cref="ReconcileExistingTables"/> rather than in the baseline DDL,
+                /// because the index names <c>user_id</c> — a database written before API-key attribution
+                /// only gains that column during reconciliation, and an index over a column that is not
+                /// there yet would fail schema init on exactly the upgrade path reconciliation exists for.
+                /// </remarks>
+                private static void EnsureUsageCoveringIndex(SqliteConnection connection)
+                {
+                    try
+                    {
+                        using SqliteCommand command = connection.CreateCommand();
+                        command.CommandText =
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_requests_usage ON requests(
+                                timestamp_utc, model, user_id, prompt_tokens, completion_tokens, total_tokens,
+                                cached_prompt_tokens, reasoning_tokens);
+                            """;
+                        command.ExecuteNonQuery();
+                    }
+                    catch (SqliteException ex)
+                    {
+                        Log.Warning(ex, "Could not create the usage covering index; Usage queries fall back to the table");
                     }
                 }
 
@@ -1564,6 +1815,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("requests", "user_agent", "TEXT NULL"),
                                 ("requests", "request_headers", "TEXT NULL"),
                                 ("requests", "response_headers", "TEXT NULL"),
+                                ("requests", "user_id", "INTEGER NULL"),
 
                                 // ── mcp_requests: the same log schema ─────────────────────────
                                 ("mcp_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
@@ -1598,6 +1850,7 @@ internal sealed class AppDatabase : IDisposable
                                 ("mcp_requests", "user_agent", "TEXT NULL"),
                                 ("mcp_requests", "request_headers", "TEXT NULL"),
                                 ("mcp_requests", "response_headers", "TEXT NULL"),
+                                ("mcp_requests", "user_id", "INTEGER NULL"),
 
                                 // ── non_proxied_requests ──────────────────────────────────────
                                 ("non_proxied_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
@@ -1632,6 +1885,42 @@ internal sealed class AppDatabase : IDisposable
                                 ("non_proxied_requests", "user_agent", "TEXT NULL"),
                                 ("non_proxied_requests", "request_headers", "TEXT NULL"),
                                 ("non_proxied_requests", "response_headers", "TEXT NULL"),
+                                ("non_proxied_requests", "user_id", "INTEGER NULL"),
+
+                                // ── web_requests: the same log schema ─────────────────────────
+                                ("web_requests", "timestamp_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "method", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "ollama_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "upstream_path", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "model", "TEXT NOT NULL DEFAULT ''"),
+                                ("web_requests", "original_model", "TEXT NULL"),
+                                ("web_requests", "streaming", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "status", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "error_message", "TEXT NULL"),
+                                ("web_requests", "status_code", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "duration_ms", "REAL NOT NULL DEFAULT 0"),
+                                ("web_requests", "prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "tokens_per_second", "REAL NOT NULL DEFAULT 0"),
+                                ("web_requests", "exception_id", "INTEGER NULL"),
+                                ("web_requests", "request_body", "TEXT NULL"),
+                                ("web_requests", "upstream_request_body", "TEXT NULL"),
+                                ("web_requests", "response_body", "TEXT NULL"),
+                                ("web_requests", "request_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "response_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "cached_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "reasoning_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "draft_n", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "draft_n_accepted", "INTEGER NOT NULL DEFAULT 0"),
+                                ("web_requests", "debug_summary", "TEXT NULL"),
+                                ("web_requests", "upstream_response_body", "TEXT NULL"),
+                                ("web_requests", "stop_reason", "TEXT NULL"),
+                                ("web_requests", "client_address", "TEXT NULL"),
+                                ("web_requests", "user_agent", "TEXT NULL"),
+                                ("web_requests", "request_headers", "TEXT NULL"),
+                                ("web_requests", "response_headers", "TEXT NULL"),
+                                ("web_requests", "user_id", "INTEGER NULL"),
 
                                 // ── model_mappings ────────────────────────────────────────────
                                 ("model_mappings", "id", "INTEGER NOT NULL DEFAULT 0"),
@@ -1671,11 +1960,20 @@ internal sealed class AppDatabase : IDisposable
                                 ("model_mappings", "enable_api_translation", "INTEGER NOT NULL DEFAULT 1"),
                                 ("model_mappings", "anthropic_max_tokens", "INTEGER NOT NULL DEFAULT 4096"),
                                 ("model_mappings", "anthropic_api_version", "TEXT NOT NULL DEFAULT '2023-06-01'"),
+                                ("model_mappings", "auto_managed", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "auto_missing_since_utc", "TEXT NULL"),
+                                ("model_mappings", "auto_disabled_utc", "TEXT NULL"),
+                                ("model_mappings", "auto_disabled_reason", "TEXT NULL"),
 
                                 // ── runtime_settings ──────────────────────────────────────────
                                 ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "start_with_dashboard_open", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "allow_multiple_instances", "INTEGER NOT NULL DEFAULT 0"),
+                                // NULL means "never chosen by the user": older builds could not actually
+                                // persist this preference (the single-instance check ran before runtime
+                                // settings were loaded and no GUI exposed it), so legacy rows carry only
+                                // the old default. NULL reads as the new default: multiple instances allowed.
+                                ("runtime_settings", "allow_multiple_instances_v2", "INTEGER NULL"),
                                 ("runtime_settings", "show_close_to_tray_notification", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "collect_request_details", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "collect_response_details", "INTEGER NOT NULL DEFAULT 0"),
@@ -1696,6 +1994,9 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "compaction_target_tokens", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "max_concurrent_compactions", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "hide_heartbeat_logs", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "enable_model_auto_discovery", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "model_auto_discovery_interval_seconds", "INTEGER NOT NULL DEFAULT 60"),
+                                ("runtime_settings", "model_auto_discovery_offline_minutes", "INTEGER NOT NULL DEFAULT 10"),
 
                                 // ── credentials ───────────────────────────────────────────────
                                 ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),
@@ -1736,8 +2037,32 @@ internal sealed class AppDatabase : IDisposable
                                 ("module_registry", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
                                 ("module_registry", "registered_utc", "TEXT NOT NULL DEFAULT ''"),
                                 ("module_registry", "last_error", "TEXT NULL"),
+                                ("module_registry", "signature_state", "TEXT NOT NULL DEFAULT 'Unsigned'"),
+                                ("module_registry", "signer_key_id", "TEXT NULL"),
 
                                 ("mcp_server_settings", "value", "TEXT NOT NULL DEFAULT ''"),
+
+                                // ── proxy access security ────────────────────────────────────
+                                ("proxy_users", "name", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "email", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "created_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+                                ("proxy_users", "dashboard_login_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_users", "dashboard_username", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "dashboard_password_hash", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_users", "dashboard_role", "TEXT NOT NULL DEFAULT 'readOnly'"),
+                                ("proxy_users", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("proxy_users", "mcp_access", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_users", "allowed_mcp_modules", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("proxy_api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"),
+                                ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_prefix", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "key_secret", "TEXT NULL"),
+                                ("proxy_api_keys", "created_utc", "TEXT NOT NULL DEFAULT ''"),
+                                ("proxy_api_keys", "last_used_utc", "TEXT NULL"),
+                                ("proxy_api_keys", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("proxy_api_keys", "mcp_access", "INTEGER NOT NULL DEFAULT 0"),
                             ];
 
                     // Read the existing shape once — table names from sqlite_master, then each
@@ -1789,7 +2114,94 @@ internal sealed class AppDatabase : IDisposable
                             Log.Warning(ex, "Skipped adding {Column} to {Table}: the database file is in use.", column, table);
                         }
                     }
+
+                    MigratePerKeyGrantsToUsers(connection);
                 }
+
+    /// <summary>
+    /// Model and MCP access used to be granted per API key; it is now granted per user, and every
+    /// key a user holds inherits it. This folds any grants still sitting on key rows into the
+    /// owning user so an upgraded database keeps the access it had, and then clears the key
+    /// columns so the migration is a no-op on every later start.
+    /// </summary>
+    /// <remarks>
+    /// Only users whose own grants are still empty are migrated, so a grant an administrator has
+    /// since set (or deliberately cleared after migrating) is never resurrected. Runs inside the
+    /// schema reconcile transaction and logs-and-continues on failure: a concurrent instance may
+    /// hold the file, and a failed migration must not stop the application from starting.
+    /// </remarks>
+    private static void MigratePerKeyGrantsToUsers(SqliteConnection connection)
+    {
+        try
+        {
+            Dictionary<int, (List<string> Models, bool Mcp)> inherited = [];
+            using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.CommandText =
+                    """
+                    SELECT user_id, allowed_models, mcp_access
+                    FROM proxy_api_keys
+                    WHERE allowed_models <> '[]' OR mcp_access = 1;
+                    """;
+                using SqliteDataReader reader = read.ExecuteReader();
+                while (reader.Read())
+                {
+                    int userId = reader.GetInt32(0);
+                    List<string> models = DeserializeAllowedModels(reader.IsDBNull(1) ? null : reader.GetString(1));
+                    bool mcp = reader.FieldCount > 2 && !reader.IsDBNull(2) && ReadBoolean(reader, 2);
+
+                    (List<string> Models, bool Mcp) current = inherited.TryGetValue(userId, out var existing)
+                        ? existing
+                        : ([], false);
+                    foreach (string model in models)
+                    {
+                        if (!current.Models.Contains(model, StringComparer.OrdinalIgnoreCase))
+                            current.Models.Add(model);
+                    }
+
+                    inherited[userId] = (current.Models, current.Mcp || mcp);
+                }
+            }
+
+            if (inherited.Count == 0)
+                return;
+
+            using SqliteTransaction transaction = connection.BeginTransaction();
+            int migrated = 0;
+            foreach ((int userId, (List<string> models, bool mcp)) in inherited)
+            {
+                using (SqliteCommand update = connection.CreateCommand())
+                {
+                    update.Transaction = transaction;
+                    update.CommandText =
+                        """
+                        UPDATE proxy_users
+                        SET allowed_models = $allowedModels, mcp_access = $mcpAccess
+                        WHERE id = $id AND (allowed_models = '[]' OR allowed_models = '') AND mcp_access = 0;
+                        """;
+                    update.Parameters.AddWithValue("$id", userId);
+                    update.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(models, _jsonOptions));
+                    update.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(mcp));
+                    migrated += update.ExecuteNonQuery();
+                }
+            }
+
+            using (SqliteCommand clear = connection.CreateCommand())
+            {
+                clear.Transaction = transaction;
+                clear.CommandText = "UPDATE proxy_api_keys SET allowed_models = '[]', mcp_access = 0;";
+                clear.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            if (migrated > 0)
+                Log.Information("Moved per-key model/MCP grants to the owning user for {Count} user(s).", migrated);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            Log.Warning(ex, "Could not migrate per-key model grants to user-level grants; continuing.");
+        }
+    }
 
     /// <summary>
     /// Writes <see cref="SeedData"/>'s default model mappings and placeholder credential into a
@@ -1995,6 +2407,7 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$userAgent", DbValue(entry.UserAgent));
         command.Parameters.AddWithValue("$requestHeaders", DbValue(entry.RequestHeaders));
         command.Parameters.AddWithValue("$responseHeaders", DbValue(entry.ResponseHeaders));
+        command.Parameters.AddWithValue("$userId", entry.UserId.HasValue ? entry.UserId.Value : DBNull.Value);
     }
 
     private static void AddModelMappingParameters(SqliteCommand command, ModelMapping mapping)
@@ -2041,6 +2454,12 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$enableApiTranslation", ToSqliteBoolean(mapping.EnableApiTranslation));
         command.Parameters.AddWithValue("$anthropicMaxTokens", mapping.AnthropicMaxTokens);
         command.Parameters.AddWithValue("$anthropicApiVersion", DbValue(mapping.AnthropicApiVersion));
+        command.Parameters.AddWithValue("$autoManaged", ToSqliteBoolean(mapping.AutoManaged));
+        command.Parameters.AddWithValue("$autoMissingSinceUtc",
+            mapping.AutoMissingSinceUtc.HasValue ? ToUtcText(mapping.AutoMissingSinceUtc.Value) : DBNull.Value);
+        command.Parameters.AddWithValue("$autoDisabledUtc",
+            mapping.AutoDisabledUtc.HasValue ? ToUtcText(mapping.AutoDisabledUtc.Value) : DBNull.Value);
+        command.Parameters.AddWithValue("$autoDisabledReason", DbValue(mapping.AutoDisabledReason));
     }
 
     /// <summary>
@@ -2129,6 +2548,12 @@ internal sealed class AppDatabase : IDisposable
         mapping.EnableApiTranslation = ReadBoolean(reader, 35);
         mapping.AnthropicMaxTokens = reader.GetInt32(36);
         mapping.AnthropicApiVersion = reader.IsDBNull(37) ? "2023-06-01" : reader.GetString(37);
+
+        // Auto-discovery bookkeeping, appended last so every ordinal above stays stable.
+        mapping.AutoManaged = ReadBoolean(reader, 38);
+        mapping.AutoMissingSinceUtc = reader.IsDBNull(39) ? null : ReadUtc(reader, 39);
+        mapping.AutoDisabledUtc = reader.IsDBNull(40) ? null : ReadUtc(reader, 40);
+        mapping.AutoDisabledReason = reader.IsDBNull(41) ? null : reader.GetString(41);
         return mapping;
     }
 
@@ -2184,6 +2609,7 @@ internal sealed class AppDatabase : IDisposable
         UserAgent = reader.IsDBNull(29) ? null : reader.GetString(29),
         RequestHeaders = reader.IsDBNull(30) ? null : reader.GetString(30),
         ResponseHeaders = reader.IsDBNull(31) ? null : reader.GetString(31),
+        UserId = reader.IsDBNull(32) ? null : reader.GetInt32(32),
     };
 
     /// <summary>
@@ -2191,6 +2617,11 @@ internal sealed class AppDatabase : IDisposable
     /// <c>request_body</c> and <c>response_body</c> columns (see <c>LoadRecent</c>).
     /// Column ordinals after <c>exception_id</c> shift down by two accordingly.
     /// </summary>
+    /// <remarks>
+    /// <c>user_agent</c> is included even though it is not a body: the Requests views derive a
+    /// client label from it, and without it a fresh load would show no client until the next
+    /// incremental poll replaced the row.
+    /// </remarks>
     private static RequestLog ReadRequestLogSummary(SqliteDataReader reader) => new()
     {
         Timestamp = ReadUtc(reader, 0).ToLocalTime(),
@@ -2219,6 +2650,8 @@ internal sealed class AppDatabase : IDisposable
         DraftN = reader.GetInt32(19),
         DraftNAccepted = reader.GetInt32(20),
         OriginalModel = reader.IsDBNull(21) ? string.Empty : reader.GetString(21),
+        UserId = reader.IsDBNull(22) ? null : reader.GetInt32(22),
+        UserAgent = reader.IsDBNull(23) ? null : reader.GetString(23),
     };
 
     private static ExceptionDetail ReadExceptionDetail(SqliteDataReader reader) => new()
@@ -2339,7 +2772,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 FROM module_registry
                 ORDER BY id;
                 """;
@@ -2359,6 +2794,8 @@ internal sealed class AppDatabase : IDisposable
                     IsEnabled = ReadBoolean(reader, 5),
                     RegisteredUtc = ReadUtc(reader, 6),
                     LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    SignatureState = reader.IsDBNull(8) ? ModuleSignatureStates.Unsigned : reader.GetString(8),
+                    SignerKeyId = reader.IsDBNull(9) ? null : reader.GetString(9),
                 });
             }
 
@@ -2383,7 +2820,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 FROM module_registry
                 WHERE assembly_path = $assemblyPath;
                 """;
@@ -2403,6 +2842,8 @@ internal sealed class AppDatabase : IDisposable
                 IsEnabled = ReadBoolean(reader, 5),
                 RegisteredUtc = ReadUtc(reader, 6),
                 LastError = reader.IsDBNull(7) ? null : reader.GetString(7),
+                SignatureState = reader.IsDBNull(8) ? ModuleSignatureStates.Unsigned : reader.GetString(8),
+                SignerKeyId = reader.IsDBNull(9) ? null : reader.GetString(9),
             };
         }
     }
@@ -2425,7 +2866,9 @@ internal sealed class AppDatabase : IDisposable
                     version,
                     is_enabled,
                     registered_utc,
-                    last_error
+                    last_error,
+                    signature_state,
+                    signer_key_id
                 )
                 VALUES (
                     $assemblyPath,
@@ -2434,7 +2877,9 @@ internal sealed class AppDatabase : IDisposable
                     $version,
                     $isEnabled,
                     $registeredUtc,
-                    $lastError
+                    $lastError,
+                    $signatureState,
+                    $signerKeyId
                 );
                 SELECT last_insert_rowid();
                 """;
@@ -2445,6 +2890,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
             command.Parameters.AddWithValue("$registeredUtc", ToUtcText(entry.RegisteredUtc));
             command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.Parameters.AddWithValue("$signatureState", entry.SignatureState);
+            command.Parameters.AddWithValue("$signerKeyId", DbValue(entry.SignerKeyId));
 
             object? scalar = command.ExecuteScalar();
             entry.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
@@ -2468,7 +2915,9 @@ internal sealed class AppDatabase : IDisposable
                     name = $name,
                     version = $version,
                     is_enabled = $isEnabled,
-                    last_error = $lastError
+                    last_error = $lastError,
+                    signature_state = $signatureState,
+                    signer_key_id = $signerKeyId
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", entry.Id);
@@ -2477,6 +2926,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$version", DbValue(entry.Version));
             command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(entry.IsEnabled));
             command.Parameters.AddWithValue("$lastError", DbValue(entry.LastError));
+            command.Parameters.AddWithValue("$signatureState", entry.SignatureState);
+            command.Parameters.AddWithValue("$signerKeyId", DbValue(entry.SignerKeyId));
             command.ExecuteNonQuery();
         }
     }
@@ -2491,6 +2942,387 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText = "DELETE FROM module_registry WHERE id = $id;";
             command.Parameters.AddWithValue("$id", id);
             command.ExecuteNonQuery();
+        }
+    }
+
+    // ── Proxy access security: users + API keys ─────────────────────────────
+
+    /// <summary>Loads all proxy users ordered by name.</summary>
+    public IReadOnlyList<ProxyUser> LoadProxyUsers()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, name, email, created_utc, is_enabled,
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
+                       allowed_models, mcp_access, allowed_mcp_modules
+                FROM proxy_users
+                ORDER BY name COLLATE NOCASE, id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ProxyUser> users = [];
+            while (reader.Read())
+                users.Add(ReadProxyUser(reader));
+
+            return users;
+        }
+    }
+
+    public bool HasDashboardLogins()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT EXISTS(SELECT 1 FROM proxy_users WHERE dashboard_login_enabled = 1);";
+            return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0;
+        }
+    }
+
+    /// <summary>Creates a proxy user. The generated row id is written back to <paramref name="user"/>.</summary>
+    public void InsertProxyUser(ProxyUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO proxy_users
+                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access, allowed_mcp_modules)
+                VALUES
+                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole, $allowedModels, $mcpAccess, $allowedMcpModules);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$name", user.Name);
+            command.Parameters.AddWithValue("$email", user.Email);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(user.CreatedUtc));
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+            command.Parameters.AddWithValue("$dashboardLoginEnabled", ToSqliteBoolean(user.DashboardLoginEnabled));
+            command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
+            command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
+            command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
+            command.Parameters.AddWithValue("$allowedMcpModules", JsonSerializer.Serialize(user.AllowedMcpModules, _jsonOptions));
+
+            object? scalar = command.ExecuteScalar();
+            user.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates a proxy user's contact info and enabled state.</summary>
+    public void UpdateProxyUser(ProxyUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_users
+                SET name = $name, email = $email, is_enabled = $isEnabled,
+                    dashboard_login_enabled = $dashboardLoginEnabled,
+                    dashboard_username = $dashboardUsername,
+                    dashboard_password_hash = $dashboardPasswordHash,
+                    dashboard_role = $dashboardRole,
+                    allowed_models = $allowedModels,
+                    mcp_access = $mcpAccess,
+                    allowed_mcp_modules = $allowedMcpModules
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", user.Id);
+            command.Parameters.AddWithValue("$name", user.Name);
+            command.Parameters.AddWithValue("$email", user.Email);
+            command.Parameters.AddWithValue("$isEnabled", ToSqliteBoolean(user.IsEnabled));
+            command.Parameters.AddWithValue("$dashboardLoginEnabled", ToSqliteBoolean(user.DashboardLoginEnabled));
+            command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
+            command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
+            command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
+            command.Parameters.AddWithValue("$allowedMcpModules", JsonSerializer.Serialize(user.AllowedMcpModules, _jsonOptions));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Deletes a proxy user and every API key belonging to it.</summary>
+    public void DeleteProxyUser(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteTransaction transaction = connection.BeginTransaction();
+            using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM proxy_api_keys WHERE user_id = $id;";
+                command.Parameters.AddWithValue("$id", id);
+                command.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand command = connection.CreateCommand())
+            {
+                command.Transaction = transaction;
+                command.CommandText = "DELETE FROM proxy_users WHERE id = $id;";
+                command.Parameters.AddWithValue("$id", id);
+                command.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+        }
+    }
+
+    /// <summary>Loads all proxy API keys (hashes included — never expose these through an API).</summary>
+    public IReadOnlyList<ProxyApiKey> LoadProxyApiKeys()
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access, key_secret
+                FROM proxy_api_keys
+                ORDER BY id;
+                """;
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            List<ProxyApiKey> keys = [];
+            while (reader.Read())
+                keys.Add(ReadProxyApiKey(reader));
+
+            return keys;
+        }
+    }
+
+    /// <summary>Finds an API key by its SHA-256 hash, or null when no key matches.</summary>
+    public ProxyApiKey? FindProxyApiKeyByHash(string keyHash)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyHash);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, user_id, label, key_hash, key_prefix, created_utc, last_used_utc, allowed_models, mcp_access, key_secret
+                FROM proxy_api_keys
+                WHERE key_hash = $keyHash;
+                """;
+            command.Parameters.AddWithValue("$keyHash", keyHash);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadProxyApiKey(reader) : null;
+        }
+    }
+
+    /// <summary>Finds a proxy user by row id, or null when it does not exist.</summary>
+    public ProxyUser? FindProxyUser(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT id, name, email, created_utc, is_enabled,
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
+                       allowed_models, mcp_access, allowed_mcp_modules
+                FROM proxy_users
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadProxyUser(reader) : null;
+        }
+    }
+
+    /// <summary>
+    /// Finds a proxy user by dashboard username without filtering on the enabled flags, so the
+    /// login flow can distinguish a wrong password (401) from an account that is disabled or has
+    /// dashboard sign-in turned off (403 with a specific message).
+    /// </summary>
+    public ProxyUser? FindProxyUserByDashboardUsername(string username)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access, allowed_mcp_modules FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
+            command.Parameters.AddWithValue("$username", username.Trim());
+
+            using SqliteDataReader reader = command.ExecuteReader();
+            return reader.Read() ? ReadProxyUser(reader) : null;
+        }
+    }
+
+    /// <summary>Creates an API key. The generated row id is written back to <paramref name="key"/>.</summary>
+    public void InsertProxyApiKey(ProxyApiKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, key_secret, created_utc, last_used_utc, allowed_models, mcp_access)
+                VALUES ($userId, $label, $keyHash, $keyPrefix, $keySecret, $createdUtc, $lastUsedUtc, $allowedModels, $mcpAccess);
+                SELECT last_insert_rowid();
+                """;
+            command.Parameters.AddWithValue("$userId", key.UserId);
+            command.Parameters.AddWithValue("$label", key.Label);
+            command.Parameters.AddWithValue("$keyHash", key.KeyHash);
+            command.Parameters.AddWithValue("$keyPrefix", key.KeyPrefix);
+            command.Parameters.AddWithValue("$keySecret", (object?)key.KeySecret ?? DBNull.Value);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(key.CreatedUtc));
+            command.Parameters.AddWithValue("$lastUsedUtc", key.LastUsedUtc is { } used ? ToUtcText(used) : DBNull.Value);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(key.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(key.McpAccess));
+
+            object? scalar = command.ExecuteScalar();
+            key.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>Updates an API key's label, model grants, and MCP server grant.</summary>
+    public void UpdateProxyApiKeyAccess(int id, string label, IReadOnlyList<string> allowedModels, bool mcpAccess = false)
+    {
+        ArgumentNullException.ThrowIfNull(allowedModels);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_api_keys
+                SET label = $label, allowed_models = $allowedModels, mcp_access = $mcpAccess
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$label", label);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(allowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(mcpAccess));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Replaces an API key's secret material in place (the "regenerate" operation): new hash,
+    /// display prefix, protected plaintext, and creation time. The label, model grants, and MCP
+    /// grant stay untouched, and the previous key stops authenticating because its hash is gone.
+    /// </summary>
+    public void UpdateProxyApiKeyMaterial(int id, string keyHash, string keyPrefix, string? keySecret, DateTime createdUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyHash);
+
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE proxy_api_keys
+                SET key_hash = $keyHash, key_prefix = $keyPrefix, key_secret = $keySecret,
+                    created_utc = $createdUtc, last_used_utc = NULL
+                WHERE id = $id;
+                """;
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$keyHash", keyHash);
+            command.Parameters.AddWithValue("$keyPrefix", keyPrefix);
+            command.Parameters.AddWithValue("$keySecret", (object?)keySecret ?? DBNull.Value);
+            command.Parameters.AddWithValue("$createdUtc", ToUtcText(createdUtc));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Records the last time an API key authenticated a request.</summary>
+    public void UpdateProxyApiKeyLastUsed(int id, DateTime lastUsedUtc)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE proxy_api_keys SET last_used_utc = $lastUsedUtc WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.Parameters.AddWithValue("$lastUsedUtc", ToUtcText(lastUsedUtc));
+            command.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Deletes an API key.</summary>
+    public void DeleteProxyApiKey(int id)
+    {
+        lock (_lock)
+        {
+            using SqliteConnection connection = OpenConnection();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM proxy_api_keys WHERE id = $id;";
+            command.Parameters.AddWithValue("$id", id);
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static ProxyUser ReadProxyUser(SqliteDataReader reader) => new()
+        {
+            Id = reader.GetInt32(0),
+            Name = reader.GetString(1),
+            Email = reader.GetString(2),
+            CreatedUtc = ReadUtc(reader, 3),
+            IsEnabled = ReadBoolean(reader, 4),
+            DashboardLoginEnabled = ReadBoolean(reader, 5),
+            DashboardUsername = reader.GetString(6),
+            DashboardPasswordHash = reader.GetString(7),
+            DashboardRole = reader.GetString(8),
+            AllowedModels = DeserializeAllowedModels(reader.IsDBNull(9) ? null : reader.GetString(9)),
+            McpAccess = reader.FieldCount > 10 && !reader.IsDBNull(10) && ReadBoolean(reader, 10),
+            AllowedMcpModules = reader.FieldCount > 11 && !reader.IsDBNull(11)
+                ? DeserializeAllowedModels(reader.GetString(11))
+                : [],
+        };
+
+        private static ProxyApiKey ReadProxyApiKey(SqliteDataReader reader) => new()
+    {
+        Id = reader.GetInt32(0),
+        UserId = reader.GetInt32(1),
+        Label = reader.GetString(2),
+        KeyHash = reader.GetString(3),
+        KeyPrefix = reader.GetString(4),
+        CreatedUtc = ReadUtc(reader, 5),
+        LastUsedUtc = reader.IsDBNull(6) ? null : ReadUtc(reader, 6),
+        AllowedModels = DeserializeAllowedModels(reader.IsDBNull(7) ? null : reader.GetString(7)),
+        McpAccess = reader.FieldCount > 8 && !reader.IsDBNull(8) && ReadBoolean(reader, 8),
+        KeySecret = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetString(9) : null,
+    };
+
+    private static List<string> DeserializeAllowedModels(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json, _jsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
         }
     }
 

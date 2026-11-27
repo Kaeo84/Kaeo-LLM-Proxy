@@ -74,6 +74,12 @@ partial class OllamaProxyHandler
             // cancellation and closes the response; there is no client left to notify.
             throw;
         }
+        catch (ModelAccessDeniedException)
+        {
+            // A policy denial, not an upstream failure: the access check runs before any response
+            // byte is written, so let HandleCoreAsync emit the structured 403 instead of a 502.
+            throw;
+        }
         catch (Exception ex) when (state.HeadersCommitted)
         {
             // The status line is already on the wire as 200, so the only way to tell the client
@@ -412,6 +418,11 @@ partial class OllamaProxyHandler
                 AppendTranslationCoding(log, "passthrough request", _settings.UseIrTranslation);
 
                 originalModel = log.Model; // set by the normalization path
+
+                // Check the CLIENT's model, not a compaction-redirect target the normalizer may
+                // have substituted (log.OriginalModel preserves the name the client sent).
+                EnsureClientModelAccess(string.IsNullOrEmpty(log.OriginalModel) ? originalModel : log.OriginalModel);
+
                 // Capture both the client's original body and the upstream-bound (rewritten)
                 // body so proxy-injected values such as reasoning_effort can be compared
                 // side-by-side in the request log. Debug mode captures bodies independently of
@@ -539,6 +550,10 @@ partial class OllamaProxyHandler
         // Token totals for a synthesized usage chunk, read only after the usage sniffer has flushed so
         // any counts the upstream did report are included.
         (int PromptTokens, int CompletionTokens) tokenCounts() => (log.PromptTokens, log.CompletionTokens);
+
+        // Body-less passthrough requests never ran the check above; a restricted key must not
+        // fall through to the default mapping either.
+        EnsureClientModelAccess(string.IsNullOrEmpty(log.OriginalModel) ? originalModel : log.OriginalModel);
 
         ModelMapping upstreamMapping = ResolveMapping(originalModel);
         var (baseUrl, timeout, apiKey) = ResolveUpstream(upstreamMapping);
@@ -807,6 +822,13 @@ partial class OllamaProxyHandler
         // independently of the Collect flags, mirroring the /api/chat path.
         bool debugCapture = _settings.DebugMode;
 
+        // Only debug mode reads the outcome, so every other request avoids the bookkeeping. The
+        // dropped calls are otherwise visible only by diffing the raw capture against what the
+        // client received, which is exactly the comparison nobody has time for mid-incident.
+        ToolCallSanitizerLog? sanitizerLog = _settings.DebugMode && passthroughDeclaredTools is not null
+            ? new ToolCallSanitizerLog(passthroughDeclaredTools)
+            : null;
+
         if (isServerSentEvents)
         {
             using var streamSession = _streamMonitor?.Begin(log, StreamKind.Sse);
@@ -836,7 +858,8 @@ partial class OllamaProxyHandler
                     terminator: streamTerminator,
                     tokenCounts: tokenCounts,
                     session: streamSession,
-                    useIrTranslation: _settings.UseIrTranslation);
+                    useIrTranslation: _settings.UseIrTranslation,
+                    sanitizerLog: sanitizerLog);
 
                 if (rawCapture is not null)
                 {
@@ -903,7 +926,17 @@ partial class OllamaProxyHandler
                 ct,
                 onBody,
                 extractToolCalls: shouldMirrorReasoningContent,
-                declaredToolNames: passthroughDeclaredTools);
+                declaredToolNames: passthroughDeclaredTools,
+                sanitizerLog: sanitizerLog);
+        }
+
+        // Record what the declared-tool sanitizer removed. Appended after the body has been
+        // forwarded because the drops are discovered as the response streams past.
+        if (sanitizerLog?.Describe() is { } sanitizerNote)
+        {
+            log.DebugSummary = string.IsNullOrEmpty(log.DebugSummary)
+                ? sanitizerNote
+                : log.DebugSummary + "\n" + sanitizerNote;
         }
 
         log.ResponseBytes = countingStream.BytesWritten;
@@ -976,7 +1009,8 @@ partial class OllamaProxyHandler
         CancellationToken ct,
         Action<string>? onBody = null,
         bool extractToolCalls = false,
-        IReadOnlySet<string>? declaredToolNames = null)
+        IReadOnlySet<string>? declaredToolNames = null,
+        ToolCallSanitizerLog? sanitizerLog = null)
     {
         if (thinkingMode == ThinkingMode.LeaveInline && onBody is null && !extractToolCalls)
         {
@@ -989,7 +1023,7 @@ partial class OllamaProxyHandler
         onBody?.Invoke(body);
         string outgoing = thinkingMode == ThinkingMode.LeaveInline && !extractToolCalls
             ? body
-            : TransformNonStreamingChatBody(body, thinkingMode, extractToolCalls, declaredToolNames);
+            : TransformNonStreamingChatBody(body, thinkingMode, extractToolCalls, declaredToolNames, sanitizerLog);
         byte[] bytes = Encoding.UTF8.GetBytes(outgoing);
         await destination.WriteAsync(bytes, ct);
     }
@@ -1012,7 +1046,8 @@ partial class OllamaProxyHandler
         string json,
         ThinkingMode thinkingMode,
         bool extractToolCalls = false,
-        IReadOnlySet<string>? declaredToolNames = null)
+        IReadOnlySet<string>? declaredToolNames = null,
+        ToolCallSanitizerLog? sanitizerLog = null)
     {
         try
         {
@@ -1068,7 +1103,13 @@ partial class OllamaProxyHandler
                     }
 
                     foreach (JsonNode? droppedNode in dropped)
+                    {
                         structured.Remove(droppedNode);
+                        sanitizerLog?.RecordDropped(
+                            (droppedNode as JsonObject)?["function"] is JsonObject droppedFn
+                            && droppedFn["name"] is JsonValue droppedName
+                            && droppedName.TryGetValue(out string? droppedStr) ? droppedStr : null);
+                    }
 
                     if (keptCalls == 0)
                     {
@@ -1089,6 +1130,15 @@ partial class OllamaProxyHandler
                     {
                         List<OllamaToolCall> allowedCalls = [.. extraction.ToolCalls
                             .Where(tc => IsToolNameAllowed(declaredToolNames, tc.Function?.Name))];
+
+                        if (allowedCalls.Count < extraction.ToolCalls.Count)
+                        {
+                            foreach (OllamaToolCall rejected in extraction.ToolCalls
+                                .Where(tc => !IsToolNameAllowed(declaredToolNames, tc.Function?.Name)))
+                            {
+                                sanitizerLog?.RecordDropped(rejected.Function?.Name);
+                            }
+                        }
 
                         if (allowedCalls.Count > 0)
                         {
@@ -1524,7 +1574,8 @@ partial class OllamaProxyHandler
         OpenAiStreamTerminator? terminator = null,
         Func<(int PromptTokens, int CompletionTokens)>? tokenCounts = null,
         bool useIrTranslation = false,
-        StreamMonitorSession? session = null)
+        StreamMonitorSession? session = null,
+        ToolCallSanitizerLog? sanitizerLog = null)
     {
         using StreamReader reader = new(source, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         TimeSpan keepAliveInterval = AppSettings.SseKeepAliveInterval(keepAliveIntervalSeconds);
@@ -1536,13 +1587,13 @@ partial class OllamaProxyHandler
         Func<IEnumerable<string>> rewriterFlush;
         if (useIrTranslation)
         {
-            OpenAiSseFrameTranslation ir = new(thinkingMode, declaredToolNames);
+            OpenAiSseFrameTranslation ir = new(thinkingMode, declaredToolNames, sanitizerLog);
             rewriter = ir.Process;
             rewriterFlush = ir.Flush;
         }
         else
         {
-            OpenAiSseRewriter legacy = new(thinkingMode, declaredToolNames);
+            OpenAiSseRewriter legacy = new(thinkingMode, declaredToolNames, sanitizerLog);
             rewriter = legacy.Process;
             rewriterFlush = legacy.Flush;
         }
@@ -1853,7 +1904,10 @@ partial class OllamaProxyHandler
         /// inline markup calls into structured ones. Superseded by the IR-routed frame translator
         /// behind <c>AppSettings.UseIrTranslation</c>; retained as the default coding path.
         /// </summary>
-        private sealed class OpenAiSseRewriter(ThinkingMode thinkingMode, IReadOnlySet<string>? declaredToolNames)
+        private sealed class OpenAiSseRewriter(
+            ThinkingMode thinkingMode,
+            IReadOnlySet<string>? declaredToolNames,
+            ToolCallSanitizerLog? sanitizerLog = null)
     {
         // Per-choice buffer of streamed delta.content prior to/within a tool_call block.
         private readonly Dictionary<int, ChoiceState> _state = [];
@@ -1920,7 +1974,7 @@ partial class OllamaProxyHandler
                 int index = choice["index"]?.GetValue<int>() ?? 0;
                 if (!_state.TryGetValue(index, out ChoiceState? cs))
                 {
-                    cs = new ChoiceState(_declaredToolNames);
+                    cs = new ChoiceState(_declaredToolNames, sanitizerLog);
                     _state[index] = cs;
                 }
 
@@ -1992,6 +2046,8 @@ partial class OllamaProxyHandler
                             && !string.IsNullOrEmpty(callName))
                         {
                             valid = IsToolNameAllowed(_declaredToolNames, callName);
+                            if (!valid)
+                                sanitizerLog?.RecordDropped(callName);
                         }
                         else
                         {
@@ -2098,8 +2154,11 @@ partial class OllamaProxyHandler
             }),
         };
 
-        private sealed class ChoiceState(IReadOnlySet<string>? declaredToolNames)
+        private sealed class ChoiceState(
+            IReadOnlySet<string>? declaredToolNames,
+            ToolCallSanitizerLog? sanitizerLog = null)
         {
+            private readonly ToolCallSanitizerLog? _sanitizerLog = sanitizerLog;
             private readonly IReadOnlySet<string>? _declaredToolNames = declaredToolNames;
             private readonly StringBuilder _toolBuffer = new();
             private bool _inToolCall;
@@ -2242,8 +2301,8 @@ partial class OllamaProxyHandler
                 // raw block back as visible content instead of a tool-call delta.
                 if (!IsToolNameAllowed(_declaredToolNames, name))
                 {
-                    extraFrames.Add(BuildChoiceFrame(root, choiceIndex, new JsonObject { ["content"] = xml.Trim() }));
-                    return;
+                    _sanitizerLog?.RecordDropped(name);
+                    extraFrames.Add(BuildChoiceFrame(root, choiceIndex, new JsonObject { ["content"] = xml.Trim() }));                    return;
                 }
 
                 Dictionary<string, object?> args = new(StringComparer.Ordinal);
@@ -2319,6 +2378,9 @@ partial class OllamaProxyHandler
     ///         separated by a blank line, so that strict Jinja templates (e.g. Qwen3)
     ///         that only allow one system message do not raise an exception.</item>
     ///   <item>Removes a trailing assistant response-prefill message, because some upstreams reject it when thinking mode is enabled.</item>
+        ///   <item>Supplies an empty <c>content</c> on any message that carries a null or absent one, because
+        ///         strict OpenAI-compatible providers (e.g. Qwen Cloud) reject an assistant tool-call turn
+        ///         without it.</item>
     ///   <item>Applies the per-model sampling priorities: <c>Provider</c> drops client-supplied
     ///         <c>temperature</c>/<c>repeat_penalty</c> so hosted providers keep their platform
     ///         values; <c>Proxy</c> overwrites (or injects) the configured proxy values.</item>
@@ -2406,11 +2468,16 @@ partial class OllamaProxyHandler
             bool hasConsecutiveSystemMessages = false;
             bool hasTrailingAssistantPrefill = false;
             bool shouldInjectInstructions = false;
+            bool repairedMessageContent = false;
             if (root.TryGetProperty("messages", out JsonElement messagesEl)
                 && messagesEl.ValueKind == JsonValueKind.Array)
             {
                 List<JsonElement> messages = [.. messagesEl.EnumerateArray()];
                 shouldInjectInstructions = !string.IsNullOrWhiteSpace(injectedInstructions);
+
+                // A client that sends "content": null (or omits it) on an assistant tool-call turn is
+                // legal for OpenAI/llama.cpp but a hard 400 for strict providers such as Qwen Cloud.
+                repairedMessageContent = MessageContentRepair.NeedsRepair(messages);
 
                 int leadingSystem = 0;
                 foreach (JsonElement msg in messages)
@@ -2433,6 +2500,7 @@ partial class OllamaProxyHandler
                 && !hasConsecutiveSystemMessages
                 && !hasTrailingAssistantPrefill
                 && !shouldInjectInstructions
+                && !repairedMessageContent
                 && tempPriority == SamplingPriority.ClientApp
                 && repeatPriority == SamplingPriority.ClientApp
                 && !rewriteReasoningEffort
@@ -2555,7 +2623,7 @@ partial class OllamaProxyHandler
                 }
                 else if (prop.Name.Equals("messages", StringComparison.OrdinalIgnoreCase)
                       && prop.Value.ValueKind == JsonValueKind.Array
-                      && (hasConsecutiveSystemMessages || hasTrailingAssistantPrefill || shouldInjectInstructions))
+                      && (hasConsecutiveSystemMessages || hasTrailingAssistantPrefill || shouldInjectInstructions || repairedMessageContent))
                 {
                     writer.WritePropertyName("messages");
                     writer.WriteStartArray();
@@ -2587,7 +2655,10 @@ partial class OllamaProxyHandler
                         if (hasTrailingAssistantPrefill && i == messages.Count - 1 && IsAssistantResponsePrefill(msg))
                             continue;
 
-                        msg.WriteTo(writer);
+                        if (MessageContentRepair.NeedsRepair(msg))
+                            MessageContentRepair.WriteRepaired(writer, msg);
+                        else
+                            msg.WriteTo(writer);
                     }
 
                     writer.WriteEndArray();
@@ -2639,7 +2710,8 @@ partial class OllamaProxyHandler
                     reasoningFormat,
                     injectedInstructions,
                     hasConsecutiveSystemMessages,
-                    hasTrailingAssistantPrefill);
+                    hasTrailingAssistantPrefill,
+                    repairedMessageContent);
 
             return output;
         }
@@ -2681,7 +2753,8 @@ partial class OllamaProxyHandler
         ReasoningEffortFormat reasoningFormat,
         string? injectedInstructions,
         bool hasConsecutiveSystemMessages,
-        bool hasTrailingAssistantPrefill)
+        bool hasTrailingAssistantPrefill,
+        bool repairedMessageContent)
     {
         // Extract the client's original values for before/after comparison.
         float? clientTemperature = ReadJsonNumber(root, "temperature");
@@ -2708,6 +2781,8 @@ partial class OllamaProxyHandler
             sb.AppendLine("messages: merged consecutive leading system messages into a single system message");
         if (hasTrailingAssistantPrefill)
             sb.AppendLine("messages: removed trailing assistant prefill (thinking compatibility)");
+        if (repairedMessageContent)
+            sb.AppendLine("messages: added an empty content field to messages that had none (strict upstream compatibility)");
 
         return sb.ToString().TrimEnd();
     }

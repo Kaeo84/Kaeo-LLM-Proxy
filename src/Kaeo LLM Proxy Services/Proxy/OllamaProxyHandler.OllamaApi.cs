@@ -26,6 +26,7 @@ partial class OllamaProxyHandler
         // stub â€” llama.cpp keeps the model permanently loaded.
         var running = _settings.ModelMappings
             .Where(m => m.IsEnabled && !string.IsNullOrWhiteSpace(m.ProxyName))
+            .Where(m => ProxyAccessService.IsModelAllowed(_currentPrincipal.Value, m.ProxyName))
             .Select(m =>
             {
                 string name = string.IsNullOrWhiteSpace(m.ProxyName) ? m.ModelName : m.ProxyName;
@@ -72,6 +73,7 @@ partial class OllamaProxyHandler
         }
 
         string requestedModel = showReq?.Model ?? showReq?.Name ?? string.Empty;
+        EnsureClientModelAccess(requestedModel);
         ModelMapping? mapping = _settings.FindModelMapping(requestedModel);
         if (mapping is null && !string.IsNullOrWhiteSpace(requestedModel))
         {
@@ -315,6 +317,8 @@ partial class OllamaProxyHandler
         if (ollamaReq is null)
             return;
 
+        EnsureClientModelAccess(ollamaReq.Model);
+
         // Context-summarize (/compact) redirect.
         string? firstContent = !string.IsNullOrEmpty(ollamaReq.System) ? ollamaReq.System : ollamaReq.Prompt;
         var (effectiveModel, compactRedirected, resolvedModel) =
@@ -455,6 +459,8 @@ partial class OllamaProxyHandler
         OllamaChatRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaChatRequest>(body, resp, log, ct);
         if (ollamaReq is null)
             return;
+
+        EnsureClientModelAccess(ollamaReq.Model);
 
         // Context-summarize (/compact) redirect.
         string? chatFirstContent = ollamaReq.Messages.Count > 0 ? ollamaReq.Messages[0].Content : null;
@@ -765,6 +771,8 @@ partial class OllamaProxyHandler
         OllamaEmbeddingsRequest? ollamaReq = await TryDeserializeRequestAsync<OllamaEmbeddingsRequest>(body, resp, log, ct);
         if (ollamaReq is null)
             return;
+
+        EnsureClientModelAccess(ollamaReq.Model);
 
         string resolvedModel = _settings.ResolveModelName(ollamaReq.Model);
         log.Model = resolvedModel;

@@ -113,6 +113,89 @@ public class RequestLogQueryTests
         Assert.Single(database.LoadRecent(50, LogSource.Mcp));
     }
 
+    // ── QueryRecent: newest first, optional user/source scoping ─────────────
+
+    [Fact]
+    public void QueryRecentReturnsNewestFirst()
+    {
+        // The web dashboard's fresh load renders these rows top-down, so the newest entry must
+        // come first — the opposite of LoadRecent's chronological queue seeding.
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+            SeedMinutes(setup, 10);
+
+        using AppDatabase database = Open(path);
+        IReadOnlyList<RequestLog> recent = database.QueryRecent(3);
+
+        Assert.Equal(["/entry/9", "/entry/8", "/entry/7"], recent.Select(e => e.OllamaPath));
+    }
+
+    [Fact]
+    public void QueryRecentFiltersByUserAndExcludesUnattributedRows()
+    {
+        string path = NewDatabasePath();
+        DateTime start = new(2026, 9, 24, 12, 0, 0, DateTimeKind.Local);
+        using (AppDatabase setup = Open(path))
+        {
+            setup.Insert(new RequestLog { Timestamp = start, Method = "GET", OllamaPath = "/mine", StatusCode = 200, Status = RequestStatus.Success, UserId = 7 });
+            setup.Insert(new RequestLog { Timestamp = start.AddMinutes(1), Method = "GET", OllamaPath = "/theirs", StatusCode = 200, Status = RequestStatus.Success, UserId = 8 });
+            setup.Insert(new RequestLog { Timestamp = start.AddMinutes(2), Method = "GET", OllamaPath = "/open", StatusCode = 200, Status = RequestStatus.Success });
+        }
+
+        using AppDatabase database = Open(path);
+        Assert.Equal("/mine", Assert.Single(database.QueryRecent(50, LogSource.Proxy, userId: 7)).OllamaPath);
+        Assert.Equal(3, database.QueryRecent(50).Count);
+    }
+
+    [Fact]
+    public void QueryRecentIsScopedToItsLogSource()
+    {
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            SeedMinutes(setup, 2);
+            setup.Insert(
+                new RequestLog
+                {
+                    Timestamp = new DateTime(2026, 9, 24, 13, 0, 0, DateTimeKind.Local),
+                    Method = "POST",
+                    OllamaPath = "/mcp/tool",
+                    StatusCode = 200,
+                    Status = RequestStatus.Success,
+                },
+                ex: null,
+                source: LogSource.Mcp);
+        }
+
+        using AppDatabase database = Open(path);
+
+        Assert.Equal(2, database.QueryRecent(50, LogSource.Proxy).Count);
+        Assert.Equal("/mcp/tool", Assert.Single(database.QueryRecent(50, LogSource.Mcp)).OllamaPath);
+    }
+
+    [Fact]
+    public void LoadRecentCarriesUserAttribution()
+    {
+        // Startup queue seeding must preserve user_id so read-only incremental polls can filter
+        // entries that predate the current process.
+        string path = NewDatabasePath();
+        using (AppDatabase setup = Open(path))
+        {
+            setup.Insert(new RequestLog
+            {
+                Timestamp = new DateTime(2026, 9, 24, 12, 0, 0, DateTimeKind.Local),
+                Method = "GET",
+                OllamaPath = "/attributed",
+                StatusCode = 200,
+                Status = RequestStatus.Success,
+                UserId = 42,
+            });
+        }
+
+        using AppDatabase database = Open(path);
+        Assert.Equal(42, Assert.Single(database.LoadRecent(10)).UserId);
+    }
+
     // ── DeleteOlderThan: prunes requests and the exceptions they linked ─────
 
     [Fact]

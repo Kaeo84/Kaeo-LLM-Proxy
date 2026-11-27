@@ -52,6 +52,7 @@ internal sealed class OllamaApiClient : IUpstreamClient
     private HttpRequestMessage CreateGetRequest(Uri uri)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        HttpHelpers.StampClientIdentity(request);
         if (!string.IsNullOrWhiteSpace(_apiKey))
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
         return request;

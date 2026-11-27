@@ -2,23 +2,34 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Kaeo LLM Proxy — Ollama-compatible proxy for llama.cpp and OpenAI-style clients</title>
-  <meta name="description" content="Kaeo LLM Proxy is a Windows system-tray application that bridges Ollama clients and OpenAI-compatible llama.cpp servers, with model mapping, tool-call translation, reasoning/thinking support, an embedded MCP server with tool modules, heartbeats, summarization, and streaming fixes.">
-  <meta name="keywords" content="LLM proxy, Ollama, llama.cpp, OpenAI compatible, MCP, Model Context Protocol, C#, Windows, tool calling, reasoning, thinking, streaming SSE">
+  <title>Kaeo LLM Proxy &mdash; cross-platform LLM proxy with Anthropic, OpenAI, and Ollama translation and a built-in web dashboard</title>
+  <meta name="description" content="Kaeo LLM Proxy is a cross-platform LLM proxy and web dashboard for Windows, macOS, and Linux. It translates between the Anthropic, OpenAI/ChatGPT, and Ollama APIs in both directions, routes each model to its own backend, and adds user administration, API keys, a credential store for central model management, per-user model and MCP grants, custom prompt injection, context compaction, and comprehensive logging, reporting, and statistics.">
+  <meta name="keywords" content="LLM proxy, Anthropic API, OpenAI compatible, ChatGPT API, Ollama, llama.cpp, MCP, Model Context Protocol, web dashboard, cross-platform, Windows, macOS, Linux, user administration, API keys, credential store, prompt injection, system prompt, role based access control, RBAC, reasoning, thinking, context compaction, streaming SSE, logging, statistics, usage reporting, C#, .NET">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://kaeo84.github.io/Kaeo-LLM-Proxy/">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #24292f; line-height: 1.6; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #24292f; line-height: 1.6; }
     h1 { font-size: 2rem; border-bottom: 1px solid #d0d7de; padding-bottom: .3em; }
-    h2 { font-size: 1.3rem; margin-top: 2em; }
+    h2 { font-size: 1.3rem; margin-top: 2.2em; border-bottom: 1px solid #eaeef2; padding-bottom: .25em; }
+    h3 { font-size: 1.05rem; margin-top: 1.6em; }
     a { color: #0969da; }
     code { background: #f6f8fa; padding: 2px 6px; border-radius: 4px; font-size: .9em; }
-    table { border-collapse: collapse; width: 100%; }
+    pre { background: #f6f8fa; padding: 12px 14px; border-radius: 6px; overflow-x: auto; font-size: .85em; }
+    pre code { background: none; padding: 0; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
     th, td { border: 1px solid #d0d7de; padding: 6px 12px; text-align: left; vertical-align: top; }
     th { background: #f6f8fa; }
     .badge { display: inline-block; background: #0969da; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: .8em; text-decoration: none; margin-right: 4px; }
-    ul { padding-left: 1.2rem; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: .25em 0; }
+    .lead { font-size: 1.05rem; }
+    .muted { color: #57606a; font-size: .9em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 1em 0; }
+    .card { border: 1px solid #d0d7de; border-radius: 8px; padding: 12px 16px; }
+    .card h3 { margin-top: 0; }
+    .card ul { margin-bottom: 0; }
+    .note { border-left: 3px solid #0969da; background: #f6f8fa; padding: 10px 14px; border-radius: 0 6px 6px 0; }
   </style>
 </head>
 <body>
@@ -26,49 +37,491 @@
   <p>
     <a class="badge" href="https://github.com/Kaeo84/Kaeo-LLM-Proxy">View on GitHub</a>
     <a class="badge" href="https://github.com/Kaeo84/Kaeo-LLM-Proxy/releases">Releases</a>
+    <a class="badge" href="https://github.com/Kaeo84/Kaeo-LLM-Proxy/blob/main/README.md">Documentation</a>
   </p>
 
-  <p>
-    <strong>Kaeo LLM Proxy</strong> is a C# Windows system-tray application that acts as an
-    <strong>Ollama API-compatible proxy</strong> in front of one or more
-    <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> servers and other OpenAI-compatible upstreams.
-    It lets Ollama clients talk to backends that expose a <code>/v1/</code> API instead of the native Ollama API.
+  <p class="lead">
+    <strong>Kaeo LLM Proxy</strong> is a <strong>cross-platform LLM proxy with a built-in web dashboard</strong>.
+    It speaks the <strong>Anthropic</strong>, <strong>OpenAI/ChatGPT</strong>, and <strong>Ollama</strong> APIs on
+    the front door and forwards each request to whatever your backends actually speak &mdash;
+    <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> or any other OpenAI-compatible server, a real
+    Ollama server, or the Anthropic Messages API &mdash; translating requests, responses, and streams in both
+    directions. Around that engine it adds user administration, API keys, a credential store for central model
+    management, custom prompt injection, and comprehensive logging, reporting, and statistics.
   </p>
+
+  <div class="note">
+    <p>
+      <strong>Runs on Windows, macOS, and Linux.</strong> The engine &mdash; proxy, MCP server, dashboard, users,
+      keys, logging, statistics &mdash; is identical on all three, and so is the dashboard served from it.
+      <strong>The web GUI is the cross-platform GUI:</strong> only the system-tray app and the Visual Studio
+      extension are Windows-only. On macOS and Linux the headless host runs the same engine and serves the same
+      dashboard, so nothing is lost but the tray icon.
+    </p>
+  </div>
 
   <h2>Why this exists</h2>
   <p>
-    Many local AI tools expect the Ollama REST API, while llama.cpp and similar servers often expose an
-    OpenAI-compatible API. This proxy sits in between, listening on <code>localhost:11434</code> by default,
-    rewriting requests and responses as needed, and routing each request to the correct upstream model.
+    It started as a bridge: many local AI tools expect the Ollama REST API while llama.cpp and similar servers
+    expose an OpenAI-compatible one, so the proxy sat in between and translated. The same idea turned out to be
+    useful for everything else &mdash; ChatGPT-style clients, Anthropic clients, several backends at once,
+    per-user access control, and one place to see what every client is actually doing. Clients still point at
+    <code>localhost:11434</code>; what sits behind that port is now configurable, multi-protocol, and auditable.
   </p>
 
-  <h2>Key features</h2>
+  <h2>API translation &mdash; Anthropic, OpenAI, Ollama</h2>
+  <p>
+    The proxy is not tied to one protocol on either side. Clients may speak <em>any</em> of the three supported
+    protocols, and each model mapping may point at <em>any</em> of the three, so one listener can serve an Ollama
+    client, a ChatGPT-style client, and an Anthropic client at the same time while fronting a mixed fleet of
+    backends.
+  </p>
+
+  <h3>Inbound &mdash; what clients call</h3>
+  <table>
+    <tr><th>Client protocol</th><th>Endpoints</th></tr>
+    <tr>
+      <td><strong>Anthropic</strong></td>
+      <td><code>POST /v1/messages</code> (and <code>/messages</code>)</td>
+    </tr>
+    <tr>
+      <td><strong>OpenAI / ChatGPT-style</strong></td>
+      <td><code>GET /v1/models</code>, <code>GET /v1/models/{model}</code>, <code>POST /v1/chat/completions</code>,
+        <code>POST /v1/completions</code>, <code>POST /v1/embeddings</code>, <code>POST /v1/responses</code>,
+        other <code>/v1/*</code> passthrough</td>
+    </tr>
+    <tr>
+      <td><strong>Ollama</strong></td>
+      <td><code>GET /api/tags</code>, <code>GET /api/ps</code>, <code>GET /api/version</code>,
+        <code>POST /api/show</code>, <code>POST /api/chat</code>, <code>POST /api/generate</code>,
+        <code>POST /api/embeddings</code>, <code>POST /api/embed</code></td>
+    </tr>
+  </table>
+
+  <h3>Upstream &mdash; what a mapping points at</h3>
+  <table>
+    <tr><th><code>UpstreamType</code></th><th>Upstream API</th><th>Typical target</th></tr>
+    <tr><td><code>OpenAI</code></td><td><code>/v1/chat/completions</code>, <code>/v1/completions</code>, <code>/v1/embeddings</code>, <code>/v1/models</code></td><td>llama.cpp, vLLM, LM Studio, OpenRouter, OpenAI</td></tr>
+    <tr><td><code>Ollama</code></td><td><code>/api/chat</code>, <code>/api/generate</code>, <code>/api/embeddings</code>, <code>/api/tags</code></td><td>a real Ollama server</td></tr>
+    <tr><td><code>Anthropic</code></td><td><code>POST /v1/messages</code></td><td><code>api.anthropic.com</code>, or a gateway in front of it</td></tr>
+  </table>
+  <p>
+    <code>EnableApiTranslation</code> (default on) is per mapping: with it on, an Ollama or Anthropic request is
+    rewritten into the upstream's native shape and the answer &mdash; streaming or not &mdash; is rewritten back
+    into the shape the client asked for. That covers tool/function calls (<code>tool_calls</code> &harr;
+    <code>tool_use</code>/<code>tool_result</code>), base64 images, system prompts, stop sequences, sampling
+    parameters, finish reasons, and token usage. With it off the request is forwarded verbatim, for when client
+    and upstream already speak the same protocol and you only need routing. Anything the target protocol cannot
+    express is dropped rather than sent as an invalid field. Anthropic requires <code>max_tokens</code>, so a
+    mapping to an Anthropic upstream supplies it (default <code>4096</code>) and sends
+    <code>anthropic-version</code> (default <code>2023-06-01</code>) on every call.
+  </p>
+
+  <h2>Highlights</h2>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Protocol translation</h3>
+      <ul>
+        <li><strong>Anthropic, OpenAI/ChatGPT, and Ollama</strong> on the front door &mdash; any client protocol, any mapping protocol</li>
+        <li>Bidirectional translation of requests, responses, and streams, including tool calls, images, system prompts, and token usage</li>
+        <li>Transparent <code>/v1/*</code> passthrough for OpenAI-compatible clients and SDKs</li>
+        <li>Streaming (NDJSON for Ollama, SSE for OpenAI and Anthropic) and non-streaming</li>
+        <li>Copilot-compatible SSE framing &mdash; well-formed <code>data: [DONE]</code>, synthesized usage chunk, in-band errors</li>
+        <li>Streaming tool-call rewriting, including inline XML tool-call conversion</li>
+        <li>Vision (base64 image) passthrough for multimodal models</li>
+        <li>Model name mapping with per-model upstream URL, timeout, credential, sampling, and behavior settings</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Reasoning and thinking</h3>
+      <ul>
+        <li>Ollama <code>think</code> input, <code>message.thinking</code> output, and <code>reasoning_content</code> compatibility</li>
+        <li>Per-model reasoning effort: value list, selection, Client App / Proxy / Provider priority</li>
+        <li>Multiple upstream wire formats &mdash; top-level <code>reasoning_effort</code>, nested <code>reasoning</code>, Qwen Cloud <code>extra_body</code>, <code>chat_template_kwargs</code></li>
+        <li>Per-model <em>Thinking Handling</em>: leave inline <code>&lt;think&gt;</code> blocks, move them into reasoning fields, strip them, or handle Qwen <code>[Thinking]</code>/<code>[Answer]</code> markers</li>
+        <li>Per-model context-window reporting so clients such as GitHub Copilot meter context accurately</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Long conversations</h3>
+      <ul>
+        <li>Automatic context compaction per model mapping, with a chosen summarization target</li>
+        <li>Manual compaction routing &mdash; <code>/v1/chat/completions/compact</code> and <code>/v1/responses/compact</code></li>
+        <li>Global Copilot compaction target, because Copilot will not honor a per-model choice</li>
+        <li>Configurable summary ceiling, fallback context window, and compaction concurrency</li>
+        <li>Streaming heartbeats plus upstream heartbeat monitoring with a live per-model view</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Web dashboard</h3>
+      <ul>
+        <li>Served by the engine itself on <code>ListenPort + 1</code> &mdash; no IIS, no Node, no second process</li>
+        <li>Login-only by default, with first-run administrator setup from the local machine</li>
+        <li>Eleven tabs, filtered by the roles the signed-in account holds</li>
+        <li>Light, dark, and follow-system themes</li>
+        <li>Optional HTTPS from a certificate held in the credential store</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Access security</h3>
+      <ul>
+        <li>Users with name, email, dashboard login, and any combination of seven roles</li>
+        <li>API keys per user, hashed for authentication and encrypted so an Admin can reveal or regenerate them</li>
+        <li>Model and MCP grants on the <em>user</em>, inherited by every key that user holds</li>
+        <li>Admin always reaches every model, every tool, and every tab</li>
+        <li>Rate-limited sign-in, protected session cookies, and immediate session revocation</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Central model management</h3>
+      <ul>
+        <li>Named credential store for API keys, bearer tokens, username/password pairs, SSH private keys, and certificates</li>
+        <li>Referenced <em>by name</em> from model mappings, module providers, and the HTTPS listener &mdash; rotate once, every consumer follows</li>
+        <li>AES-256-GCM at rest with a PBKDF2-derived key; the passphrase hash is DPAPI-protected on Windows</li>
+        <li>Write-only after saving &mdash; the GUI shows only a masked value and whether a secret is set</li>
+        <li>Certificate credentials configure HTTPS for the dashboard, the proxy, and the MCP endpoint</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Auto-managed models</h3>
+      <ul>
+        <li>One auto-managed mapping per upstream is enough &mdash; the models that server reports register themselves</li>
+        <li>Models the upstream stops listing disable themselves after a grace period, and re-enable when they return</li>
+        <li>A failed model-list read never disables anything, so an upstream outage cannot unregister a fleet</li>
+        <li>A model an operator switched off by hand is never overridden by discovery</li>
+        <li>Poll interval and grace period are settings; <strong>Discover now</strong> runs a scan on demand</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Custom prompt injection</h3>
+      <ul>
+        <li>Named instruction sets injected into every request a mapping serves &mdash; no client edits</li>
+        <li>Attached per model mapping, with a separate set for compaction summaries</li>
+        <li>Merged with the client's own system messages into exactly one system message, so strict templates such as Qwen3 keep working</li>
+        <li>Editable next to the mapping it applies to, in either GUI</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>MCP server and modules</h3>
+      <ul>
+        <li>Built-in <strong>Model Context Protocol</strong> server over Streamable HTTP at <code>/mcp</code></li>
+        <li>Optional Scalar API explorer and OpenAPI document, switched on and off independently of the proxy and registration documents</li>
+        <li>Importable <code>.kaeomod</code> modules contributing tools in isolation (Web Search, SSH, Code Vector Store)</li>
+        <li>Package signing, per-module configuration, and per-user MCP access</li>
+        <li>Optional capture of MCP request/response details with field-level redaction</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Logging, reporting, and statistics</h3>
+      <ul>
+        <li>Request log in SQLite, auto-expired by age (72&nbsp;hours by default, configurable or forever)</li>
+        <li>One row per request: date, time, requestor, client label, method, path, model, status, duration, and token counts</li>
+        <li>Source split &mdash; <em>Proxy</em>, <em>MCP</em>, <em>Web</em> dashboard traffic, and <em>Non-proxied</em> requests</li>
+        <li>Live SSE stream panel with upstream and client byte counts</li>
+        <li>Application log viewer with level filters, search, and heartbeat hiding</li>
+        <li>Token usage analytics by period, model, and user, with per-day drill-down</li>
+        <li>Counters for requests, errors, prompt/completion tokens, and requests per second, plus per-model heartbeat health</li>
+        <li>Request/response redaction, including field-level redaction of sensitive JSON keys</li>
+        <li>Manual refresh, or automatic at 5, 10, 30, or 60 seconds</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Operations</h3>
+      <ul>
+        <li>Start, stop, and restart the proxy, the MCP server, and the web server &mdash; from the dashboard and the tray app</li>
+        <li>CPU, working set, GC, and per-source traffic counters on the dashboard</li>
+        <li>Centralized encrypted credential store referenced by name from mappings, modules, and HTTPS</li>
+        <li>Request/response redaction, including field-level redaction of sensitive JSON keys</li>
+        <li>Portable: everything lives in a <code>Data/</code> folder beside the executable</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Web dashboard</h2>
+  <p>
+    The dashboard is the same UI on every platform and covers everything the tray app does. It is served by the
+    engine itself &mdash; no separate process, no IIS, no Node.
+  </p>
   <ul>
-    <li>Ollama-to-OpenAI/llama.cpp request and response translation</li>
-    <li>Transparent <code>/v1/*</code> passthrough for OpenAI-compatible clients and SDKs</li>
-    <li>Streaming and non-streaming chat/completion support</li>
-    <li>Streaming tool-call rewriting, including conversion of inline XML tool calls</li>
-    <li>Thinking/reasoning support: Ollama <code>think</code> input, <code>message.thinking</code> output, and <code>reasoning_content</code> compatibility for clients that expect visible assistant text</li>
-    <li>Per-model reasoning effort configuration — value list, selection, Client App / Proxy / Provider priority, and multiple upstream wire formats (top-level <code>reasoning_effort</code>, nested <code>reasoning</code>, Qwen Cloud <code>extra_body</code>, and <code>chat_template_kwargs</code>)</li>
-    <li>Per-model <em>Thinking Handling</em> mode to leave inline <code>&lt;think&gt;</code> blocks in place, move them into <code>reasoning_content</code> / <code>message.thinking</code>, strip them, or handle Qwen <code>[Thinking]</code>/<code>[Answer]</code> markers</li>
-    <li>Per-model context-window reporting (<code>context_length</code>) advertised to clients such as GitHub Copilot for accurate context metering</li>
-    <li>Vision (base64 image) input passthrough for multimodal models</li>
-    <li>Model name mapping with per-model upstream URL, timeout, credential, sampling, and behavior settings</li>
-    <li>Optional instruction set injection for model-specific system prompts</li>
-    <li>Streaming heartbeats and periodic upstream heartbeat monitoring, with a live per-model heartbeat view</li>
-    <li>Automatic conversation summarization retries when context windows overflow</li>
-    <li>Built-in <strong>MCP (Model Context Protocol) server</strong> over Streamable HTTP at <code>/mcp</code>, with an optional Scalar API explorer and OpenAPI document</li>
-    <li>Importable <strong>MCP sub-modules</strong> that contribute tools to the built-in server (Web Search, SSH, Code Vector Store), loaded in isolation with their own config and help pages</li>
-    <li>Centralized encrypted credential store referenced by name from model mappings and module providers</li>
-    <li>Request/response redaction, including field-level redaction of sensitive JSON keys (API keys, tokens, secrets)</li>
-    <li>Test console for sending chat requests through the proxy with streamed output</li>
-    <li>Portable Windows tray app with LiteDB-backed request history and Serilog app logging</li>
+    <li><strong>Address:</strong> <code>http://localhost:11435</code> by default (<code>ListenPort + 1</code>).
+      Set <code>WebDashboard.Port</code> to override, or <code>WebDashboard.ListenAddress</code> to bind wider
+      than loopback.</li>
+    <li><strong>TLS:</strong> set <code>WebDashboard.Scheme</code> to <code>Https</code> and point
+      <code>WebDashboard.CertificateCredentialName</code> at a certificate credential created on the
+      <strong>Credentials</strong> tab. The dashboard, the proxy, and the MCP endpoint all serve that
+      certificate.</li>
+    <li><strong>Access:</strong> <code>WebDashboard.RequireLogin</code> is on by default. Turning it off gives
+      everyone who can reach the port full Admin access &mdash; only appropriate on an isolated network.</li>
   </ul>
 
-  <h2>Supported endpoints</h2>
+  <h3>Tabs</h3>
+  <table>
+    <tr><th>Tab</th><th>What it shows</th></tr>
+    <tr><td>Dashboard</td><td>Proxy, MCP server, and web server state; CPU, working set, and GC counters; per-source traffic totals; module counts; start / stop / restart for each listener</td></tr>
+    <tr><td>Requests</td><td>Newest-first request rows with date, time, requestor, method, path, model, status, duration, and token counts; details fetched on demand as the modal opens; live SSE streams in a collapsed panel capped to fifteen rows, with each stream's captured tails in their own dialog</td></tr>
+    <tr><td>Sys Log</td><td>The application's own Serilog output with level filters, text search, and heartbeat hiding</td></tr>
+    <tr><td>Usage</td><td>Token consumption by period (This week by default, then Last week, This month, Last month, Last 30 and Last 90 days), model, and user, with a stacked chart and per-day drill-down; the aggregate is served from a covering index so longer ranges stay quick as the log grows</td></tr>
+    <tr><td>Models</td><td>Model mappings and the full editor: sampling, thinking handling, reasoning effort, context window, instruction sets, heartbeats, redaction, Copilot compatibility, and compaction; the list carries an <strong>Auto</strong> column and a <strong>Discover now</strong> button for upstream-managed models</td></tr>
+    <tr><td>Credentials</td><td>Named secrets and certificates, write-only after saving</td></tr>
+    <tr><td>Users</td><td>Accounts, combinable roles, API keys, reveal/regenerate, and per-user model and MCP grants</td></tr>
+    <tr><td>Test Console</td><td>Send a prompt through the proxy and watch the answer stream back, limited to the models that account can reach</td></tr>
+    <tr><td>Settings</td><td>Proxy, web dashboard, MCP, logging, and default behaviour</td></tr>
+    <tr><td>MCP</td><td>MCP server state, exposed tools, and the imported tool modules</td></tr>
+    <tr><td>Help</td><td>Always present, filtered by your roles so it documents only the surfaces you can actually reach</td></tr>
+  </table>
+
+  <h3>Roles</h3>
+  <p>
+    Roles combine &mdash; the permissions are the union &mdash; so a user can be, say, <em>User Admin</em> plus
+    <em>Dashboard Read Only</em>. A user with no valid role has no dashboard access at all rather than falling
+    back to Read Only.
+  </p>
+  <table>
+    <tr><th>Role</th><th>What it adds</th></tr>
+    <tr><td>Admin</td><td>Everything: every model, every MCP tool, every tab, and every action</td></tr>
+    <tr><td>Read Only</td><td>The Requests log and Usage, limited to that user's own traffic</td></tr>
+    <tr><td>Models Read Only</td><td>Read Only plus the Models tab in read-only form, listing every model mapping</td></tr>
+    <tr><td>Own Models Read Only</td><td>Read Only plus the Models tab in read-only form, limited to the mappings granted to that user</td></tr>
+    <tr><td>Dashboard Read Only</td><td>The Dashboard tab &mdash; state, performance, and traffic totals, without the control buttons</td></tr>
+    <tr><td>Dashboard Read-Write</td><td>Dashboard Read Only plus start, stop, and restart for the proxy, the MCP server, and the web server</td></tr>
+    <tr><td>User Admin</td><td>Read Only plus adding, updating, and removing users, roles, API keys, and grants</td></tr>
+    <tr><td>Model Admin</td><td>Read Only plus adding, updating, and removing model mappings</td></tr>
+    <tr><td>Test Console</td><td>The Test Console tab, limited to the models that user can access</td></tr>
+    <tr><td>Registration Read Only</td><td>The model registration API in read-only form, for a service account's API key. Grants no dashboard tabs</td></tr>
+    <tr><td>Registration Read-Write</td><td>Registration Read Only plus registering, updating, and removing models and running a discovery scan. Grants no dashboard tabs</td></tr>
+  </table>
+  <p class="muted">
+    Sys Log, the live stream panes, and the Settings, Credentials, and Modules surfaces stay Admin-only whatever
+    else is granted, because they expose payload text and stored secrets.
+  </p>
+
+  <h3>Users, API keys, and grants</h3>
+  <ul>
+    <li><strong>Users</strong> carry a name, an email address, an optional dashboard login, one or more roles,
+      and the grants that decide what their API keys can reach.</li>
+    <li><strong>Model and MCP access belong to the user</strong>, not to an individual key, so every key that
+      user holds has the same reach. An empty allowed-model list means <em>no models</em>, not all models.</li>
+    <li><strong>MCP modules</strong> narrow the MCP grant further: leave every box clear to allow every module, or
+      tick specific modules to limit the user to exactly those. A tool from an unticked module is not listed and
+      calling it is refused. Unlike models, an empty module list means <em>every</em> module.</li>
+    <li><strong>API keys</strong> are hashed for authentication and also kept under reversible encryption, so an
+      Admin can reveal or regenerate one. Regenerating keeps the label and the grants and invalidates the old
+      secret immediately.</li>
+    <li><strong>Card actions</strong> live behind a 3-dot overflow menu, so a card stays readable however many
+      keys it holds.</li>
+    <li>Proxy API keys are not a dashboard login: they authenticate model and MCP requests, plus the model
+      registration API, and nothing else &mdash; even when the key belongs to an Admin user.</li>
+  </ul>
+
+  <h3>Service accounts and the registration API</h3>
+  <p>
+    A machine that registers models &mdash; a startup script on a model server, a CI job, a scheduled task &mdash;
+    should not hold a dashboard password. Create a user with <strong>Registration Read-Write</strong>, leave its
+    dashboard login off, and give it one API key. That key then drives
+    <code>/api/mappings</code> with <code>Authorization: Bearer &lt;key&gt;</code> (or <code>x-api-key</code>),
+    and nothing outside it:
+  </p>
+  <table>
+    <tr><th>Call</th><th>Needs</th></tr>
+    <tr><td><code>GET /api/mappings</code>, <code>GET /api/mappings/discovery</code></td><td>Registration Read Only</td></tr>
+    <tr><td><code>GET /api/mappings/openapi.json</code></td><td>Registration Read Only</td></tr>
+    <tr><td><code>POST /api/mappings</code>, <code>PUT /api/mappings/{id}</code>, <code>DELETE /api/mappings/{id}</code>, <code>POST /api/mappings/discover</code></td><td>Registration Read-Write</td></tr>
+  </table>
+  <p>
+    The whole surface is described by an OpenAPI 3 document at <code>/api/mappings/openapi.json</code>, which the
+    same key can fetch and which imports straight into Postman, Insomnia, or Swagger Editor. It lives on the
+    dashboard port rather than at the proxy's <code>/openapi/v1/openapi.json</code> because these are dashboard
+    routes, and it needs the same grant they do: Admin, User Admin, Model Admin, Registration Read Only, and
+    Registration Read-Write can read it, and every other role gets 403. The <strong>Help</strong> tab carries the
+    same contract for whichever of those roles is signed in.
+  </p>
+  <p>
+    All three documents &mdash; the proxy's, the MCP server's, and this one &mdash; are switched on and off
+    separately. <strong>Settings</strong> &rarr; <em>Proxy API explorer</em> and <em>Registration API document</em>
+    each have their own toggle, and the MCP explorer follows the MCP server settings because it has nothing to
+    describe while that server is off. While a document is switched off its path answers 404 and every link to it
+    disappears from the Dashboard cards and the Help tab, so the UI never offers a page that would not load.
+  </p>
+  <p class="muted">
+    Users, keys, settings, credentials, modules, logs, usage, and the dashboard tabs still answer 401 for a key, so
+    a leaked service-account key cannot pivot into administration. Deleting the key or disabling the user revokes
+    it within seconds, and dashboard-login settings never apply to a key. <code>scripts/register-auto-managed-models.sh</code>
+    uses this path when <code>KAEO_API_KEY</code> is set.
+  </p>
+
+  <h2>Logging, reporting, and statistics</h2>
+    <p>
+      Every request is logged &mdash; nothing lives only in memory &mdash; and four sources share one SQLite
+      database and one set of retention rules, so "who called what, when, from which client, with which key, and
+      what happened" is answerable without correlating files.
+    </p>
+    <table>
+      <tr><th>Report</th><th>What it gives you</th></tr>
+      <tr>
+        <td><strong>Requests</strong></td>
+        <td>One row per request with date, time, requestor, client label, method, path, model, status, duration,
+          and token counts. Bodies, headers, and error text are fetched only when a row is opened, so the list
+          stays fast against a large database. Live streams are tailed in the same tab, capped to fifteen
+                    rows, and a click opens that stream's captured upstream and forwarded tails in a dialog.</td>
+      </tr>
+      <tr>
+        <td><strong>Sources</strong></td>
+        <td><em>Proxy</em> traffic, <em>MCP</em> tool calls, <em>Web</em> dashboard traffic, and
+          <em>Non-proxied</em> requests that were refused or not handled &mdash; so a scanner hitting an unknown
+          path shows up as a row instead of silently vanishing.</td>
+      </tr>
+      <tr>
+        <td><strong>Sys Log</strong></td>
+        <td>The application's own Serilog output with level filters, model filter, text search, and heartbeat
+          hiding. Heartbeat ping failures have their own threshold so an upstream that is switched off cannot bury
+          real errors. Admin-only, because it can contain payload fragments.</td>
+      </tr>
+      <tr>
+        <td><strong>Usage</strong></td>
+        <td>Token consumption by day, week, or month and by model, scoped to your own traffic or &mdash; for
+          Admin &mdash; to any user with a per-user share breakdown.</td>
+      </tr>
+      <tr>
+        <td><strong>Statistics</strong></td>
+        <td>Total requests, total errors, prompt and completion tokens, requests per second, per-model counts, and
+          a live connection-health snapshot of heartbeat probes and failures per model.</td>
+      </tr>
+      <tr>
+        <td><strong>Performance</strong></td>
+        <td>CPU, working set, GC gen2 collections, and LOH size sampled for the Dashboard card.</td>
+      </tr>
+    </table>
+    <p class="muted">
+      Retention is by age: <code>LogRetentionHours</code> defaults to 72 hours and <code>0</code> keeps rows
+      forever. Only the newest entries retain bodies, which bounds memory without losing metadata. Per mapping,
+      <code>RedactRequestBodies</code> and <code>RedactResponseBodies</code> replace captured bodies with a marker
+      (both on by default), <code>RedactSensitiveJsonFields</code> scrubs keys, tokens, and passwords while leaving
+      prompt text readable, and <code>Authorization</code> headers are always redacted.
+    </p>
+
+    <h2>Central model management</h2>
+    <p>
+      API keys, bearer tokens, username/password pairs, SSH private keys, and certificates are stored
+      <strong>once</strong> in a credential store and referenced <strong>by name</strong> from wherever they are
+      needed &mdash; model mappings, module providers, and the HTTPS listener. A fleet of mappings shares one
+      rotating secret instead of holding N copies of it.
+    </p>
+    <ul>
+      <li><strong>Encrypted at rest.</strong> AES-256-GCM with a key derived from your security passphrase via
+        PBKDF2-SHA256 (600,000 iterations). The passphrase is never stored &mdash; only its SHA-256 hash, which is
+        DPAPI-protected on Windows. On macOS and Linux the hash is stored without DPAPI, so protect the
+        <code>Data/</code> folder with filesystem permissions.</li>
+      <li><strong>Write-only after saving.</strong> No GET ever returns secret material: the GUI shows a masked
+        value and whether a secret is set. Leave a field blank while editing to keep the stored secret, or supply a
+        new value to replace it.</li>
+      <li><strong>Certificate credentials</strong> carry a certificate and private key, which is how HTTPS for the
+        dashboard, the proxy, and the MCP endpoint is configured.</li>
+      <li><strong>The name is the contract.</strong> Renaming a credential breaks every consumer, so the GUI warns
+        before doing it.</li>
+    </ul>
+
+    <h2>Auto-managed models</h2>
+    <p>
+      A machine that can serve several models does not need several hand-written mappings. Tick
+      <strong>Auto-managed by upstream</strong> on one mapping per upstream server and the proxy keeps the rest of
+      that server's models in step with the <code>/v1/models</code> list it reports.
+    </p>
+    <ul>
+      <li><strong>Register.</strong> A model the upstream lists but the proxy does not know about is added as a
+        clone of the auto-managed mapping &mdash; same upstream URL, credential, instruction set, and sampling
+        defaults. Compaction targets are deliberately not inherited.</li>
+      <li><strong>Disable after a grace period.</strong> A model that disappears from the upstream list is marked
+        missing on the first scan that misses it, and only switched off once it has been missing for
+        <code>ModelAutoDiscoveryOfflineMinutes</code> (default 10). Disabling is the same switch as the manual one:
+        the model leaves <code>/v1/models</code> and <code>/api/tags</code> and stops routing.</li>
+      <li><strong>Re-activate.</strong> A model that comes back is switched on again automatically &mdash; but only
+        when discovery was the thing that switched it off. A model an operator disabled by hand is never
+        overridden.</li>
+      <li><strong>A failed read changes nothing.</strong> If the upstream is down, times out, or rejects the call,
+        every mapping is left exactly as it was, so an outage of a whole server never looks like "all the models
+        were deleted".</li>
+      <li><strong>Proxy names stay unique.</strong> A model id already used as a proxy name by any mapping is
+        skipped rather than overwritten.</li>
+    </ul>
+    <table>
+      <tr><th>Setting</th><th>Default</th><th>Range</th><th>Meaning</th></tr>
+      <tr><td><code>EnableModelAutoDiscovery</code></td><td><code>true</code></td><td>on/off</td><td>Master switch; off leaves every auto-managed mapping where it is</td></tr>
+      <tr><td><code>ModelAutoDiscoveryIntervalSeconds</code></td><td><code>60</code></td><td>15&ndash;3600</td><td>How often each upstream is polled</td></tr>
+      <tr><td><code>ModelAutoDiscoveryOfflineMinutes</code></td><td><code>10</code></td><td>1&ndash;1440</td><td>How long a model must stay missing before it is disabled</td></tr>
+    </table>
+    <p class="muted">
+      Both GUIs show the last scan and its outcome, and both can run a scan on demand (<strong>Discover now</strong>
+      in the web dashboard, <strong>Discover models now</strong> in the Windows app). The interval and the master
+      switch are re-read on every tick, so changing them needs no restart.
+    </p>
+
+    <h3>Bootstrapping a new machine</h3>
+    <p>
+      A model cannot register itself from nothing: discovery polls the upstreams that <em>auto-managed
+      mappings</em> already point at, so the first mapping on a new server has to be created once. After that every
+      other model on that server registers, retires, and comes back on its own &mdash; the seed only has to name one
+      model the server really serves. Tick <strong>Auto-managed by upstream</strong> on any mapping, or run the
+      helper script from a shell:
+    </p>
+    <pre><code>KAEO_PASSWORD='your-dashboard-password' \
+KAEO_UPSTREAM='http://127.0.0.1:11434' \
+./scripts/register-auto-managed-models.sh</code></pre>
+    <p>
+      The script reads the first model id from the upstream's <code>/v1/models</code>, signs in to the dashboard,
+      creates one mapping named <code>kaeo-auto</code> with <code>autoManaged: true</code>, and scans immediately.
+      Re-running it is safe. Overrides: <code>KAEO_DASHBOARD</code>, <code>KAEO_USER</code>,
+      <code>KAEO_UPSTREAM_TYPE</code> (<code>1</code> OpenAI-compatible, <code>2</code> Ollama, <code>3</code>
+      Anthropic), <code>KAEO_CREDENTIAL</code>, <code>KAEO_SEED_NAME</code>, <code>KAEO_SEED_MODEL</code>,
+      <code>KAEO_SEED_HIDDEN</code>. The same three calls with plain <code>curl</code>:
+    </p>
+    <pre><code># Sign in; the session cookie authorises every later call.
+curl -sS -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"your-dashboard-password"}' \
+  http://localhost:11435/api/auth/login
+
+# One auto-managed seed mapping (OllamaName = proxy name, LlamaCppName = upstream model).
+curl -sS -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"OllamaName":"kaeo-auto","LlamaCppName":"llama3.2","upstreamUrl":"http://127.0.0.1:11434","upstreamType":2,"autoManaged":true,"isEnabled":true}' \
+  http://localhost:11435/api/mappings
+
+# Scan now, then read the outcome.
+curl -sS -b cookies.txt -X POST http://localhost:11435/api/mappings/discover
+curl -sS -b cookies.txt http://localhost:11435/api/mappings/discovery</code></pre>
+    <p class="muted">
+      Creating or changing mappings needs the <strong>Admin</strong> or <strong>Model Admin</strong> role. The
+      dashboard listens on the proxy port + 1 (11435 by default). On a machine that also runs the proxy, move the
+      proxy's <code>ListenPort</code> off 11434 so it does not collide with Ollama.
+    </p>
+
+    <h2>Custom prompt injection</h2>
+    <p>
+      Named <strong>instruction sets</strong> inject your own system prompt into every request that a mapping
+      serves, without editing each client. An instruction set is a name, a description, and the instruction text;
+      a mapping attaches one, and mappings that attach none are untouched.
+    </p>
+    <p>
+      The text is merged with any leading <code>system</code> messages the client already sent into
+      <strong>exactly one</strong> system message, separated by blank lines. Strict chat templates &mdash; Qwen3,
+      for example &mdash; reject a second system message, so folding rather than prepending is what keeps those
+      models working. A separate compaction instruction set tunes the prompt used when the proxy summarises a
+      conversation, independently of the answering prompt.
+    </p>
+
+    <h2>Supported endpoints</h2>
   <table>
     <tr><th>Incoming endpoint</th><th>Behavior</th></tr>
-    <tr><td><code>GET /api/tags</code></td><td>Returns configured proxy model names</td></tr>
+    <tr><td><code>GET /api/tags</code></td><td>Returns the proxy model names this caller may use</td></tr>
     <tr><td><code>GET /api/ps</code></td><td>Returns enabled mappings as running models</td></tr>
     <tr><td><code>GET /api/version</code></td><td>Returns proxy version metadata</td></tr>
     <tr><td><code>POST /api/show</code></td><td>Queries <code>/v1/models/{model}</code> with model-list fallback</td></tr>
@@ -76,66 +529,150 @@
     <tr><td><code>POST /api/chat</code></td><td>Forwards to <code>/v1/chat/completions</code></td></tr>
     <tr><td><code>POST /api/embeddings</code></td><td>Forwards to <code>/v1/embeddings</code></td></tr>
     <tr><td><code>POST /api/embed</code></td><td>Alias of <code>/v1/embeddings</code></td></tr>
+    <tr><td><code>POST /v1/messages</code></td><td>Anthropic Messages API &mdash; translated to the mapping's upstream and translated back (also served at <code>/messages</code>)</td></tr>
+    <tr><td><code>POST /v1/chat/completions</code>, <code>POST /v1/completions</code>, <code>POST /v1/embeddings</code>, <code>POST /v1/responses</code></td><td>Forwarded to the selected upstream, translated when the upstream speaks another protocol</td></tr>
+    <tr><td><code>POST /v1/chat/completions/compact</code>, <code>POST /v1/responses/compact</code></td><td>Manual compaction &mdash; a model produces the summary, optionally redirected to a compaction model</td></tr>
     <tr><td><code>/v1/*</code></td><td>Transparent passthrough with model rewriting for JSON requests</td></tr>
-    <tr><td><code>POST /mcp</code></td><td>Built-in MCP (Model Context Protocol) server — JSON-RPC 2.0 over Streamable HTTP (also served at the server root for base-URL-only clients)</td></tr>
+    <tr><td><code>POST /mcp</code></td><td>Built-in MCP server &mdash; JSON-RPC 2.0 over Streamable HTTP (also served at the server root for base-URL-only clients)</td></tr>
     <tr><td><code>GET /scalar</code></td><td>Optional interactive Scalar API explorer (when the API explorer is enabled on the MCP port)</td></tr>
     <tr><td><code>GET /openapi/v1/openapi.json</code></td><td>Optional OpenAPI document for the MCP endpoint</td></tr>
   </table>
+  <p class="muted">
+    Model discovery, <code>/api/show</code>, chat, and passthrough all honour the caller's grants: a model that is
+    disabled or hidden disappears from <code>/api/tags</code> and <code>/v1/models</code>, and a model the caller
+    cannot reach is refused.
+  </p>
 
   <h2>MCP server and modules</h2>
   <p>
     The proxy embeds an MCP server (default <code>http://localhost:8388/mcp</code>) that exposes the tools
-    contributed by the loaded sub-modules over the Streamable HTTP transport. Clients speak JSON-RPC 2.0:
-    post an <code>initialize</code> request to open a session (the response carries an
-    <code>Mcp-Session-Id</code> header), then send <code>tools/list</code> and <code>tools/call</code> on the
-    same session. Sub-modules are importable <code>.dll</code> assemblies built against the Kaeo LLM Proxy
-    module contracts; the host loads each in an isolated context and contributes its tools, configuration
-    page, and help content. Ships with:
+    contributed by the loaded modules over the Streamable HTTP transport. Clients speak JSON-RPC 2.0: post an
+    <code>initialize</code> request to open a session (the response carries an <code>Mcp-Session-Id</code>
+    header), then send <code>tools/list</code> and <code>tools/call</code> on the same session.
+  </p>
+  <p>
+    Modules are importable <code>.kaeomod</code> packages built against the module contracts. The host loads each
+    in an isolated context and contributes its tools, configuration, and help content. Ships with:
   </p>
   <ul>
-    <li><strong>Web Search</strong> — <code>web_search</code> / <code>web_fetch</code> tools</li>
-    <li><strong>SSH</strong> — remote shell execution tools</li>
-    <li><strong>Code Vector Store</strong> — semantic code indexing and search (<code>code_index</code>, <code>code_search</code>, <code>code_status</code>, etc.)</li>
+    <li><strong>Web Search</strong> &mdash; <code>web_search</code> / <code>web_fetch</code> tools</li>
+    <li><strong>SSH</strong> &mdash; <code>ssh_connect</code>, <code>ssh_exec</code>, <code>ssh_disconnect</code>, <code>ssh_list</code></li>
+    <li><strong>Code Vector Store</strong> &mdash; semantic code indexing and search (<code>code_index</code>, <code>code_search</code>, <code>code_sync_repo</code>, <code>code_list_collections</code>, <code>code_status</code>, <code>code_reindex</code>, <code>code_remove</code>)</li>
+    <li><strong>Chat Interface</strong> &mdash; <code>chat_send</code>, <code>chat_ask</code>, <code>chat_read</code>, <code>chat_channels</code> for Discord, Microsoft Teams, Slack, Google Chat, and Zoom</li>
   </ul>
-
-  <h2>Recent compatibility improvements</h2>
-  <ul>
-    <li>Improved OpenAI/Ollama mapping fidelity, including <code>/api/ps</code> and embedding metadata support</li>
-    <li>Better streamed tool-call aggregation and XML tool-call conversion</li>
-    <li>Correct SSE framing so each <code>data:</code> payload is emitted as its own event</li>
-    <li>Streaming and non-streaming reasoning passthrough improvements, including surfacing inline thinking into <code>message.thinking</code></li>
-    <li>Per-model reasoning effort and thinking-handling configuration across multiple provider wire formats</li>
-    <li>Built-in MCP server with importable tool modules and an integrated API explorer</li>
-    <li>Expanded documentation and GitHub Pages support</li>
-  </ul>
+  <p class="note">
+    MCP clients authenticate with a proxy API key or the configured shared bearer credential. A known key whose
+    user lacks the MCP grant gets <code>403</code>; an unknown key gets <code>401</code>. Only the
+    <code>/health</code> probe stays open. Module packages are per-platform, so a Windows package will not load
+    on macOS or Linux.
+  </p>
 
   <h2>Configuration highlights</h2>
   <ul>
-    <li><code>ListenPort</code> and <code>ListenAddress</code> configure where the proxy listens; a separate MCP server section (port, address, auth, API explorer) controls the <code>/mcp</code> endpoint</li>
-    <li>The <code>Logging</code> section controls app logs, retention, and database location</li>
-    <li>Model mappings define the proxy-facing name, upstream model, upstream URL, timeout, credential, and feature toggles</li>
-    <li>Per-model settings can enable thinking compatibility, streaming heartbeats, summarization, instruction sets, response redaction, context-window override, and reasoning effort</li>
-    <li>Credentials stores named secrets encrypted at rest, referenced by name from model mappings and module providers</li>
-    <li>The MCP Modules page imports and manages the sub-modules that contribute tools to the built-in MCP server</li>
+    <li><code>ListenPort</code> and <code>ListenAddress</code> configure where the proxy listens; a separate MCP
+      section (port, address, auth, API explorer) controls the <code>/mcp</code> endpoint, and a web dashboard
+      section controls the UI listener.</li>
+    <li>The <code>Logging</code> section controls app logs, retention, and the SQLite database location.</li>
+    <li>Model mappings define the proxy-facing name, upstream model, upstream URL, <code>UpstreamType</code>
+      (<code>OpenAI</code>, <code>Ollama</code>, or <code>Anthropic</code>), <code>EnableApiTranslation</code>,
+      timeout, credential, and feature toggles.</li>
+    <li>Per-model settings cover thinking compatibility, streaming heartbeats, summarization, instruction sets,
+      response redaction, context-window override, reasoning effort, and compaction.</li>
+    <li>Auto-managed mappings (<code>AutoManaged</code>) turn their upstream's <code>/v1/models</code> list into
+      mappings automatically; the scan cadence and offline grace period are settings, not code.</li>
+    <li>Anthropic upstreams take <code>AnthropicMaxTokens</code> and <code>AnthropicApiVersion</code>, applied
+      when the client omits them.</li>
+    <li>Credentials store named secrets and certificates encrypted at rest, referenced by name from model
+      mappings, module providers, and the HTTPS listener.</li>
+    <li>Users, roles, API keys, and grants live in the same database and are edited from the Users tab in either
+      GUI.</li>
+    <li>A wildcard listen address (<code>0.0.0.0</code>, <code>::</code>) is an instruction to listen everywhere,
+      not a browsable destination &mdash; wherever the app hands you a URL it reports
+      <code>http://localhost:&lt;port&gt;</code> instead, so <em>Open Web Dashboard</em> always works.</li>
   </ul>
 
   <h2>Quick start</h2>
   <ol>
-    <li>Install the <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10 Desktop Runtime</a> if needed.</li>
-    <li>Run <code>Kaeo LLM Proxy.exe</code>; it starts minimised to the system tray.</li>
-    <li>Open the dashboard from the tray icon.</li>
-    <li>Add one or more model mappings that point to your llama.cpp or compatible upstream servers.</li>
-    <li>Optionally configure instruction sets, heartbeats, and logging/redaction settings.</li>
-    <li>Point your Ollama-compatible client at <code>http://localhost:11434</code>.</li>
+    <li><strong>Windows:</strong> install the <a href="https://dotnet.microsoft.com/download/dotnet/10.0">.NET 10
+      Desktop Runtime</a> if needed and run <code>Kaeo LLM Proxy.exe</code>; it starts minimised to the system
+      tray. <strong>macOS/Linux:</strong> run the self-contained <code>./Kaeo LLM Proxy Headless</code> (see
+      below).</li>
+    <li>Open the dashboard &mdash; from the tray icon on Windows, or by browsing to
+      <code>http://localhost:11435</code> anywhere.</li>
+    <li>Create the first administrator account when the dashboard offers first-run setup.</li>
+    <li>Add one or more model mappings: the name clients will use, the upstream URL, and the protocol the
+      backend speaks.</li>
+    <li>Add a user and an API key, then grant that user the models and MCP access it should have.</li>
+    <li>Point your client &mdash; Ollama, OpenAI/ChatGPT-style, or Anthropic &mdash; at
+      <code>http://localhost:11434</code> with that key.</li>
   </ol>
+
+  <h2>Linux and macOS</h2>
+  <p>
+    The headless host runs the same engine without the tray icon, as a single self-contained executable so no
+    .NET SDK is needed on the target machine:
+  </p>
+  <pre><code># Apple Silicon
+dotnet publish "src/Kaeo LLM Proxy Headless/Kaeo LLM Proxy Headless.csproj" \
+  -c Release -r osx-arm64 --self-contained true -o artifacts/osx-arm64
+
+# Linux x64
+dotnet publish "src/Kaeo LLM Proxy Headless/Kaeo LLM Proxy Headless.csproj" \
+  -c Release -r linux-x64 --self-contained true -o artifacts/linux-x64</code></pre>
+  <p>
+    Copy the output folder to the target machine and run <code>./Kaeo LLM Proxy Headless</code>. The same
+    <code>Data/</code> layout is created beside the executable, so the folder stays portable. On first launch no
+    dashboard account exists yet, so browse to the dashboard port and the login page offers first-run setup.
+    <code>SIGINT</code>/<code>SIGTERM</code> drains in-flight requests and shuts down cleanly.
+  </p>
+  <p>
+    The Windows-only pieces (the tray app and the Visual Studio extension) are not part of the headless host.
+    Build module packages on the target platform with
+    <code>./Kaeo LLM Proxy Headless --module-pack &lt;module-dir&gt;</code>, adding
+    <code>--module-sign --key &lt;private-key.pem&gt;</code> to sign them.
+  </p>
+
+  <h2>Visual Studio extension</h2>
+    <p>
+      A Windows-only companion extension adds a GitHub Copilot-style chat panel that pairs with the proxy: an
+      agent/mode/model pill bar, a streaming chat transcript, a multi-tab settings modal, and MCP tool
+      integration, all routed through the proxy's Ollama-compatible API. It ships with Interactive, Bypass, and
+      AutoPilot agent modes, built-in Agent / Ask / Plan agents plus user-defined ones, and support for any number
+      of proxy connections &mdash; models are pulled live from each connection and tool-capable models are
+      auto-enabled.
+    </p>
+
+    <h2>Data folder</h2>
+  <pre><code>Kaeo LLM Proxy.exe
+Data/
+  settings.jsonc          # Configuration file (settings.jsonc.bak is the previous version)
+  Database/
+    kaeo_llm_proxy.db     # Request log, users, API keys, mappings (SQLite)
+  logs/
+    app/                  # Application logs (Serilog, rolling)
+    startup-*.log         # Startup trace written before Serilog is configured</code></pre>
 
   <h2>Networking and security</h2>
   <ul>
-    <li>Default binding is <code>localhost</code>, which keeps access local to the machine.</li>
-    <li>Binding to <code>0.0.0.0</code> or a specific external IP may require administrator rights or a URL ACL reservation (for both the proxy listener and the MCP server on its own port).</li>
+    <li>Default binding is <code>localhost</code> for the proxy, the MCP server, and the dashboard.</li>
+    <li>Binding to <code>0.0.0.0</code> or a specific external IP may require administrator rights or a URL ACL
+      reservation, for both the proxy listener and the MCP server on its own port.</li>
+    <li>A wildcard bind is a listen instruction, not a destination: every URL the app hands you &mdash; the tray
+      menu's <em>Open Web Dashboard</em>, the Dashboard tab, the headless startup line &mdash; is normalised to
+      <code>http://localhost:&lt;port&gt;</code>, and IPv6 literals are bracketed so the URL stays valid.</li>
+    <li>Keep <code>WebDashboard.RequireLogin</code> on whenever the dashboard is reachable beyond loopback.</li>
     <li>Prefer request/response redaction when prompts or outputs may contain sensitive information.</li>
-    <li>Use HTTPS upstream endpoints where possible if the upstream is remote.</li>
-    <li>The MCP server supports an optional bearer-token credential (by name) and a field-level redaction of sensitive JSON keys when capturing MCP request/response details.</li>
+    <li>Use HTTPS upstream endpoints, and an HTTPS dashboard certificate, when traffic crosses a network you do
+      not control.</li>
+    <li>The MCP server supports a bearer credential and field-level redaction of sensitive JSON keys when
+      capturing request/response details.</li>
+  </ul>
+
+  <h2>Documentation</h2>
+  <ul>
+    <li><a href="https://github.com/Kaeo84/Kaeo-LLM-Proxy/blob/main/README.md">README</a> &mdash; configuration, endpoints, access security, and deployment</li>
+    <li><a href="https://github.com/Kaeo84/Kaeo-LLM-Proxy/tree/main/docs">docs/</a> &mdash; architecture notes and specifications</li>
+    <li><a href="https://github.com/Kaeo84/Kaeo-LLM-Proxy/releases">Releases</a> &mdash; release notes and downloads</li>
   </ul>
 
   <h2>License</h2>
@@ -145,8 +682,8 @@
   </p>
 
   <hr>
-  <p><small>
+  <p class="muted">
     Source: <a href="https://github.com/Kaeo84/Kaeo-LLM-Proxy">github.com/Kaeo84/Kaeo-LLM-Proxy</a>
-  </small></p>
+  </p>
 </body>
 </html>

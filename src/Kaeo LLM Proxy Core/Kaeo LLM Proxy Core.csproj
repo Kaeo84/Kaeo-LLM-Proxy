@@ -1,20 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<TargetFramework>net10.0</TargetFramework>
 		<RootNamespace>Kaeo.LlmProxy.Core</RootNamespace>
 		<AssemblyName>Kaeo LLM Proxy Core</AssemblyName>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
-		<UseWindowsForms>true</UseWindowsForms>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<PackageReference Include="Serilog" Version="4.4.0" />
+		<!-- DPAPI: Windows-only at runtime (throws PlatformNotSupportedException elsewhere, which
+			 SecurityPassphraseConverter handles). Required for compile on the portable net10.0 TFM. -->
+		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="Kaeo LLM Proxy" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy Headless" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy Web" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy Infrastructure" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy Services" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in · Kaeo LLM Proxy</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+    <main class="login-wrap">
+        <div class="login-card card">
+            <div class="brand">Kaeo <span>LLM Proxy</span></div>
+            <h1 id="login-title">Sign in</h1>
+            <p id="login-subtitle" class="muted">The dashboard requires a dashboard account. Proxy API keys are for model access only and cannot sign in here.</p>
+            <div id="login-error" class="banner error hidden"></div>
+            <form id="login-form">
+                <div class="field hidden" id="field-name">
+                    <label for="login-name">Display name</label>
+                    <input type="text" id="login-name" autocomplete="name">
+                </div>
+                <div class="field">
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" autocomplete="username">
+                </div>
+                <div class="field">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" autocomplete="current-password">
+                </div>
+                <div class="field hidden" id="field-confirm">
+                    <label for="login-confirm">Confirm password</label>
+                    <input type="password" id="login-confirm" autocomplete="new-password">
+                </div>
+                <button type="submit" id="login-submit" class="primary">Sign in</button>
+            </form>
+            <p class="muted login-note" id="login-note"></p>
+        </div>
+    </main>
+    <script src="lib/jquery-3.7.1.min.js"></script>
+    <script src="js/login.js"></script>
+</body>
+</html>

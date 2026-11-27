@@ -1,16 +1,16 @@
 <Project>
 
-  <!--
-	Target win-x64 only for now. The app uses WinForms (WindowsDesktop framework),
-	whose runtime pack only exists for win-* RIDs. This trims NuGet native assets
-	(LibGit2Sharp, OnnxRuntime, SQLitePCLRaw) to win-x64 only instead of ~24 RIDs.
+	<!--
+	Cross-platform RID set. The portable engine (Core/Infrastructure/Services) and the headless
+	host target net10.0 and run on every RID below; the WinForms tray host and module UI build
+	only for win-* (WindowsDesktop framework). Native assets (LibGit2Sharp, OnnxRuntime,
+	SQLitePCLRaw, sqlite-vec) all ship linux-x64/arm64 and osx-x64/arm64.
 
-	When the GUI is replaced with a cross-platform UI, switch to:
-	  <RuntimeIdentifiers>win-x64;linux-x64;osx-x64</RuntimeIdentifiers>
-	(linux-x64 = glibc; add linux-musl-x64 for Alpine, osx-arm64 for Apple Silicon)
-  -->
-  <PropertyGroup>
-	<RuntimeIdentifier>win-x64</RuntimeIdentifier>
-  </PropertyGroup>
+	No global RuntimeIdentifier(s) is set: everyday build/test stays framework-dependent with
+	unchanged output paths. To target another platform, publish the portable projects with an
+	explicit RID, e.g. `dotnet publish -r osx-arm64` (linux-x64 = glibc; use linux-musl-x64 for
+	Alpine). A plural RuntimeIdentifiers list here would force every project — including the
+	Windows-only host — to restore runtime packs for all RIDs and fail (NETSDK1082).
+	-->
 
 </Project>

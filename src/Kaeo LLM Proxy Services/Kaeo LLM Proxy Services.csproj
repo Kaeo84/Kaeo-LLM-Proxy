@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net10.0-windows10.0.22000.0</TargetFramework>
+		<TargetFramework>net10.0</TargetFramework>
 		<RootNamespace>Kaeo.LlmProxy.Services</RootNamespace>
 		<AssemblyName>Kaeo LLM Proxy Services</AssemblyName>
 		<Nullable>enable</Nullable>
@@ -21,6 +21,8 @@
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="Kaeo LLM Proxy" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy Headless" />
+		<InternalsVisibleTo Include="Kaeo LLM Proxy Web" />
 		<InternalsVisibleTo Include="Kaeo LLM Proxy.Tests" />
 	</ItemGroup>
 

@@ -1,5 +1,6 @@
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.Services;
 using Microsoft.Data.Sqlite;
 using Xunit;
 
@@ -91,6 +92,155 @@ public class AppDatabaseSchemaTests
         Assert.Contains("collect_non_proxied_categories", columns);
         Assert.Contains("enable_ir_translation", columns);
         Assert.Contains("compaction_fallback_context_tokens", columns);
+        Assert.Contains("allow_multiple_instances_v2", columns);
+        Assert.Contains("enable_model_auto_discovery", columns);
+        Assert.Contains("model_auto_discovery_interval_seconds", columns);
+        Assert.Contains("model_auto_discovery_offline_minutes", columns);
+    }
+
+    [Fact]
+    public void RequestTablesBaselineCarryUserIdForUsageAttribution()
+    {
+        string path = NewDatabasePath();
+
+        using AppDatabase database = OpenDatabase(path);
+
+        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            Assert.Contains("user_id", ReadColumnNames(path, table));
+    }
+
+    [Fact]
+    public void UsageCoveringIndex_IsCreatedOnFreshAndLegacyDatabases()
+    {
+        // The Usage aggregate reads the request range straight out of this index; if it is ever
+        // dropped from the startup path the report still works, just by scanning the whole table.
+        string fresh = NewDatabasePath();
+        using (AppDatabase database = OpenDatabase(fresh)) { }
+        Assert.Contains("idx_requests_usage", ReadIndexNames(fresh, "requests"));
+
+        // A database written before user_id existed must still end up with the index: it is built
+        // after column reconciliation, not with the baseline DDL that runs before it.
+        string legacy = NewDatabasePath();
+        using (AppDatabase database = OpenDatabase(legacy)) { }
+        using (SqliteConnection connection = new($"Data Source={legacy}"))
+        {
+            connection.Open();
+            using SqliteCommand drop = connection.CreateCommand();
+            drop.CommandText = "DROP INDEX IF EXISTS idx_requests_usage; ALTER TABLE requests DROP COLUMN user_id;";
+            drop.ExecuteNonQuery();
+        }
+        Assert.DoesNotContain("user_id", ReadColumnNames(legacy, "requests"));
+
+        using (AppDatabase upgraded = OpenDatabase(legacy)) { }
+        Assert.Contains("user_id", ReadColumnNames(legacy, "requests"));
+        Assert.Contains("idx_requests_usage", ReadIndexNames(legacy, "requests"));
+    }
+
+    private static List<string> ReadIndexNames(string path, string table)
+    {
+        using SqliteConnection connection = new($"Data Source={path}");
+        connection.Open();
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = $table;";
+        command.Parameters.AddWithValue("$table", table);
+
+        List<string> indexes = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+            indexes.Add(reader.GetString(0));
+
+        return indexes;
+    }
+
+    [Fact]
+    public void RequestTables_LegacyWithoutUserId_AreReconciledOnOpen()
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.Insert(new RequestLog { Model = "legacy", PromptTokens = 5, CompletionTokens = 2, TotalTokens = 7 });
+        }
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            // A database from before API-key attribution has neither the column nor any index that
+            // names it, so the usage covering index goes first — SQLite refuses to drop a column an
+            // index still references.
+            using (SqliteCommand dropIndex = connection.CreateCommand())
+            {
+                dropIndex.CommandText = "DROP INDEX IF EXISTS idx_requests_usage;";
+                dropIndex.ExecuteNonQuery();
+            }
+            foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            {
+                using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = $"ALTER TABLE {table} DROP COLUMN user_id;";
+                command.ExecuteNonQuery();
+            }
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        foreach (string table in new[] { "requests", "mcp_requests", "non_proxied_requests" })
+            Assert.Contains("user_id", ReadColumnNames(path, table));
+
+        // Pre-attribution rows survive the upgrade and read back unattributed.
+        RequestLog legacy = database.LoadRecent(1).Single();
+        Assert.Null(legacy.UserId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AllowMultipleInstancesSurvivesASaveAndReload(bool allowed)
+    {
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveRuntimeSettings(new RuntimeSettings
+            {
+                DebugMode = true,
+                AllowMultipleInstances = allowed,
+            });
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        RuntimeSettings reloaded = database.LoadRuntimeSettings();
+
+        Assert.Equal(allowed, reloaded.AllowMultipleInstances);
+        Assert.True(reloaded.DebugMode);
+
+        AppSettings app = new();
+        app.ApplyRuntimeSettings(reloaded);
+        Assert.Equal(allowed, app.AllowMultipleInstances);
+    }
+
+    [Fact]
+    public void AllowMultipleInstances_LegacyRowWithoutV2Value_ReadsAsNewDefault()
+    {
+        // Rows written before the v2 column existed only ever hold the old unreachable default
+        // (the setting was checked before the database loaded), so NULL must read as the new
+        // default of true rather than resurrecting the stale legacy value.
+        string path = NewDatabasePath();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveRuntimeSettings(new RuntimeSettings { AllowMultipleInstances = false });
+        }
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "UPDATE runtime_settings SET allow_multiple_instances_v2 = NULL;";
+            command.ExecuteNonQuery();
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        Assert.True(database.LoadRuntimeSettings().AllowMultipleInstances);
     }
 
     [Fact]
@@ -105,6 +255,10 @@ public class AppDatabaseSchemaTests
         Assert.Contains("context_summarize_model_name", columns);
         Assert.Contains("context_summarize_model_id", columns);
         Assert.Contains("enable_copilot_compatibility", columns);
+        Assert.Contains("auto_managed", columns);
+        Assert.Contains("auto_missing_since_utc", columns);
+        Assert.Contains("auto_disabled_utc", columns);
+        Assert.Contains("auto_disabled_reason", columns);
     }
 
     [Fact]
@@ -232,6 +386,56 @@ public class AppDatabaseSchemaTests
     }
 
     [Fact]
+    public void ModelAutoDiscoverySurfaceSurvivesASaveAndReload()
+    {
+        string path = NewDatabasePath();
+        DateTime missingSince = new(2026, 4, 2, 8, 30, 0, DateTimeKind.Utc);
+
+        ModelMapping mapping = new()
+        {
+            ProxyName = "qwen3",
+            ModelName = "qwen3",
+            UpstreamUrl = "http://localhost:1234",
+            AutoManaged = true,
+            AutoMissingSinceUtc = missingSince,
+            AutoDisabledUtc = missingSince.AddMinutes(10),
+            AutoDisabledReason = "Not present in the upstream model list.",
+            IsEnabled = false,
+        };
+        mapping.EnsureId();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveModelMappings([mapping]);
+            setup.SaveRuntimeSettings(new RuntimeSettings
+            {
+                EnableModelAutoDiscovery = false,
+                ModelAutoDiscoveryIntervalSeconds = 120,
+                ModelAutoDiscoveryOfflineMinutes = 45,
+            });
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        ModelMapping reloaded = Assert.Single(database.LoadModelMappings());
+        Assert.True(reloaded.AutoManaged);
+        Assert.Equal(missingSince, reloaded.AutoMissingSinceUtc);
+        Assert.Equal(missingSince.AddMinutes(10), reloaded.AutoDisabledUtc);
+        Assert.Equal("Not present in the upstream model list.", reloaded.AutoDisabledReason);
+        Assert.False(reloaded.IsEnabled);
+
+        RuntimeSettings runtime = database.LoadRuntimeSettings();
+        Assert.False(runtime.EnableModelAutoDiscovery);
+        Assert.Equal(120, runtime.ModelAutoDiscoveryIntervalSeconds);
+        Assert.Equal(45, runtime.ModelAutoDiscoveryOfflineMinutes);
+
+        AppSettings app = new();
+        app.ApplyRuntimeSettings(runtime);
+        Assert.False(app.EnableModelAutoDiscovery);
+        Assert.Equal(120, app.ModelAutoDiscoveryIntervalSeconds);
+        Assert.Equal(45, app.ModelAutoDiscoveryOfflineMinutes);
+    }
+
+    [Fact]
     public void ReopeningAPopulatedDatabasePreservesItsRows()
     {
         // Every baseline statement is IF NOT EXISTS, so reopening must never recreate or clear a
@@ -339,4 +543,53 @@ public class AppDatabaseSchemaTests
 
                     Assert.True(loaded.EnableCopilotCompactionRouting);
                 }
+
+    [Fact]
+    public void ProxyApiKeys_LegacyTableWithoutKeySecret_IsReconciledOnOpen()
+    {
+        // Keys created before reveal/regenerate existed have a hash and prefix only. Opening such a
+        // database must add key_secret (so new writes work) and read the old rows back as
+        // unrevealable rather than throwing "no such column".
+        string path = NewDatabasePath();
+
+        using (SqliteConnection connection = new($"Data Source={path}"))
+        {
+            connection.Open();
+            using SqliteCommand create = connection.CreateCommand();
+            create.CommandText =
+                """
+                CREATE TABLE proxy_api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
+                    key_hash TEXT NOT NULL UNIQUE,
+                    key_prefix TEXT NOT NULL DEFAULT '',
+                    created_utc TEXT NOT NULL,
+                    last_used_utc TEXT NULL,
+                    allowed_models TEXT NOT NULL DEFAULT '[]',
+                    mcp_access INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO proxy_api_keys (user_id, label, key_hash, key_prefix, created_utc)
+                VALUES (1, 'legacy', 'deadbeef', 'kaeo-legacy01', '2026-01-01T00:00:00.0000000Z');
+                """;
+            create.ExecuteNonQuery();
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+
+        Assert.Contains("key_secret", ReadColumnNames(path, "proxy_api_keys"));
+        ProxyApiKey key = Assert.Single(database.LoadProxyApiKeys());
+        Assert.Equal("legacy", key.Label);
+        Assert.Null(key.KeySecret);
+
+        ProxyAccessService access = new(database);
+        Assert.Null(access.RevealKey(key));
+
+        // Regenerating the legacy row stores recoverable material in the reconciled column.
+        (string plainText, string hash, string prefix, string? secret) = access.GenerateKeyMaterial();
+        database.UpdateProxyApiKeyMaterial(key.Id, hash, prefix, secret, DateTime.UtcNow);
+
+        ProxyApiKey reloaded = Assert.Single(database.LoadProxyApiKeys());
+        Assert.Equal(plainText, access.RevealKey(reloaded));
+    }
             }

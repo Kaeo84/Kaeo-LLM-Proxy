@@ -28,4 +28,28 @@ internal static class HttpHelpers
         if (!string.IsNullOrWhiteSpace(apiKey))
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
+    /// <summary>
+    /// The User-Agent every extension request carries: <c>Kaeo-VSExt/&lt;version&gt;</c>.
+    /// </summary>
+    /// <remarks>
+    /// The proxy stores each request's User-Agent and derives a client label from it, so this
+    /// token is what lets the Requests views separate extension traffic from Copilot's — both
+    /// reach the proxy through the same Ollama-compatible endpoints and send no other
+    /// distinguishing header.
+    /// </remarks>
+    public static readonly string ClientUserAgent =
+        "Kaeo-VSExt/" + (typeof(HttpHelpers).Assembly.GetName().Version?.ToString() ?? "1.0.0.0");
+
+    /// <summary>
+    /// Stamps the extension's identity headers on an outgoing proxy request. Applied per request
+    /// rather than on <c>DefaultRequestHeaders</c>, so a shared <see cref="HttpClient"/> can serve
+    /// connections configured with different keys without cross-talk.
+    /// </summary>
+    public static void StampClientIdentity(HttpRequestMessage request)
+    {
+        if (request is null)
+            return;
+        request.Headers.TryAddWithoutValidation("User-Agent", ClientUserAgent);
+        request.Headers.TryAddWithoutValidation("X-Kaeo-Client", "vsext");
+    }
 }

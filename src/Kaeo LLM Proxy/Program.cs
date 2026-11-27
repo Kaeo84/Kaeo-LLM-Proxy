@@ -53,9 +53,18 @@ internal static class Program
             e.SetObserved();
         };
 
-        // Acquire the single-instance lock before touching the database or prompting for
-        // elevation, so a second instance never opens the DB file and never shows a UAC prompt
-        // only to be told the app is already running.
+        // Program owns the single shared AppDatabase for the whole process. It is passed into
+        // TrayApplicationContext rather than created there so a second connection to the same
+        // file can never exist. Opened before the single-instance check because the
+        // AllowMultipleInstances preference lives in runtime settings; the database tolerates
+        // concurrent instances (sharing-violation retries), so this is safe even when a second
+        // instance is about to be turned away.
+        using AppDatabase database = new(settings.Logging);
+        settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
+
+        // Single-instance lock (opt-out via "Allow multiple instances" in Settings; multiple
+        // instances are allowed by default). Acquired before prompting for elevation so a second
+        // instance never shows a UAC prompt only to be told the app is already running.
         if (!settings.AllowMultipleInstances && !TryAcquireSingleInstanceMutex())
             return;
 
@@ -85,12 +94,6 @@ internal static class Program
         if (!settings.RunAsAdministrator || !IsRunningAsAdministrator())
             settings.ListenAddress = "localhost";
 #endif
-
-        // Program owns the single shared AppDatabase for the whole process. It is passed into
-        // TrayApplicationContext rather than created there so a second connection to the same
-        // file can never exist.
-        using AppDatabase database = new(settings.Logging);
-        settings.ApplyRuntimeSettings(database.LoadRuntimeSettings());
 
         // Load mappings and credentials early so we can resolve the passphrase and decrypt
         // their secrets before the TrayApplicationContext starts the proxy.
@@ -122,8 +125,9 @@ internal static class Program
         ReleaseSingleInstanceMutex();
         MessageBox.Show(
             "Kaeo LLM Proxy is already running.\n\n" +
-            "Only one instance is allowed at a time. Check the system tray for the existing instance.\n\n" +
-            "To run multiple instances simultaneously, set \"AllowMultipleInstances\": true in settings.jsonc.",
+            "Single-instance mode is enabled. Check the system tray for the existing instance.\n\n" +
+            "To run multiple instances simultaneously, enable \"Allow multiple instances\" in the Settings tab " +
+            "(Windows app or web dashboard).",
             "Already Running",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);

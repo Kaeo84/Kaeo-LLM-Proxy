@@ -338,7 +338,7 @@ internal sealed class RuntimeSettings
 
     public bool StartWithDashboardOpen { get; set; } = false;
 
-    public bool AllowMultipleInstances { get; set; } = false;
+    public bool AllowMultipleInstances { get; set; } = true;
 
     /// <summary>
     /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
@@ -430,6 +430,22 @@ internal sealed class RuntimeSettings
     public int ModelDiscoveryTimeoutSeconds { get; set; } = 10;
 
     /// <summary>
+    /// When true, the model auto-discovery service keeps every auto-managed mapping in sync with its
+    /// upstream's model list. Default: true; the per-mapping flag decides whether anything is
+    /// actually scanned.
+    /// </summary>
+    public bool EnableModelAutoDiscovery { get; set; } = true;
+
+    /// <summary>Seconds between model auto-discovery scans. Default: 60.</summary>
+    public int ModelAutoDiscoveryIntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Minutes an auto-managed model must be missing from its upstream list before discovery
+    /// disables it. Default: 10.
+    /// </summary>
+    public int ModelAutoDiscoveryOfflineMinutes { get; set; } = 10;
+
+    /// <summary>
     /// Proxy name of the single global model every Copilot-detected context summarization is routed
     /// to, or null when none is selected. Stored in the application database beside the other
     /// runtime settings because it is a single installation-wide choice.
@@ -494,12 +510,18 @@ internal sealed class RuntimeSettings
 
         public bool EnablePerformanceSampling { get; set; } = true;
 
-    /// <summary>
-    /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
-    /// specification at /openapi/v1/openapi.json. Default: false.
-    /// </summary>
-    public bool EnableApiExplorer { get; set; } = false;
-}
+        /// <summary>
+        /// When true, the dashboard serves the registration API's OpenAPI document at
+        /// /api/mappings/openapi.json. Default: true.
+        /// </summary>
+        public bool EnableRegistrationApiSpec { get; set; } = true;
+
+        /// <summary>
+        /// When true, the proxy serves a Scalar API explorer at /scalar and an OpenAPI
+        /// specification at /openapi/v1/openapi.json. Default: false.
+        /// </summary>
+        public bool EnableApiExplorer { get; set; } = false;
+    }
 
 /// <summary>Maps an externally exposed proxy model name to a specific upstream server and model name.</summary>
 internal sealed class ModelMapping
@@ -561,14 +583,55 @@ internal sealed class ModelMapping
     /// </remarks>
     public bool Hidden { get; set; }
 
-    /// <summary>The model name as exposed by this proxy to clients (e.g. "llama3").</summary>
-    [JsonPropertyName("OllamaName")]
-    public string ProxyName { get; set; } = string.Empty;
+        /// <summary>
+        /// When true, this mapping is kept in sync with its upstream's <c>/v1/models</c> list by the
+        /// model auto-discovery service: models that appear upstream are registered automatically, and
+        /// models that stop appearing are disabled once the offline grace period elapses.
+        /// Default: false, so nothing is added or toggled behind the operator's back until asked for.
+        /// </summary>
+        /// <remarks>
+        /// The flag also marks this mapping as a discovery <em>source</em>: every auto-managed mapping
+        /// contributes its own upstream URL, credential and upstream type to the set of endpoints the
+        /// service polls. That way a new machine only needs one hand-written auto-managed mapping before
+        /// the rest of its models appear on their own.
+        /// <para>
+        /// A mapping is only ever re-enabled automatically when it was disabled by discovery itself
+        /// (see <see cref="AutoDisabledUtc"/>). An operator who switches an auto-managed model off is
+        /// never overridden.
+        /// </para>
+        /// </remarks>
+        public bool AutoManaged { get; set; }
+
+        /// <summary>
+        /// UTC timestamp of the first discovery scan that did not find this auto-managed model in the
+        /// upstream list, or null when it is present (or not auto-managed). Used to time the offline
+        /// grace period so a single missed scan does not disable a model.
+        /// </summary>
+        public DateTime? AutoMissingSinceUtc { get; set; }
+
+        /// <summary>
+        /// UTC timestamp of the scan that disabled this auto-managed mapping, or null when discovery did
+        /// not disable it. Distinguishes "disabled by discovery" (re-enabled automatically when the model
+        /// comes back) from "disabled by an operator" (left alone).
+        /// </summary>
+        public DateTime? AutoDisabledUtc { get; set; }
+
+        /// <summary>Human-readable reason recorded when discovery disabled this mapping.</summary>
+        public string? AutoDisabledReason { get; set; }
+
+        /// <summary>The model name as exposed by this proxy to clients (e.g. "llama3").</summary>
+        [JsonPropertyName("OllamaName")]
+        public string ProxyName { get; set; } = string.Empty;
 
     /// <summary>The actual model name to request from the upstream server (e.g. "llama-3-8b").</summary>
     [JsonPropertyName("LlamaCppName")]
     public string ModelName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// When true, assistant turns that carry no content (Qwen's response-prefill shape) are dropped
+    /// from the request body before it is forwarded. This is a request-side workaround only: it has
+    /// no effect on how reasoning is returned, which <see cref="ThinkingMode"/> controls. Default: true.
+    /// </summary>
     public bool EnableThinkingCompatibility { get; set; } = true;
 
     /// <summary>
@@ -952,6 +1015,10 @@ internal sealed class ModelMapping
             Id = Id,
             IsEnabled = IsEnabled,
             Hidden = Hidden,
+            AutoManaged = AutoManaged,
+            AutoMissingSinceUtc = AutoMissingSinceUtc,
+            AutoDisabledUtc = AutoDisabledUtc,
+            AutoDisabledReason = AutoDisabledReason,
             ProxyName = ProxyName,
             ModelName = ModelName,
             EnableThinkingCompatibility = EnableThinkingCompatibility,
@@ -1081,6 +1148,88 @@ internal sealed class LoggingSettings
     }
 }
 
+/// <summary>
+/// Configuration for the cross-platform web dashboard (ASP.NET Core / Kestrel host serving the
+/// jQuery/AJAX UI). Every value here is config-driven so the dashboard can be retargeted without a
+/// rebuild. HTTP is the default so HTTPS can be terminated at a load balancer; set <see cref="Scheme"/>
+/// to "Https" and supply a certificate to terminate TLS in-process instead.
+/// </summary>
+internal sealed class WebDashboardSettings
+{
+    /// <summary>Whether the web dashboard host starts with the engine. Default: true.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Port the dashboard listens on. 0 (the default) means "the proxy <c>ListenPort</c> + 1" so the
+    /// dashboard tracks the proxy port automatically; set an explicit port to pin it.
+    /// </summary>
+    public int Port { get; set; } = 0;
+
+    /// <summary>
+    /// Address the dashboard binds to. Default "localhost" keeps it local-only; use "0.0.0.0" to
+    /// expose it on the network (pair with HTTPS when you do). The dashboard requires a
+    /// username/password sign-in unless <see cref="RequireLogin"/> is turned off; proxy API keys
+    /// never grant dashboard access.
+    /// </summary>
+    public string ListenAddress { get; set; } = "localhost";
+
+    /// <summary>
+    /// When true (the default), every dashboard page and API call requires a dashboard
+    /// username/password session. Turn off to make the login screen optional: the dashboard then
+    /// serves everyone who can reach it with full admin access — only do that on a trusted,
+    /// loopback-only or otherwise protected network. Applies immediately, no restart needed.
+    /// </summary>
+    public bool RequireLogin { get; set; } = true;
+
+    /// <summary>
+    /// URL scheme: "Http" (default) or "Https". HTTP is the default so TLS can be terminated at a
+    /// load balancer; choose "Https" to terminate TLS in Kestrel using the certificate below.
+    /// </summary>
+    public string Scheme { get; set; } = "Http";
+
+    /// <summary>
+    /// Name of a stored credential (<see cref="AppSettings.Credentials"/>) that supplies the HTTPS
+    /// certificate when <see cref="Scheme"/> is "Https". The credential's <c>Certificate</c> field
+    /// holds either a PFX/PKCS#12 file encoded as base64 or a PEM certificate (paired with the
+    /// credential's <c>PrivateKey</c>); the credential's <c>Secret</c> is the PFX password, if any.
+    /// Preferred over <see cref="CertificatePath"/> because the material is encrypted at rest and
+    /// managed alongside every other credential.
+    /// </summary>
+    public string? CertificateCredentialName { get; set; }
+
+    /// <summary>
+    /// Path to a PFX/PKCS#12 certificate used when <see cref="Scheme"/> is "Https" and
+    /// <see cref="CertificateCredentialName"/> is not set. Null/empty uses the ASP.NET Core
+    /// development certificate (development only).
+    /// </summary>
+    public string? CertificatePath { get; set; }
+
+    /// <summary>
+    /// Password for <see cref="CertificatePath"/>. Prefer referencing a stored credential rather than
+    /// writing a plaintext password here; null means an unprotected certificate.
+    /// </summary>
+    public string? CertificatePassword { get; set; }
+
+    /// <summary>Resolves the effective listen port, falling back to the proxy port + 1 when unset.</summary>
+    public int GetEffectivePort(int proxyListenPort) => Port > 0 ? Port : proxyListenPort + 1;
+}
+
+/// <summary>
+/// Proxy access security. Users and their API keys live in the application database (dashboard
+/// Users tab); this section only controls enforcement. With <see cref="RequireApiKey"/> off the
+/// proxy stays open (today's behavior), but a request that presents a known key still gets that
+/// key's per-model restrictions applied.
+/// </summary>
+internal sealed class ProxySecuritySettings
+{
+    /// <summary>
+    /// When true, every proxy request (except the "/" health probe, /api/version, and CORS
+    /// preflight) must present a valid, enabled user's API key via <c>Authorization: Bearer</c>
+    /// or <c>x-api-key</c>. Default: false.
+    /// </summary>
+    public bool RequireApiKey { get; set; } = false;
+}
+
 /// <summary>Persisted application settings.</summary>
 internal sealed class AppSettings
 {
@@ -1157,6 +1306,17 @@ internal sealed class AppSettings
     [JsonIgnore]
     public object CredentialsSyncRoot { get; } = new();
 
+    /// <summary>
+    /// Process-wide sync root for <see cref="ModelMappings"/>. The web dashboard, the model
+    /// auto-discovery service, and the Windows grid all rewrite the same list from different
+    /// threads, and the whole list is replaced on commit rather than mutated in place, so the lock
+    /// object cannot live on the instance — a replacement list would carry a different one. Static
+    /// for the same reason <see cref="CredentialsSyncRoot"/> exists: the mapping list is a
+    /// process-wide singleton even though it is reachable from several <see cref="AppSettings"/>
+    /// clones.
+    /// </summary>
+    internal static readonly object ModelMappingsSyncRoot = new();
+
     /// <summary>Maximum number of log entries to keep in memory. Min: 10, Max: 100000.</summary>
     public int MaxLogEntries { get; set; } = 500;
 
@@ -1169,13 +1329,13 @@ internal sealed class AppSettings
     public bool StartWithDashboardOpen { get; set; } = false;
 
     /// <summary>
-    /// When true, allows more than one instance of the application to run simultaneously.
-    /// By default only a single instance is permitted; attempting to launch a second instance
-    /// will display a message and exit. Advanced users may set this to true when running
-    /// multiple proxy configurations side-by-side. Default: false.
+    /// When true (the default), more than one instance of the application may run simultaneously
+    /// (e.g. several proxy configurations side-by-side, each with its own ports and web dashboard).
+    /// Set to false to restore the single-instance lock: a second launch displays a message and
+    /// exits. Managed in the Settings tab of either GUI; takes effect on the next launch.
     /// </summary>
     [JsonIgnore]
-    public bool AllowMultipleInstances { get; set; } = false;
+    public bool AllowMultipleInstances { get; set; } = true;
 
     /// <summary>
     /// When true, the application re-launches itself elevated (UAC prompt) at startup so http.sys
@@ -1370,6 +1530,59 @@ internal sealed class AppSettings
     public const int DefaultModelDiscoveryTimeoutSeconds = 10;
 
     /// <summary>
+    /// When true (default), the model auto-discovery service polls the upstream of every
+    /// <see cref="ModelMapping.AutoManaged"/> mapping and registers or disables models to match.
+    /// </summary>
+    /// <remarks>
+    /// Master switch for the feature as a whole; each mapping still opts in through
+    /// <see cref="ModelMapping.AutoManaged"/>, so turning this off leaves every auto-managed mapping
+    /// exactly as it currently stands rather than reverting anything.
+    /// </remarks>
+    [JsonIgnore]
+    public bool EnableModelAutoDiscovery { get; set; } = true;
+
+    /// <summary>
+    /// Seconds between model auto-discovery scans. Min: 15, Max: 3600. Default: 60.
+    /// </summary>
+    /// <remarks>
+    /// Each scan costs one <c>/v1/models</c> call per distinct upstream, not per model, so a short
+    /// interval is cheap. It is still deliberately not seconds-fast: a model server takes far longer
+    /// than a minute to load a model, and reacting instantly buys nothing.
+    /// </remarks>
+    [JsonIgnore]
+    public int ModelAutoDiscoveryIntervalSeconds { get; set; } = DefaultModelAutoDiscoveryIntervalSeconds;
+
+    /// <summary>
+    /// How long an auto-managed model must be missing from its upstream's model list before
+    /// discovery disables it. Min: 1, Max: 1440 minutes. Default: 10.
+    /// </summary>
+    /// <remarks>
+    /// The grace period exists because a single scan can miss a model for reasons that are not
+    /// "the model is gone" — an upstream restarting, a partially written list, a timeout on the
+    /// poll. Ten minutes of consecutive absences is a real outage rather than a blip.
+    /// </remarks>
+    [JsonIgnore]
+    public int ModelAutoDiscoveryOfflineMinutes { get; set; } = DefaultModelAutoDiscoveryOfflineMinutes;
+
+    /// <summary>Lower bound accepted for <see cref="ModelAutoDiscoveryIntervalSeconds"/>.</summary>
+    public const int MinModelAutoDiscoveryIntervalSeconds = 15;
+
+    /// <summary>Upper bound accepted for <see cref="ModelAutoDiscoveryIntervalSeconds"/>.</summary>
+    public const int MaxModelAutoDiscoveryIntervalSeconds = 3600;
+
+    /// <summary>Default auto-discovery scan interval in seconds.</summary>
+    public const int DefaultModelAutoDiscoveryIntervalSeconds = 60;
+
+    /// <summary>Lower bound accepted for <see cref="ModelAutoDiscoveryOfflineMinutes"/>.</summary>
+    public const int MinModelAutoDiscoveryOfflineMinutes = 1;
+
+    /// <summary>Upper bound accepted for <see cref="ModelAutoDiscoveryOfflineMinutes"/>.</summary>
+    public const int MaxModelAutoDiscoveryOfflineMinutes = 1440;
+
+    /// <summary>Default offline grace period, in minutes, before discovery disables a model.</summary>
+    public const int DefaultModelAutoDiscoveryOfflineMinutes = 10;
+
+    /// <summary>
     /// Name of the instruction set that drives every compaction summarization, or null to use the
     /// built-in summarizer prompt. Installation-wide, like the compaction model it accompanies.
     /// </summary>
@@ -1478,6 +1691,15 @@ internal sealed class AppSettings
     [JsonIgnore]
     public bool EnableApiExplorer { get; set; } = false;
 
+    /// <summary>
+    /// When true, the dashboard serves the registration API's OpenAPI document at
+    /// /api/mappings/openapi.json and the dashboard and Help tabs link to it. Off answers 404 on
+    /// that path and hides every link, which is the way to keep the registration contract out of
+    /// reach on a locked-down deployment. Default: true.
+    /// </summary>
+    [JsonIgnore]
+    public bool EnableRegistrationApiSpec { get; set; } = true;
+
     // NOTE: There is deliberately no global compaction toggle. Compaction is configured
     // per model mapping only, via ModelMapping.AutoCompactPaths, the proactive overflow
     // thresholds, the compaction target (ModelMapping.ContextSummarizeModelId) and
@@ -1491,6 +1713,27 @@ internal sealed class AppSettings
 
     /// <summary>Logging configuration.</summary>
     public LoggingSettings Logging { get; set; } = new();
+
+    /// <summary>Cross-platform web dashboard configuration.</summary>
+    public WebDashboardSettings WebDashboard { get; set; } = new();
+
+    /// <summary>Proxy access security (per-user API keys; enforcement toggle).</summary>
+    public ProxySecuritySettings ProxySecurity { get; set; } = new();
+
+    /// <summary>
+    /// Module signature enforcement: AllowUnsigned (default), Warn, or RequireSigned. Every
+    /// module load routes through one verification seam, so changing this is config-only.
+    /// Serialized as a string so settings.jsonc stays readable.
+    /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<ModuleLoadPolicy>))]
+    public ModuleLoadPolicy ModuleLoadPolicy { get; set; } = ModuleLoadPolicy.AllowUnsigned;
+
+    /// <summary>
+    /// Public keys trusted to sign module packages (ECDSA P-256). Populate from the
+    /// <c>.pub</c> files produced by <c>--module-keygen</c>. Empty means no signer is trusted;
+    /// signed packages are then refused under RequireSigned.
+    /// </summary>
+    public List<TrustedModuleKey> TrustedModuleKeys { get; set; } = [];
 
     /// <summary>
     /// SHA-256 hash of the user's passphrase, prefixed with <c>!pwh!</c>.
@@ -1684,6 +1927,10 @@ internal sealed class AppSettings
             MaxConcurrentCompactions, MinMaxConcurrentCompactions, MaxMaxConcurrentCompactions);
         ModelDiscoveryTimeoutSeconds = Math.Clamp(
             ModelDiscoveryTimeoutSeconds, MinModelDiscoveryTimeoutSeconds, MaxModelDiscoveryTimeoutSeconds);
+        ModelAutoDiscoveryIntervalSeconds = Math.Clamp(
+            ModelAutoDiscoveryIntervalSeconds, MinModelAutoDiscoveryIntervalSeconds, MaxModelAutoDiscoveryIntervalSeconds);
+        ModelAutoDiscoveryOfflineMinutes = Math.Clamp(
+            ModelAutoDiscoveryOfflineMinutes, MinModelAutoDiscoveryOfflineMinutes, MaxModelAutoDiscoveryOfflineMinutes);
         CompactionTargetTokens = Math.Clamp(
             CompactionTargetTokens, MinCompactionTargetTokens, MaxCompactionTargetTokens);
 
@@ -1709,6 +1956,16 @@ internal sealed class AppSettings
             mapping.Temperature = Math.Clamp(mapping.Temperature, 0.0, 2.0);
             mapping.RepeatPenalty = Math.Clamp(mapping.RepeatPenalty, 0.0, 2.0);
             mapping.ProactiveOverflowPercent = Math.Clamp(mapping.ProactiveOverflowPercent, 0, 100);
+
+            // Discovery bookkeeping only means something while the mapping is auto-managed; clear it
+            // when the flag is off so a later re-enable starts from a clean slate instead of instantly
+            // re-disabling the model on stale evidence.
+            if (!mapping.AutoManaged)
+            {
+                mapping.AutoMissingSinceUtc = null;
+                mapping.AutoDisabledUtc = null;
+                mapping.AutoDisabledReason = null;
+            }
 
             if (!string.IsNullOrWhiteSpace(mapping.UpstreamUrl)
                 && Uri.TryCreate(mapping.UpstreamUrl, UriKind.Absolute, out Uri? uri)
@@ -1774,12 +2031,16 @@ internal sealed class AppSettings
             CompactionFallbackContextTokens = CompactionFallbackContextTokens,
             MaxConcurrentCompactions = MaxConcurrentCompactions,
             ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
+            EnableModelAutoDiscovery = EnableModelAutoDiscovery,
+            ModelAutoDiscoveryIntervalSeconds = ModelAutoDiscoveryIntervalSeconds,
+            ModelAutoDiscoveryOfflineMinutes = ModelAutoDiscoveryOfflineMinutes,
             CompactionInstructionSetName = CompactionInstructionSetName,
             CompactionTargetTokens = CompactionTargetTokens,
             CopilotCompactionModelName = CopilotCompactionModelName,
             EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
             EnablePerformanceSampling = EnablePerformanceSampling,
             EnableApiExplorer = EnableApiExplorer,
+            EnableRegistrationApiSpec = EnableRegistrationApiSpec,
             Logging = new LoggingSettings
             {
                 MinimumLevel = Logging.MinimumLevel,
@@ -1791,6 +2052,21 @@ internal sealed class AppSettings
                 LogRetentionHours = Logging.LogRetentionHours,
                 MaxLogEntriesWithBodies = Logging.MaxLogEntriesWithBodies,
                 LogDirectory = Logging.LogDirectory,
+            },
+            WebDashboard = new WebDashboardSettings
+            {
+                Enabled = WebDashboard.Enabled,
+                Port = WebDashboard.Port,
+                ListenAddress = WebDashboard.ListenAddress,
+                RequireLogin = WebDashboard.RequireLogin,
+                Scheme = WebDashboard.Scheme,
+                CertificateCredentialName = WebDashboard.CertificateCredentialName,
+                CertificatePath = WebDashboard.CertificatePath,
+                CertificatePassword = WebDashboard.CertificatePassword,
+            },
+            ProxySecurity = new ProxySecuritySettings
+            {
+                RequireApiKey = ProxySecurity.RequireApiKey,
             },
             SecurityPassphrase = SecurityPassphrase,
             RuntimePassphrase = RuntimePassphrase,
@@ -1833,12 +2109,16 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         MaxConcurrentCompactions = MaxConcurrentCompactions,
         ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
+        EnableModelAutoDiscovery = EnableModelAutoDiscovery,
+        ModelAutoDiscoveryIntervalSeconds = ModelAutoDiscoveryIntervalSeconds,
+        ModelAutoDiscoveryOfflineMinutes = ModelAutoDiscoveryOfflineMinutes,
         CopilotCompactionModelName = CopilotCompactionModelName,
         EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
         CompactionInstructionSetName = CompactionInstructionSetName,
         CompactionTargetTokens = CompactionTargetTokens,
         EnablePerformanceSampling = EnablePerformanceSampling,
         EnableApiExplorer = EnableApiExplorer,
+        EnableRegistrationApiSpec = EnableRegistrationApiSpec,
     };
 
     public void ApplyRuntimeSettings(RuntimeSettings runtimeSettings)
@@ -1862,12 +2142,16 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         MaxConcurrentCompactions = runtimeSettings.MaxConcurrentCompactions;
         ModelDiscoveryTimeoutSeconds = runtimeSettings.ModelDiscoveryTimeoutSeconds;
+        EnableModelAutoDiscovery = runtimeSettings.EnableModelAutoDiscovery;
+        ModelAutoDiscoveryIntervalSeconds = runtimeSettings.ModelAutoDiscoveryIntervalSeconds;
+        ModelAutoDiscoveryOfflineMinutes = runtimeSettings.ModelAutoDiscoveryOfflineMinutes;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
         CompactionInstructionSetName = runtimeSettings.CompactionInstructionSetName;
         CompactionTargetTokens = runtimeSettings.CompactionTargetTokens;
         EnablePerformanceSampling = runtimeSettings.EnablePerformanceSampling;
         EnableApiExplorer = runtimeSettings.EnableApiExplorer;
+        EnableRegistrationApiSpec = runtimeSettings.EnableRegistrationApiSpec;
     }
 
     /// <summary>
@@ -2207,7 +2491,57 @@ internal sealed class AppSettings
 
                 // Root directory for text log files.
                 "LogDirectory": {{escapedLogDir}}
-              }
+              },
+
+              // - Web dashboard ---------------------------------------------------------
+              // The cross-platform dashboard (proxy port + 1 by default). Everything the Windows
+              // tray app can do is also available here, so a headless install is fully manageable.
+              "WebDashboard": {
+
+                // Start the dashboard host with the engine.  Default: true
+                "Enabled": {{(WebDashboard.Enabled ? "true" : "false")}},
+
+                // Dashboard port. 0 means "proxy ListenPort + 1".  Min: 0  Max: 65535  Default: 0
+                "Port": {{WebDashboard.Port}},
+
+                // Address the dashboard binds to. Keep "localhost" for local-only access; use
+                // "0.0.0.0" to expose it on the network, and pair that with HTTPS.
+                // Default: "localhost"
+                "ListenAddress": "{{WebDashboard.ListenAddress}}",
+
+                // Require a dashboard username/password sign-in. Turning this off gives everyone
+                // who can reach the dashboard full Admin access — loopback/trusted networks only.
+                // Applies immediately, no restart.  Default: true
+                "RequireLogin": {{(WebDashboard.RequireLogin ? "true" : "false")}},
+
+                // "Http" (default) or "Https". Prefer Http plus a TLS-terminating reverse proxy,
+                // or Https with the certificate credential below.
+                "Scheme": "{{WebDashboard.Scheme}}",
+
+                // Name of an entry in "Credentials" holding the HTTPS certificate: its Certificate
+                // field is a PFX (base64) or a PEM cert, its PrivateKey the PEM key, and its Secret
+                // the PFX password. Preferred over CertificatePath because it is encrypted at rest.
+                "CertificateCredentialName": {{JsonSerializer.Serialize(WebDashboard.CertificateCredentialName)}}
+              },
+
+              // - Proxy access security -------------------------------------------------
+              "ProxySecurity": {
+
+                // Require a valid user API key on every proxy request (health probe, /api/version
+                // and CORS preflight stay public). Manage users and keys in the Users tab.
+                // Default: false
+                "RequireApiKey": {{(ProxySecurity.RequireApiKey ? "true" : "false")}}
+              },
+
+              // - Modules ---------------------------------------------------------------
+              // Signature enforcement for .kaeomod packages.
+              // Values: "AllowUnsigned" (default) | "Warn" | "RequireSigned"
+              "ModuleLoadPolicy": "{{ModuleLoadPolicy}}",
+
+              // Public keys trusted to sign module packages (ECDSA P-256). Each entry needs the
+              // base64 DER SubjectPublicKeyInfo from the .pub file written by --module-keygen.
+              // Example: [{ "Name": "build-2026", "PublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE..." }]
+              "TrustedModuleKeys": []
             }
             """;
 

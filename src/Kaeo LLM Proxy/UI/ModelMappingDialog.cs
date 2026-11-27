@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.VSExtension.Core;
 
 namespace Kaeo.LlmProxy;
 
@@ -74,6 +75,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly CheckedListBox _lstReasoningEffortFormats = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly CheckBox _chkHidden = new();
+    private readonly CheckBox _chkAutoManaged = new();
     private readonly Label _lblTempPriority = new();
     private readonly ComboBox _cmbTempPriority = new();
     private readonly Label _lblRepeatPenaltyPriority = new();
@@ -739,15 +741,6 @@ internal sealed class ModelMappingDialog : Form
         _nudRepeatPenalty.Enabled = RepeatPenaltyPriority == SamplingPriority.Proxy;
     }
 
-    /// <summary>
-    /// Enables or disables the entire thinking/reasoning options group based on the
-    /// Enable thinking compatibility checkbox.
-    /// </summary>
-    private void UpdateThinkingReasoningGroupState() =>
-        _grpThinkingReasoning.Enabled = EnableThinkingCompatibility;
-
-
-
     private void PopulateInstructionSets(IEnumerable<InstructionSet> instructionSets)
     {
         _cmbInstructionSet.Items.Clear();
@@ -839,7 +832,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 25;
+        _tlpMain.RowCount = 26;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -914,40 +907,46 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_chkHidden, 3);
         _tlpMain.Controls.Add(_chkHidden, 0, 15);
 
+        // Auto-managed sits with Enabled and Hidden: together they decide whether the model is
+        // offered, and who gets to change that. Auto-managed also makes this mapping the discovery
+        // source for its upstream.
+        _tlpMain.SetColumnSpan(_chkAutoManaged, 3);
+        _tlpMain.Controls.Add(_chkAutoManaged, 0, 16);
+
         // Move the per-model SSE keep-alive option up near the top (right after hidden)
         _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
-        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 17);
 
         // Copilot Compatibility sits directly under the SSE keep-alive option: both govern how the
         // proxy behaves toward a streaming client. The group box holds the toggle plus a wrapping
         // status label, mirroring the Compaction group's layout.
         _tlpMain.SetColumnSpan(_grpCopilotCompat, 3);
-        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 17);
+        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 18);
 
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 18);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 19);
 
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 19);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 20);
 
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 20);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 21);
 
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 21);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 22);
 
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
-        _tlpMain.Controls.Add(_grpRedaction, 0, 22);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 23);
 
         // Forwarding the client's own bearer token is a security decision rather than a
         // compatibility one, so it sits below the redaction group with the other
         // "what leaves this process" options.
         _tlpMain.SetColumnSpan(_chkForwardClientAuthorization, 3);
-        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 23);
+        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 24);
 
         _tlpMain.SetColumnSpan(_grpApiTranslation, 3);
-        _tlpMain.Controls.Add(_grpApiTranslation, 0, 24);
+        _tlpMain.Controls.Add(_grpApiTranslation, 0, 25);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1480,6 +1479,14 @@ internal sealed class ModelMappingDialog : Form
         _chkHidden.Margin = new Padding(0, 2, 0, 2);
         _chkHidden.Text = "Hide from model discovery (/v1/models, /api/tags)";
         _chkHidden.Checked = false;
+
+        _chkAutoManaged.AutoSize = true;
+        _chkAutoManaged.Margin = new Padding(0, 2, 0, 2);
+        _chkAutoManaged.Text = "Auto-managed: register this upstream's models automatically";
+        _chkAutoManaged.Checked = false;
+        _chkAutoManaged.AccessibleDescription =
+            "Registers every model the upstream lists, and disables a model after it has been "
+            + "missing for the configured grace period. A model you disabled yourself stays disabled.";
         _toolTip.SetToolTip(
             _chkHidden,
             "When checked, this mapping is omitted from the discovery list endpoints so clients\n"
@@ -1493,11 +1500,10 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
-        _chkEnableThinkingCompatibility.CheckedChanged += (_, _) => UpdateThinkingReasoningGroupState();
         _toolTip.SetToolTip(
             _chkEnableThinkingCompatibility,
             "Removes a trailing assistant turn that the client sent only to prefill the model's\n"
-            + "reply, which some models mishandle. Also gates the Thinking && Reasoning options below.\n\n"
+            + "reply, which some models mishandle.\n\n"
             + "This affects only the request body sent upstream. It has nothing to do with the SSE\n"
             + "keep-alive that prevents client timeouts — see 'Enable SSE keep-alive for this model'.");
 
@@ -1511,20 +1517,15 @@ internal sealed class ModelMappingDialog : Form
         _cmbThinkingHandling.Margin = new Padding(0, 4, 0, 4);
         _cmbThinkingHandling.Items.AddRange(
         [
-            new ThinkingModeOption(ThinkingMode.LeaveInline, "Leave thinking in the visible answer"),
-            new ThinkingModeOption(ThinkingMode.MoveToReasoningContent, "Move thinking into reasoning_content (Qwen Cloud compatibility)"),
-            new ThinkingModeOption(ThinkingMode.StripFromOutput, "Remove thinking from client output (kept in logs)"),
-            new ThinkingModeOption(ThinkingMode.QwenThinkingCompatible, "Qwen Thinking Compatible ([Thinking] → reasoning_content, [Answer] → answer)"),
+            .. ThinkingModeOptions.Select(mode => new ThinkingModeOption(mode, ReasoningVocabulary.LabelForProxyMode(mode.ToString()))),
         ]);
         _cmbThinkingHandling.SelectedIndex = 0;
+        // The copy comes from the shared vocabulary so the proxy's list and the extension's
+        // Reasoning column describe one axis in one set of words instead of drifting apart.
         _toolTip.SetToolTip(
             _cmbThinkingHandling,
-            "Controls how upstream <think> reasoning is surfaced to clients.\n"
-            + "Leave inline keeps it in the visible answer; moving it to reasoning_content lets\n"
-            + "clients like VS render a collapsible thinking panel; removing it hides it from\n"
-            + "clients entirely while captured logs still retain the original upstream body.\n"
-            + "Qwen Thinking Compatible handles models that emit literal [Thinking] and [Answer]\n"
-            + "markers: the text between them becomes reasoning_content and the rest the answer.");
+            "Controls how upstream reasoning is surfaced to clients.\n\n"
+            + string.Join("\n\n", ThinkingModeOptions.Select(mode => ReasoningVocabulary.HelpForProxyMode(mode.ToString()))));
 
         _grpThinkingReasoning.AutoSize = true;
         _grpThinkingReasoning.AutoSizeMode = AutoSizeMode.GrowOnly;
@@ -2194,6 +2195,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ContextSummarizeModelName = settings.FindContextSummarizeTarget(mapping)?.ProxyName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.Hidden = mapping.Hidden;
+        dlg._chkAutoManaged.Checked = mapping.AutoManaged;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
@@ -2218,7 +2220,6 @@ internal sealed class ModelMappingDialog : Form
             dlg.ReasoningEffort = mapping.ReasoningEffort;
         dlg.UpdateSamplingControlStates();
         dlg.UpdateReasoningEffortControlStates();
-        dlg.UpdateThinkingReasoningGroupState();
         dlg._suppressReasoningPrefill = false;
         dlg.TryPrefillReasoningEffortProfile(mapping.ModelName);
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
@@ -2240,6 +2241,13 @@ internal sealed class ModelMappingDialog : Form
         mapping.ProxyName = dlg._txtProxyName.Text.Trim();
         mapping.IsEnabled = dlg._chkIsEnabled.Checked;
         mapping.Hidden = dlg.Hidden;
+        mapping.AutoManaged = dlg._chkAutoManaged.Checked;
+        // A dialog save is an operator decision, so it outranks discovery's bookkeeping: drop the
+        // "missing since" and "disabled by discovery" markers, otherwise the service would keep
+        // reporting a disable the operator has just overridden.
+        mapping.AutoMissingSinceUtc = null;
+        mapping.AutoDisabledUtc = null;
+        mapping.AutoDisabledReason = null;
         mapping.UpstreamUrl = dlg._cmbUpstreamUrl.Text.Trim();
         mapping.CredentialName = dlg.CredentialName;
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());
@@ -2314,6 +2322,18 @@ internal sealed class ModelMappingDialog : Form
     {
         public override string ToString() => Label;
     }
+
+    /// <summary>
+    /// The order the Thinking Handling list presents its options in: the plain policies first, the
+    /// Qwen-specific variant last. Labels and help text come from <see cref="ReasoningVocabulary"/>.
+    /// </summary>
+    private static readonly ThinkingMode[] ThinkingModeOptions =
+    [
+        ThinkingMode.LeaveInline,
+        ThinkingMode.MoveToReasoningContent,
+        ThinkingMode.StripFromOutput,
+        ThinkingMode.QwenThinkingCompatible,
+    ];
 
     /// <summary>Display wrapper binding a friendly label to a <see cref="SamplingPriority"/> value.</summary>
     private sealed record SamplingPriorityOption(SamplingPriority Priority, string Label)

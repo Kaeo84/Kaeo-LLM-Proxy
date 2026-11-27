@@ -24,6 +24,7 @@ internal sealed class McpServerService : IAsyncDisposable
     private readonly McpServerOptionsFactory _optionsFactory;
     private readonly ModuleHost _moduleHost;
     private readonly StatisticsService _statistics;
+    private readonly ProxyAccessService _access;
 
     private McpServerHost? _host;
     private McpApiExplorer? _apiExplorer;
@@ -33,18 +34,20 @@ internal sealed class McpServerService : IAsyncDisposable
     // both create hosts and race on the listener bind (leaking the losing host's listener).
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
 
-    public McpServerService(AppDatabase database, AppSettings settings, ModuleHost moduleHost, StatisticsService statistics)
+    public McpServerService(AppDatabase database, AppSettings settings, ModuleHost moduleHost, StatisticsService statistics, ProxyAccessService access)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(moduleHost);
         ArgumentNullException.ThrowIfNull(statistics);
+        ArgumentNullException.ThrowIfNull(access);
 
         _repository = new McpServerSettingsRepository(database);
         _secrets = new ModuleSecretProvider(settings);
         _optionsFactory = new McpServerOptionsFactory(moduleHost);
         _moduleHost = moduleHost;
         _statistics = statistics;
+        _access = access;
     }
 
     public bool IsRunning => _host?.IsRunning == true;
@@ -110,7 +113,7 @@ internal sealed class McpServerService : IAsyncDisposable
 
             // Recreate the host so fresh endpoint/auth settings always apply. The explorer is
             // only attached when enabled; the host 404s the spec/scalar paths without it.
-            _host = new McpServerHost(settings, _secrets, _optionsFactory.Build, _statistics);
+            _host = new McpServerHost(settings, _secrets, _optionsFactory.Build, _statistics, _access);
             // L14: rebuild the host snapshot each start so proxy port/explorer changes are reflected.
             _apiExplorer = settings.EnableApiExplorer ? new McpApiExplorer(_host, _moduleHost.BuildHostInfo()) : null;
             _host.ApiExplorer = _apiExplorer;

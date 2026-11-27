@@ -26,6 +26,15 @@ internal enum LogSource
     /// proxied traffic, while still being logged and attributable.
     /// </summary>
     NonProxied,
+
+    /// <summary>
+    /// Requests served by the web dashboard's own Kestrel listener: page loads, sign-ins, and
+    /// control-plane API calls. Logged separately from proxy traffic because it is traffic to the
+    /// dashboard, not through the proxy, so it answers "who is using the dashboard and what did
+    /// they do". High-frequency read-only dashboard polling is not logged (failures always are) so
+    /// a single open browser tab cannot bury real activity.
+    /// </summary>
+    Web,
 }
 
 /// <summary>A single logged proxy request with timing and token stats.</summary>
@@ -187,7 +196,36 @@ internal sealed class RequestLog
     public string? UserAgent { get; set; }
 
     /// <summary>
-    /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
+    /// The user who owns the API key that authenticated this request, for per-user token usage
+    /// reporting. Null when the request carried no known key (open proxy, rejected before the
+    /// access gate) or predates usage attribution.
+    /// </summary>
+    public int? UserId { get; set; }
+
+        /// <summary>
+        /// Display name for the request's owner in dashboard columns: the local part of the owner's
+        /// email address (the text before '<c>@</c>'), or null when the request is unattributed or the
+        /// owner has no email. Not persisted — resolved from <see cref="UserId"/> when entries are
+        /// serialized for the dashboard, so rename/email changes reflect immediately without a
+        /// backfill rewrite.
+        /// </summary>
+        public string? Requestor { get; set; }
+
+    /// <summary>
+    /// Short label naming the client that made the request — <c>VS extension</c>, <c>Copilot</c>,
+    /// <c>Ollama</c>, <c>Browser</c> — classified from <see cref="UserAgent"/>. Null when the request
+    /// carried no User-Agent or named a client this build does not recognise.
+    /// </summary>
+    /// <remarks>
+    /// Not persisted, for the same reason as <see cref="Requestor"/>: the label is a pure function of
+    /// the stored User-Agent, so classification rules improve every historical row at once. Callers
+    /// that serialize entries for a UI must populate it (see
+    /// <c>DashboardEndpoints.AttachDerivedFields</c>).
+    /// </remarks>
+    public string? ClientTag { get; set; }
+
+        /// <summary>
+        /// The request's headers as a pre-formatted <c>Name: value</c> block, one per line, captured for
     /// every log source. This is what makes an otherwise opaque request — an unknown app hitting the
     /// proxy, a probe with no body — diagnosable, since it names the client library, content type,
     /// and any tracing/correlation headers.

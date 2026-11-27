@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kaeo LLM Proxy</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="dashboard">
+    <header id="topbar">
+        <div class="brand">Kaeo <span>LLM Proxy</span></div>
+        <nav id="tabs">
+            <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+            <a href="#requests" data-tab="requests">Requests</a>
+            <a href="#syslog" data-tab="syslog">Sys Log</a>
+            <a href="#usage" data-tab="usage">Usage</a>
+            <a href="#models" data-tab="models">Models</a>
+            <a href="#credentials" data-tab="credentials">Credentials</a>
+            <a href="#users" data-tab="users">Users</a>
+            <a href="#testconsole" data-tab="testconsole">Test Console</a>
+            <a href="#settings" data-tab="settings">Settings</a>
+            <a href="#mcp" data-tab="mcp">MCP</a>
+            <a href="#help" data-tab="help">Help</a>
+        </nav>
+        <div class="top-actions">
+            <span id="conn-state" class="pill" title="API connection state">connecting</span>
+            <button id="btn-signin" class="ghost" type="button" title="Sign out of the dashboard">Sign out</button>
+            <button id="btn-theme" class="ghost" type="button" title="Cycle theme: auto / light / dark">Auto</button>
+        </div>
+    </header>
+
+    <main>
+        <section id="tab-dashboard" class="tab">
+            <div id="status-cards" class="cards"></div>
+            <h2>Traffic</h2>
+            <div id="stats-tables"></div>
+        </section>
+
+        <section id="tab-requests" class="tab">
+            <div class="toolbar">
+                <label>Source
+                    <select id="log-source">
+                        <option value="proxy">Proxy</option>
+                        <option value="mcp">MCP</option>
+                        <option value="nonproxied">Non-proxied</option>
+                    </select>
+                </label>
+                <label>Refresh
+                    <select id="log-refresh" class="refresh-select">
+                        <option value="0">Manual</option>
+                        <option value="5">5s</option>
+                        <option value="10">10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </label>
+                <label>Client
+                    <select id="log-client" class="refresh-select">
+                        <option value="">All clients</option>
+                        <option value="VS extension">VS extension</option>
+                        <option value="Copilot">Copilot</option>
+                        <option value="Ollama">Ollama</option>
+                        <option value="OpenAI SDK">OpenAI SDK</option>
+                        <option value="Python">Python</option>
+                        <option value="curl">curl</option>
+                        <option value="Browser">Browser</option>
+                    </select>
+                </label>
+                <button id="btn-pause" type="button">Pause</button>
+                <button id="btn-clear-logs" type="button">Clear view</button>
+                <span id="log-count" class="muted"></span>
+                <button id="btn-refresh-logs" type="button" class="toolbar-right">Refresh</button>
+            </div>
+            <details id="streams-panel" class="streams-panel">
+                <summary>Live streams <span id="stream-count" class="muted"></span></summary>
+                <div class="streams-body">
+                    <div class="table-wrap streams-scroll">
+                        <table id="stream-table">
+                            <thead>
+                                <tr>
+                                    <th>State</th><th>Started</th><th>Kind</th><th>Method</th><th>Path</th>
+                                    <th>Model</th><th>Upstream B</th><th>Client B</th><th>Frames</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <p class="muted">Live rows come first, then streams that finished in the last 15 minutes. Click a row to open its captured tails in a dialog.</p>
+                </div>
+            </details>
+            <div class="table-wrap table-fill">
+                <table id="log-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th><th>Time</th><th>Requestor</th><th>Method</th><th>Path</th><th>Model</th>
+                            <th>Status</th><th>ms</th><th>Prompt</th><th>Completion</th><th>tok/s</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="tab-syslog" class="tab">
+            <div class="toolbar">
+                <span id="syslog-levels" class="level-checks">
+                    <label><input type="checkbox" value="Verbose"> Verbose</label>
+                    <label><input type="checkbox" value="Debug"> Debug</label>
+                    <label><input type="checkbox" value="Information" checked> Info</label>
+                    <label><input type="checkbox" value="Warning" checked> Warning</label>
+                    <label><input type="checkbox" value="Error" checked> Error</label>
+                    <label><input type="checkbox" value="Fatal" checked> Fatal</label>
+                </span>
+                <label>Search <input id="syslog-search" type="search" placeholder="message text"></label>
+                <label><input id="syslog-hide-heartbeats" type="checkbox" checked> Hide heartbeats</label>
+                <label>Refresh
+                    <select id="syslog-refresh" class="refresh-select">
+                        <option value="0">Manual</option>
+                        <option value="5">5s</option>
+                        <option value="10">10s</option>
+                        <option value="30">30s</option>
+                        <option value="60">60s</option>
+                    </select>
+                </label>
+                <button id="btn-clear-syslog" type="button">Clear view</button>
+                <span id="syslog-count" class="muted"></span>
+                <button id="btn-refresh-syslog" type="button" class="toolbar-right">Refresh</button>
+            </div>
+            <div id="syslog-health" class="muted"></div>
+            <div class="table-wrap table-fill">
+                <table id="syslog-table">
+                    <thead>
+                        <tr><th>Time</th><th>Level</th><th>Message</th><th>Source</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="tab-usage" class="tab">
+            <div class="toolbar">
+                <label>Period
+                    <select id="usage-period">
+                        <option value="thisWeek">This week</option>
+                        <option value="lastWeek">Last week</option>
+                        <option value="thisMonth">This month</option>
+                        <option value="lastMonth">Last month</option>
+                        <option value="last30">Last 30 days</option>
+                        <option value="last90">Last 90 days</option>
+                    </select>
+                </label>
+                <label>Group by
+                    <select id="usage-group">
+                        <option value="day">Day</option>
+                        <option value="week">Week</option>
+                        <option value="month">Month</option>
+                    </select>
+                </label>
+                <label>Model
+                    <select id="usage-model"><option value="">All models</option></select>
+                </label>
+                <label id="usage-user-wrap">User
+                    <select id="usage-user"><option value="all">All users</option></select>
+                </label>
+                <button id="btn-refresh-usage" type="button">Refresh</button>
+                <span id="usage-range" class="muted"></span>
+            </div>
+            <div id="usage-summary" class="cards"></div>
+            <div id="usage-chart" class="usage-chart"></div>
+            <div id="usage-legend" class="usage-legend"></div>
+            <div id="usage-byuser-wrap">
+                <h2>Usage by user</h2>
+                <div id="usage-byuser"></div>
+            </div>
+            <h2>By day</h2>
+            <div class="table-wrap">
+                <table id="usage-day-table">
+                    <thead>
+                        <tr><th></th><th>Day</th><th>Requests</th><th>Prompt</th><th>Completion</th><th>Total</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p class="muted">Click a day to expand its per-model breakdown. Counts cover model requests that reported token usage; days are local time. Requests made without an API key appear as &ldquo;Unattributed&rdquo;.</p>
+        </section>
+
+        <section id="tab-models" class="tab">
+            <div class="toolbar">
+                <button id="btn-add-mapping" type="button" class="primary">Add model</button>
+                <button id="btn-remove-mapping" type="button" disabled>Remove</button>
+                <button id="btn-duplicate-mapping" type="button" disabled>Duplicate</button>
+                <button id="btn-configure-mapping" type="button" disabled>Configure</button>
+                <button id="btn-toggle-mapping" type="button" disabled>Toggle enabled</button>
+                <button id="btn-discover-models" type="button">Discover now</button>
+                <span id="discovery-status" class="muted"></span>
+                <button id="btn-refresh-mappings" type="button" class="toolbar-right">Refresh</button>
+            </div>
+            <div class="table-wrap table-fill">
+                <table id="mapping-table">
+                    <thead>
+                        <tr>
+                            <th>Enabled</th><th>Proxy name</th><th>Upstream model</th><th>Instruction set</th>
+                            <th>Type</th><th>Credential</th><th>Hidden</th><th>Auto</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="tab-credentials" class="tab">
+            <div class="toolbar">
+                <button id="btn-add-credential" type="button" class="primary">Add credential</button>
+                <button id="btn-refresh-credentials" type="button">Refresh</button>
+                <span class="muted">Secrets are write-only &mdash; they are never shown again after saving.</span>
+            </div>
+            <div class="table-wrap table-fill">
+                <table id="credential-table">
+                    <thead>
+                        <tr><th>Name</th><th>Description</th><th>Username</th><th>Secret stored</th><th></th></tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section id="tab-users" class="tab">
+            <div class="toolbar">
+                <button id="btn-add-user" type="button" class="primary">Add user</button>
+                <button id="btn-refresh-users" type="button">Refresh</button>
+                <span class="muted">Model and MCP access belong to the user, so every API key they hold shares it. Admin users always have full model, MCP, and dashboard access.</span>
+            </div>
+            <div id="user-cards" class="cards"></div>
+        </section>
+
+        <section id="tab-testconsole" class="tab">
+            <div class="toolbar">
+                <label>Model
+                    <select id="tc-model"></select>
+                </label>
+                <button id="tc-send" type="button" class="primary">Send</button>
+                <button id="tc-cancel" type="button" disabled>Cancel</button>
+                <button id="tc-clear" type="button">Clear</button>
+                <span id="tc-status" class="muted"></span>
+            </div>
+            <div class="tc-pane">
+                <div class="field">
+                    <label for="tc-system">System prompt (optional)</label>
+                    <textarea id="tc-system" rows="2" spellcheck="false"></textarea>
+                </div>
+                <div class="field">
+                    <label for="tc-prompt">Prompt</label>
+                    <textarea id="tc-prompt" rows="4" spellcheck="false"></textarea>
+                </div>
+                <div class="tc-params">
+                    <label>Temperature <input id="tc-temperature" type="number" min="0" max="2" step="0.05" value="0.7"></label>
+                    <label>Repeat penalty <input id="tc-repeat-penalty" type="number" min="0" max="2" step="0.05" value="1.1"></label>
+                </div>
+                <div id="tc-thinking-wrap" class="tc-block hidden">
+                    <h3>Thinking</h3>
+                    <pre id="tc-thinking"></pre>
+                </div>
+                <div class="tc-block">
+                    <h3>Response</h3>
+                    <pre id="tc-response" class="tc-response"></pre>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-settings" class="tab">
+            <div id="settings-error" class="banner error hidden"></div>
+            <form id="settings-form" autocomplete="off"></form>
+            <div class="toolbar">
+                <button id="btn-save-settings" type="button" class="primary">Save settings</button>
+                <button id="btn-reload-settings" type="button">Reload</button>
+                <span class="muted">Proxy listen and web-dashboard changes apply after a restart.</span>
+            </div>
+        </section>
+
+        <section id="tab-mcp" class="tab">
+            <div class="toolbar">
+                <button id="btn-refresh-mcp" type="button">Refresh</button>
+            </div>
+            <div id="mcp-view"></div>
+            <h2>Modules</h2>
+            <div class="toolbar">
+                <button id="btn-refresh-modules" type="button">Refresh</button>
+                <button id="btn-upload-module" type="button">Upload package…</button>
+                <input id="module-package-input" type="file" accept=".kaeomod" style="display:none">
+            </div>
+            <div id="module-cards" class="cards"></div>
+        </section>
+
+        <section id="tab-help" class="tab">
+            <div class="toolbar">
+                <span class="muted">Help is filtered by your roles, so only the topics you can actually use appear here.</span>
+            </div>
+            <div id="help-access"></div>
+            <div id="help-sections" class="help-grid"></div>
+        </section>
+    </main>
+
+    <div id="modal-backdrop" class="hidden">
+        <div id="modal" role="dialog" aria-modal="true">
+            <div id="modal-head"><span id="modal-title"></span><button id="modal-close" type="button" class="ghost">&times;</button></div>
+            <div id="modal-body"></div>
+            <div id="modal-error" class="banner error hidden"></div>
+            <div id="modal-buttons"></div>
+        </div>
+    </div>
+
+    <div id="toasts"></div>
+
+    <script src="lib/jquery-3.7.1.min.js"></script>
+    <script src="js/help.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

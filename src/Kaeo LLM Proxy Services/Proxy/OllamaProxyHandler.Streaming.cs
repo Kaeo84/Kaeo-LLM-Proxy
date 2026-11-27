@@ -323,10 +323,11 @@ partial class OllamaProxyHandler
                     break;
 
                 long elapsedNs = ElapsedNanos(sw);
+                (string doneToken, string? doneThinking) = DrainInlineExtractor(inlineExtractor);
                 var doneChunk = new OllamaChatResponse
                 {
                     Model = modelName,
-                    Message = new OllamaMessage("assistant", string.Empty),
+                    Message = new OllamaMessage("assistant", doneToken) { Thinking = doneThinking },
                     Done = true,
                     DoneReason = "stop",
                     TotalDuration = elapsedNs,
@@ -340,6 +341,7 @@ partial class OllamaProxyHandler
                 ollamaJsonAccumulator?.Append(doneJson);
                 ollamaJsonAccumulator?.Append('\n');
                 stopReason ??= "stop";
+                terminalChunkSent = true;
                 await writer.WriteLineAsync(doneJson);
                 await writer.FlushAsync(ct);
                 session?.OnForwarded(doneJson + "\n");
@@ -386,9 +388,22 @@ partial class OllamaProxyHandler
             string? thinking = !string.IsNullOrEmpty(extractedThinking)
                 ? (nativeThinking is null ? extractedThinking : nativeThinking + extractedThinking)
                 : nativeThinking;
+
+            // The finish_reason frame is the last one the client reads, so the extractor's held-back
+            // tail has to ride on it: a partial tag buffered at the end of the stream would otherwise
+            // be lost along with the last characters of the answer.
+            bool done = choice?.FinishReason != null;
+            if (done && inlineExtractor is not null)
+            {
+                (string tailToken, string? tailThinking) = DrainInlineExtractor(inlineExtractor);
+                if (tailThinking is not null)
+                    thinking = thinking is null ? tailThinking : thinking + tailThinking;
+                if (tailToken.Length > 0)
+                    token = tailToken + token;
+            }
+
             AppendStreamingToolCalls(toolCallBuilders, delta?.ToolCalls);
             token = CaptureXmlToolCallToken(token, xmlToolCallBuilder, ref capturingXmlToolCall);
-            bool done = choice?.FinishReason != null;
             // Some OpenAI-compatible upstreams (notably llama.cpp) emit finish_reason="stop"
             // even when tool_calls are present in the delta. Flush any accumulated tool_calls
             // on the terminal chunk regardless of the reported finish_reason.
@@ -432,15 +447,12 @@ partial class OllamaProxyHandler
             session?.OnForwarded(chunkJson + "\n");
         }
 
-        // Drain any text the extractor held back because the stream ended inside an unterminated
-        // think block. Emit a final chunk carrying it (as message.thinking, or as content when the
-        // stream closed in answer mode) so the tail of the reasoning trace is not lost. Only when
-        // no terminal (finish_reason) chunk was already sent, to avoid a duplicate done marker.
+        // Drain any text the extractor held back because the stream ended without a terminal chunk
+        // at all (a truncated upstream that never sent finish_reason or [DONE]). The terminal paths
+        // above already drained it into their own frame.
         if (inlineExtractor is not null && !terminalChunkSent)
         {
-            (string tailReasoning, string tailAnswer) = inlineExtractor.Flush();
-            string? tailThinking = tailReasoning.Length > 0 ? tailReasoning : null;
-            string tailToken = tailAnswer.Length > 0 ? tailAnswer : string.Empty;
+            (string tailToken, string? tailThinking) = DrainInlineExtractor(inlineExtractor);
             if (tailThinking is not null || tailToken.Length > 0)
             {
                 long tailNs = ElapsedNanos(sw);
@@ -481,6 +493,22 @@ partial class OllamaProxyHandler
             : ct.IsCancellationRequested && !reachedDone
                 ? RequestStatus.Cancelled
                 : RequestStatus.Success;
+    }
+
+    /// <summary>
+    /// Drains the inline think-tag extractor at the end of a stream, returning the buffered tail as
+    /// an Ollama answer token plus an optional thinking fragment (null when empty, so the serializer
+    /// omits the field). A partial tag held back at the stream's end is the only thing that can be
+    /// buffered, so this is normally a couple of characters — but dropping it silently truncates the
+    /// answer, and the terminal frame is the last chance to deliver it.
+    /// </summary>
+    private static (string Token, string? Thinking) DrainInlineExtractor(ThinkTagExtractor? extractor)
+    {
+        if (extractor is null)
+            return (string.Empty, null);
+
+        (string tailReasoning, string tailAnswer) = extractor.Flush();
+        return (tailAnswer, tailReasoning.Length > 0 ? tailReasoning : null);
     }
 
     /// <summary>

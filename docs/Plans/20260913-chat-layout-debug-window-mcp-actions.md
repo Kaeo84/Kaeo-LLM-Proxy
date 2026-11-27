@@ -39,15 +39,15 @@ MCP tab: add `LastErrorDetail`/`StatusMessage`/`SetError(Exception)` to `McpServ
 - Fixed 1024x800 could overflow a very small screen; keeping the window resizable mitigates this.
 
 ## Steps
-- [ ] 1. Add `Core/DebugLog.cs` - debug-mode sink with ring buffer and Info/Debug/Error methods
-- [ ] 2. Add `Debug/DebugOutputPane.cs` and `Debug/DebugOutputControl.xaml(.cs)` - the plain text-area tool window
-- [ ] 3. Register the debug window in `VsPackage.cs` and add a static Instance plus global exception hooks
-- [ ] 4. Add the Debug toolbar button to the tool window and open the debug pane from it
-- [ ] 5. Rework the tool window pills bar into a Grid (fixed Mode, filling Model) and make the Settings button icon-only
-- [ ] 6. Set the settings window to 1024x800 and add a persistent bottom Close bar
-- [ ] 7. Extend `McpServerViewModel` with error detail and a status message
-- [ ] 8. Add `McpServerManager.TestConnectionAsync` (http initialize with tools/list fallback) and log failures
-- [ ] 9. Add MCP Save + Test Connection buttons and a hover/click-to-copy error display in the tab
-- [ ] 10. Wire the MCP and settings/chat error paths to DebugLog and add the Save/Test/Close/copy handlers
-- [ ] 11. Build the extension and resolve any compile or XAML errors
+- [x] 1. Add `Core/DebugLog.cs` - debug-mode sink with ring buffer and Info/Debug/Error methods
+- [x] 2. Add `Debug/DebugOutputPane.cs` and `Debug/DebugOutputControl.xaml(.cs)` - the plain text-area tool window  *(landed as `Diagnostics/DebugOutputPane.cs` + `Diagnostics/DebugOutputControl.xaml(.cs)`)*
+- [x] 3. Register the debug window in `VsPackage.cs` and add a static Instance plus global exception hooks
+- [x] 4. Add the Debug toolbar button to the tool window and open the debug pane from it
+- [x] 5. Rework the tool window pills bar into a Grid (fixed Mode, filling Model) and make the Settings button icon-only
+- [x] 6. Set the settings window to 1024x800 and add a persistent bottom Close bar
+- [x] 7. Extend `McpServerViewModel` with error detail and a status message
+- [x] 8. Add `McpServerManager.TestConnectionAsync` (http initialize with tools/list fallback) and log failures
+- [x] 9. Add MCP Save + Test Connection buttons and a hover/click-to-copy error display in the tab
+- [x] 10. Wire the MCP and settings/chat error paths to DebugLog and add the Save/Test/Close/copy handlers
+- [x] 11. Build the extension and resolve any compile or XAML errors
 - [x] 12. Commit and push to main as Kaeo84

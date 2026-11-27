@@ -3,7 +3,7 @@ namespace Kaeo.LlmProxy.Infrastructure;
 /// <summary>
 /// Builds the host-owned pages of the Help tab: one introductory blurb per dashboard tab plus
 /// the MCP page with Server/Modules sub-pages. Module-provided help pages are injected by
-/// MainForm into the Modules page via <see cref="Modules.IHelpModule"/>.
+/// MainForm into the Modules page via <see cref="Modules.IModuleUi"/>.
 /// </summary>
 internal static class HelpPages
 {
@@ -89,6 +89,6 @@ internal static class HelpPages
         """;
 
     internal const string ModulesPlaceholder = """
-        No loaded module provides help content yet. Import an MCP sub-module that implements IHelpModule (for example Kaeo LLM Proxy Module Web Search) and its documentation appears here.
+        No loaded module provides help content yet. Import an MCP sub-module that implements IModuleUi (for example Kaeo LLM Proxy Module Web Search) and its documentation appears here.
         """;
 }

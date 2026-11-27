@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net;
@@ -28,6 +29,7 @@ internal partial class MainForm : Form
     private readonly OllamaProxyHandler _handler;
     private readonly PerformanceService _perfService;
     private readonly AppDatabase _database;
+    private readonly ProxyAccessService _access;
     private readonly ModuleHost _moduleHost;
     private readonly McpServerService _mcpServer;
     private readonly StatisticsService _mcpStats;
@@ -39,7 +41,25 @@ internal partial class MainForm : Form
     /// </summary>
     private readonly StatisticsService _nonProxiedStats;
 
+        /// <summary>
+        /// Web dashboard (web server) request traffic. Surfaced as its own Logs sub-tab so the
+        /// dashboard's own page loads and API calls do not mix with model or MCP traffic.
+        /// </summary>
+        private readonly StatisticsService _webStats;
+
         private readonly StreamMonitor? _streamMonitor;
+
+        /// <summary>
+        /// Owns the web dashboard listener. Null only in hosts that never create one, in which
+        /// case the dashboard's Web Server group reports "not available".
+        /// </summary>
+        private readonly WebDashboardService? _webDashboard;
+
+                /// <summary>
+                /// Drives the auto-managed model scan. Null in hosts that do not run it, in which case the
+                /// auto-discovery group reports "not available" and Discover Now is disabled.
+                /// </summary>
+                private readonly ModelAutoDiscoveryService? _modelDiscovery;
 
         // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
@@ -53,6 +73,7 @@ internal partial class MainForm : Form
     private IReadOnlyList<RequestLog> _logCache = [];
     private IReadOnlyList<RequestLog> _mcpLogCache = [];
     private IReadOnlyList<RequestLog> _nonProxiedLogCache = [];
+    private IReadOnlyList<RequestLog> _webLogCache = [];
     private IReadOnlyList<SystemLogEntry> _sysLogCache = [];
     private bool _sysLogRefreshInFlight;
 
@@ -75,6 +96,7 @@ internal partial class MainForm : Form
     // disabled for the duration.
     private bool _proxyOperationInProgress;
     private bool _mcpDashOperationInProgress;
+    private bool _webDashOperationInProgress;
 
     // Coalesces concurrent MCP settings applies so rapid successive changes produce at most
     // one in-flight apply plus one follow-up.
@@ -95,7 +117,7 @@ internal partial class MainForm : Form
     // numeric textbox is invalid.
     private readonly ErrorProvider _inputErrors = new();
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StreamMonitor? streamMonitor = null)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StatisticsService webStats, StreamMonitor? streamMonitor = null, WebDashboardService? webDashboard = null, ModelAutoDiscoveryService? modelDiscovery = null)
     {
         _settings = settings;
         _stats = stats;
@@ -103,17 +125,25 @@ internal partial class MainForm : Form
         _handler = handler;
         _perfService = perfService;
         _database = database;
+        _access = access;
         _moduleHost = moduleHost;
         _mcpServer = mcpServer;
         _mcpStats = mcpServer.Statistics;
         _nonProxiedStats = nonProxiedStats;
+        _webStats = webStats;
         _streamMonitor = streamMonitor;
+        _webDashboard = webDashboard;
+        _modelDiscovery = modelDiscovery;
 
                 if (_streamMonitor is not null)
                     _streamMonitor.StreamsChanged += OnStreamsChanged;
 
                 InitializeComponent();
         Icon = Program.GetApplicationIcon();
+
+        TabPage usersPage = new("Users");
+        usersPage.Controls.Add(new ProxyUsersControl(_database, _access, _settings, _moduleHost, SaveProxyApiKeyRequirement));
+        _tabControl.TabPages.Insert(_tabControl.TabPages.IndexOf(_tabCredentials) + 1, usersPage);
 
         // Inject configuration tabs for already-loaded modules and track module registry
         // changes so imports, enables, disables, and removals update the tabs live.
@@ -130,6 +160,8 @@ internal partial class MainForm : Form
         _lstMcpLogs.RetrieveVirtualItem += LstMcpLogs_RetrieveVirtualItem;
         _lstNonProxiedLogs.VirtualMode = true;
         _lstNonProxiedLogs.RetrieveVirtualItem += LstNonProxiedLogs_RetrieveVirtualItem;
+        _lstWebLogs.VirtualMode = true;
+        _lstWebLogs.RetrieveVirtualItem += LstWebLogs_RetrieveVirtualItem;
         _lstSysLogs.VirtualMode = true;
         _lstSysLogs.RetrieveVirtualItem += LstSysLogs_RetrieveVirtualItem;
 
@@ -138,6 +170,7 @@ internal partial class MainForm : Form
         _lstLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
         _lstMcpLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
         _lstNonProxiedLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
+        _lstWebLogs.SelectedIndexChanged += LogList_SelectedIndexChanged;
 
         _stats.StatsChanged += OnStatsChanged;
         _mcpStats.StatsChanged += OnMcpStatsChanged;
@@ -161,6 +194,7 @@ internal partial class MainForm : Form
         _chkAutoStart.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkStartWithDashboard.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkRunAsAdmin.CheckedChanged += (_, _) => SaveGeneralSettings();
+        _chkAllowMultipleInstances.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkCollectResponseDetails.CheckedChanged += (_, _) => SaveGeneralSettings();
         _chkDebugMode.CheckedChanged += (_, _) => SaveGeneralSettings();
@@ -187,8 +221,21 @@ internal partial class MainForm : Form
         _txtRequestDbPath.Validated += (_, _) => SaveLoggingSettings();
         _txtLogRetention.Validated += (_, _) => SaveLoggingSettings();
 
+        // Web dashboard settings use an explicit Save button (they need an application restart);
+        // these handlers only refresh the URL preview label.
+        _chkWebDashboardEnabled.CheckedChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _txtWebDashboardPort.TextChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _txtWebDashboardAddress.TextChanged += (_, _) => UpdateWebDashboardUrlLabel();
+        _cmbWebDashboardScheme.SelectedIndexChanged += (_, _) => UpdateWebDashboardUrlLabel();
+
+        // The Dashboard tab shows the browsable URL for the running listener; clicking it opens
+        // the browser, which is the same address the tray menu uses.
+        _lblDashWebUrlValue.Click += LblDashWebUrlValue_Click;
+
         // MCP tab settings persist and restart the server immediately, like the Settings tab.
         _mcpServer.StatusChanged += OnMcpStatusChanged;
+        if (_webDashboard is not null)
+            _webDashboard.StatusChanged += OnWebDashboardStatusChanged;
         _chkMcpEnabled.CheckedChanged += (_, _) => OnMcpSettingChanged();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => UpdateMcpApiExplorerUrlLabel();
         _chkMcpApiExplorer.CheckedChanged += (_, _) => OnMcpSettingChanged();
@@ -226,10 +273,41 @@ internal partial class MainForm : Form
         RefreshModules();
         LoadMcpSettingsToForm();
         UpdateMcpStatusDisplays();
+        RefreshWebDashboardStatus();
         _stats.ConnectionHealthChanged += OnConnectionHealthChanged;
+        _database.ModelMappingsSaved += OnModelMappingsSaved;
         _cmbRefreshInterval.SelectedIndex = 1; // default: 2 s
         _refreshTimer.Start();
         _tabControl.SelectedIndexChanged += TabControl_SelectedIndexChanged;
+    }
+
+    /// <summary>
+    /// Re-syncs the mappings grid whenever the window regains focus. The web dashboard edits the
+    /// same <see cref="AppSettings.ModelMappings"/> list, and the grid is only a snapshot of it.
+    /// </summary>
+    protected override void OnActivated(EventArgs e)
+    {
+        base.OnActivated(e);
+        SyncMappingsGridFromSettings();
+    }
+
+    /// <summary>
+    /// Marshals a mapping re-sync onto the UI thread after the database rewrote the mapping table
+    /// (the web dashboard does this from an ASP.NET request thread).
+    /// </summary>
+    private void OnModelMappingsSaved()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        try
+        {
+            BeginInvoke(SyncMappingsGridFromSettings);
+        }
+        catch (InvalidOperationException)
+        {
+            // The form was disposed between the check and the marshal — nothing left to refresh.
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -254,10 +332,13 @@ internal partial class MainForm : Form
         _stats.StatsChanged -= OnStatsChanged;
         _mcpStats.StatsChanged -= OnMcpStatsChanged;
         _stats.ConnectionHealthChanged -= OnConnectionHealthChanged;
+        _database.ModelMappingsSaved -= OnModelMappingsSaved;
         _server.StatusChanged -= OnServerStatusChanged;
         _perfService.Sampled -= OnPerfSampled;
         _moduleHost.ModulesChanged -= OnModulesChanged;
         _mcpServer.StatusChanged -= OnMcpStatusChanged;
+        if (_webDashboard is not null)
+            _webDashboard.StatusChanged -= OnWebDashboardStatusChanged;
         if (_streamMonitor is not null)
             _streamMonitor.StreamsChanged -= OnStreamsChanged;
         _inputErrors.Dispose();
@@ -495,11 +576,7 @@ internal partial class MainForm : Form
         /// </summary>
         private static string FormatLocalBaseUrl(string host, int port, string path)
         {
-            string h = (host ?? "").Trim();
-            if (h is "" or "*" or "0.0.0.0" or "+" or "::" or "[::]")
-                h = "localhost";
-
-            return $"http://{h}:{port}{path}";
+            return $"http://{NetworkingHelpers.ResolveBrowsableHost(host)}:{port}{path}";
         }
 
     /// <summary>
@@ -744,6 +821,141 @@ internal partial class MainForm : Form
         }
     }
 
+    // ── Web dashboard status group ──────────────────────────────────────────
+
+    private void OnWebDashboardStatusChanged(object? sender, string status)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try
+        {
+            BeginInvoke(RefreshWebDashboardStatus);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Refreshes the dashboard Web Server group: shows whether the listener is up, the browsable
+    /// URL, and the address/port it bound, and enables the control buttons accordingly.
+    /// </summary>
+    private void RefreshWebDashboardStatus()
+    {
+        if (_webDashboard is null)
+        {
+            _lblDashWebStatusValue.Text = "Not available";
+            _lblDashWebUrlValue.Text = "-";
+            _lblDashWebUrlValue.Cursor = Cursors.Default;
+            _lblDashWebPortValue.Text = "-";
+            _btnDashWebStart.Enabled = false;
+            _btnDashWebStop.Enabled = false;
+            _btnDashWebRestart.Enabled = false;
+            return;
+        }
+
+        bool running = _webDashboard.IsRunning;
+        string status = _webDashboard.Status;
+
+        _lblDashWebStatusValue.Text = running ? "Running" : status;
+        _lblDashWebStatusValue.ForeColor = running
+            ? Color.Green
+            : status.StartsWith("Failed", StringComparison.OrdinalIgnoreCase)
+                ? Color.Red
+                : SystemColors.ControlText;
+
+        string? url = _webDashboard.Url;
+        _lblDashWebUrlValue.Text = running ? url ?? "-" : "-";
+        _lblDashWebUrlValue.Cursor = running && url is not null ? Cursors.Hand : Cursors.Default;
+        _lblDashWebUrlValue.ForeColor = running && url is not null ? SystemColors.Highlight : SystemColors.ControlText;
+        _lblDashWebPortValue.Text = $"{_webDashboard.ListenAddress}:{_webDashboard.ListenPort}";
+
+        _btnDashWebStart.Enabled = !running && _webDashboard.CanControl && !_webDashOperationInProgress;
+        _btnDashWebStop.Enabled = running && !_webDashOperationInProgress;
+        _btnDashWebRestart.Enabled = running && !_webDashOperationInProgress;
+    }
+
+    private void LblDashWebUrlValue_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is { IsRunning: true } dashboard && dashboard.Url is { Length: > 0 } url)
+            OpenUrlInBrowser(url);
+    }
+
+    private async void BtnDashWebStart_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.StartAsync(forceStart: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to start the web dashboard from the dashboard");
+            MessageBox.Show($"Failed to start the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
+    private async void BtnDashWebStop_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to stop the web dashboard from the dashboard");
+            MessageBox.Show($"Error stopping the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
+    private async void BtnDashWebRestart_Click(object? sender, EventArgs e)
+    {
+        if (_webDashboard is null || _webDashOperationInProgress)
+            return;
+
+        _webDashOperationInProgress = true;
+        RefreshWebDashboardStatus();
+
+        try
+        {
+            await _webDashboard.RestartAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to restart the web dashboard from the dashboard");
+            MessageBox.Show($"Error restarting the web server: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _webDashOperationInProgress = false;
+            RefreshWebDashboardStatus();
+        }
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────────
 
     private void RefreshStats()
@@ -875,6 +1087,16 @@ internal partial class MainForm : Form
             _lstNonProxiedLogs.Invalidate();
         }
 
+        private void RefreshWebLogs()
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+
+            string filter = _txtWebLogFilter.Text;
+            _webLogCache = [.. _webStats.GetRecentLogs().Where(log => MatchesFilter(log, filter))];
+            _lstWebLogs.VirtualListSize = _webLogCache.Count;
+            _lstWebLogs.Invalidate();
+        }
+
         /// <summary>
         /// Re-applies the active tab's filter. Text filters are applied in memory over the cached
         /// summaries rather than re-queried, so typing re-filters instantly without a database round
@@ -1004,6 +1226,33 @@ internal partial class MainForm : Form
         e.Item = item;
     }
 
+    private void LstWebLogs_RetrieveVirtualItem(object? sender, RetrieveVirtualItemEventArgs e)
+    {
+        if (e.ItemIndex < 0 || e.ItemIndex >= _webLogCache.Count)
+        {
+            e.Item = new ListViewItem(string.Empty);
+            return;
+        }
+
+        RequestLog log = _webLogCache[e.ItemIndex];
+        var item = new ListViewItem(log.Timestamp.ToString("M/d HH:mm:ss"));
+        item.SubItems.Add(log.Method);
+        item.SubItems.Add(log.OllamaPath);
+        item.SubItems.Add(log.Status.ToString());
+        item.SubItems.Add($"{log.DurationMs:F0}");
+        item.SubItems.Add(FormatBytes(log.RequestBytes, log.ResponseBytes));
+        item.Tag = log;
+
+        item.ForeColor = log.Status switch
+        {
+            RequestStatus.Error => Color.Red,
+            RequestStatus.Cancelled => Color.DarkOrange,
+            _ => SystemColors.WindowText,
+        };
+
+        e.Item = item;
+    }
+
     private void BtnClearLogs_Click(object? sender, EventArgs e) =>
         RunOnceWhileDisabled(_btnClearLogs, () =>
         {
@@ -1022,6 +1271,13 @@ internal partial class MainForm : Form
                     _nonProxiedLogCache = [];
                     _lstNonProxiedLogs.VirtualListSize = 0;
                     _lstNonProxiedLogs.Invalidate();
+                }
+                else if (_logSubTabs.SelectedTab == _logWebPage)
+                {
+                    _webStats.ClearLogs();
+                    _webLogCache = [];
+                    _lstWebLogs.VirtualListSize = 0;
+                    _lstWebLogs.Invalidate();
                 }
                 else if (_logSubTabs.SelectedTab == _tabSysLogs)
                 {
@@ -1056,6 +1312,8 @@ internal partial class MainForm : Form
             ShowSelectedLogDetails(_lstMcpLogs, _mcpLogCache, LogSource.Mcp);
         else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
             ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
+        else if (_logSubTabs.SelectedTab == _logWebPage)
+            ShowSelectedLogDetails(_lstWebLogs, _webLogCache, LogSource.Web);
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             ShowSelectedSysLogDetails();
         else
@@ -1158,6 +1416,9 @@ internal partial class MainForm : Form
     private void LstNonProxiedLogs_DoubleClick(object? sender, EventArgs e) =>
         ShowSelectedLogDetails(_lstNonProxiedLogs, _nonProxiedLogCache, LogSource.NonProxied);
 
+    private void LstWebLogs_DoubleClick(object? sender, EventArgs e) =>
+        ShowSelectedLogDetails(_lstWebLogs, _webLogCache, LogSource.Web);
+
     private void ShowLogDetails(RequestLog log, LogSource source)
     {
         // The in-memory entry is a lightweight summary without request/response bodies.
@@ -1181,6 +1442,10 @@ internal partial class MainForm : Form
         // which otherwise give nothing to trace a source from.
         if (!string.IsNullOrEmpty(log.ClientAddress))
             sb.AppendLine($"Client    : {log.ClientAddress}");
+        // Derived from the agent string, so extension traffic is nameable without reading the header.
+        string? clientTag = ClientTag.Classify(log.UserAgent);
+        if (!string.IsNullOrEmpty(clientTag))
+            sb.AppendLine($"Client app: {clientTag}");
         if (!string.IsNullOrEmpty(log.UserAgent))
             sb.AppendLine($"Agent     : {log.UserAgent}");
         if (source == LogSource.Proxy)
@@ -1226,6 +1491,7 @@ internal partial class MainForm : Form
             {
                 LogSource.Mcp => _mcpStats,
                 LogSource.NonProxied => _nonProxiedStats,
+                LogSource.Web => _webStats,
                 _ => _stats,
             };
             ExceptionDetail? ex = statsForSource.GetException(log.ExceptionId.Value);
@@ -1555,6 +1821,8 @@ internal partial class MainForm : Form
             RefreshMcpLogs();
         else if (_logSubTabs.SelectedTab == _logNonProxiedPage)
             RefreshNonProxiedLogs();
+        else if (_logSubTabs.SelectedTab == _logWebPage)
+            RefreshWebLogs();
         else if (_logSubTabs.SelectedTab == _tabSysLogs)
             RefreshSystemLogs();
         else if (_logSubTabs.SelectedTab == _logStreamsPage)
@@ -1898,13 +2166,120 @@ internal partial class MainForm : Form
             }
 
             _settings.HeartbeatIntervalSeconds = heartbeatIntervalSeconds;
-            _settings.Save();
-            _handler.UpdateSettings(_settings);
-            RefreshHeartbeats();
 
-            MessageBox.Show("Heartbeat settings saved.", "Saved",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-        });
+                        // Auto-discovery settings live in the same group and are saved by the same button: they
+                        // are the other half of "how often does the proxy poll the upstream".
+                        if (!int.TryParse(_txtDiscoveryInterval.Text, out int discoveryInterval)
+                            || discoveryInterval < AppSettings.MinModelAutoDiscoveryIntervalSeconds
+                            || discoveryInterval > AppSettings.MaxModelAutoDiscoveryIntervalSeconds)
+                        {
+                            MessageBox.Show(
+                                $"Auto-discovery scan interval must be a number between "
+                                + $"{AppSettings.MinModelAutoDiscoveryIntervalSeconds} and "
+                                + $"{AppSettings.MaxModelAutoDiscoveryIntervalSeconds} seconds.",
+                                "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        if (!int.TryParse(_txtDiscoveryOffline.Text, out int discoveryOffline)
+                            || discoveryOffline < AppSettings.MinModelAutoDiscoveryOfflineMinutes
+                            || discoveryOffline > AppSettings.MaxModelAutoDiscoveryOfflineMinutes)
+                        {
+                            MessageBox.Show(
+                                $"The auto-discovery offline grace period must be a number between "
+                                + $"{AppSettings.MinModelAutoDiscoveryOfflineMinutes} and "
+                                + $"{AppSettings.MaxModelAutoDiscoveryOfflineMinutes} minutes.",
+                                "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        _settings.EnableModelAutoDiscovery = _chkEnableModelDiscovery.Checked;
+                        _settings.ModelAutoDiscoveryIntervalSeconds = discoveryInterval;
+                        _settings.ModelAutoDiscoveryOfflineMinutes = discoveryOffline;
+                        _settings.Save();
+                        // Persist to the database as well: the discovery settings live in runtime settings, so a
+                        // save that only wrote settings.jsonc would be overwritten on the next load.
+                        try
+                        {
+                            _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
+                        }
+                        catch (Exception ex) when (ex is IOException or DbException)
+                        {
+                            Log.Warning(ex, "Could not persist runtime settings to the database; changes apply for this session only");
+                        }
+
+                        _handler.UpdateSettings(_settings);
+                        RefreshHeartbeats();
+                        UpdateModelDiscoveryStatus();
+
+                        MessageBox.Show("Heartbeat and auto-discovery settings saved.", "Saved",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    });
+
+                /// <summary>
+                /// Runs one auto-discovery scan from the button, then refreshes the grid (the scan can add,
+                /// enable, or disable mappings) and the status line.
+                /// </summary>
+                private async void BtnDiscoverModelsNow_Click(object? sender, EventArgs e)
+                {
+                    if (_modelDiscovery is null)
+                        return;
+
+                    _btnDiscoverModelsNow.Enabled = false;
+                    _lblDiscoveryStatus.Text = "Scanning upstreams…";
+                    try
+                    {
+                        ModelAutoDiscoveryResult result = await _modelDiscovery.RunOnceAsync();
+                        SyncMappingsGridFromSettings();
+                        UpdateModelDiscoveryStatus();
+                        MessageBox.Show(
+                            $"Scanned {result.Sources} upstream(s)."
+                            + $"\n\nRegistered: {result.Registered}"
+                            + $"\nRe-enabled: {result.Reactivated}"
+                            + $"\nDisabled: {result.Disabled}"
+                            + $"\nUnreachable: {result.FailedSources}"
+                            + (result.Messages.Count > 0 ? "\n\n" + string.Join("\n", result.Messages) : string.Empty),
+                            "Model discovery", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Manual model discovery scan failed");
+                        _lblDiscoveryStatus.Text = "Discovery failed: " + ex.Message;
+                    }
+                    finally
+                    {
+                        _btnDiscoverModelsNow.Enabled = true;
+                    }
+                }
+
+                /// <summary>
+                /// Renders the auto-discovery state on the Heartbeats tab: the master switch, the last scan, and
+                /// what it did. Kept separate from the settings load so the periodic refresh can call it alone.
+                /// </summary>
+                private void UpdateModelDiscoveryStatus()
+                {
+                    _chkEnableModelDiscovery.Checked = _settings.EnableModelAutoDiscovery;
+
+                    if (_modelDiscovery is null)
+                    {
+                        _lblDiscoveryStatus.Text = "Auto-discovery is not running in this host.";
+                        _btnDiscoverModelsNow.Enabled = false;
+                        return;
+                    }
+
+                    _btnDiscoverModelsNow.Enabled = true;
+                    if (_modelDiscovery.LastScanUtc is not { } lastScan)
+                    {
+                        _lblDiscoveryStatus.Text = "Auto-discovery has not scanned yet.";
+                        return;
+                    }
+
+                    ModelAutoDiscoveryResult result = _modelDiscovery.LastResult ?? ModelAutoDiscoveryResult.None;
+                    _lblDiscoveryStatus.Text =
+                        $"Last scan {lastScan.ToLocalTime():g}: {result.Registered} registered, "
+                        + $"{result.Reactivated} re-enabled, {result.Disabled} disabled, "
+                        + $"{result.FailedSources} unreachable.";
+                }
 
     /// <summary>
     /// Persists the SSE keep-alive interval from the Settings tab immediately when it changes.
@@ -2047,6 +2422,7 @@ internal partial class MainForm : Form
         _chkAutoStart.Checked = _settings.AutoStartProxy;
         _chkStartWithDashboard.Checked = _settings.StartWithDashboardOpen;
         _chkRunAsAdmin.Checked = _settings.RunAsAdministrator;
+        _chkAllowMultipleInstances.Checked = _settings.AllowMultipleInstances;
         _chkCollectDetails.Checked = _settings.CollectRequestDetails;
         _chkCollectResponseDetails.Checked = _settings.CollectResponseDetails;
         _chkSysLogHideHeartbeats.Checked = _settings.HideHeartbeatLogs;
@@ -2063,6 +2439,19 @@ internal partial class MainForm : Form
         _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
         _txtKeepAliveInterval.Text = _settings.SseKeepAliveIntervalSeconds.ToString();
         _txtHeartbeatInterval.Text = _settings.HeartbeatIntervalSeconds.ToString();
+                _txtDiscoveryInterval.Text = _settings.ModelAutoDiscoveryIntervalSeconds.ToString();
+                _txtDiscoveryOffline.Text = _settings.ModelAutoDiscoveryOfflineMinutes.ToString();
+                UpdateModelDiscoveryStatus();
+
+        // Web dashboard settings (explicit Save button; application restart to apply).
+        WebDashboardSettings webDashboard = _settings.WebDashboard;
+        _chkWebDashboardEnabled.Checked = webDashboard.Enabled;
+        _chkWebDashboardRequireLogin.Checked = webDashboard.RequireLogin;
+        _txtWebDashboardPort.Text = webDashboard.Port.ToString();
+        _txtWebDashboardAddress.Text = webDashboard.ListenAddress;
+        _cmbWebDashboardScheme.SelectedIndex = string.Equals(webDashboard.Scheme, "Https", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        LoadWebDashboardCertificateCredentials(webDashboard.CertificateCredentialName);
+        UpdateWebDashboardUrlLabel();
 
         _dgvMappings.Rows.Clear();
         foreach (ModelMapping mapping in _settings.ModelMappings)
@@ -2107,7 +2496,10 @@ internal partial class MainForm : Form
             mapping.ProxyName,
             mapping.ModelName,
             mapping.InstructionSetName ?? string.Empty,
-            mapping.ReasoningEffort ?? string.Empty);
+            mapping.ReasoningEffort ?? string.Empty,
+            // "Off" is discovery's own disable, which the operator can distinguish from a model they
+            // switched off themselves — the ToolTip carries the reason.
+            mapping.AutoManaged ? (mapping.AutoDisabledUtc is null ? "Yes" : "Off") : string.Empty);
 
         _dgvMappings.Rows[idx].Tag = mapping;
         return idx;
@@ -2240,6 +2632,123 @@ internal partial class MainForm : Form
             UpdateApiExplorerUrlLabel();
         });
 
+    private void BtnSaveWebDashboard_Click(object? sender, EventArgs e) =>
+        RunOnceWhileDisabled(_btnSaveWebDashboard, () =>
+        {
+            if (!int.TryParse(_txtWebDashboardPort.Text, out int port) || port < 0 || port > 65535)
+            {
+                MessageBox.Show("Dashboard port must be a number between 0 and 65535 (0 = proxy port + 1).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            string address = _txtWebDashboardAddress.Text.Trim();
+            if (address.Length == 0)
+            {
+                MessageBox.Show("Dashboard listen address is required (use localhost for loopback-only).", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            bool https = _cmbWebDashboardScheme.SelectedIndex == 1;
+            string certCredential = _cmbWebDashboardCertCredential.SelectedItem as string ?? string.Empty;
+            if (https && certCredential.Length == 0)
+            {
+                MessageBox.Show("HTTPS requires a certificate credential. Add the PFX or PEM certificate to the Credentials tab, then select it here. Use Http when TLS is terminated at a load balancer.",
+                    "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            WebDashboardSettings webDashboard = _settings.WebDashboard;
+            bool prevEnabled = webDashboard.Enabled;
+            int prevPort = webDashboard.Port;
+            string prevAddress = webDashboard.ListenAddress;
+            bool prevRequireLogin = webDashboard.RequireLogin;
+            string prevScheme = webDashboard.Scheme;
+            string? prevCertCredential = webDashboard.CertificateCredentialName;
+
+            webDashboard.Enabled = _chkWebDashboardEnabled.Checked;
+            webDashboard.Port = port;
+            webDashboard.ListenAddress = address;
+            webDashboard.RequireLogin = _chkWebDashboardRequireLogin.Checked;
+            webDashboard.Scheme = https ? "Https" : "Http";
+            webDashboard.CertificateCredentialName = certCredential.Length == 0 ? null : certCredential;
+
+            if (!TryPersist("Web dashboard settings", PersistSettingsCore, () =>
+            {
+                webDashboard.Enabled = prevEnabled;
+                webDashboard.Port = prevPort;
+                webDashboard.ListenAddress = prevAddress;
+                webDashboard.RequireLogin = prevRequireLogin;
+                webDashboard.Scheme = prevScheme;
+                webDashboard.CertificateCredentialName = prevCertCredential;
+            }))
+                return;
+
+            MessageBox.Show("Web dashboard settings saved. Restart the application for the changes to take effect.",
+                "Saved", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            UpdateWebDashboardUrlLabel();
+        });
+
+    private void UpdateWebDashboardUrlLabel()
+    {
+        if (!_chkWebDashboardEnabled.Checked)
+        {
+            _lblWebDashboardUrl.Text = "Web dashboard is disabled.";
+            return;
+        }
+
+        int port = int.TryParse(_txtWebDashboardPort.Text, out int parsed) && parsed > 0
+            ? parsed
+            : _settings.ListenPort + 1;
+        string address = _txtWebDashboardAddress.Text.Trim();
+        // Wildcard binds are not browsable addresses; show loopback like the tray log does.
+        string host = NetworkingHelpers.ResolveBrowsableHost(address);
+        string scheme = _cmbWebDashboardScheme.SelectedIndex == 1 ? "https" : "http";
+        _lblWebDashboardUrl.Text = $"Configured URL: {scheme}://{host}:{port}";
+    }
+
+    /// <summary>
+    /// Fills the HTTPS certificate picker with the stored credential names. The first entry is the
+    /// empty "no certificate" option so the selection can be cleared or left blank for Http.
+    /// </summary>
+    private void LoadWebDashboardCertificateCredentials(string? selected)
+    {
+        _cmbWebDashboardCertCredential.BeginUpdate();
+        try
+        {
+            _cmbWebDashboardCertCredential.Items.Clear();
+            _cmbWebDashboardCertCredential.Items.Add(string.Empty);
+
+            List<string> names;
+            lock (_settings.CredentialsSyncRoot)
+            {
+                names = [.. _settings.Credentials
+                    .Select(c => c.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)];
+            }
+
+            foreach (string name in names)
+                _cmbWebDashboardCertCredential.Items.Add(name);
+
+            int index = string.IsNullOrWhiteSpace(selected)
+                ? 0
+                : _cmbWebDashboardCertCredential.Items.IndexOf(selected);
+            _cmbWebDashboardCertCredential.SelectedIndex = index < 0 ? 0 : index;
+        }
+        finally
+        {
+            _cmbWebDashboardCertCredential.EndUpdate();
+        }
+    }
+
+    private bool SaveProxyApiKeyRequirement(bool requireApiKey)
+    {
+        bool previous = _settings.ProxySecurity.RequireApiKey;
+        _settings.ProxySecurity.RequireApiKey = requireApiKey;
+        return TryPersist("Proxy access security", PersistSettingsCore,
+            () => _settings.ProxySecurity.RequireApiKey = previous);
+    }
+
     /// <summary>
     /// Persists the immediately-saved general Settings tab options (everything except the
     /// listener group, model mappings, and logging group, which are saved separately).
@@ -2304,6 +2813,7 @@ internal partial class MainForm : Form
         _settings.AutoStartProxy = _chkAutoStart.Checked;
         _settings.StartWithDashboardOpen = _chkStartWithDashboard.Checked;
         _settings.RunAsAdministrator = _chkRunAsAdmin.Checked;
+        _settings.AllowMultipleInstances = _chkAllowMultipleInstances.Checked;
         _settings.CollectRequestDetails = _chkCollectDetails.Checked;
         _settings.CollectResponseDetails = _chkCollectResponseDetails.Checked;
         _settings.HideHeartbeatLogs = _chkSysLogHideHeartbeats.Checked;
@@ -2325,10 +2835,12 @@ internal partial class MainForm : Form
         _stats.UpdateMaxEntries(maxLogs);
         _mcpStats.UpdateMaxEntries(maxLogs);
         _nonProxiedStats.UpdateMaxEntries(maxLogs);
+        _webStats.UpdateMaxEntries(maxLogs);
         // Re-clamp the body-retention window against the new maximum for every log source.
         _stats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _mcpStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _nonProxiedStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
+        _webStats.UpdateMaxEntriesWithBodies(_settings.Logging.MaxLogEntriesWithBodies);
         _perfService.SetEnabled(_settings.EnablePerformanceSampling);
 
         TryPersist("Settings", PersistSettingsCore);
@@ -2400,6 +2912,7 @@ internal partial class MainForm : Form
         _stats.UpdateRetentionHours(logRetentionHours);
         _mcpStats.UpdateRetentionHours(logRetentionHours);
         _nonProxiedStats.UpdateRetentionHours(logRetentionHours);
+        _webStats.UpdateRetentionHours(logRetentionHours);
 
         // Re-apply logging config immediately so the new level/size/dir is active.
         AppLogger.Initialize(_settings.Logging);
@@ -2485,6 +2998,58 @@ internal partial class MainForm : Form
 
         return saved;
     }
+
+    /// <summary>
+    /// Rebuilds the mappings grid from <see cref="AppSettings.ModelMappings"/> when the two have
+    /// diverged. The web dashboard edits that list in place, while
+    /// <see cref="CommitMappingsFromGrid"/> rebuilds it from the grid rows — so without this
+    /// re-sync the next Windows-GUI mapping edit would silently drop every dashboard-added model.
+    /// </summary>
+    private void SyncMappingsGridFromSettings()
+    {
+        if (_loadingSettings || _dgvMappings.IsDisposed)
+            return;
+
+        List<ModelMapping> mappings = _settings.ModelMappings;
+        if (string.Equals(GridMappingSignature(), MappingSignature(mappings), StringComparison.Ordinal))
+            return;
+
+        // Keep the selected mapping selected across the rebuild.
+        int? selectedId = _dgvMappings.SelectedRows.Count > 0
+            ? (_dgvMappings.SelectedRows[0].Tag as ModelMapping)?.Id
+            : null;
+
+        _loadingSettings = true;
+        try
+        {
+            _dgvMappings.Rows.Clear();
+            foreach (ModelMapping mapping in mappings)
+            {
+                int row = AddMappingRow(mapping.Clone());
+                if (selectedId is not null && mapping.Id == selectedId.Value)
+                    _dgvMappings.Rows[row].Selected = true;
+            }
+        }
+        finally
+        {
+            _loadingSettings = false;
+        }
+
+        RefreshMappingInstructionCells();
+    }
+
+    /// <summary>Identity and editable names of the rows currently in the mappings grid.</summary>
+    private string GridMappingSignature() =>
+        string.Join('\u001f', _dgvMappings.Rows.Cast<DataGridViewRow>()
+            .Where(row => row.Tag is ModelMapping)
+            .Select(row => (row.Tag as ModelMapping)!.Id + "\u001e" +
+                (row.Cells[_colProxyName.Name].Value?.ToString() ?? string.Empty) + "\u001e" +
+                (row.Cells[_colModelName.Name].Value?.ToString() ?? string.Empty)));
+
+    /// <summary>Identity and editable names of the committed mappings, in list order.</summary>
+    private static string MappingSignature(IEnumerable<ModelMapping> mappings) =>
+        string.Join('\u001f', mappings.Select(m =>
+            m.Id + "\u001e" + (m.ProxyName ?? string.Empty) + "\u001e" + (m.ModelName ?? string.Empty)));
 
     /// <summary>
     /// Rebuilds <see cref="AppSettings.ModelMappings"/> from the mappings grid and persists the
@@ -3147,7 +3712,10 @@ internal partial class MainForm : Form
         }
 
         _lstCredentials.EndUpdate();
-    }
+
+                // The HTTPS certificate picker in the Settings tab references credential names.
+                LoadWebDashboardCertificateCredentials(_settings.WebDashboard.CertificateCredentialName);
+            }
 
     private void BtnAddCredential_Click(object? sender, EventArgs e)
     {
@@ -3369,10 +3937,13 @@ internal partial class MainForm : Form
             if (_moduleTabs.ContainsKey(moduleId))
                 continue;
 
+            if (loaded.Module is not IModuleUi ui)
+                continue;
+
             TabPage page;
             try
             {
-                page = loaded.Module.CreateConfigPage();
+                page = (TabPage)ui.CreateConfigPage();
             }
             catch (Exception ex)
             {
@@ -3597,7 +4168,7 @@ internal partial class MainForm : Form
         _helpTabs.TabPages.Add(modulesPage);
     }
 
-    /// <summary>Appends the help page of every loaded IHelpModule module that lacks one.</summary>
+    /// <summary>Appends the help page of every loaded module that provides one and lacks a tab.</summary>
     private void AddModuleHelpPages()
     {
         foreach (LoadedModule loaded in _moduleHost.LoadedModules)
@@ -3606,13 +4177,15 @@ internal partial class MainForm : Form
             if (_moduleHelpPages.ContainsKey(moduleId))
                 continue;
 
-            if (loaded.Module is not IHelpModule helpModule)
+            if (loaded.Module is not IModuleUi ui)
                 continue;
 
             TabPage page;
             try
             {
-                page = helpModule.CreateHelpPage();
+                if (ui.CreateHelpPage() is not TabPage helpPage)
+                    continue;
+                page = helpPage;
             }
             catch (Exception ex)
             {
@@ -3663,6 +4236,8 @@ internal partial class MainForm : Form
 
     private void TabControl_SelectedIndexChanged(object? sender, EventArgs e)
     {
+        if (_tabControl.SelectedTab == _tabSettings)
+            SyncMappingsGridFromSettings();
         if (_tabControl.SelectedTab == _tabTest)
             LoadTestModels();
     }

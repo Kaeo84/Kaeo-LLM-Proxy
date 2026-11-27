@@ -1,0 +1,462 @@
+using System.Globalization;
+using System.Security.Claims;
+using Kaeo.LlmProxy.Core.Models;
+using Kaeo.LlmProxy.Core.Modules;
+using Kaeo.LlmProxy.Services;
+using Kaeo.LlmProxy.Services.Mcp;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Data.Sqlite;
+
+namespace Kaeo.LlmProxy.Web;
+
+/// <summary>
+/// Maps the dashboard's JSON Minimal API endpoints. All routes are under <c>/api</c> and guarded
+/// by the auth middleware in <see cref="WebDashboardHost"/>. No Razor, no postbacks — every
+/// response is JSON consumed by the jQuery/AJAX front end (Phase 4).
+/// </summary>
+internal static partial class DashboardEndpoints
+{
+    // Serializes admin mutations (mappings/credentials/settings) against each other. The proxy
+    // reads these collections on its own path; dashboard edits are infrequent control-plane ops.
+    private static readonly object Sync = new();
+
+    public static void MapAll(WebApplication app, AppSettings settings, ProxyHostController controller)
+    {
+        MapAuthentication(app, settings, controller);
+        // /api/auth/me sits outside the auth gate so the login page can probe it; it resolves the
+        // session itself and reports the caller's roles and capabilities so the front end can hide
+        // controls the caller cannot use.
+        app.MapGet("/api/auth/me", (HttpContext context) =>
+        {
+            bool signedIn = DashboardAuth.TryAuthorize(context, settings, controller.Database, controller.Access, out _);
+            string roles = context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty;
+            return Results.Json(new
+            {
+                role = roles,
+                roles = DashboardRoles.Parse(roles)
+                    .Select(key => new { key, label = DashboardRoles.Find(key)?.Label ?? key })
+                    .ToList(),
+                capabilities = DashboardRoles.CapabilityNames(roles),
+                username = context.Items[DashboardAuth.UserNameItemKey]?.ToString(),
+                loginRequired = settings.WebDashboard.RequireLogin,
+                // Only a resolved session is told where the API documents live; the login page has
+                // no use for the topology and must not be able to read it.
+                explorers = signedIn ? BuildExplorerState(settings, controller, roles) : null,
+            });
+        });
+        // The role vocabulary the user editor renders, so the UI can never offer a role the
+        // endpoints would reject. Readable by any signed-in session; it exposes no user data.
+        app.MapGet("/api/auth/roles", () => Results.Json(new
+        {
+            roles = DashboardRoles.All
+                .Select(role => new
+                {
+                    key = role.Key,
+                    label = role.Label,
+                    description = role.Description,
+                    capabilities = DashboardRoles.CapabilityNames(role.Capabilities),
+                })
+                .ToList(),
+        }));
+        MapStatus(app, settings, controller);
+        MapProxy(app, controller);
+        MapWebDashboard(app, controller);
+        MapLogs(app, controller);
+        MapObservability(app, controller);
+        MapUsage(app, controller);
+        MapStats(app, controller);
+        MapMcp(app, controller);
+        MapSettings(app, settings, controller);
+        MapMappings(app, controller);
+        MapCredentials(app, controller);
+        MapModules(app, controller);
+        MapUsers(app, controller);
+        MapTestConsole(app, settings, controller);
+    }
+
+    private static void MapStatus(WebApplication app, AppSettings settings, ProxyHostController controller)
+    {
+        app.MapGet("/api/status", (HttpContext context) => Results.Json(new
+        {
+            version = typeof(AppSettings).Assembly.GetName().Version?.ToString(),
+            proxy = new
+            {
+                isRunning = controller.Server.IsRunning,
+                listenAddress = controller.Server.ListenAddress,
+                listenPort = controller.Server.ListenPort,
+                // StartProxy never throws; a failed bind surfaces here so the dashboard can show it.
+                error = controller.LastStartError,
+            },
+            mcp = new
+            {
+                isRunning = controller.McpServer.IsRunning,
+                status = controller.McpServer.Status,
+                endpointUrl = controller.McpServer.EndpointUrl,
+            },
+            modules = controller.ModuleHost.GetRegistryEntries().Select(e => new
+            {
+                id = e.Id,
+                name = e.Name,
+                isEnabled = e.IsEnabled,
+                isRunning = RunningState(controller, e.Id),
+            }).ToList(),
+            dashboard = new
+            {
+                authMode = settings.WebDashboard.RequireLogin ? "login" : "open",
+                scheme = settings.WebDashboard.Scheme,
+                isRunning = controller.WebDashboard.IsRunning,
+                url = controller.WebDashboard.Url,
+                status = controller.WebDashboard.Status,
+                listenAddress = controller.WebDashboard.ListenAddress,
+                listenPort = controller.WebDashboard.ListenPort,
+                requireLogin = settings.WebDashboard.RequireLogin,
+                certificateCredentialName = settings.WebDashboard.CertificateCredentialName,
+                canControl = controller.WebDashboard.CanControl,
+                error = controller.WebDashboard.LastError,
+            },
+            // Sampled by PerformanceService on the same interval as the Windows dashboard, so the
+            // two views agree. Zeroes until the first sample lands.
+            performance = new
+            {
+                cpuPercent = Math.Round(controller.PerfService.CpuPercent, 1),
+                memoryMb = Math.Round(controller.PerfService.MemoryMb, 1),
+                gen2Collections = controller.PerfService.Gen2Collections,
+                lohMb = Math.Round(controller.PerfService.LohMb, 1),
+            },
+            // Which database this instance is actually writing to. Each build output resolves its
+            // own file, so two launches (or a portable copy) can silently diverge — surfacing the
+            // path here makes that mismatch visible instead of looking like lost edits.
+            databasePath = controller.Database.DatabasePath,
+            databaseDegraded = controller.Database.IsDegraded,
+            // Repeated here as well as on /api/auth/me because this is the payload the Dashboard
+            // polls: a document toggled in the Windows app appears without a page reload.
+            explorers = BuildExplorerState(
+                settings,
+                controller,
+                context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty),
+        }));
+    }
+
+    /// <summary>
+    /// Which API documents this instance publishes, and where. The proxy and MCP explorers listen
+    /// on their own ports, so the browser rebuilds those absolute URLs from the address it used to
+    /// reach the dashboard; only the registration document shares the dashboard's origin.
+    /// <para>
+    /// The registration entry is reported as disabled unless the caller holds
+    /// <see cref="DashboardCapability.ViewRegistration"/>, so a role that could not read the
+    /// document is not told it exists.
+    /// </para>
+    /// </summary>
+    private static object BuildExplorerState(AppSettings settings, ProxyHostController controller, string roles)
+    {
+        McpServerSettings mcpSettings = controller.McpServer.LoadSettings();
+        return new
+        {
+            proxy = new
+            {
+                enabled = settings.EnableApiExplorer,
+                listenAddress = settings.ListenAddress,
+                listenPort = settings.ListenPort,
+                scalarPath = EndpointPaths.Scalar,
+                specPath = EndpointPaths.OpenApiSpec,
+            },
+            mcp = new
+            {
+                enabled = mcpSettings.EnableApiExplorer,
+                // The configured endpoint, not the live one: the service reports an empty address and
+                // port 0 until it starts, which would hide the links on a server that is merely
+                // stopped. The card marks a stopped server instead of dropping the link.
+                listenAddress = mcpSettings.ListenAddress,
+                listenPort = mcpSettings.ListenPort,
+                scalarPath = McpServerHost.ScalarPath,
+                specPath = McpServerHost.SpecPath,
+            },
+            registration = new
+            {
+                enabled = settings.EnableRegistrationApiSpec
+                    && DashboardRoles.HasCapability(roles, DashboardCapability.ViewRegistration),
+                path = RegistrationApiSpec.Path,
+            },
+        };
+    }
+
+    private static void MapProxy(WebApplication app, ProxyHostController controller)
+    {
+        app.MapPost("/api/proxy/start", () =>
+        {
+            controller.StartProxy();
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = controller.LastStartError });
+        });
+
+        app.MapPost("/api/proxy/stop", async () =>
+        {
+            await controller.Server.StopAsync();
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = (string?)null });
+        });
+
+        // Stop-then-start on the configured endpoint. The dashboard runs on its own port, so
+        // restarting the proxy listener never interrupts the page that asked for it.
+        app.MapPost("/api/proxy/restart", async () =>
+        {
+            await controller.RestartProxyAsync();
+            return Results.Json(new { isRunning = controller.Server.IsRunning, error = controller.LastStartError });
+        });
+    }
+
+    private static void MapWebDashboard(WebApplication app, ProxyHostController controller)
+    {
+        // The dashboard's own Stop/Restart must not tear the listener down inside the request it
+        // is currently answering, so the response is returned first and the work is deferred.
+        app.MapPost("/api/webdashboard/start", async () =>
+        {
+            await controller.WebDashboard.StartAsync(forceStart: true);
+            return Results.Json(WebDashboardState(controller));
+        });
+
+        app.MapPost("/api/webdashboard/stop", () =>
+        {
+            controller.WebDashboard.StopAfter(TimeSpan.FromMilliseconds(300));
+            return Results.Json(new
+            {
+                isRunning = true,
+                status = "Stopping",
+                message = "The web dashboard is shutting down; this page will stop responding.",
+            });
+        });
+
+        app.MapPost("/api/webdashboard/restart", () =>
+        {
+            controller.WebDashboard.RestartAfter(TimeSpan.FromMilliseconds(300));
+            return Results.Json(new
+            {
+                isRunning = true,
+                status = "Restarting",
+                message = "The web dashboard is restarting; this page will reconnect shortly.",
+            });
+        });
+    }
+
+    private static object WebDashboardState(ProxyHostController controller) => new
+    {
+        isRunning = controller.WebDashboard.IsRunning,
+        status = controller.WebDashboard.Status,
+        url = controller.WebDashboard.Url,
+        error = controller.WebDashboard.LastError,
+    };
+
+    private static void MapLogs(WebApplication app, ProxyHostController controller)
+    {
+        // Two modes sharing a timestamp-ticks cursor (RequestLog has no numeric id):
+        //  - `after` omitted: fresh load — the newest `limit` entries straight from the database
+        //    (the full retention window, not just the in-memory queue), newest first.
+        //  - `after` supplied: incremental poll of the in-memory window — strictly newer entries,
+        //    oldest first.
+        // Only Admin sessions see every user's traffic; every other role is limited to requests
+        // attributed to the signed-in user (via API key), matching what Read Only has always shown.
+        app.MapGet("/api/logs", (HttpContext context, string? source, long? after, int? limit) =>
+        {
+            bool fullVisibility = DashboardAuth.IsAdmin(context);
+            int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
+                ? parsedId
+                : null;
+            if (!fullVisibility && callerId is null)
+                return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
+            int? filterUserId = fullVisibility ? null : callerId;
+
+            int take = Math.Clamp(limit ?? 100, 1, 1000);
+
+            if (after is null)
+            {
+                try
+                {
+                    IReadOnlyList<RequestLog> recent = controller.Database.QueryRecent(take, LogSourceFor(source), filterUserId);
+                    Dictionary<int, string> aliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
+                    foreach (RequestLog entry in recent)
+                        AttachDerivedFields(entry, aliases);
+                    long newest = recent.Count > 0 ? recent[0].Timestamp.Ticks : 0;
+                    return Results.Json(new { entries = recent, nextAfter = newest });
+                }
+                catch (Exception ex) when (ex is IOException or SqliteException)
+                {
+                    Serilog.Log.Warning(ex, "Log query failed");
+                    return Results.Json(new { error = "Log data is temporarily unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+            }
+
+            StatisticsService stats = StatsForSource(controller, source);
+            long cursor = after.Value;
+            List<RequestLog> entries = stats.GetRecentLogs()
+                .Where(e => e.Timestamp.Ticks > cursor && (filterUserId is null || e.UserId == filterUserId))
+                .OrderBy(e => e.Timestamp.Ticks)
+                .ThenBy(e => e.RequestId, StringComparer.Ordinal)
+                .Take(take)
+                .ToList();
+
+            Dictionary<int, string> requestorAliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
+            foreach (RequestLog entry in entries)
+                AttachDerivedFields(entry, requestorAliases);
+
+            long next = entries.Count > 0 ? entries[^1].Timestamp.Ticks : cursor;
+            return Results.Json(new { entries, nextAfter = next });
+        });
+
+        // Full bodies/headers for the detail view, loaded on demand from the store. Read Only
+        // callers get 404 for entries that are not theirs (no existence leak).
+        app.MapGet("/api/logs/detail", (HttpContext context, string? source, string? timestamp) =>
+        {
+            if (!DateTime.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime parsed))
+                return Results.Json(new { error = "timestamp must be an ISO 8601 date/time." }, statusCode: StatusCodes.Status400BadRequest);
+
+            bool fullVisibility = DashboardAuth.IsAdmin(context);
+            int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
+                ? parsedId
+                : null;
+            if (!fullVisibility && callerId is null)
+                return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
+
+            try
+            {
+                RequestLog? full = controller.Database.LoadFullLogEntry(parsed.ToLocalTime(), LogSourceFor(source));
+                if (full is null || (!fullVisibility && full.UserId != callerId))
+                    return Results.Json(new { error = "Log entry not found." }, statusCode: StatusCodes.Status404NotFound);
+                AttachDerivedFields(full, BuildRequestorAliases(controller.Database.LoadProxyUsers()));
+                return Results.Json(full);
+            }
+            catch (Exception ex) when (ex is IOException or SqliteException)
+            {
+                Serilog.Log.Warning(ex, "Log detail query failed");
+                return Results.Json(new { error = "Log data is temporarily unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+        });
+    }
+
+    private static LogSource LogSourceFor(string? source) => source?.ToLowerInvariant() switch
+    {
+        "mcp" => LogSource.Mcp,
+        "nonproxied" or "non-proxied" => LogSource.NonProxied,
+        "web" => LogSource.Web,
+        _ => LogSource.Proxy,
+    };
+
+    /// <summary>User id → the local part of their email address (the reference shown in the
+    /// Requests view). Users without an email are omitted, so their entries show blank.</summary>
+    private static Dictionary<int, string> BuildRequestorAliases(IEnumerable<ProxyUser> users)
+    {
+        Dictionary<int, string> aliases = [];
+        foreach (ProxyUser user in users)
+        {
+            string? alias = EmailLocalPart(user.Email);
+            if (alias is not null)
+                aliases[user.Id] = alias;
+        }
+        return aliases;
+    }
+
+    private static string? EmailLocalPart(string? email)
+    {
+        string value = email?.Trim() ?? string.Empty;
+        int at = value.IndexOf('@');
+        string local = at >= 0 ? value[..at] : value;
+        return local.Length == 0 ? null : local;
+    }
+
+    private static void AttachDerivedFields(RequestLog entry, IReadOnlyDictionary<int, string> aliases)
+    {
+        entry.Requestor = entry.UserId is int userId && aliases.TryGetValue(userId, out string? alias)
+            ? alias
+            : null;
+        entry.ClientTag = ClientTag.Classify(entry.UserAgent);
+    }
+
+    private static void MapStats(WebApplication app, ProxyHostController controller)
+    {
+        app.MapGet("/api/stats", () => Results.Json(new
+        {
+            proxy = SourceStats(controller.Stats),
+            mcp = SourceStats(controller.McpStats),
+            nonProxied = SourceStats(controller.NonProxiedStats),
+            web = SourceStats(controller.WebStats),
+        }));
+    }
+
+    private static void MapMcp(WebApplication app, ProxyHostController controller)
+    {
+        app.MapGet("/api/mcp", () =>
+        {
+            McpServerService mcp = controller.McpServer;
+            McpServerSettings s = mcp.LoadSettings();
+            return Results.Json(new
+            {
+                isRunning = mcp.IsRunning,
+                status = mcp.Status,
+                listenAddress = mcp.ListenAddress,
+                listenPort = mcp.ListenPort,
+                endpointUrl = mcp.EndpointUrl,
+                settings = new
+                {
+                    enabled = s.Enabled,
+                    listenAddress = s.ListenAddress,
+                    listenPort = s.ListenPort,
+                    enableApiExplorer = s.EnableApiExplorer,
+                    authCredentialName = s.AuthCredentialName,
+                    collectRequestDetails = s.CollectRequestDetails,
+                    collectResponseDetails = s.CollectResponseDetails,
+                },
+                toolModules = controller.ModuleHost.LoadedModules
+                    .Where(l => l.Module is IMcpToolModule)
+                    .Select(l => new { id = l.Entry.Id, name = l.Entry.Name })
+                    .ToList(),
+            });
+        });
+
+        // The dashboard and the MCP server live in the same process, so these drive the exact
+        // instance the proxy exposes. Start forces the listener up even when the persisted Enabled
+        // flag is off — an explicit Start click is a stronger signal than the saved default.
+        app.MapPost("/api/mcp/start", async () =>
+        {
+            await controller.McpServer.StartAsync(forceStart: true);
+            return Results.Json(McpState(controller));
+        });
+
+        app.MapPost("/api/mcp/stop", async () =>
+        {
+            await controller.McpServer.StopAsync();
+            return Results.Json(McpState(controller));
+        });
+
+        app.MapPost("/api/mcp/restart", async () =>
+        {
+            await controller.McpServer.RestartAsync();
+            return Results.Json(McpState(controller));
+        });
+    }
+
+    private static object McpState(ProxyHostController controller) => new
+    {
+        isRunning = controller.McpServer.IsRunning,
+        status = controller.McpServer.Status,
+        endpointUrl = controller.McpServer.EndpointUrl,
+    };
+
+    private static object SourceStats(StatisticsService stats) => new
+    {
+        totalRequests = stats.TotalRequests,
+        totalErrors = stats.TotalErrors,
+        totalPromptTokens = stats.TotalPromptTokens,
+        totalCompletionTokens = stats.TotalCompletionTokens,
+        requestsPerSecond = stats.RequestsPerSecond,
+    };
+
+    private static StatisticsService StatsForSource(ProxyHostController controller, string? source)
+        => source?.ToLowerInvariant() switch
+        {
+            "mcp" => controller.McpStats,
+            "nonproxied" or "non-proxied" => controller.NonProxiedStats,
+            "web" => controller.WebStats,
+            _ => controller.Stats,
+        };
+
+    private static bool RunningState(ProxyHostController controller, int id)
+        => controller.ModuleHost.LoadedModules.FirstOrDefault(l => l.Entry.Id == id)?.Module is IRunnableModule r && r.IsRunning;
+}
