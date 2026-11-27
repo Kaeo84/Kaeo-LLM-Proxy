@@ -77,7 +77,7 @@ internal static partial class DashboardEndpoints
 
     private static void MapStatus(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
-        app.MapGet("/api/status", () => Results.Json(new
+        app.MapGet("/api/status", (HttpContext context) => Results.Json(new
         {
             version = typeof(AppSettings).Assembly.GetName().Version?.ToString(),
             proxy = new
@@ -129,6 +129,12 @@ internal static partial class DashboardEndpoints
             // path here makes that mismatch visible instead of looking like lost edits.
             databasePath = controller.Database.DatabasePath,
             databaseDegraded = controller.Database.IsDegraded,
+            // Repeated here as well as on /api/auth/me because this is the payload the Dashboard
+            // polls: a document toggled in the Windows app appears without a page reload.
+            explorers = BuildExplorerState(
+                settings,
+                controller,
+                context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty),
         }));
     }
 
@@ -158,8 +164,11 @@ internal static partial class DashboardEndpoints
             mcp = new
             {
                 enabled = mcpSettings.EnableApiExplorer,
-                listenAddress = controller.McpServer.ListenAddress,
-                listenPort = controller.McpServer.ListenPort,
+                // The configured endpoint, not the live one: the service reports an empty address and
+                // port 0 until it starts, which would hide the links on a server that is merely
+                // stopped. The card marks a stopped server instead of dropping the link.
+                listenAddress = mcpSettings.ListenAddress,
+                listenPort = mcpSettings.ListenPort,
                 scalarPath = McpServerHost.ScalarPath,
                 specPath = McpServerHost.SpecPath,
             },

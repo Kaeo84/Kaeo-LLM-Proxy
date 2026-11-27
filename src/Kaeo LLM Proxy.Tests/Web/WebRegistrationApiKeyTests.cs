@@ -282,6 +282,35 @@ public sealed class WebRegistrationApiKeyTests
     }
 
     [Fact]
+    public async Task McpExplorer_IsReportedWithTheConfiguredEndpointWhileTheServerIsStopped()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        McpServerSettings mcp = b.Controller.McpServer.LoadSettings();
+        mcp.Enabled = false;
+        mcp.EnableApiExplorer = true;
+        mcp.ListenAddress = "localhost";
+        mcp.ListenPort = 7420;
+        b.Controller.McpServer.SaveSettings(mcp);
+
+        // A stopped service reports an empty endpoint, so the state has to come from the saved
+        // settings: the Dashboard still owes the caller a usable link, marked as stopped.
+        Assert.False(b.Controller.McpServer.IsRunning);
+
+        // Both payloads carry it, because the Dashboard polls /api/status and the Help tab reads the
+        // identity once.
+        foreach (string path in new[] { "/api/auth/me", "/api/status" })
+        {
+            using JsonDocument doc = JsonDocument.Parse(await (await b.Client.GetAsync(path)).Content.ReadAsStringAsync());
+            JsonElement state = doc.RootElement.GetProperty("explorers").GetProperty("mcp");
+            Assert.True(state.GetProperty("enabled").GetBoolean());
+            Assert.Equal("localhost", state.GetProperty("listenAddress").GetString());
+            Assert.Equal(7420, state.GetProperty("listenPort").GetInt32());
+            Assert.Equal("/scalar", state.GetProperty("scalarPath").GetString());
+        }
+    }
+
+    [Fact]
     public async Task RolesEndpoint_AdvertisesTheRegistrationRoles()
     {
         await using Bundle b = await CreateBundleAsync();

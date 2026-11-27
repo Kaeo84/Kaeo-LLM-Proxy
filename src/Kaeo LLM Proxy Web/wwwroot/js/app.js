@@ -342,6 +342,10 @@
     }
 
     function renderStatus(s) {
+        // The status payload repeats the API-document state so a toggle flipped in the Windows app
+        // reaches this page on the next poll instead of needing a reload.
+        if (s.explorers) explorers = s.explorers;
+
         var $cards = $('#status-cards').empty();
 
         var $proxy = $('<div class="card">').append($('<h3>').text('Proxy ').append(pill(s.proxy.isRunning, 'running', 'stopped')))
@@ -2039,6 +2043,14 @@
                 .append(kv('Auth credential', s.authCredentialName || 'none'))
                 .append(kv('Collect request details', s.collectRequestDetails ? 'yes' : 'no'))
                 .append(kv('Collect response details', s.collectResponseDetails ? 'yes' : 'no'));
+            // The explorer is a separate listener, so the tab links to it here as well as on the
+            // Dashboard card: this is the page that shows the toggle's state.
+            var mcpExplorer = explorers.mcp || {};
+            if (mcpExplorer.enabled) {
+                $card.append($('<p class="card-links">')
+                    .append(explorerLink(explorerUrl(mcpExplorer, mcpExplorer.scalarPath), 'API explorer', m.isRunning))
+                    .append(explorerLink(explorerUrl(mcpExplorer, mcpExplorer.specPath), 'OpenAPI spec', m.isRunning)));
+            }
             $view.append($('<div class="cards">').append($card));
             $view.append($('<p class="muted">').text(
                 'Clients authenticate with the configured shared credential or with a proxy API key that has '

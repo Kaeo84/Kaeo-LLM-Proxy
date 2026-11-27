@@ -133,9 +133,7 @@ internal sealed class ProxyUsersControl : UserControl
                 ListViewItem item = new(user.Name) { Tag = user };
                 item.SubItems.Add(user.Email);
                 item.SubItems.Add(user.IsEnabled ? "Enabled" : "Disabled");
-                item.SubItems.Add(user.DashboardLoginEnabled
-                    ? $"{DashboardRoles.Describe(user.DashboardRole)} ({user.DashboardUsername})"
-                    : "None");
+                item.SubItems.Add(DescribeDashboard(user));
                 item.SubItems.Add(DescribeModelAccess(user));
                 _users.Items.Add(item);
                 if (user.Id == selectedId)
@@ -178,6 +176,16 @@ internal sealed class ProxyUsersControl : UserControl
 
     private ProxyUser? SelectedUser() => _users.SelectedItems.Count == 0 ? null : _users.SelectedItems[0].Tag as ProxyUser;
     private ProxyApiKey? SelectedKey() => _keys.SelectedItems.Count == 0 ? null : _keys.SelectedItems[0].Tag as ProxyApiKey;
+
+    // Roles are not a dashboard-login concept: a registration service account holds a role and no
+    // Web GUI login at all, so the column always reports the roles and marks the login separately.
+    private static string DescribeDashboard(ProxyUser user)
+    {
+        string roles = DashboardRoles.Parse(user.DashboardRole).Count == 0
+            ? "No roles"
+            : DashboardRoles.Describe(user.DashboardRole);
+        return user.DashboardLoginEnabled ? $"{roles} ({user.DashboardUsername})" : $"{roles} (API only)";
+    }
 
     // Admin implies every model, so say that instead of listing them all.
     private static string DescribeModelAccess(ProxyUser user)
@@ -672,6 +680,7 @@ internal sealed class UserEditorDialog : Form
             Anchor = AnchorStyles.Left,
             Text = "Passwords need 12+ characters. Leave blank to keep the current password.\n"
                 + "Check every role that applies; permissions are combined and Admin already includes everything.\n"
+                + "Roles apply to API keys too, so a service account holds its role without a dashboard login.\n"
                 + "Model and MCP access belong to the user, so every API key they hold shares it. Leave every\n"
                 + "model unchecked to grant no model access. Leave every MCP module unchecked to allow all of them.",
         };
@@ -706,16 +715,18 @@ internal sealed class UserEditorDialog : Form
                     MessageBox.Show(this, "That dashboard username is already in use.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                if (SelectedRoles().Count == 0)
-                {
-                    MessageBox.Show(this, "Pick at least one dashboard role.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
                 if (_loginPassword.Text.Length == 0 && _original.DashboardPasswordHash.Length == 0)
                 {
                     MessageBox.Show(this, "A password is required to enable dashboard login.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
+            }
+            // A login with no role could reach nothing, so one is required there. An API-only user may
+            // hold roles (a registration service account) or none at all (plain proxy use).
+            if (_loginEnabled.Checked && SelectedRoles().Count == 0)
+            {
+                MessageBox.Show(this, "Pick at least one role.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
             if (_loginPassword.Text.Length > 0 && _loginPassword.Text.Length is < 12 or > 1024)
             {
@@ -741,9 +752,11 @@ internal sealed class UserEditorDialog : Form
 
     private void UpdateLoginFieldState()
     {
+        // Only the credentials belong to the login. The role list stays editable either way: a user
+        // with no dashboard login can still hold roles, which is how a registration service account
+        // gets its grant.
         _loginUsername.Enabled = _loginEnabled.Checked;
         _loginPassword.Enabled = _loginEnabled.Checked;
-        _roles.Enabled = _loginEnabled.Checked;
     }
 
     private sealed record RoleChoice(string Label, string Description, string Value)
