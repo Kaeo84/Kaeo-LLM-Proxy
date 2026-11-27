@@ -88,6 +88,7 @@ html, body {
     color: var(--fg-muted);
     text-decoration: none;
     font-weight: 600;
+    white-space: nowrap;
 }
 #tabs a:hover { background: var(--row-hover); color: var(--fg); }
 #tabs a.active { background: var(--accent); color: var(--accent-fg); }
@@ -193,9 +194,15 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
     padding: 14px 16px;
 }
 .card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
-.card .kv { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; font-size: 13px; }
-.card .kv .k { color: var(--fg-muted); }
-.card .kv .v { font-weight: 600; text-align: right; word-break: break-all; }
+.card .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 2px 0; font-size: 13px; }
+/* The label never wraps; the value wraps only between words, so "Test Console" is never split
+   mid-word into "Test Co / nsole" the way break-all did. */
+.card .kv .k { color: var(--fg-muted); flex: none; white-space: nowrap; }
+.card .kv .v { font-weight: 600; text-align: right; min-width: 0; overflow-wrap: anywhere; }
+/* Role lists are pills rather than one long comma string: they wrap at pill boundaries and stay
+   legible however many roles a user holds. */
+.card .kv .v.role-list { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.role-pill { padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); color: var(--fg); font-size: 12px; font-weight: 600; white-space: nowrap; }
 /* Wraps instead of overflowing the card: the user-level button row is wider than a 280px card. */
 .card .actions { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 /* Inline failure text under a card's action row (proxy start errors, degraded database). */
@@ -268,7 +275,10 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .kebab-sep { height: 1px; margin: 4px 2px; background: var(--border); }
 
 /* ---- test console tab ---- */
-.tc-pane { display: flex; flex-direction: column; gap: 10px; }
+/* The pane fills the tab and scrolls with it; its children keep their natural height so a textarea
+   or output block is never squeezed into a few pixels on a short window. */
+.tc-pane { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 0; }
+.tc-pane > * { flex: none; }
 .tc-pane textarea {
     font-family: Consolas, "SF Mono", monospace;
     font-size: 13px;
@@ -290,6 +300,20 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 }
 .tc-response { min-height: 8em; }
 #tc-status.err { color: var(--err); }
+
+/* ---- help tab ---- */
+.help-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.help-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.help-card h3 { margin: 0 0 8px; font-size: 14px; }
+.help-card p { margin: 0 0 8px; font-size: 13px; }
+.help-card ul { margin: 0 0 8px; padding-left: 1.15rem; font-size: 13px; }
+.help-card li { margin: 2px 0; overflow-wrap: anywhere; }
+.help-card li > strong { font-weight: 600; }
+.help-card code { font-family: Consolas, "SF Mono", monospace; font-size: 12px; background: var(--bg-inset); padding: 1px 5px; border-radius: 4px; }
+.help-note { margin: 0; font-size: 12px; color: var(--fg-muted); border-top: 1px solid var(--border); padding-top: 8px; }
+.help-table { margin: 0 0 8px; }
+.help-table td, .help-table th { white-space: normal; }
+.help-roles { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }

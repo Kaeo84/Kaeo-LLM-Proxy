@@ -10,7 +10,7 @@ internal enum DashboardCapability
 {
     None = 0,
 
-    /// <summary>Requests, Sys Log, and the live stream panes.</summary>
+    /// <summary>The Requests log — every user's rows for an Admin, only their own otherwise.</summary>
     ViewLogs = 1 << 0,
 
     /// <summary>The Usage tab (charts, per-day breakdown, usage by user).</summary>
@@ -83,7 +83,7 @@ internal static class DashboardRoles
             AllCapabilities),
 
         new(ReadOnly, "Read Only",
-            "Requests, Sys Log, and Usage — limited to this user's own traffic.",
+            "The Requests log and Usage, limited to this user's own traffic.",
             DashboardCapability.ViewLogs | DashboardCapability.ViewUsage),
 
         new(DashboardReadOnly, "Dashboard Read Only",

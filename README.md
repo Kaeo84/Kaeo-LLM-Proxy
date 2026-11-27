@@ -19,7 +19,8 @@ request to the right llama.cpp instance, doing all format translation transparen
   errors) so `Microsoft.Extensions.AI` clients never hang awaiting a stream end
 - Model name mapping — map any Ollama model name to the actual model loaded in llama.cpp
 - Per-mapping upstream URL and timeout — route different models to different servers
-- Request logging with [LiteDB](https://www.litedb.org/) (auto-archived by size, auto-expired by age)
+- Request logging to SQLite via [Microsoft.Data.Sqlite](https://learn.microsoft.com/dotnet/standard/data/sqlite/)
+  (auto-archived by size, auto-expired by age)
 - Application logging via [Serilog](https://serilog.net/) with rolling files
 - System tray application — no console window, always available in the background
 - Portable deployment — all data stored alongside the executable, easy to move or back up
@@ -79,10 +80,12 @@ backup and portability:
 ```
 Kaeo LLM Proxy.exe
 Data/
-  settings.jsonc          # Configuration file
+  settings.jsonc          # Configuration file (settings.jsonc.bak is the previous version)
+  Database/
+	kaeo_llm_proxy.db     # Request log, users, API keys, mappings (SQLite)
   logs/
 	app/                  # Application logs (Serilog, rolling)
-	requests/             # Request logs (LiteDB database files)
+	startup-*.log         # Startup trace written before Serilog is configured
 ```
 
 ## Configuration
@@ -488,8 +491,12 @@ served by the engine itself — no separate process, no IIS, no Node.
   the MCP endpoint then all serve that certificate.
 - **Tabs:** Dashboard (health, CPU/RAM, traffic, and start/stop/restart for the proxy, MCP server,
   and web server), Requests (per-request rows plus live SSE streams), Sys Log, Usage, Models
-  (mappings, thinking mode, per-model grants), Credentials, Users (accounts, roles, API keys,
-  per-key model and MCP grants, reveal/regenerate), Settings, and MCP (tools, modules).
+  (mappings, thinking mode), Credentials, Users (accounts, combinable roles, API keys,
+  reveal/regenerate, and per-user model and MCP grants), Test Console, Settings, MCP (tools,
+  modules), and Help. Only the tabs your roles unlock are listed.
+- **Help:** the Help tab is always present and is filtered by your roles, so it documents only the
+  surfaces you can actually reach — a topic appears when you hold the role that unlocks it. It
+  opens with a "Your access" card listing your roles and the capabilities they grant.
 
 ### Hosting behind IIS on Windows
 

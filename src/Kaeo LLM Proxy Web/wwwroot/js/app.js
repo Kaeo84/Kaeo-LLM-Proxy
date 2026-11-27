@@ -181,7 +181,9 @@
         users: 'ManageUsers',
         settings: 'ManageSettings',
         mcp: 'ViewDashboard',
-        testconsole: 'TestConsole'
+        testconsole: 'TestConsole',
+        // Help is always reachable; its own topics are filtered by capability instead.
+        help: null
     };
 
     function can(capability) { return !!capabilities[capability]; }
@@ -1097,9 +1099,25 @@
         $(document).on('keydown', function (e) { if (e.key === 'Escape') closeKebabMenu(); });
         $(window).on('resize scroll', function () { closeKebabMenu(); });
 
-        function roleListLabel(user) {
-            if (user.roleLabel) return user.roleLabel;
-            return (user.dashboardRoles && user.dashboardRoles.length) ? user.dashboardRoles.join(', ') : 'No dashboard access';
+        function roleLabel(key) {
+            var definition = DASHBOARD_ROLES.filter(function (r) { return r.key === key; })[0];
+            return definition ? definition.label : key;
+        }
+
+        // Roles are pills rather than one comma-joined string: a card is only 280px wide, and a
+        // multi-role value used to break mid-word ("Test Co / nsole").
+        function rolesRow(user) {
+            var $value = $('<span class="v role-list">');
+            var roles = (user.dashboardRoles || []).slice();
+            if (!roles.length && user.dashboardRole) roles = [user.dashboardRole];
+            if (!user.dashboardLoginEnabled) {
+                $value.text('—');
+            } else if (!roles.length) {
+                $value.text('No dashboard access');
+            } else {
+                roles.forEach(function (key) { $value.append($('<span class="role-pill">').text(roleLabel(key))); });
+            }
+            return $('<div class="kv">').append($('<span class="k">').text('Roles')).append($value);
         }
 
         function grantSummary(user) {
@@ -1136,7 +1154,7 @@
                     $card.append($title);
                     $card.append(kv('Email', u.email || '—'))
                         .append(kv('Dashboard login', u.dashboardLoginEnabled ? (u.dashboardUsername || '—') : 'disabled'))
-                        .append(kv('Roles', u.dashboardLoginEnabled ? roleListLabel(u) : '—'))
+                        .append(rolesRow(u))
                         .append(kv('Model access', grantSummary(u)))
                         .append(kv('Created', u.createdUtc ? new Date(u.createdUtc).toLocaleString() : '—'));
 
@@ -1980,7 +1998,99 @@
 
         loaders.testconsole = loadTestConsole;
 
-    // ------------------------------------------------------------------ polling
+        // ------------------------------------------------------------------ help tab
+        // Content lives in js/help.js. Each section names the capability that unlocks it, using the
+        // same wire names the server puts in /api/auth/me, so this page can only ever describe the
+        // surfaces the signed-in user can actually reach.
+        var HELP_CAPABILITY_LABELS = {
+            ViewLogs: 'Requests log',
+            ViewUsage: 'Usage',
+            ViewDashboard: 'Dashboard',
+            DashboardControl: 'Proxy controls',
+            ManageUsers: 'Users and keys',
+            ManageModels: 'Models',
+            TestConsole: 'Test Console',
+            ManageSettings: 'Settings, credentials, and modules',
+            Admin: 'Everything (Admin)'
+        };
+
+        function renderHelpAccess() {
+            var $wrap = $('#help-access').empty();
+            var identity = currentIdentity || {};
+            var roles = identity.roles || [];
+            var $card = $('<div class="card">').append($('<h3>').text('Your access'));
+
+            var $roleList = $('<div class="help-roles">');
+            if (roles.length) {
+                roles.forEach(function (role) { $roleList.append($('<span class="role-pill">').text(role.label || role.key)); });
+            } else {
+                $roleList.append($('<span class="muted">').text('No dashboard roles'));
+            }
+            $card.append($roleList);
+
+            var granted = Object.keys(capabilities).filter(function (name) { return !!capabilities[name]; })
+                .map(function (name) { return HELP_CAPABILITY_LABELS[name] || name; });
+            $card.append($('<p>').text(granted.length
+                ? 'You can use: ' + granted.join(' \u00b7 ')
+                : 'Your account holds no dashboard permissions.'));
+            if (identity.username) $card.append($('<p class="muted">').text('Signed in as ' + identity.username + '.'));
+
+            $wrap.append($card);
+        }
+
+        function loadHelp() {
+            var sections = (window.KaeoHelp && window.KaeoHelp.sections) || [];
+            var $sections = $('#help-sections').empty();
+            var shown = 0;
+
+            sections.forEach(function (section) {
+                if (section.capability && !can(section.capability)) return;
+                shown++;
+
+                var $card = $('<div class="help-card">').append($('<h3>').text(section.title));
+                if (section.summary) $card.append($('<p>').text(section.summary));
+
+                if (section.table) {
+                    var $head = $('<tr>');
+                    (section.table.head || []).forEach(function (cell) { $head.append($('<th>').text(cell)); });
+                    var $body = $('<tbody>');
+                    (section.table.rows || []).forEach(function (row) {
+                        var $row = $('<tr>');
+                        row.forEach(function (cell) { $row.append($('<td>').text(cell)); });
+                        $body.append($row);
+                    });
+                    $card.append($('<table class="help-table">')
+                        .append($('<thead>').append($head))
+                        .append($body));
+                }
+
+                if (section.items && section.items.length) {
+                    var $list = $('<ul>');
+                    section.items.forEach(function (item) {
+                        if (typeof item === 'string') {
+                            $list.append($('<li>').text(item));
+                            return;
+                        }
+                        $list.append($('<li>')
+                            .append($('<strong>').text(item.label))
+                            .append(document.createTextNode(' \u2014 ' + item.text)));
+                    });
+                    $card.append($list);
+                }
+
+                if (section.note) $card.append($('<p class="help-note">').text(section.note));
+                $sections.append($card);
+            });
+
+            if (!shown) {
+                $sections.append($('<p class="muted">').text('No help topics apply to your account yet.'));
+            }
+            renderHelpAccess();
+        }
+
+        loaders.help = loadHelp;
+
+            // ------------------------------------------------------------------ polling
     var lastStatusPoll = 0;
     var lastLogPoll = 0;
     var lastStreamPoll = 0;
@@ -2124,11 +2234,19 @@
                     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); tcSend(); }
                 });
 
-        api('GET', '/api/auth/me', undefined, { silent: true })
-            .then(function (identity) {
-                setIdentity(identity);
-                activateTab(location.hash.replace('#', '') || 'dashboard');
-            })
-            .catch(function (err) { if (err.status !== 401) setConn('err'); });
+        // Role labels drive the user cards and the role reference in Help, so refresh the fallback
+                // list once at boot. A failure just leaves the built-in copy in place.
+                api('GET', '/api/auth/roles', undefined, { silent: true })
+                    .then(function (result) {
+                        if (result && result.roles && result.roles.length) DASHBOARD_ROLES = result.roles;
+                    })
+                    .catch(function () { /* keep the built-in list */ });
+
+                api('GET', '/api/auth/me', undefined, { silent: true })
+                    .then(function (identity) {
+                        setIdentity(identity);
+                        activateTab(location.hash.replace('#', '') || 'dashboard');
+                    })
+                    .catch(function (err) { if (err.status !== 401) setConn('err'); });
     });
 })(jQuery);
