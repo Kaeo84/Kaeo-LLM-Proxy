@@ -569,6 +569,11 @@ internal sealed class ModelMapping
     [JsonPropertyName("LlamaCppName")]
     public string ModelName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// When true, assistant turns that carry no content (Qwen's response-prefill shape) are dropped
+    /// from the request body before it is forwarded. This is a request-side workaround only: it has
+    /// no effect on how reasoning is returned, which <see cref="ThinkingMode"/> controls. Default: true.
+    /// </summary>
     public bool EnableThinkingCompatibility { get; set; } = true;
 
     /// <summary>

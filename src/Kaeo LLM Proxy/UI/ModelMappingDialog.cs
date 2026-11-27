@@ -740,15 +740,6 @@ internal sealed class ModelMappingDialog : Form
         _nudRepeatPenalty.Enabled = RepeatPenaltyPriority == SamplingPriority.Proxy;
     }
 
-    /// <summary>
-    /// Enables or disables the entire thinking/reasoning options group based on the
-    /// Enable thinking compatibility checkbox.
-    /// </summary>
-    private void UpdateThinkingReasoningGroupState() =>
-        _grpThinkingReasoning.Enabled = EnableThinkingCompatibility;
-
-
-
     private void PopulateInstructionSets(IEnumerable<InstructionSet> instructionSets)
     {
         _cmbInstructionSet.Items.Clear();
@@ -1494,11 +1485,10 @@ internal sealed class ModelMappingDialog : Form
         _chkEnableThinkingCompatibility.AutoSize = true;
         _chkEnableThinkingCompatibility.Margin = new Padding(0, 2, 0, 2);
         _chkEnableThinkingCompatibility.Text = "Enable thinking compatibility (strip assistant response-prefill turns)";
-        _chkEnableThinkingCompatibility.CheckedChanged += (_, _) => UpdateThinkingReasoningGroupState();
         _toolTip.SetToolTip(
             _chkEnableThinkingCompatibility,
             "Removes a trailing assistant turn that the client sent only to prefill the model's\n"
-            + "reply, which some models mishandle. Also gates the Thinking && Reasoning options below.\n\n"
+            + "reply, which some models mishandle.\n\n"
             + "This affects only the request body sent upstream. It has nothing to do with the SSE\n"
             + "keep-alive that prevents client timeouts — see 'Enable SSE keep-alive for this model'.");
 
@@ -2214,7 +2204,6 @@ internal sealed class ModelMappingDialog : Form
             dlg.ReasoningEffort = mapping.ReasoningEffort;
         dlg.UpdateSamplingControlStates();
         dlg.UpdateReasoningEffortControlStates();
-        dlg.UpdateThinkingReasoningGroupState();
         dlg._suppressReasoningPrefill = false;
         dlg.TryPrefillReasoningEffortProfile(mapping.ModelName);
         dlg.RedactRequestBodies = mapping.RedactRequestBodies;
