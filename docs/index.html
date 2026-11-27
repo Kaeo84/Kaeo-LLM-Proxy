@@ -422,6 +422,44 @@
       switch are re-read on every tick, so changing them needs no restart.
     </p>
 
+    <h3>Bootstrapping a new machine</h3>
+    <p>
+      A model cannot register itself from nothing: discovery polls the upstreams that <em>auto-managed
+      mappings</em> already point at, so the first mapping on a new server has to be created once. After that every
+      other model on that server registers, retires, and comes back on its own &mdash; the seed only has to name one
+      model the server really serves. Tick <strong>Auto-managed by upstream</strong> on any mapping, or run the
+      helper script from a shell:
+    </p>
+    <pre><code>KAEO_PASSWORD='your-dashboard-password' \
+KAEO_UPSTREAM='http://127.0.0.1:11434' \
+./scripts/register-auto-managed-models.sh</code></pre>
+    <p>
+      The script reads the first model id from the upstream's <code>/v1/models</code>, signs in to the dashboard,
+      creates one mapping named <code>kaeo-auto</code> with <code>autoManaged: true</code>, and scans immediately.
+      Re-running it is safe. Overrides: <code>KAEO_DASHBOARD</code>, <code>KAEO_USER</code>,
+      <code>KAEO_UPSTREAM_TYPE</code> (<code>1</code> OpenAI-compatible, <code>2</code> Ollama, <code>3</code>
+      Anthropic), <code>KAEO_CREDENTIAL</code>, <code>KAEO_SEED_NAME</code>, <code>KAEO_SEED_MODEL</code>,
+      <code>KAEO_SEED_HIDDEN</code>. The same three calls with plain <code>curl</code>:
+    </p>
+    <pre><code># Sign in; the session cookie authorises every later call.
+curl -sS -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"your-dashboard-password"}' \
+  http://localhost:11435/api/auth/login
+
+# One auto-managed seed mapping (OllamaName = proxy name, LlamaCppName = upstream model).
+curl -sS -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"OllamaName":"kaeo-auto","LlamaCppName":"llama3.2","upstreamUrl":"http://127.0.0.1:11434","upstreamType":2,"autoManaged":true,"isEnabled":true}' \
+  http://localhost:11435/api/mappings
+
+# Scan now, then read the outcome.
+curl -sS -b cookies.txt -X POST http://localhost:11435/api/mappings/discover
+curl -sS -b cookies.txt http://localhost:11435/api/mappings/discovery</code></pre>
+    <p class="muted">
+      Creating or changing mappings needs the <strong>Admin</strong> or <strong>Model Admin</strong> role. The
+      dashboard listens on the proxy port + 1 (11435 by default). On a machine that also runs the proxy, move the
+      proxy's <code>ListenPort</code> off 11434 so it does not collide with Ollama.
+    </p>
+
     <h2>Custom prompt injection</h2>
     <p>
       Named <strong>instruction sets</strong> inject your own system prompt into every request that a mapping

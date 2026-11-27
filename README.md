@@ -305,6 +305,52 @@ Both GUIs show the last scan and its outcome, and both offer **Discover now** (w
 Windows: *Discover models now*) to run one scan immediately instead of waiting for the next tick.
 The scan interval and master switch are re-read every tick, so changing them needs no restart.
 
+### Bootstrapping a new machine
+
+A model cannot register itself from nothing: discovery polls the upstreams that *auto-managed
+mappings* already point at, so the first mapping on a new server has to be created once. After that,
+every other model on that server registers, retires, and comes back on its own — the seed only has
+to name one model the server really serves.
+
+Tick **Auto-managed by upstream** on any mapping in the Models tab, or create the seed over the
+dashboard API. `scripts/register-auto-managed-models.sh` does it from a shell (macOS, Linux, WSL):
+
+```sh
+KAEO_PASSWORD='your-dashboard-password' \
+KAEO_UPSTREAM='http://127.0.0.1:11434' \
+./scripts/register-auto-managed-models.sh
+```
+
+It reads the first model id from the upstream's `/v1/models` (or takes `KAEO_SEED_MODEL`), signs in
+to the dashboard, creates one mapping named `kaeo-auto` with `autoManaged: true`, and runs a scan
+immediately. Re-running it is safe — the seed is skipped when it already exists. Other overrides:
+`KAEO_DASHBOARD` (default `http://127.0.0.1:11435`), `KAEO_USER`, `KAEO_UPSTREAM_TYPE` (`1`
+OpenAI-compatible, `2` Ollama, `3` Anthropic), `KAEO_CREDENTIAL` (a stored credential for the
+upstream), `KAEO_SEED_NAME`, and `KAEO_SEED_HIDDEN`.
+
+The same thing with plain `curl`:
+
+```sh
+# 1. Sign in. The session cookie authorises every later call.
+curl -sS -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"your-dashboard-password"}' \
+  http://localhost:11435/api/auth/login
+
+# 2. One auto-managed seed mapping. OllamaName is the proxy name and LlamaCppName is
+#    the upstream model name — historical wire names that predate the JSON contract.
+curl -sS -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"OllamaName":"kaeo-auto","LlamaCppName":"llama3.2","upstreamUrl":"http://127.0.0.1:11434","upstreamType":2,"autoManaged":true,"isEnabled":true}' \
+  http://localhost:11435/api/mappings
+
+# 3. Scan now instead of waiting for the next tick, then read the outcome.
+curl -sS -b cookies.txt -X POST http://localhost:11435/api/mappings/discover
+curl -sS -b cookies.txt http://localhost:11435/api/mappings/discovery
+```
+
+Creating or changing mappings needs the **Admin** or **Model Admin** role. The dashboard listens on
+the proxy port + 1 (11435 by default) and requires sign-in unless that is switched off. On a machine
+that also runs the proxy, move the proxy's `ListenPort` off 11434 so it does not collide with Ollama.
+
 ## Custom Prompt Injection (Instruction Sets)
 
 Named **instruction sets** inject your own system prompt into every request that a mapping serves,
