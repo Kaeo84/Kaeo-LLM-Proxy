@@ -37,6 +37,9 @@ internal sealed class SettingsUpdate
     public bool? EnableSseKeepAlive { get; set; }
     public int? SseKeepAliveIntervalSeconds { get; set; }
     public int? HeartbeatIntervalSeconds { get; set; }
+    public bool? EnableModelAutoDiscovery { get; set; }
+    public int? ModelAutoDiscoveryIntervalSeconds { get; set; }
+    public int? ModelAutoDiscoveryOfflineMinutes { get; set; }
     public bool? EnablePerformanceSampling { get; set; }
     public bool? EnableApiExplorer { get; set; }
     public bool? AllowMultipleInstances { get; set; }

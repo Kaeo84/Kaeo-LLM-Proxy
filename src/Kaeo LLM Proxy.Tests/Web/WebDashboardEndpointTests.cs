@@ -719,6 +719,43 @@ public sealed class WebDashboardEndpointTests
     }
 
     [Fact]
+    public async Task Settings_Put_RoundTripsTheModelAutoDiscoveryKnobs()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.PutAsJsonAsync("/api/settings", new
+        {
+            enableModelAutoDiscovery = false,
+            modelAutoDiscoveryIntervalSeconds = 900,
+            modelAutoDiscoveryOfflineMinutes = 45,
+        });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.False(doc.RootElement.GetProperty("enableModelAutoDiscovery").GetBoolean());
+        Assert.Equal(900, doc.RootElement.GetProperty("modelAutoDiscoveryIntervalSeconds").GetInt32());
+        Assert.Equal(45, doc.RootElement.GetProperty("modelAutoDiscoveryOfflineMinutes").GetInt32());
+
+        RuntimeSettings persisted = b.Database.LoadRuntimeSettings();
+        Assert.False(persisted.EnableModelAutoDiscovery);
+        Assert.Equal(900, persisted.ModelAutoDiscoveryIntervalSeconds);
+        Assert.Equal(45, persisted.ModelAutoDiscoveryOfflineMinutes);
+        Assert.Equal(900, b.Controller.Settings.ModelAutoDiscoveryIntervalSeconds);
+    }
+
+    [Fact]
+    public async Task Settings_Put_RejectsAnOutOfRangeDiscoveryInterval()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.PutAsJsonAsync("/api/settings",
+            new { modelAutoDiscoveryIntervalSeconds = 1 });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(60, b.Controller.Settings.ModelAutoDiscoveryIntervalSeconds);
+    }
+
+    [Fact]
     public async Task Credentials_PostThenGet_NeverLeaksSecretMaterial()
     {
         await using Bundle b = await CreateBundleAsync();
@@ -927,6 +964,135 @@ public sealed class WebDashboardEndpointTests
         Assert.Equal(1, Volatile.Read(ref raised));
         Assert.Contains(b.Controller.Settings.ModelMappings, m => m.ProxyName == "web-added");
         Assert.Contains(b.Database.LoadModelMappings(), m => m.ProxyName == "web-added");
+    }
+
+    [Fact]
+    public async Task MappingsDiscovery_ReportsTheSettingsAndTheLastScan()
+    {
+        await using Bundle b = await CreateBundleAsync(configureSettings: s =>
+        {
+            s.EnableModelAutoDiscovery = false;
+            s.ModelAutoDiscoveryIntervalSeconds = 300;
+            s.ModelAutoDiscoveryOfflineMinutes = 30;
+        });
+
+        using JsonDocument doc = JsonDocument.Parse(await b.Client.GetStringAsync("/api/mappings/discovery"));
+        JsonElement root = doc.RootElement;
+
+        Assert.False(root.GetProperty("enabled").GetBoolean());
+        Assert.Equal(300, root.GetProperty("intervalSeconds").GetInt32());
+        Assert.Equal(30, root.GetProperty("offlineMinutes").GetInt32());
+        Assert.False(root.GetProperty("isRunning").GetBoolean());
+        // ASP.NET Core omits nulls from JSON, so "never scanned" shows up as an absent property.
+        Assert.False(root.TryGetProperty("lastScanUtc", out JsonElement lastScan));
+        Assert.Equal(JsonValueKind.Undefined, lastScan.ValueKind);
+        Assert.False(root.TryGetProperty("lastResult", out _));
+    }
+
+    [Fact]
+    public async Task MappingsDiscover_WithNoAutoManagedMappings_ReturnsAnEmptyResultAndRecordsTheScan()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        HttpResponseMessage response = await b.Client.PostAsync("/api/mappings/discover", content: null);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(0, doc.RootElement.GetProperty("sources").GetInt32());
+        Assert.False(doc.RootElement.GetProperty("changed").GetBoolean());
+        Assert.NotNull(b.Controller.ModelDiscovery.LastScanUtc);
+
+        using JsonDocument status = JsonDocument.Parse(await b.Client.GetStringAsync("/api/mappings/discovery"));
+        Assert.True(status.RootElement.TryGetProperty("lastResult", out JsonElement lastResult));
+        Assert.Equal(0, lastResult.GetProperty("sources").GetInt32());
+    }
+
+    [Fact]
+    public async Task Mappings_WebSave_ClearsDiscoveryBookkeeping_SoAManualEditWins()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        DateTime now = DateTime.UtcNow;
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/mappings", new ModelMapping
+        {
+            ProxyName = "auto-model",
+            ModelName = "auto-model",
+            UpstreamUrl = "http://localhost:1",
+            AutoManaged = true,
+            AutoMissingSinceUtc = now.AddHours(-2),
+            AutoDisabledUtc = now.AddHours(-1),
+            AutoDisabledReason = "gone upstream",
+            IsEnabled = false,
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        ModelMapping stored = b.Controller.Settings.ModelMappings.Single(m => m.ProxyName == "auto-model");
+        Assert.True(stored.AutoManaged);
+        Assert.Null(stored.AutoMissingSinceUtc);
+        Assert.Null(stored.AutoDisabledUtc);
+        Assert.Null(stored.AutoDisabledReason);
+
+        // Turning auto-managed off must drop the markers too, or the service would keep claiming it
+        // disabled a model the operator has since taken over.
+        HttpResponseMessage updated = await b.Client.PutAsJsonAsync($"/api/mappings/{stored.Id}", new ModelMapping
+        {
+            ProxyName = "auto-model",
+            ModelName = "auto-model",
+            UpstreamUrl = "http://localhost:1",
+            AutoManaged = false,
+            AutoMissingSinceUtc = now.AddHours(-2),
+            AutoDisabledUtc = now.AddHours(-1),
+            AutoDisabledReason = "gone upstream",
+            IsEnabled = true,
+        });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+
+        ModelMapping after = b.Controller.Settings.ModelMappings.Single(m => m.ProxyName == "auto-model");
+        Assert.False(after.AutoManaged);
+        Assert.Null(after.AutoMissingSinceUtc);
+        Assert.Null(after.AutoDisabledUtc);
+        Assert.Null(after.AutoDisabledReason);
+    }
+
+    [Fact]
+    public async Task Mappings_WebSave_KeepsDiscoveryBookkeeping_WhenNothingAboutItChanged()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        DateTime disabledAt = new(2026, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+
+        HttpResponseMessage created = await b.Client.PostAsJsonAsync("/api/mappings", new ModelMapping
+        {
+            ProxyName = "auto-model",
+            ModelName = "auto-model",
+            UpstreamUrl = "http://localhost:1",
+            AutoManaged = true,
+            IsEnabled = false,
+        });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        ModelMapping stored = b.Controller.Settings.ModelMappings.Single(m => m.ProxyName == "auto-model");
+
+        // Simulate what discovery had written before the tab was opened and saved again.
+        stored.IsEnabled = false;
+        stored.AutoMissingSinceUtc = disabledAt;
+        stored.AutoDisabledUtc = disabledAt;
+        stored.AutoDisabledReason = "gone upstream";
+
+        HttpResponseMessage updated = await b.Client.PutAsJsonAsync($"/api/mappings/{stored.Id}", new ModelMapping
+        {
+            ProxyName = "auto-model",
+            ModelName = "auto-model",
+            UpstreamUrl = "http://localhost:1",
+            AutoManaged = true,
+            AutoMissingSinceUtc = disabledAt,
+            AutoDisabledUtc = disabledAt,
+            AutoDisabledReason = "gone upstream",
+            IsEnabled = false,
+        });
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+
+        ModelMapping after = b.Controller.Settings.ModelMappings.Single(m => m.ProxyName == "auto-model");
+        Assert.Equal(disabledAt, after.AutoDisabledUtc);
+        Assert.Equal("gone upstream", after.AutoDisabledReason);
     }
 
     [Fact]

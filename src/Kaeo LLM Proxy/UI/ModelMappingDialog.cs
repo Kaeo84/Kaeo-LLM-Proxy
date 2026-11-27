@@ -75,6 +75,7 @@ internal sealed class ModelMappingDialog : Form
     private readonly CheckedListBox _lstReasoningEffortFormats = new();
     private readonly CheckBox _chkIsEnabled = new();
     private readonly CheckBox _chkHidden = new();
+    private readonly CheckBox _chkAutoManaged = new();
     private readonly Label _lblTempPriority = new();
     private readonly ComboBox _cmbTempPriority = new();
     private readonly Label _lblRepeatPenaltyPriority = new();
@@ -831,7 +832,7 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // Every row sizes to its content. The table lives inside a scrollable panel so all
         // settings stay reachable when the content is taller than the dialog.
-        _tlpMain.RowCount = 25;
+        _tlpMain.RowCount = 26;
         for (int i = 0; i < _tlpMain.RowCount; i++)
             _tlpMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpMain.AutoSize = true;
@@ -906,40 +907,46 @@ internal sealed class ModelMappingDialog : Form
         _tlpMain.SetColumnSpan(_chkHidden, 3);
         _tlpMain.Controls.Add(_chkHidden, 0, 15);
 
+        // Auto-managed sits with Enabled and Hidden: together they decide whether the model is
+        // offered, and who gets to change that. Auto-managed also makes this mapping the discovery
+        // source for its upstream.
+        _tlpMain.SetColumnSpan(_chkAutoManaged, 3);
+        _tlpMain.Controls.Add(_chkAutoManaged, 0, 16);
+
         // Move the per-model SSE keep-alive option up near the top (right after hidden)
         _tlpMain.SetColumnSpan(_chkEnableSseKeepAlive, 3);
-        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 16);
+        _tlpMain.Controls.Add(_chkEnableSseKeepAlive, 0, 17);
 
         // Copilot Compatibility sits directly under the SSE keep-alive option: both govern how the
         // proxy behaves toward a streaming client. The group box holds the toggle plus a wrapping
         // status label, mirroring the Compaction group's layout.
         _tlpMain.SetColumnSpan(_grpCopilotCompat, 3);
-        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 17);
+        _tlpMain.Controls.Add(_grpCopilotCompat, 0, 18);
 
         _tlpMain.SetColumnSpan(_chkEnableHeartbeats, 3);
-        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 18);
+        _tlpMain.Controls.Add(_chkEnableHeartbeats, 0, 19);
 
         _tlpMain.SetColumnSpan(_chkEnableThinkingCompatibility, 3);
-        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 19);
+        _tlpMain.Controls.Add(_chkEnableThinkingCompatibility, 0, 20);
 
         _tlpMain.SetColumnSpan(_grpThinkingReasoning, 3);
-        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 20);
+        _tlpMain.Controls.Add(_grpThinkingReasoning, 0, 21);
 
         _tlpMain.SetColumnSpan(_grpClientCapabilities, 3);
-        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 21);
+        _tlpMain.Controls.Add(_grpClientCapabilities, 0, 22);
 
         // Group redaction-related checkboxes together
         _tlpMain.SetColumnSpan(_grpRedaction, 3);
-        _tlpMain.Controls.Add(_grpRedaction, 0, 22);
+        _tlpMain.Controls.Add(_grpRedaction, 0, 23);
 
         // Forwarding the client's own bearer token is a security decision rather than a
         // compatibility one, so it sits below the redaction group with the other
         // "what leaves this process" options.
         _tlpMain.SetColumnSpan(_chkForwardClientAuthorization, 3);
-        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 23);
+        _tlpMain.Controls.Add(_chkForwardClientAuthorization, 0, 24);
 
         _tlpMain.SetColumnSpan(_grpApiTranslation, 3);
-        _tlpMain.Controls.Add(_grpApiTranslation, 0, 24);
+        _tlpMain.Controls.Add(_grpApiTranslation, 0, 25);
 
         _lblProxyName.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblProxyName.AutoSize = true;
@@ -1472,6 +1479,14 @@ internal sealed class ModelMappingDialog : Form
         _chkHidden.Margin = new Padding(0, 2, 0, 2);
         _chkHidden.Text = "Hide from model discovery (/v1/models, /api/tags)";
         _chkHidden.Checked = false;
+
+        _chkAutoManaged.AutoSize = true;
+        _chkAutoManaged.Margin = new Padding(0, 2, 0, 2);
+        _chkAutoManaged.Text = "Auto-managed: register this upstream's models automatically";
+        _chkAutoManaged.Checked = false;
+        _chkAutoManaged.AccessibleDescription =
+            "Registers every model the upstream lists, and disables a model after it has been "
+            + "missing for the configured grace period. A model you disabled yourself stays disabled.";
         _toolTip.SetToolTip(
             _chkHidden,
             "When checked, this mapping is omitted from the discovery list endpoints so clients\n"
@@ -2180,6 +2195,7 @@ internal sealed class ModelMappingDialog : Form
         dlg.ContextSummarizeModelName = settings.FindContextSummarizeTarget(mapping)?.ProxyName;
         dlg._chkIsEnabled.Checked = mapping.IsEnabled;
         dlg.Hidden = mapping.Hidden;
+        dlg._chkAutoManaged.Checked = mapping.AutoManaged;
         dlg.TemperaturePriority = mapping.TemperaturePriority;
         dlg.RepeatPenaltyPriority = mapping.RepeatPenaltyPriority;
         dlg.EnableThinkingCompatibility = mapping.EnableThinkingCompatibility;
@@ -2225,6 +2241,13 @@ internal sealed class ModelMappingDialog : Form
         mapping.ProxyName = dlg._txtProxyName.Text.Trim();
         mapping.IsEnabled = dlg._chkIsEnabled.Checked;
         mapping.Hidden = dlg.Hidden;
+        mapping.AutoManaged = dlg._chkAutoManaged.Checked;
+        // A dialog save is an operator decision, so it outranks discovery's bookkeeping: drop the
+        // "missing since" and "disabled by discovery" markers, otherwise the service would keep
+        // reporting a disable the operator has just overridden.
+        mapping.AutoMissingSinceUtc = null;
+        mapping.AutoDisabledUtc = null;
+        mapping.AutoDisabledReason = null;
         mapping.UpstreamUrl = dlg._cmbUpstreamUrl.Text.Trim();
         mapping.CredentialName = dlg.CredentialName;
         mapping.UpstreamType = UpstreamTypeExtensions.FromDisplayName(dlg._cmbUpstreamType.SelectedItem?.ToString());

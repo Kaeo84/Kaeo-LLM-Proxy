@@ -190,6 +190,17 @@
     </div>
 
     <div class="card">
+      <h3>Auto-managed models</h3>
+      <ul>
+        <li>One auto-managed mapping per upstream is enough &mdash; the models that server reports register themselves</li>
+        <li>Models the upstream stops listing disable themselves after a grace period, and re-enable when they return</li>
+        <li>A failed model-list read never disables anything, so an upstream outage cannot unregister a fleet</li>
+        <li>A model an operator switched off by hand is never overridden by discovery</li>
+        <li>Poll interval and grace period are settings; <strong>Discover now</strong> runs a scan on demand</li>
+      </ul>
+    </div>
+
+    <div class="card">
       <h3>Custom prompt injection</h3>
       <ul>
         <li>Named instruction sets injected into every request a mapping serves &mdash; no client edits</li>
@@ -261,7 +272,7 @@
     <tr><td>Requests</td><td>Newest-first request rows with date, time, requestor, method, path, model, status, duration, and token counts; details fetched on demand as the modal opens; live SSE streams in a collapsed panel capped to fifteen rows, with each stream's captured tails in their own dialog</td></tr>
     <tr><td>Sys Log</td><td>The application's own Serilog output with level filters, text search, and heartbeat hiding</td></tr>
     <tr><td>Usage</td><td>Token consumption by period (This week by default, then Last week, This month, Last month, Last 30 and Last 90 days), model, and user, with a stacked chart and per-day drill-down; the aggregate is served from a covering index so longer ranges stay quick as the log grows</td></tr>
-    <tr><td>Models</td><td>Model mappings and the full editor: sampling, thinking handling, reasoning effort, context window, instruction sets, heartbeats, redaction, Copilot compatibility, and compaction</td></tr>
+    <tr><td>Models</td><td>Model mappings and the full editor: sampling, thinking handling, reasoning effort, context window, instruction sets, heartbeats, redaction, Copilot compatibility, and compaction; the list carries an <strong>Auto</strong> column and a <strong>Discover now</strong> button for upstream-managed models</td></tr>
     <tr><td>Credentials</td><td>Named secrets and certificates, write-only after saving</td></tr>
     <tr><td>Users</td><td>Accounts, combinable roles, API keys, reveal/regenerate, and per-user model and MCP grants</td></tr>
     <tr><td>Test Console</td><td>Send a prompt through the proxy and watch the answer stream back, limited to the models that account can reach</td></tr>
@@ -376,6 +387,41 @@
         before doing it.</li>
     </ul>
 
+    <h2>Auto-managed models</h2>
+    <p>
+      A machine that can serve several models does not need several hand-written mappings. Tick
+      <strong>Auto-managed by upstream</strong> on one mapping per upstream server and the proxy keeps the rest of
+      that server's models in step with the <code>/v1/models</code> list it reports.
+    </p>
+    <ul>
+      <li><strong>Register.</strong> A model the upstream lists but the proxy does not know about is added as a
+        clone of the auto-managed mapping &mdash; same upstream URL, credential, instruction set, and sampling
+        defaults. Compaction targets are deliberately not inherited.</li>
+      <li><strong>Disable after a grace period.</strong> A model that disappears from the upstream list is marked
+        missing on the first scan that misses it, and only switched off once it has been missing for
+        <code>ModelAutoDiscoveryOfflineMinutes</code> (default 10). Disabling is the same switch as the manual one:
+        the model leaves <code>/v1/models</code> and <code>/api/tags</code> and stops routing.</li>
+      <li><strong>Re-activate.</strong> A model that comes back is switched on again automatically &mdash; but only
+        when discovery was the thing that switched it off. A model an operator disabled by hand is never
+        overridden.</li>
+      <li><strong>A failed read changes nothing.</strong> If the upstream is down, times out, or rejects the call,
+        every mapping is left exactly as it was, so an outage of a whole server never looks like "all the models
+        were deleted".</li>
+      <li><strong>Proxy names stay unique.</strong> A model id already used as a proxy name by any mapping is
+        skipped rather than overwritten.</li>
+    </ul>
+    <table>
+      <tr><th>Setting</th><th>Default</th><th>Range</th><th>Meaning</th></tr>
+      <tr><td><code>EnableModelAutoDiscovery</code></td><td><code>true</code></td><td>on/off</td><td>Master switch; off leaves every auto-managed mapping where it is</td></tr>
+      <tr><td><code>ModelAutoDiscoveryIntervalSeconds</code></td><td><code>60</code></td><td>15&ndash;3600</td><td>How often each upstream is polled</td></tr>
+      <tr><td><code>ModelAutoDiscoveryOfflineMinutes</code></td><td><code>10</code></td><td>1&ndash;1440</td><td>How long a model must stay missing before it is disabled</td></tr>
+    </table>
+    <p class="muted">
+      Both GUIs show the last scan and its outcome, and both can run a scan on demand (<strong>Discover now</strong>
+      in the web dashboard, <strong>Discover models now</strong> in the Windows app). The interval and the master
+      switch are re-read on every tick, so changing them needs no restart.
+    </p>
+
     <h2>Custom prompt injection</h2>
     <p>
       Named <strong>instruction sets</strong> inject your own system prompt into every request that a mapping
@@ -450,6 +496,8 @@
       timeout, credential, and feature toggles.</li>
     <li>Per-model settings cover thinking compatibility, streaming heartbeats, summarization, instruction sets,
       response redaction, context-window override, reasoning effort, and compaction.</li>
+    <li>Auto-managed mappings (<code>AutoManaged</code>) turn their upstream's <code>/v1/models</code> list into
+      mappings automatically; the scan cadence and offline grace period are settings, not code.</li>
     <li>Anthropic upstreams take <code>AnthropicMaxTokens</code> and <code>AnthropicApiVersion</code>, applied
       when the client omits them.</li>
     <li>Credentials store named secrets and certificates encrypted at rest, referenced by name from model

@@ -46,6 +46,12 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
     public ProxyAccessService Access { get; }
 
     /// <summary>
+    /// Keeps auto-managed model mappings in sync with their upstreams' model lists. Owned here so both
+    /// hosts get it and neither has to know how it works; the dashboard drives it for "Discover now".
+    /// </summary>
+    public ModelAutoDiscoveryService ModelDiscovery { get; }
+
+    /// <summary>
     /// Proxy status text (forwarded from <see cref="ProxyServer.StatusChanged"/>, plus "Listening …"
     /// on a successful start and "Error" on a failed one). May fire on a threadpool thread; UI hosts
     /// must marshal to their UI thread.
@@ -105,6 +111,10 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         Handler.StartHeartbeatMonitors();
         Server = new ProxyServer(Handler);
 
+        // Registered models need their heartbeat monitors (re)built, which is exactly what
+        // StartHeartbeatMonitors does after a mapping change.
+        ModelDiscovery = new ModelAutoDiscoveryService(Settings, Database, Handler.StartHeartbeatMonitors);
+
         Server.StatusChanged += (_, status) => StatusChanged?.Invoke(this, status);
     }
 
@@ -153,6 +163,24 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
 
         StartModules();
         await StartMcpServerAsync();
+        StartModelDiscovery();
+    }
+
+    /// <summary>
+    /// Starts the model auto-discovery loop. It gates itself on the persisted settings and on each
+    /// mapping's own auto-managed flag, so an installation that never opts in pays nothing but a
+    /// sleeping timer.
+    /// </summary>
+    public void StartModelDiscovery()
+    {
+        try
+        {
+            ModelDiscovery.Start();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Model auto-discovery failed to start");
+        }
     }
 
     /// <summary>
@@ -221,6 +249,14 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
         }
         try
         {
+            await ModelDiscovery.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error stopping model auto-discovery during shutdown");
+        }
+        try
+        {
             await McpServer.StopAsync();
         }
         catch (Exception ex)
@@ -260,6 +296,7 @@ internal sealed class ProxyHostController : IAsyncDisposable, IDisposable
 
         Server.Dispose();
         Handler.Dispose();
+        ModelDiscovery.Dispose();
         Stats.Dispose();
         McpStats.Dispose();
         NonProxiedStats.Dispose();

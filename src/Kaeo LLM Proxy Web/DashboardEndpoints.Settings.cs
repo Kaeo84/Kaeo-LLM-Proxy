@@ -59,6 +59,9 @@ internal static partial class DashboardEndpoints
             enableSseKeepAlive = s.EnableSseKeepAlive,
             sseKeepAliveIntervalSeconds = s.SseKeepAliveIntervalSeconds,
             heartbeatIntervalSeconds = s.HeartbeatIntervalSeconds,
+            enableModelAutoDiscovery = s.EnableModelAutoDiscovery,
+            modelAutoDiscoveryIntervalSeconds = s.ModelAutoDiscoveryIntervalSeconds,
+            modelAutoDiscoveryOfflineMinutes = s.ModelAutoDiscoveryOfflineMinutes,
             enablePerformanceSampling = s.EnablePerformanceSampling,
             enableApiExplorer = s.EnableApiExplorer,
             allowMultipleInstances = s.AllowMultipleInstances,
@@ -104,6 +107,12 @@ internal static partial class DashboardEndpoints
             return "SseKeepAliveIntervalSeconds must be at least 1.";
         if (u.HeartbeatIntervalSeconds is < 1)
             return "HeartbeatIntervalSeconds must be at least 1.";
+        if (u.ModelAutoDiscoveryIntervalSeconds is { } madi
+            && madi is < AppSettings.MinModelAutoDiscoveryIntervalSeconds or > AppSettings.MaxModelAutoDiscoveryIntervalSeconds)
+            return $"ModelAutoDiscoveryIntervalSeconds must be between {AppSettings.MinModelAutoDiscoveryIntervalSeconds} and {AppSettings.MaxModelAutoDiscoveryIntervalSeconds}.";
+        if (u.ModelAutoDiscoveryOfflineMinutes is { } madm
+            && madm is < AppSettings.MinModelAutoDiscoveryOfflineMinutes or > AppSettings.MaxModelAutoDiscoveryOfflineMinutes)
+            return $"ModelAutoDiscoveryOfflineMinutes must be between {AppSettings.MinModelAutoDiscoveryOfflineMinutes} and {AppSettings.MaxModelAutoDiscoveryOfflineMinutes}.";
         if (u.WebDashboard is { } wd)
         {
             if (wd.Port is < 0 or > 65535)
@@ -142,6 +151,9 @@ internal static partial class DashboardEndpoints
         if (u.EnableSseKeepAlive is { } sse) s.EnableSseKeepAlive = sse;
         if (u.SseKeepAliveIntervalSeconds is { } ssei) s.SseKeepAliveIntervalSeconds = ssei;
         if (u.HeartbeatIntervalSeconds is { } hbi) s.HeartbeatIntervalSeconds = hbi;
+        if (u.EnableModelAutoDiscovery is { } emad) s.EnableModelAutoDiscovery = emad;
+        if (u.ModelAutoDiscoveryIntervalSeconds is { } madi) s.ModelAutoDiscoveryIntervalSeconds = madi;
+        if (u.ModelAutoDiscoveryOfflineMinutes is { } madm) s.ModelAutoDiscoveryOfflineMinutes = madm;
         if (u.EnablePerformanceSampling is { } eps) s.EnablePerformanceSampling = eps;
         if (u.EnableApiExplorer is { } eae) s.EnableApiExplorer = eae;
         if (u.AllowMultipleInstances is { } ami) s.AllowMultipleInstances = ami;

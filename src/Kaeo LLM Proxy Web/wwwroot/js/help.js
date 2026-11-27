@@ -113,9 +113,12 @@ window.KaeoHelp = {
                 { label: 'Add model', text: 'Proxy name (what clients request), upstream model, upstream URL, credential, and type.' },
                 { label: 'Configure', text: 'The full editor: sampling, thinking handling, reasoning effort, context window, instruction set, heartbeats, redaction, Copilot compatibility, and compaction thresholds.' },
                 { label: 'Toggle enabled / Duplicate / Remove', text: 'Mapping lifecycle. Double-click a row to open Configure.' },
-                { label: 'Columns', text: 'Enabled, proxy name, upstream model, instruction set, type, credential, and hidden.' }
+                { label: 'Columns', text: 'Enabled, proxy name, upstream model, instruction set, type, credential, hidden, and Auto.' },
+                { label: 'Auto-managed', text: 'Tick “Auto-managed by upstream” in the model editor. That mapping becomes a discovery source: every model the upstream lists is registered automatically, using the auto-managed mapping as the template for settings and credential.' },
+                { label: 'Auto column', text: '“yes” means discovery registered the model, “off” means discovery disabled it because the model stayed missing. Hover the pill for the reason.' },
+                { label: 'Discover now', text: 'Runs one scan immediately instead of waiting for the interval. The result lists every model registered, re-enabled, or disabled.' }
             ],
-            note: 'A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name.'
+            note: 'A disabled or hidden mapping disappears from /api/tags and /v1/models immediately, so clients stop offering it; a hidden mapping can still be reached by its exact name. Discovery only disables a model after a successful model-list read shows it missing for the whole offline grace period, so an upstream outage never unregisters everything. A model that comes back is re-enabled — but a model you switched off yourself stays off, and saving a model in the editor clears any discovery-applied disable.'
         },
         {
             id: 'users',
@@ -182,6 +185,7 @@ window.KaeoHelp = {
             items: [
                 { label: 'Proxy', text: 'Listen address and port, plus the multi-instance setting.' },
                 { label: 'Web dashboard', text: 'Enabled, scheme, port, listen address, require login, and the HTTPS certificate credential.' },
+                { label: 'Model auto-discovery', text: 'The master switch, the scan interval, and the offline grace period. Changes apply to the running scan loop without a restart.' },
                 { label: 'Applied when', text: 'Save applies what it can immediately; listen-address and web-port changes take effect on the next restart.' }
             ],
             note: 'Turning Require login off gives everyone who can reach the dashboard full Admin access. Only use it on an isolated, trusted network.'

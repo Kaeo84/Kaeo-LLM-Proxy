@@ -753,12 +753,22 @@
 
             var $tbody = $('#mapping-table tbody').empty();
             if (!mappingCache.length) {
-                $tbody.append($('<tr>').append($('<td colspan="7" class="muted">').text('No model mappings yet.')));
+                $tbody.append($('<tr>').append($('<td colspan="8" class="muted">').text('No model mappings yet.')));
                 updateMappingButtons();
                 return;
             }
             mappingCache.forEach(function (m) {
                 var model = m.LlamaCppName || '';
+                var $auto = $('<td>');
+                if (m.autoManaged) {
+                    // The title carries why discovery turned it off, which is otherwise invisible.
+                    $auto.append($('<span class="pill">')
+                        .addClass(m.autoDisabledUtc ? 'warn' : 'ok')
+                        .attr('title', m.autoDisabledReason || 'Registered and managed by model auto-discovery.')
+                        .text(m.autoDisabledUtc ? 'off' : 'yes'));
+                } else {
+                    $auto.text('\u2014');
+                }
                 $tbody.append($('<tr>')
                     .attr('data-id', m.id)
                     .toggleClass('selected', m.id === selectedMappingId)
@@ -768,9 +778,56 @@
                     .append($('<td>').text(m.instructionSetName || '\u2014'))
                     .append($('<td>').text(upstreamTypeName(m.upstreamType)))
                     .append($('<td>').text(m.credentialName || '\u2014'))
-                    .append($('<td>').text(m.hidden ? 'yes' : 'no')));
+                    .append($('<td>').text(m.hidden ? 'yes' : 'no'))
+                    .append($auto));
             });
             updateMappingButtons();
+        });
+        loadDiscoveryStatus();
+    }
+
+    function describeDiscovery(result) {
+        if (!result) return '';
+        var parts = [];
+        if (result.registered) parts.push(result.registered + ' registered');
+        if (result.reactivated) parts.push(result.reactivated + ' re-enabled');
+        if (result.disabled) parts.push(result.disabled + ' disabled');
+        if (result.failedSources) parts.push(result.failedSources + ' unreachable');
+        return parts.length ? parts.join(', ') : 'no changes';
+    }
+
+    function loadDiscoveryStatus() {
+        api('GET', '/api/mappings/discovery', undefined, { silent: true }).then(function (d) {
+            var text;
+            if (!d || !d.enabled) {
+                text = 'Auto-discovery is off.';
+            } else if (!d.lastScanUtc) {
+                text = 'Auto-discovery every ' + d.intervalSeconds + 's; no scan yet.';
+            } else {
+                text = 'Last scan ' + new Date(d.lastScanUtc).toLocaleTimeString() +
+                    ': ' + describeDiscovery(d.lastResult) + '.';
+            }
+            $('#discovery-status').text(text).attr('title',
+                d && d.lastResult && d.lastResult.messages ? d.lastResult.messages.join('\n') : '');
+        }).catch(function () { /* the status line is informational only */ });
+    }
+
+    function discoverModelsNow() {
+        var $btn = $('#btn-discover-models').prop('disabled', true);
+        api('POST', '/api/mappings/discover', {}).then(function (result) {
+            var summary = describeDiscovery(result);
+            toast('Discovery: ' + summary + '.');
+            if (result && result.messages && result.messages.length) {
+                var $body = $('<div>');
+                $body.append($('<p>').text('Scanned ' + result.sources + ' upstream(s): ' + summary + '.'));
+                $body.append($('<pre>').text(result.messages.join('\n')));
+                openModal('Model discovery', $body, [{ label: 'Close' }], true);
+            }
+            loadMappings();
+        }).catch(function (err) {
+            toast('Discovery failed: ' + err.message, true);
+        }).then(function () {
+            $btn.prop('disabled', false);
         });
     }
 
@@ -852,6 +909,11 @@
         var $timeout = field('Upstream timeout (seconds)', $('<input type="number" min="1">').val(base.upstreamTimeoutSeconds || 300));
         var $enabled = field('Enabled', $('<input type="checkbox">').prop('checked', base.isEnabled !== false));
         var $hidden = field('Hidden from discovery', $('<input type="checkbox">').prop('checked', !!base.hidden));
+        var $autoManaged = field('Auto-managed by upstream', $('<input type="checkbox">').prop('checked', !!base.autoManaged),
+            'Registers every model this upstream lists, and disables a model once it has been missing for the grace period. Saving here clears any discovery-applied disable.');
+        if (base.autoDisabledReason) {
+            $body.append($('<p class="hint">').text('Discovery disabled this model: ' + base.autoDisabledReason));
+        }
 
         var $advanced = $('<textarea rows="12">').val(JSON.stringify(base, null, 2));
         $body.append($('<details>').append($('<summary>').text('All settings (JSON) — advanced fields preserved on save')).append($advanced));
@@ -881,6 +943,7 @@
             merged.upstreamTimeoutSeconds = parseInt($timeout.val(), 10) || 300;
             merged.isEnabled = $enabled.prop('checked');
             merged.hidden = $hidden.prop('checked');
+            merged.autoManaged = $autoManaged.prop('checked');
 
             if (!merged.OllamaName) { modalError('Proxy name is required.'); return; }
             if (!merged.LlamaCppName) { modalError('Upstream model name is required.'); return; }
@@ -1705,6 +1768,13 @@
             ]
         },
         {
+            title: 'Model auto-discovery', fields: [
+                { path: 'enableModelAutoDiscovery', label: 'Enable auto-discovery', type: 'bool', hint: 'Polls the upstream of every auto-managed model for its model list.' },
+                { path: 'modelAutoDiscoveryIntervalSeconds', label: 'Scan interval (s)', type: 'number', hint: '15–3600. How often each auto-managed upstream is polled.' },
+                { path: 'modelAutoDiscoveryOfflineMinutes', label: 'Offline grace (minutes)', type: 'number', hint: '1–1440. How long a model must be missing before discovery disables it.' }
+            ]
+        },
+        {
             title: 'Diagnostics', fields: [
                 { path: 'enablePerformanceSampling', label: 'Performance sampling', type: 'bool' },
                 { path: 'enableApiExplorer', label: 'API explorer', type: 'bool' }
@@ -2221,6 +2291,7 @@
         $('#btn-configure-mapping').on('click', configureSelectedMapping);
         $('#btn-toggle-mapping').on('click', toggleSelectedMapping);
         $('#btn-refresh-mappings').on('click', loadMappings);
+        $('#btn-discover-models').on('click', discoverModelsNow);
         $('#mapping-table').on('click', 'tbody tr[data-id]', function () {
             selectMapping(Number($(this).attr('data-id')));
         });

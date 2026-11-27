@@ -71,6 +71,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _controller.StartModules();
         _ = _controller.StartMcpServerAsync();
+        _controller.StartModelDiscovery();
         _ = StartWebDashboardAsync();
 
         if (_settings.StartWithDashboardOpen)
@@ -251,7 +252,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_mainForm is null || _mainForm.IsDisposed)
         {
-            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.Access, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.WebStats, _controller.StreamMonitor, _controller.WebDashboard);
+            _mainForm = new MainForm(_settings, _controller.Stats, _controller.Server, _controller.Handler, _controller.PerfService, _database, _controller.Access, _controller.ModuleHost, _controller.McpServer, _controller.NonProxiedStats, _controller.WebStats, _controller.StreamMonitor, _controller.WebDashboard, _controller.ModelDiscovery);
             _mainForm.FormClosed += OnMainFormClosed;
             _mainForm.MinimizedToTray += OnMainFormMinimizedToTray;
         }

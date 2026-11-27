@@ -93,6 +93,9 @@ public class AppDatabaseSchemaTests
         Assert.Contains("enable_ir_translation", columns);
         Assert.Contains("compaction_fallback_context_tokens", columns);
         Assert.Contains("allow_multiple_instances_v2", columns);
+        Assert.Contains("enable_model_auto_discovery", columns);
+        Assert.Contains("model_auto_discovery_interval_seconds", columns);
+        Assert.Contains("model_auto_discovery_offline_minutes", columns);
     }
 
     [Fact]
@@ -252,6 +255,10 @@ public class AppDatabaseSchemaTests
         Assert.Contains("context_summarize_model_name", columns);
         Assert.Contains("context_summarize_model_id", columns);
         Assert.Contains("enable_copilot_compatibility", columns);
+        Assert.Contains("auto_managed", columns);
+        Assert.Contains("auto_missing_since_utc", columns);
+        Assert.Contains("auto_disabled_utc", columns);
+        Assert.Contains("auto_disabled_reason", columns);
     }
 
     [Fact]
@@ -376,6 +383,56 @@ public class AppDatabaseSchemaTests
         Assert.Equal(85, reloaded.ProactiveOverflowPercent);
         Assert.Equal(12000, reloaded.ProactiveOverflowTokens);
         Assert.False(reloaded.EnableCopilotCompatibility);
+    }
+
+    [Fact]
+    public void ModelAutoDiscoverySurfaceSurvivesASaveAndReload()
+    {
+        string path = NewDatabasePath();
+        DateTime missingSince = new(2026, 4, 2, 8, 30, 0, DateTimeKind.Utc);
+
+        ModelMapping mapping = new()
+        {
+            ProxyName = "qwen3",
+            ModelName = "qwen3",
+            UpstreamUrl = "http://localhost:1234",
+            AutoManaged = true,
+            AutoMissingSinceUtc = missingSince,
+            AutoDisabledUtc = missingSince.AddMinutes(10),
+            AutoDisabledReason = "Not present in the upstream model list.",
+            IsEnabled = false,
+        };
+        mapping.EnsureId();
+
+        using (AppDatabase setup = OpenDatabase(path))
+        {
+            setup.SaveModelMappings([mapping]);
+            setup.SaveRuntimeSettings(new RuntimeSettings
+            {
+                EnableModelAutoDiscovery = false,
+                ModelAutoDiscoveryIntervalSeconds = 120,
+                ModelAutoDiscoveryOfflineMinutes = 45,
+            });
+        }
+
+        using AppDatabase database = OpenDatabase(path);
+        ModelMapping reloaded = Assert.Single(database.LoadModelMappings());
+        Assert.True(reloaded.AutoManaged);
+        Assert.Equal(missingSince, reloaded.AutoMissingSinceUtc);
+        Assert.Equal(missingSince.AddMinutes(10), reloaded.AutoDisabledUtc);
+        Assert.Equal("Not present in the upstream model list.", reloaded.AutoDisabledReason);
+        Assert.False(reloaded.IsEnabled);
+
+        RuntimeSettings runtime = database.LoadRuntimeSettings();
+        Assert.False(runtime.EnableModelAutoDiscovery);
+        Assert.Equal(120, runtime.ModelAutoDiscoveryIntervalSeconds);
+        Assert.Equal(45, runtime.ModelAutoDiscoveryOfflineMinutes);
+
+        AppSettings app = new();
+        app.ApplyRuntimeSettings(runtime);
+        Assert.False(app.EnableModelAutoDiscovery);
+        Assert.Equal(120, app.ModelAutoDiscoveryIntervalSeconds);
+        Assert.Equal(45, app.ModelAutoDiscoveryOfflineMinutes);
     }
 
     [Fact]

@@ -249,6 +249,7 @@ partial class MainForm
         _colModelName = new DataGridViewTextBoxColumn();
         _colInstructionSet = new DataGridViewTextBoxColumn();
         _colReasoningEffort = new DataGridViewTextBoxColumn();
+        _colMappingAuto = new DataGridViewTextBoxColumn();
         _grpListener = new GroupBox();
         _tlpListener = new TableLayoutPanel();
         _btnSaveListener = new Button();
@@ -374,6 +375,15 @@ partial class MainForm
         _tlpHeartbeats = new TableLayoutPanel();
         _lblHeartbeatInterval = new Label();
         _txtHeartbeatInterval = new TextBox();
+        _grpModelDiscovery = new GroupBox();
+        _tlpModelDiscovery = new TableLayoutPanel();
+        _chkEnableModelDiscovery = new CheckBox();
+        _lblDiscoveryInterval = new Label();
+        _txtDiscoveryInterval = new TextBox();
+        _lblDiscoveryOffline = new Label();
+        _txtDiscoveryOffline = new TextBox();
+        _lblDiscoveryStatus = new Label();
+        _btnDiscoverModelsNow = new Button();
         _grpPings = new GroupBox();
         _lstPings = new ListView();
         _colPingModel = new ColumnHeader();
@@ -461,6 +471,8 @@ partial class MainForm
         _tabHelp.SuspendLayout();
         _helpTabs.SuspendLayout();
         _tlpHeartbeats.SuspendLayout();
+        _grpModelDiscovery.SuspendLayout();
+        _tlpModelDiscovery.SuspendLayout();
         _flpHeartbeatButtons.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)_nudTestTemp).BeginInit();
         ((System.ComponentModel.ISupportInitialize)_nudTestRepeatPenalty).BeginInit();
@@ -1814,6 +1826,7 @@ partial class MainForm
         _dgvMappings.Columns.Add(_colModelName);
         _dgvMappings.Columns.Add(_colInstructionSet);
         _dgvMappings.Columns.Add(_colReasoningEffort);
+        _dgvMappings.Columns.Add(_colMappingAuto);
         _dgvMappings.Dock = DockStyle.Fill;
         _dgvMappings.Margin = new Padding(4, 4, 4, 4);
         _dgvMappings.MinimumSize = new Size(0, 120);
@@ -1841,6 +1854,11 @@ partial class MainForm
         _colReasoningEffort.Name = "_colReasoningEffort";
         _colReasoningEffort.FillWeight = 90;
         _colReasoningEffort.DefaultCellStyle.NullValue = string.Empty;
+
+        _colMappingAuto.HeaderText = "Auto";
+        _colMappingAuto.Name = "_colMappingAuto";
+        _colMappingAuto.FillWeight = 55;
+        _colMappingAuto.DefaultCellStyle.NullValue = string.Empty;
 
         _flpMappingButtons.AutoSize = true;
         _flpMappingButtons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -2797,19 +2815,89 @@ partial class MainForm
         _tlpHeartbeats.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _tlpHeartbeats.Dock = DockStyle.Fill;
         _tlpHeartbeats.Name = "_tlpHeartbeats";
-        _tlpHeartbeats.RowCount = 4;
+        _tlpHeartbeats.RowCount = 5;
+        _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
         _tlpHeartbeats.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _tlpHeartbeats.Controls.Add(_lblHeartbeatInterval, 0, 0);
         _tlpHeartbeats.Controls.Add(_txtHeartbeatInterval, 1, 0);
+        _tlpHeartbeats.SetColumnSpan(_grpModelDiscovery, 2);
+        _tlpHeartbeats.Controls.Add(_grpModelDiscovery, 0, 1);
         _tlpHeartbeats.SetColumnSpan(_grpPings, 2);
-        _tlpHeartbeats.Controls.Add(_grpPings, 0, 1);
+        _tlpHeartbeats.Controls.Add(_grpPings, 0, 2);
         _tlpHeartbeats.SetColumnSpan(_grpKeepAlives, 2);
-        _tlpHeartbeats.Controls.Add(_grpKeepAlives, 0, 2);
+        _tlpHeartbeats.Controls.Add(_grpKeepAlives, 0, 3);
         _tlpHeartbeats.SetColumnSpan(_flpHeartbeatButtons, 2);
-        _tlpHeartbeats.Controls.Add(_flpHeartbeatButtons, 0, 3);
+        _tlpHeartbeats.Controls.Add(_flpHeartbeatButtons, 0, 4);
+
+        // Model auto-discovery: the same three knobs the web dashboard exposes. They live on this
+        // tab because it is the app's "background polling" surface.
+        _grpModelDiscovery.Dock = DockStyle.Fill;
+        _grpModelDiscovery.Margin = new Padding(4, 4, 4, 4);
+        _grpModelDiscovery.Name = "_grpModelDiscovery";
+        _grpModelDiscovery.Padding = new Padding(8);
+        _grpModelDiscovery.Text = "Model Auto-Discovery (register an upstream's models automatically)";
+
+        _tlpModelDiscovery.ColumnCount = 4;
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+        _tlpModelDiscovery.Dock = DockStyle.Fill;
+        _tlpModelDiscovery.Name = "_tlpModelDiscovery";
+        _tlpModelDiscovery.RowCount = 3;
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _tlpModelDiscovery.Controls.Add(_chkEnableModelDiscovery, 0, 0);
+        _tlpModelDiscovery.SetColumnSpan(_chkEnableModelDiscovery, 4);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryInterval, 0, 1);
+        _tlpModelDiscovery.Controls.Add(_txtDiscoveryInterval, 1, 1);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryOffline, 2, 1);
+        _tlpModelDiscovery.Controls.Add(_txtDiscoveryOffline, 3, 1);
+        _tlpModelDiscovery.Controls.Add(_lblDiscoveryStatus, 0, 2);
+        _tlpModelDiscovery.SetColumnSpan(_lblDiscoveryStatus, 3);
+        _tlpModelDiscovery.Controls.Add(_btnDiscoverModelsNow, 3, 2);
+        _grpModelDiscovery.Controls.Add(_tlpModelDiscovery);
+
+        _chkEnableModelDiscovery.AutoSize = true;
+        _chkEnableModelDiscovery.Margin = new Padding(0, 4, 0, 4);
+        _chkEnableModelDiscovery.Name = "_chkEnableModelDiscovery";
+        _chkEnableModelDiscovery.Text = "Enable auto-discovery for models marked auto-managed";
+
+        _lblDiscoveryInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryInterval.AutoSize = true;
+        _lblDiscoveryInterval.Margin = new Padding(0, 8, 8, 4);
+        _lblDiscoveryInterval.Name = "_lblDiscoveryInterval";
+        _lblDiscoveryInterval.Text = "Scan interval (seconds):";
+
+        _txtDiscoveryInterval.Dock = DockStyle.Fill;
+        _txtDiscoveryInterval.Margin = new Padding(0, 6, 12, 6);
+        _txtDiscoveryInterval.Name = "_txtDiscoveryInterval";
+
+        _lblDiscoveryOffline.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryOffline.AutoSize = true;
+        _lblDiscoveryOffline.Margin = new Padding(0, 8, 8, 4);
+        _lblDiscoveryOffline.Name = "_lblDiscoveryOffline";
+        _lblDiscoveryOffline.Text = "Disable after missing (minutes):";
+
+        _txtDiscoveryOffline.Dock = DockStyle.Fill;
+        _txtDiscoveryOffline.Margin = new Padding(0, 6, 0, 6);
+        _txtDiscoveryOffline.Name = "_txtDiscoveryOffline";
+
+        _lblDiscoveryStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _lblDiscoveryStatus.AutoEllipsis = true;
+        _lblDiscoveryStatus.Margin = new Padding(0, 6, 8, 0);
+        _lblDiscoveryStatus.Name = "_lblDiscoveryStatus";
+        _lblDiscoveryStatus.Text = "Auto-discovery has not scanned yet.";
+
+        _btnDiscoverModelsNow.AutoSize = true;
+        _btnDiscoverModelsNow.Margin = new Padding(0, 4, 0, 0);
+        _btnDiscoverModelsNow.Name = "_btnDiscoverModelsNow";
+        _btnDiscoverModelsNow.Text = "Discover Now";
+        _btnDiscoverModelsNow.Click += BtnDiscoverModelsNow_Click;
 
         _lblHeartbeatInterval.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _lblHeartbeatInterval.AutoSize = true;
@@ -3071,6 +3159,10 @@ partial class MainForm
         _tlpWebDashboard.PerformLayout();
         _tlpHeartbeats.ResumeLayout(false);
         _tlpHeartbeats.PerformLayout();
+        _tlpModelDiscovery.ResumeLayout(false);
+        _tlpModelDiscovery.PerformLayout();
+        _grpModelDiscovery.ResumeLayout(false);
+        _grpModelDiscovery.PerformLayout();
         _grpPings.ResumeLayout(false);
         _grpKeepAlives.ResumeLayout(false);
         _flpHeartbeatButtons.ResumeLayout(false);
@@ -3257,6 +3349,7 @@ partial class MainForm
     private DataGridViewTextBoxColumn _colModelName;
     private DataGridViewTextBoxColumn _colInstructionSet;
     private DataGridViewTextBoxColumn _colReasoningEffort;
+    private DataGridViewTextBoxColumn _colMappingAuto;
     private FlowLayoutPanel _flpMappingButtons;
     private Button _btnAddMapping;
     private Button _btnRemoveMapping;
@@ -3430,6 +3523,15 @@ partial class MainForm
     private TableLayoutPanel _tlpHeartbeats;
     private Label _lblHeartbeatInterval;
     private TextBox _txtHeartbeatInterval;
+    private GroupBox _grpModelDiscovery;
+    private TableLayoutPanel _tlpModelDiscovery;
+    private CheckBox _chkEnableModelDiscovery;
+    private Label _lblDiscoveryInterval;
+    private TextBox _txtDiscoveryInterval;
+    private Label _lblDiscoveryOffline;
+    private TextBox _txtDiscoveryOffline;
+    private Label _lblDiscoveryStatus;
+    private Button _btnDiscoverModelsNow;
     private GroupBox _grpPings;
     private ListView _lstPings;
     private ColumnHeader _colPingModel;

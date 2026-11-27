@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Net;
@@ -53,6 +54,12 @@ internal partial class MainForm : Form
         /// case the dashboard's Web Server group reports "not available".
         /// </summary>
         private readonly WebDashboardService? _webDashboard;
+
+                /// <summary>
+                /// Drives the auto-managed model scan. Null in hosts that do not run it, in which case the
+                /// auto-discovery group reports "not available" and Discover Now is disabled.
+                /// </summary>
+                private readonly ModelAutoDiscoveryService? _modelDiscovery;
 
         // Tabs injected by loaded modules
     // module is disabled or unregistered while the dashboard is open.
@@ -110,7 +117,7 @@ internal partial class MainForm : Form
     // numeric textbox is invalid.
     private readonly ErrorProvider _inputErrors = new();
 
-    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StatisticsService webStats, StreamMonitor? streamMonitor = null, WebDashboardService? webDashboard = null)
+    public MainForm(AppSettings settings, StatisticsService stats, ProxyServer server, OllamaProxyHandler handler, PerformanceService perfService, AppDatabase database, ProxyAccessService access, ModuleHost moduleHost, McpServerService mcpServer, StatisticsService nonProxiedStats, StatisticsService webStats, StreamMonitor? streamMonitor = null, WebDashboardService? webDashboard = null, ModelAutoDiscoveryService? modelDiscovery = null)
     {
         _settings = settings;
         _stats = stats;
@@ -126,6 +133,7 @@ internal partial class MainForm : Form
         _webStats = webStats;
         _streamMonitor = streamMonitor;
         _webDashboard = webDashboard;
+        _modelDiscovery = modelDiscovery;
 
                 if (_streamMonitor is not null)
                     _streamMonitor.StreamsChanged += OnStreamsChanged;
@@ -2158,13 +2166,120 @@ internal partial class MainForm : Form
             }
 
             _settings.HeartbeatIntervalSeconds = heartbeatIntervalSeconds;
-            _settings.Save();
-            _handler.UpdateSettings(_settings);
-            RefreshHeartbeats();
 
-            MessageBox.Show("Heartbeat settings saved.", "Saved",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-        });
+                        // Auto-discovery settings live in the same group and are saved by the same button: they
+                        // are the other half of "how often does the proxy poll the upstream".
+                        if (!int.TryParse(_txtDiscoveryInterval.Text, out int discoveryInterval)
+                            || discoveryInterval < AppSettings.MinModelAutoDiscoveryIntervalSeconds
+                            || discoveryInterval > AppSettings.MaxModelAutoDiscoveryIntervalSeconds)
+                        {
+                            MessageBox.Show(
+                                $"Auto-discovery scan interval must be a number between "
+                                + $"{AppSettings.MinModelAutoDiscoveryIntervalSeconds} and "
+                                + $"{AppSettings.MaxModelAutoDiscoveryIntervalSeconds} seconds.",
+                                "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        if (!int.TryParse(_txtDiscoveryOffline.Text, out int discoveryOffline)
+                            || discoveryOffline < AppSettings.MinModelAutoDiscoveryOfflineMinutes
+                            || discoveryOffline > AppSettings.MaxModelAutoDiscoveryOfflineMinutes)
+                        {
+                            MessageBox.Show(
+                                $"The auto-discovery offline grace period must be a number between "
+                                + $"{AppSettings.MinModelAutoDiscoveryOfflineMinutes} and "
+                                + $"{AppSettings.MaxModelAutoDiscoveryOfflineMinutes} minutes.",
+                                "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+
+                        _settings.EnableModelAutoDiscovery = _chkEnableModelDiscovery.Checked;
+                        _settings.ModelAutoDiscoveryIntervalSeconds = discoveryInterval;
+                        _settings.ModelAutoDiscoveryOfflineMinutes = discoveryOffline;
+                        _settings.Save();
+                        // Persist to the database as well: the discovery settings live in runtime settings, so a
+                        // save that only wrote settings.jsonc would be overwritten on the next load.
+                        try
+                        {
+                            _database.SaveRuntimeSettings(_settings.CreateRuntimeSettings());
+                        }
+                        catch (Exception ex) when (ex is IOException or DbException)
+                        {
+                            Log.Warning(ex, "Could not persist runtime settings to the database; changes apply for this session only");
+                        }
+
+                        _handler.UpdateSettings(_settings);
+                        RefreshHeartbeats();
+                        UpdateModelDiscoveryStatus();
+
+                        MessageBox.Show("Heartbeat and auto-discovery settings saved.", "Saved",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    });
+
+                /// <summary>
+                /// Runs one auto-discovery scan from the button, then refreshes the grid (the scan can add,
+                /// enable, or disable mappings) and the status line.
+                /// </summary>
+                private async void BtnDiscoverModelsNow_Click(object? sender, EventArgs e)
+                {
+                    if (_modelDiscovery is null)
+                        return;
+
+                    _btnDiscoverModelsNow.Enabled = false;
+                    _lblDiscoveryStatus.Text = "Scanning upstreams…";
+                    try
+                    {
+                        ModelAutoDiscoveryResult result = await _modelDiscovery.RunOnceAsync();
+                        SyncMappingsGridFromSettings();
+                        UpdateModelDiscoveryStatus();
+                        MessageBox.Show(
+                            $"Scanned {result.Sources} upstream(s)."
+                            + $"\n\nRegistered: {result.Registered}"
+                            + $"\nRe-enabled: {result.Reactivated}"
+                            + $"\nDisabled: {result.Disabled}"
+                            + $"\nUnreachable: {result.FailedSources}"
+                            + (result.Messages.Count > 0 ? "\n\n" + string.Join("\n", result.Messages) : string.Empty),
+                            "Model discovery", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Manual model discovery scan failed");
+                        _lblDiscoveryStatus.Text = "Discovery failed: " + ex.Message;
+                    }
+                    finally
+                    {
+                        _btnDiscoverModelsNow.Enabled = true;
+                    }
+                }
+
+                /// <summary>
+                /// Renders the auto-discovery state on the Heartbeats tab: the master switch, the last scan, and
+                /// what it did. Kept separate from the settings load so the periodic refresh can call it alone.
+                /// </summary>
+                private void UpdateModelDiscoveryStatus()
+                {
+                    _chkEnableModelDiscovery.Checked = _settings.EnableModelAutoDiscovery;
+
+                    if (_modelDiscovery is null)
+                    {
+                        _lblDiscoveryStatus.Text = "Auto-discovery is not running in this host.";
+                        _btnDiscoverModelsNow.Enabled = false;
+                        return;
+                    }
+
+                    _btnDiscoverModelsNow.Enabled = true;
+                    if (_modelDiscovery.LastScanUtc is not { } lastScan)
+                    {
+                        _lblDiscoveryStatus.Text = "Auto-discovery has not scanned yet.";
+                        return;
+                    }
+
+                    ModelAutoDiscoveryResult result = _modelDiscovery.LastResult ?? ModelAutoDiscoveryResult.None;
+                    _lblDiscoveryStatus.Text =
+                        $"Last scan {lastScan.ToLocalTime():g}: {result.Registered} registered, "
+                        + $"{result.Reactivated} re-enabled, {result.Disabled} disabled, "
+                        + $"{result.FailedSources} unreachable.";
+                }
 
     /// <summary>
     /// Persists the SSE keep-alive interval from the Settings tab immediately when it changes.
@@ -2324,6 +2439,9 @@ internal partial class MainForm : Form
         _chkSseKeepAlive.Checked = _settings.EnableSseKeepAlive;
         _txtKeepAliveInterval.Text = _settings.SseKeepAliveIntervalSeconds.ToString();
         _txtHeartbeatInterval.Text = _settings.HeartbeatIntervalSeconds.ToString();
+                _txtDiscoveryInterval.Text = _settings.ModelAutoDiscoveryIntervalSeconds.ToString();
+                _txtDiscoveryOffline.Text = _settings.ModelAutoDiscoveryOfflineMinutes.ToString();
+                UpdateModelDiscoveryStatus();
 
         // Web dashboard settings (explicit Save button; application restart to apply).
         WebDashboardSettings webDashboard = _settings.WebDashboard;
@@ -2378,7 +2496,10 @@ internal partial class MainForm : Form
             mapping.ProxyName,
             mapping.ModelName,
             mapping.InstructionSetName ?? string.Empty,
-            mapping.ReasoningEffort ?? string.Empty);
+            mapping.ReasoningEffort ?? string.Empty,
+            // "Off" is discovery's own disable, which the operator can distinguish from a model they
+            // switched off themselves — the ToolTip carries the reason.
+            mapping.AutoManaged ? (mapping.AutoDisabledUtc is null ? "Yes" : "Off") : string.Empty);
 
         _dgvMappings.Rows[idx].Tag = mapping;
         return idx;

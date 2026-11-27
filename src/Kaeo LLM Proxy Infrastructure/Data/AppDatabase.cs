@@ -342,7 +342,11 @@ internal sealed class AppDatabase : IDisposable
                     forward_client_authorization,
                     enable_api_translation,
                     anthropic_max_tokens,
-                    anthropic_api_version
+                    anthropic_api_version,
+                    auto_managed,
+                    auto_missing_since_utc,
+                    auto_disabled_utc,
+                    auto_disabled_reason
                 FROM model_mappings
                 ORDER BY proxy_name;
                 """;
@@ -425,7 +429,11 @@ internal sealed class AppDatabase : IDisposable
                         forward_client_authorization,
                         enable_api_translation,
                         anthropic_max_tokens,
-                        anthropic_api_version
+                        anthropic_api_version,
+                        auto_managed,
+                        auto_missing_since_utc,
+                        auto_disabled_utc,
+                        auto_disabled_reason
                     )
                     VALUES (
                         $id,
@@ -465,7 +473,11 @@ internal sealed class AppDatabase : IDisposable
                         $forwardClientAuthorization,
                         $enableApiTranslation,
                         $anthropicMaxTokens,
-                        $anthropicApiVersion
+                        $anthropicApiVersion,
+                        $autoManaged,
+                        $autoMissingSinceUtc,
+                        $autoDisabledUtc,
+                        $autoDisabledReason
                     );
                     """;
 
@@ -726,7 +738,10 @@ internal sealed class AppDatabase : IDisposable
                     compaction_target_tokens,
                     max_concurrent_compactions,
                     hide_heartbeat_logs,
-                    allow_multiple_instances_v2
+                    allow_multiple_instances_v2,
+                    enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes
                 FROM runtime_settings
                 WHERE id = $id;
                 """;
@@ -768,6 +783,9 @@ internal sealed class AppDatabase : IDisposable
                 MaxConcurrentCompactions = reader.GetInt32(21),
                 HideHeartbeatLogs = ReadBoolean(reader, 22),
                 AllowMultipleInstances = reader.IsDBNull(23) || ReadBoolean(reader, 23),
+                EnableModelAutoDiscovery = ReadBoolean(reader, 24),
+                ModelAutoDiscoveryIntervalSeconds = reader.GetInt32(25),
+                ModelAutoDiscoveryOfflineMinutes = reader.GetInt32(26),
             };
         }
     }
@@ -807,7 +825,10 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name,
                     compaction_target_tokens,
                     max_concurrent_compactions,
-                    hide_heartbeat_logs
+                    hide_heartbeat_logs,
+                    enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes
                 )
                 VALUES (
                     $id,
@@ -834,7 +855,10 @@ internal sealed class AppDatabase : IDisposable
                     $compactionInstructionSetName,
                     $compactionTargetTokens,
                     $maxConcurrentCompactions,
-                    $hideHeartbeatLogs
+                    $hideHeartbeatLogs,
+                    $enableModelAutoDiscovery,
+                    $modelAutoDiscoveryIntervalSeconds,
+                    $modelAutoDiscoveryOfflineMinutes
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     auto_start_proxy = excluded.auto_start_proxy,
@@ -860,7 +884,10 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name = excluded.compaction_instruction_set_name,
                     compaction_target_tokens = excluded.compaction_target_tokens,
                     max_concurrent_compactions = excluded.max_concurrent_compactions,
-                    hide_heartbeat_logs = excluded.hide_heartbeat_logs;
+                    hide_heartbeat_logs = excluded.hide_heartbeat_logs,
+                    enable_model_auto_discovery = excluded.enable_model_auto_discovery,
+                    model_auto_discovery_interval_seconds = excluded.model_auto_discovery_interval_seconds,
+                    model_auto_discovery_offline_minutes = excluded.model_auto_discovery_offline_minutes;
                 """;
 
             command.Parameters.AddWithValue("$id", RuntimeSettingsId);
@@ -894,6 +921,9 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$compactionTargetTokens", settings.CompactionTargetTokens);
             command.Parameters.AddWithValue("$maxConcurrentCompactions", settings.MaxConcurrentCompactions);
             command.Parameters.AddWithValue("$hideHeartbeatLogs", ToSqliteBoolean(settings.HideHeartbeatLogs));
+            command.Parameters.AddWithValue("$enableModelAutoDiscovery", ToSqliteBoolean(settings.EnableModelAutoDiscovery));
+            command.Parameters.AddWithValue("$modelAutoDiscoveryIntervalSeconds", settings.ModelAutoDiscoveryIntervalSeconds);
+            command.Parameters.AddWithValue("$modelAutoDiscoveryOfflineMinutes", settings.ModelAutoDiscoveryOfflineMinutes);
             command.ExecuteNonQuery();
         }
     }
@@ -1546,7 +1576,11 @@ internal sealed class AppDatabase : IDisposable
                     forward_client_authorization INTEGER NOT NULL DEFAULT 0,
                     enable_api_translation INTEGER NOT NULL DEFAULT 1,
                     anthropic_max_tokens INTEGER NOT NULL DEFAULT 4096,
-                    anthropic_api_version TEXT NOT NULL DEFAULT '2023-06-01'
+                    anthropic_api_version TEXT NOT NULL DEFAULT '2023-06-01',
+                    auto_managed INTEGER NOT NULL DEFAULT 0,
+                    auto_missing_since_utc TEXT NULL,
+                    auto_disabled_utc TEXT NULL,
+                    auto_disabled_reason TEXT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_model_mappings_model_name ON model_mappings(model_name);
@@ -1597,7 +1631,10 @@ internal sealed class AppDatabase : IDisposable
                     compaction_instruction_set_name TEXT NULL,
                     compaction_target_tokens INTEGER NOT NULL DEFAULT 0,
                     max_concurrent_compactions INTEGER NOT NULL DEFAULT 1,
-                    hide_heartbeat_logs INTEGER NOT NULL DEFAULT 0
+                    hide_heartbeat_logs INTEGER NOT NULL DEFAULT 0,
+                    enable_model_auto_discovery INTEGER NOT NULL DEFAULT 1,
+                    model_auto_discovery_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                    model_auto_discovery_offline_minutes INTEGER NOT NULL DEFAULT 10
                 );
 
                 CREATE TABLE IF NOT EXISTS module_registry (
@@ -1923,6 +1960,10 @@ internal sealed class AppDatabase : IDisposable
                                 ("model_mappings", "enable_api_translation", "INTEGER NOT NULL DEFAULT 1"),
                                 ("model_mappings", "anthropic_max_tokens", "INTEGER NOT NULL DEFAULT 4096"),
                                 ("model_mappings", "anthropic_api_version", "TEXT NOT NULL DEFAULT '2023-06-01'"),
+                                ("model_mappings", "auto_managed", "INTEGER NOT NULL DEFAULT 0"),
+                                ("model_mappings", "auto_missing_since_utc", "TEXT NULL"),
+                                ("model_mappings", "auto_disabled_utc", "TEXT NULL"),
+                                ("model_mappings", "auto_disabled_reason", "TEXT NULL"),
 
                                 // ── runtime_settings ──────────────────────────────────────────
                                 ("runtime_settings", "auto_start_proxy", "INTEGER NOT NULL DEFAULT 1"),
@@ -1953,6 +1994,9 @@ internal sealed class AppDatabase : IDisposable
                                 ("runtime_settings", "compaction_target_tokens", "INTEGER NOT NULL DEFAULT 0"),
                                 ("runtime_settings", "max_concurrent_compactions", "INTEGER NOT NULL DEFAULT 1"),
                                 ("runtime_settings", "hide_heartbeat_logs", "INTEGER NOT NULL DEFAULT 0"),
+                                ("runtime_settings", "enable_model_auto_discovery", "INTEGER NOT NULL DEFAULT 1"),
+                                ("runtime_settings", "model_auto_discovery_interval_seconds", "INTEGER NOT NULL DEFAULT 60"),
+                                ("runtime_settings", "model_auto_discovery_offline_minutes", "INTEGER NOT NULL DEFAULT 10"),
 
                                 // ── credentials ───────────────────────────────────────────────
                                 ("credentials", "secret", "TEXT NOT NULL DEFAULT ''"),
@@ -2409,6 +2453,12 @@ internal sealed class AppDatabase : IDisposable
         command.Parameters.AddWithValue("$enableApiTranslation", ToSqliteBoolean(mapping.EnableApiTranslation));
         command.Parameters.AddWithValue("$anthropicMaxTokens", mapping.AnthropicMaxTokens);
         command.Parameters.AddWithValue("$anthropicApiVersion", DbValue(mapping.AnthropicApiVersion));
+        command.Parameters.AddWithValue("$autoManaged", ToSqliteBoolean(mapping.AutoManaged));
+        command.Parameters.AddWithValue("$autoMissingSinceUtc",
+            mapping.AutoMissingSinceUtc.HasValue ? ToUtcText(mapping.AutoMissingSinceUtc.Value) : DBNull.Value);
+        command.Parameters.AddWithValue("$autoDisabledUtc",
+            mapping.AutoDisabledUtc.HasValue ? ToUtcText(mapping.AutoDisabledUtc.Value) : DBNull.Value);
+        command.Parameters.AddWithValue("$autoDisabledReason", DbValue(mapping.AutoDisabledReason));
     }
 
     /// <summary>
@@ -2497,6 +2547,12 @@ internal sealed class AppDatabase : IDisposable
         mapping.EnableApiTranslation = ReadBoolean(reader, 35);
         mapping.AnthropicMaxTokens = reader.GetInt32(36);
         mapping.AnthropicApiVersion = reader.IsDBNull(37) ? "2023-06-01" : reader.GetString(37);
+
+        // Auto-discovery bookkeeping, appended last so every ordinal above stays stable.
+        mapping.AutoManaged = ReadBoolean(reader, 38);
+        mapping.AutoMissingSinceUtc = reader.IsDBNull(39) ? null : ReadUtc(reader, 39);
+        mapping.AutoDisabledUtc = reader.IsDBNull(40) ? null : ReadUtc(reader, 40);
+        mapping.AutoDisabledReason = reader.IsDBNull(41) ? null : reader.GetString(41);
         return mapping;
     }
 

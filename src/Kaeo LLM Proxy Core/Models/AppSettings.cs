@@ -430,6 +430,22 @@ internal sealed class RuntimeSettings
     public int ModelDiscoveryTimeoutSeconds { get; set; } = 10;
 
     /// <summary>
+    /// When true, the model auto-discovery service keeps every auto-managed mapping in sync with its
+    /// upstream's model list. Default: true; the per-mapping flag decides whether anything is
+    /// actually scanned.
+    /// </summary>
+    public bool EnableModelAutoDiscovery { get; set; } = true;
+
+    /// <summary>Seconds between model auto-discovery scans. Default: 60.</summary>
+    public int ModelAutoDiscoveryIntervalSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Minutes an auto-managed model must be missing from its upstream list before discovery
+    /// disables it. Default: 10.
+    /// </summary>
+    public int ModelAutoDiscoveryOfflineMinutes { get; set; } = 10;
+
+    /// <summary>
     /// Proxy name of the single global model every Copilot-detected context summarization is routed
     /// to, or null when none is selected. Stored in the application database beside the other
     /// runtime settings because it is a single installation-wide choice.
@@ -561,9 +577,45 @@ internal sealed class ModelMapping
     /// </remarks>
     public bool Hidden { get; set; }
 
-    /// <summary>The model name as exposed by this proxy to clients (e.g. "llama3").</summary>
-    [JsonPropertyName("OllamaName")]
-    public string ProxyName { get; set; } = string.Empty;
+        /// <summary>
+        /// When true, this mapping is kept in sync with its upstream's <c>/v1/models</c> list by the
+        /// model auto-discovery service: models that appear upstream are registered automatically, and
+        /// models that stop appearing are disabled once the offline grace period elapses.
+        /// Default: false, so nothing is added or toggled behind the operator's back until asked for.
+        /// </summary>
+        /// <remarks>
+        /// The flag also marks this mapping as a discovery <em>source</em>: every auto-managed mapping
+        /// contributes its own upstream URL, credential and upstream type to the set of endpoints the
+        /// service polls. That way a new machine only needs one hand-written auto-managed mapping before
+        /// the rest of its models appear on their own.
+        /// <para>
+        /// A mapping is only ever re-enabled automatically when it was disabled by discovery itself
+        /// (see <see cref="AutoDisabledUtc"/>). An operator who switches an auto-managed model off is
+        /// never overridden.
+        /// </para>
+        /// </remarks>
+        public bool AutoManaged { get; set; }
+
+        /// <summary>
+        /// UTC timestamp of the first discovery scan that did not find this auto-managed model in the
+        /// upstream list, or null when it is present (or not auto-managed). Used to time the offline
+        /// grace period so a single missed scan does not disable a model.
+        /// </summary>
+        public DateTime? AutoMissingSinceUtc { get; set; }
+
+        /// <summary>
+        /// UTC timestamp of the scan that disabled this auto-managed mapping, or null when discovery did
+        /// not disable it. Distinguishes "disabled by discovery" (re-enabled automatically when the model
+        /// comes back) from "disabled by an operator" (left alone).
+        /// </summary>
+        public DateTime? AutoDisabledUtc { get; set; }
+
+        /// <summary>Human-readable reason recorded when discovery disabled this mapping.</summary>
+        public string? AutoDisabledReason { get; set; }
+
+        /// <summary>The model name as exposed by this proxy to clients (e.g. "llama3").</summary>
+        [JsonPropertyName("OllamaName")]
+        public string ProxyName { get; set; } = string.Empty;
 
     /// <summary>The actual model name to request from the upstream server (e.g. "llama-3-8b").</summary>
     [JsonPropertyName("LlamaCppName")]
@@ -957,6 +1009,10 @@ internal sealed class ModelMapping
             Id = Id,
             IsEnabled = IsEnabled,
             Hidden = Hidden,
+            AutoManaged = AutoManaged,
+            AutoMissingSinceUtc = AutoMissingSinceUtc,
+            AutoDisabledUtc = AutoDisabledUtc,
+            AutoDisabledReason = AutoDisabledReason,
             ProxyName = ProxyName,
             ModelName = ModelName,
             EnableThinkingCompatibility = EnableThinkingCompatibility,
@@ -1244,6 +1300,17 @@ internal sealed class AppSettings
     [JsonIgnore]
     public object CredentialsSyncRoot { get; } = new();
 
+    /// <summary>
+    /// Process-wide sync root for <see cref="ModelMappings"/>. The web dashboard, the model
+    /// auto-discovery service, and the Windows grid all rewrite the same list from different
+    /// threads, and the whole list is replaced on commit rather than mutated in place, so the lock
+    /// object cannot live on the instance — a replacement list would carry a different one. Static
+    /// for the same reason <see cref="CredentialsSyncRoot"/> exists: the mapping list is a
+    /// process-wide singleton even though it is reachable from several <see cref="AppSettings"/>
+    /// clones.
+    /// </summary>
+    internal static readonly object ModelMappingsSyncRoot = new();
+
     /// <summary>Maximum number of log entries to keep in memory. Min: 10, Max: 100000.</summary>
     public int MaxLogEntries { get; set; } = 500;
 
@@ -1455,6 +1522,59 @@ internal sealed class AppSettings
 
     /// <summary>Default model discovery timeout in seconds.</summary>
     public const int DefaultModelDiscoveryTimeoutSeconds = 10;
+
+    /// <summary>
+    /// When true (default), the model auto-discovery service polls the upstream of every
+    /// <see cref="ModelMapping.AutoManaged"/> mapping and registers or disables models to match.
+    /// </summary>
+    /// <remarks>
+    /// Master switch for the feature as a whole; each mapping still opts in through
+    /// <see cref="ModelMapping.AutoManaged"/>, so turning this off leaves every auto-managed mapping
+    /// exactly as it currently stands rather than reverting anything.
+    /// </remarks>
+    [JsonIgnore]
+    public bool EnableModelAutoDiscovery { get; set; } = true;
+
+    /// <summary>
+    /// Seconds between model auto-discovery scans. Min: 15, Max: 3600. Default: 60.
+    /// </summary>
+    /// <remarks>
+    /// Each scan costs one <c>/v1/models</c> call per distinct upstream, not per model, so a short
+    /// interval is cheap. It is still deliberately not seconds-fast: a model server takes far longer
+    /// than a minute to load a model, and reacting instantly buys nothing.
+    /// </remarks>
+    [JsonIgnore]
+    public int ModelAutoDiscoveryIntervalSeconds { get; set; } = DefaultModelAutoDiscoveryIntervalSeconds;
+
+    /// <summary>
+    /// How long an auto-managed model must be missing from its upstream's model list before
+    /// discovery disables it. Min: 1, Max: 1440 minutes. Default: 10.
+    /// </summary>
+    /// <remarks>
+    /// The grace period exists because a single scan can miss a model for reasons that are not
+    /// "the model is gone" — an upstream restarting, a partially written list, a timeout on the
+    /// poll. Ten minutes of consecutive absences is a real outage rather than a blip.
+    /// </remarks>
+    [JsonIgnore]
+    public int ModelAutoDiscoveryOfflineMinutes { get; set; } = DefaultModelAutoDiscoveryOfflineMinutes;
+
+    /// <summary>Lower bound accepted for <see cref="ModelAutoDiscoveryIntervalSeconds"/>.</summary>
+    public const int MinModelAutoDiscoveryIntervalSeconds = 15;
+
+    /// <summary>Upper bound accepted for <see cref="ModelAutoDiscoveryIntervalSeconds"/>.</summary>
+    public const int MaxModelAutoDiscoveryIntervalSeconds = 3600;
+
+    /// <summary>Default auto-discovery scan interval in seconds.</summary>
+    public const int DefaultModelAutoDiscoveryIntervalSeconds = 60;
+
+    /// <summary>Lower bound accepted for <see cref="ModelAutoDiscoveryOfflineMinutes"/>.</summary>
+    public const int MinModelAutoDiscoveryOfflineMinutes = 1;
+
+    /// <summary>Upper bound accepted for <see cref="ModelAutoDiscoveryOfflineMinutes"/>.</summary>
+    public const int MaxModelAutoDiscoveryOfflineMinutes = 1440;
+
+    /// <summary>Default offline grace period, in minutes, before discovery disables a model.</summary>
+    public const int DefaultModelAutoDiscoveryOfflineMinutes = 10;
 
     /// <summary>
     /// Name of the instruction set that drives every compaction summarization, or null to use the
@@ -1792,6 +1912,10 @@ internal sealed class AppSettings
             MaxConcurrentCompactions, MinMaxConcurrentCompactions, MaxMaxConcurrentCompactions);
         ModelDiscoveryTimeoutSeconds = Math.Clamp(
             ModelDiscoveryTimeoutSeconds, MinModelDiscoveryTimeoutSeconds, MaxModelDiscoveryTimeoutSeconds);
+        ModelAutoDiscoveryIntervalSeconds = Math.Clamp(
+            ModelAutoDiscoveryIntervalSeconds, MinModelAutoDiscoveryIntervalSeconds, MaxModelAutoDiscoveryIntervalSeconds);
+        ModelAutoDiscoveryOfflineMinutes = Math.Clamp(
+            ModelAutoDiscoveryOfflineMinutes, MinModelAutoDiscoveryOfflineMinutes, MaxModelAutoDiscoveryOfflineMinutes);
         CompactionTargetTokens = Math.Clamp(
             CompactionTargetTokens, MinCompactionTargetTokens, MaxCompactionTargetTokens);
 
@@ -1817,6 +1941,16 @@ internal sealed class AppSettings
             mapping.Temperature = Math.Clamp(mapping.Temperature, 0.0, 2.0);
             mapping.RepeatPenalty = Math.Clamp(mapping.RepeatPenalty, 0.0, 2.0);
             mapping.ProactiveOverflowPercent = Math.Clamp(mapping.ProactiveOverflowPercent, 0, 100);
+
+            // Discovery bookkeeping only means something while the mapping is auto-managed; clear it
+            // when the flag is off so a later re-enable starts from a clean slate instead of instantly
+            // re-disabling the model on stale evidence.
+            if (!mapping.AutoManaged)
+            {
+                mapping.AutoMissingSinceUtc = null;
+                mapping.AutoDisabledUtc = null;
+                mapping.AutoDisabledReason = null;
+            }
 
             if (!string.IsNullOrWhiteSpace(mapping.UpstreamUrl)
                 && Uri.TryCreate(mapping.UpstreamUrl, UriKind.Absolute, out Uri? uri)
@@ -1882,6 +2016,9 @@ internal sealed class AppSettings
             CompactionFallbackContextTokens = CompactionFallbackContextTokens,
             MaxConcurrentCompactions = MaxConcurrentCompactions,
             ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
+            EnableModelAutoDiscovery = EnableModelAutoDiscovery,
+            ModelAutoDiscoveryIntervalSeconds = ModelAutoDiscoveryIntervalSeconds,
+            ModelAutoDiscoveryOfflineMinutes = ModelAutoDiscoveryOfflineMinutes,
             CompactionInstructionSetName = CompactionInstructionSetName,
             CompactionTargetTokens = CompactionTargetTokens,
             CopilotCompactionModelName = CopilotCompactionModelName,
@@ -1956,6 +2093,9 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = CompactionFallbackContextTokens,
         MaxConcurrentCompactions = MaxConcurrentCompactions,
         ModelDiscoveryTimeoutSeconds = ModelDiscoveryTimeoutSeconds,
+        EnableModelAutoDiscovery = EnableModelAutoDiscovery,
+        ModelAutoDiscoveryIntervalSeconds = ModelAutoDiscoveryIntervalSeconds,
+        ModelAutoDiscoveryOfflineMinutes = ModelAutoDiscoveryOfflineMinutes,
         CopilotCompactionModelName = CopilotCompactionModelName,
         EnableCopilotCompactionRouting = EnableCopilotCompactionRouting,
         CompactionInstructionSetName = CompactionInstructionSetName,
@@ -1985,6 +2125,9 @@ internal sealed class AppSettings
         CompactionFallbackContextTokens = runtimeSettings.CompactionFallbackContextTokens;
         MaxConcurrentCompactions = runtimeSettings.MaxConcurrentCompactions;
         ModelDiscoveryTimeoutSeconds = runtimeSettings.ModelDiscoveryTimeoutSeconds;
+        EnableModelAutoDiscovery = runtimeSettings.EnableModelAutoDiscovery;
+        ModelAutoDiscoveryIntervalSeconds = runtimeSettings.ModelAutoDiscoveryIntervalSeconds;
+        ModelAutoDiscoveryOfflineMinutes = runtimeSettings.ModelAutoDiscoveryOfflineMinutes;
         CopilotCompactionModelName = runtimeSettings.CopilotCompactionModelName;
         EnableCopilotCompactionRouting = runtimeSettings.EnableCopilotCompactionRouting;
         CompactionInstructionSetName = runtimeSettings.CompactionInstructionSetName;

@@ -53,6 +53,8 @@ what sits behind that port is now configurable, multi-protocol, and auditable.
 - Model name mapping — map any client model name to the model actually loaded on the backend
 - Per-mapping upstream URL and timeout — route different models to different servers
 - Per-model enable/disable, display name, and context length for `/v1/models`
+- Auto-managed models — one mapping per upstream is enough; models the upstream reports register
+  themselves, and models it stops reporting disable themselves after a grace period
 - Context compaction — manual `/compact` endpoints plus automatic, threshold-driven summarisation
 
 **Access security**
@@ -267,6 +269,41 @@ keeps a fleet of mappings on one rotating secret instead of N copies of it.
 - **Managed in both GUIs.** The **Credentials** tab (web) and the Windows **Credentials** tab list,
   add, edit, and delete entries; the name is the contract, so a rename is a breaking change for
   every consumer and the GUI warns before doing it.
+
+## Auto-Managed Models (Upstream Discovery)
+
+A machine that can run several models does not need several hand-written mappings. Tick
+**Auto-managed by upstream** on one mapping per upstream server, and the proxy keeps the rest of
+that server's models in step with what the server actually reports from its `/v1/models` endpoint:
+
+- **Register** — a model the upstream lists but the proxy does not know about is added as a clone of
+  the auto-managed mapping (same upstream URL, credential, instruction set, and sampling defaults).
+  Compaction targets are deliberately *not* inherited, so a new model never points at the template's
+  summarizer.
+- **Disable after a grace period** — a model the upstream stops listing is marked missing on the
+  first scan that misses it, and only switched off once it has been missing for
+  **`ModelAutoDiscoveryOfflineMinutes`** (default 10). Disabling is the same switch as the manual
+  one: the model disappears from `/v1/models` and `/api/tags` and stops routing.
+- **Re-activate** — a model that comes back is switched on again automatically, but only when
+  discovery was the thing that switched it off. An operator who disables a model by hand is never
+  overridden.
+- **A failed read changes nothing** — if the upstream is down, times out, or rejects the call, every
+  mapping is left exactly as it was. An outage of a whole server never looks like "all the models
+  were deleted".
+- **Proxy names stay unique** — a model id already used as a proxy name by any mapping (hand-written
+  or from another upstream) is skipped rather than overwritten.
+
+Two settings control it, in the **Models** tab (web) or the **Heartbeats** group (Windows app):
+
+| Setting | Default | Range | Meaning |
+|---------|---------|-------|---------|
+| `EnableModelAutoDiscovery` | `true` | on/off | Master switch. Off leaves every auto-managed mapping exactly where it is. |
+| `ModelAutoDiscoveryIntervalSeconds` | `60` | 15–3600 | How often each upstream is polled. |
+| `ModelAutoDiscoveryOfflineMinutes` | `10` | 1–1440 | How long a model must stay missing before it is disabled. |
+
+Both GUIs show the last scan and its outcome, and both offer **Discover now** (web: *Discover now*,
+Windows: *Discover models now*) to run one scan immediately instead of waiting for the next tick.
+The scan interval and master switch are re-read every tick, so changing them needs no restart.
 
 ## Custom Prompt Injection (Instruction Sets)
 
