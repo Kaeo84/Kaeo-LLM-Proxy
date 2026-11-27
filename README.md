@@ -377,6 +377,32 @@ and configuration details.
 - Windows 10 version 22000 (21H2) or later for the tray app
 - [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 
+### Platform support
+
+The engine, the web dashboard, and the MCP server are cross-platform. The tray app and the Visual
+Studio extension are Windows-only; on Linux and macOS the headless host plus the browser dashboard
+give you the same engine with full management UI.
+
+| Component | Windows | Linux | macOS (Apple Silicon) | macOS (Intel) |
+|-----------|---------|-------|-----------------------|---------------|
+| Proxy engine (`ProxyHostController`) | ✅ | ✅ | ✅ | ✅ |
+| Web dashboard | ✅ | ✅ | ✅ | ✅ |
+| MCP server | ✅ | ✅ | ✅ | ✅ |
+| Headless host (`Kaeo LLM Proxy Headless`) | ✅ | ✅ | ✅ (verified) | ✅ |
+| Tray app | ✅ | — | — | — |
+| Visual Studio extension | ✅ | — | — | — |
+| Code Vector Store module (ONNX + sqlite-vec natives) | ✅ | ✅ | ✅ (verified) | ✅ |
+| SSH module | ✅ | ✅ | ✅ | ✅ |
+
+Publish RIDs: `win-x64`, `linux-x64`, `linux-arm64`, `osx-arm64`, `osx-x64`. Module packages with
+native dependencies are per-RID — see [docs/Module-Packaging.md](docs/Module-Packaging.md).
+
+"Verified" means exercised end to end on real hardware: proxy endpoints, dashboard login and every
+authenticated API, lifecycle controls (proxy / MCP / web server start-stop-restart), HTTPS from a
+stored certificate credential, the MCP handshake and tool list, and the native module dependencies
+(ONNX Runtime, sqlite-vec, LibGit2Sharp). Linux uses the same code paths and publishes the same
+way, but has not yet been run on Linux hardware — treat it as supported but unverified.
+
 ## Running headless on Linux / macOS
 
 The tray app is Windows-only, but the engine, the web dashboard, and the MCP server are all
@@ -410,6 +436,39 @@ The Windows-only pieces (the tray app and the Visual Studio extension) are not p
 host. Module packages (`.kaeomod`) are per-platform; build them on the target platform with
 `./Kaeo LLM Proxy Headless --module-pack <module-dir>` (add `--module-sign --key <private-key.pem>`
 to sign), or leave them out and run with the built-in features.
+
+## Web dashboard
+
+The dashboard is the same UI on every platform and covers everything the tray app does. It is
+served by the engine itself — no separate process, no IIS, no Node.
+
+- **Address:** `http://localhost:11435` by default (`ListenPort + 1`). Set `WebDashboard.Port` to
+  override, or `WebDashboard.ListenAddress` to bind wider than loopback. Binding to `0.0.0.0`
+  exposes the dashboard to your network — keep `WebDashboard.RequireLogin` on.
+- **TLS:** set `WebDashboard.Scheme` to `Https` and point `WebDashboard.CertificateCredentialName`
+  at a certificate credential created on the **Credentials** tab. The dashboard, the proxy, and
+  the MCP endpoint then all serve that certificate.
+- **Tabs:** Dashboard (health, CPU/RAM, traffic, and start/stop/restart for the proxy, MCP server,
+  and web server), Requests (per-request rows plus live SSE streams), Sys Log, Usage, Models
+  (mappings, thinking mode, per-model grants), Credentials, Users (accounts, roles, API keys,
+  per-key model and MCP grants, reveal/regenerate), Settings, and MCP (tools, modules).
+
+### Hosting behind IIS on Windows
+
+The dashboard is a self-hosted Kestrel listener, so IIS is only ever a reverse proxy in front of
+it. Two options:
+
+1. **Reverse proxy (recommended).** Run the app normally and add a URL Rewrite rule with
+   `AR R` (Application Request Routing) that forwards a site or path to `http://localhost:11435`.
+   Set `WebDashboard.RequireLogin` to `true` and keep the dashboard bound to loopback so the site
+   is the only public surface.
+2. **Host the Web project as an IIS application.** Publish
+   `src/Kaeo LLM Proxy Web` and configure an *AspNetCoreModuleV2* application. The process must run
+   under an account with read/write access to the `Data/` folder (database, logs, module
+   packages), and the app pool must not be recycled mid-request if you rely on live SSE streams.
+
+Either way, terminate TLS at IIS and leave `WebDashboard.Scheme` at `Http` so the app does not
+double-encrypt; forward `X-Forwarded-Proto` if you need correct absolute links.
 
 ## GitHub Pages
 

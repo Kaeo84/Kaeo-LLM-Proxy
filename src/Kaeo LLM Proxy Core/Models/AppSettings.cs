@@ -2325,7 +2325,57 @@ internal sealed class AppSettings
 
                 // Root directory for text log files.
                 "LogDirectory": {{escapedLogDir}}
-              }
+              },
+
+              // - Web dashboard ---------------------------------------------------------
+              // The cross-platform dashboard (proxy port + 1 by default). Everything the Windows
+              // tray app can do is also available here, so a headless install is fully manageable.
+              "WebDashboard": {
+
+                // Start the dashboard host with the engine.  Default: true
+                "Enabled": {{(WebDashboard.Enabled ? "true" : "false")}},
+
+                // Dashboard port. 0 means "proxy ListenPort + 1".  Min: 0  Max: 65535  Default: 0
+                "Port": {{WebDashboard.Port}},
+
+                // Address the dashboard binds to. Keep "localhost" for local-only access; use
+                // "0.0.0.0" to expose it on the network, and pair that with HTTPS.
+                // Default: "localhost"
+                "ListenAddress": "{{WebDashboard.ListenAddress}}",
+
+                // Require a dashboard username/password sign-in. Turning this off gives everyone
+                // who can reach the dashboard full Admin access — loopback/trusted networks only.
+                // Applies immediately, no restart.  Default: true
+                "RequireLogin": {{(WebDashboard.RequireLogin ? "true" : "false")}},
+
+                // "Http" (default) or "Https". Prefer Http plus a TLS-terminating reverse proxy,
+                // or Https with the certificate credential below.
+                "Scheme": "{{WebDashboard.Scheme}}",
+
+                // Name of an entry in "Credentials" holding the HTTPS certificate: its Certificate
+                // field is a PFX (base64) or a PEM cert, its PrivateKey the PEM key, and its Secret
+                // the PFX password. Preferred over CertificatePath because it is encrypted at rest.
+                "CertificateCredentialName": {{JsonSerializer.Serialize(WebDashboard.CertificateCredentialName)}}
+              },
+
+              // - Proxy access security -------------------------------------------------
+              "ProxySecurity": {
+
+                // Require a valid user API key on every proxy request (health probe, /api/version
+                // and CORS preflight stay public). Manage users and keys in the Users tab.
+                // Default: false
+                "RequireApiKey": {{(ProxySecurity.RequireApiKey ? "true" : "false")}}
+              },
+
+              // - Modules ---------------------------------------------------------------
+              // Signature enforcement for .kaeomod packages.
+              // Values: "AllowUnsigned" (default) | "Warn" | "RequireSigned"
+              "ModuleLoadPolicy": "{{ModuleLoadPolicy}}",
+
+              // Public keys trusted to sign module packages (ECDSA P-256). Each entry needs the
+              // base64 DER SubjectPublicKeyInfo from the .pub file written by --module-keygen.
+              // Example: [{ "Name": "build-2026", "PublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE..." }]
+              "TrustedModuleKeys": []
             }
             """;
 
