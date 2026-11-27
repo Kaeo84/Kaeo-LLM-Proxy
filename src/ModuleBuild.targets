@@ -219,6 +219,11 @@
 
 	<MakeDir Directories="$(_ModulePackageDir)" Condition="Exists('$(_HeadlessDll)')" />
 
+	<!-- A plain `dotnet publish` without -o writes bin\{Config}\{TFM}\publish\ inside the build
+			 output. The packer takes the whole output folder, so a stale publish subtree would be
+			 shipped a second time (doubling package size). It is derived output — drop it first. -->
+	<RemoveDir Directories="$(OutputPath)publish" Condition="Exists('$(OutputPath)publish')" />
+
 	<!-- The source dir is passed as "$(OutputPath)." — the trailing dot matters: $(OutputPath)
 		 ends with a backslash, and a quoted path ending in \" would be parsed by Windows as an
 		 escaped quote, mangling every following argument. The dot avoids the trailing backslash
