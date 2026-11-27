@@ -1966,6 +1966,8 @@ internal sealed class AppDatabase : IDisposable
                                 ("proxy_users", "dashboard_username", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_users", "dashboard_password_hash", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_users", "dashboard_role", "TEXT NOT NULL DEFAULT 'readOnly'"),
+                                ("proxy_users", "allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
+                                ("proxy_users", "mcp_access", "INTEGER NOT NULL DEFAULT 0"),
                                 ("proxy_api_keys", "user_id", "INTEGER NOT NULL DEFAULT 0"),
                                 ("proxy_api_keys", "label", "TEXT NOT NULL DEFAULT ''"),
                                 ("proxy_api_keys", "key_hash", "TEXT NOT NULL DEFAULT ''"),
@@ -2026,7 +2028,94 @@ internal sealed class AppDatabase : IDisposable
                             Log.Warning(ex, "Skipped adding {Column} to {Table}: the database file is in use.", column, table);
                         }
                     }
+
+                    MigratePerKeyGrantsToUsers(connection);
                 }
+
+    /// <summary>
+    /// Model and MCP access used to be granted per API key; it is now granted per user, and every
+    /// key a user holds inherits it. This folds any grants still sitting on key rows into the
+    /// owning user so an upgraded database keeps the access it had, and then clears the key
+    /// columns so the migration is a no-op on every later start.
+    /// </summary>
+    /// <remarks>
+    /// Only users whose own grants are still empty are migrated, so a grant an administrator has
+    /// since set (or deliberately cleared after migrating) is never resurrected. Runs inside the
+    /// schema reconcile transaction and logs-and-continues on failure: a concurrent instance may
+    /// hold the file, and a failed migration must not stop the application from starting.
+    /// </remarks>
+    private static void MigratePerKeyGrantsToUsers(SqliteConnection connection)
+    {
+        try
+        {
+            Dictionary<int, (List<string> Models, bool Mcp)> inherited = [];
+            using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.CommandText =
+                    """
+                    SELECT user_id, allowed_models, mcp_access
+                    FROM proxy_api_keys
+                    WHERE allowed_models <> '[]' OR mcp_access = 1;
+                    """;
+                using SqliteDataReader reader = read.ExecuteReader();
+                while (reader.Read())
+                {
+                    int userId = reader.GetInt32(0);
+                    List<string> models = DeserializeAllowedModels(reader.IsDBNull(1) ? null : reader.GetString(1));
+                    bool mcp = reader.FieldCount > 2 && !reader.IsDBNull(2) && ReadBoolean(reader, 2);
+
+                    (List<string> Models, bool Mcp) current = inherited.TryGetValue(userId, out var existing)
+                        ? existing
+                        : ([], false);
+                    foreach (string model in models)
+                    {
+                        if (!current.Models.Contains(model, StringComparer.OrdinalIgnoreCase))
+                            current.Models.Add(model);
+                    }
+
+                    inherited[userId] = (current.Models, current.Mcp || mcp);
+                }
+            }
+
+            if (inherited.Count == 0)
+                return;
+
+            using SqliteTransaction transaction = connection.BeginTransaction();
+            int migrated = 0;
+            foreach ((int userId, (List<string> models, bool mcp)) in inherited)
+            {
+                using (SqliteCommand update = connection.CreateCommand())
+                {
+                    update.Transaction = transaction;
+                    update.CommandText =
+                        """
+                        UPDATE proxy_users
+                        SET allowed_models = $allowedModels, mcp_access = $mcpAccess
+                        WHERE id = $id AND (allowed_models = '[]' OR allowed_models = '') AND mcp_access = 0;
+                        """;
+                    update.Parameters.AddWithValue("$id", userId);
+                    update.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(models, _jsonOptions));
+                    update.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(mcp));
+                    migrated += update.ExecuteNonQuery();
+                }
+            }
+
+            using (SqliteCommand clear = connection.CreateCommand())
+            {
+                clear.Transaction = transaction;
+                clear.CommandText = "UPDATE proxy_api_keys SET allowed_models = '[]', mcp_access = 0;";
+                clear.ExecuteNonQuery();
+            }
+
+            transaction.Commit();
+            if (migrated > 0)
+                Log.Information("Moved per-key model/MCP grants to the owning user for {Count} user(s).", migrated);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException)
+        {
+            Log.Warning(ex, "Could not migrate per-key model grants to user-level grants; continuing.");
+        }
+    }
 
     /// <summary>
     /// Writes <see cref="SeedData"/>'s default model mappings and placeholder credential into a
@@ -2770,7 +2859,8 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 SELECT id, name, email, created_utc, is_enabled,
-                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
+                       allowed_models, mcp_access
                 FROM proxy_users
                 ORDER BY name COLLATE NOCASE, id;
                 """;
@@ -2778,20 +2868,7 @@ internal sealed class AppDatabase : IDisposable
             using SqliteDataReader reader = command.ExecuteReader();
             List<ProxyUser> users = [];
             while (reader.Read())
-            {
-                users.Add(new ProxyUser
-                {
-                    Id = reader.GetInt32(0),
-                    Name = reader.GetString(1),
-                    Email = reader.GetString(2),
-                    CreatedUtc = ReadUtc(reader, 3),
-                    IsEnabled = ReadBoolean(reader, 4),
-                    DashboardLoginEnabled = ReadBoolean(reader, 5),
-                    DashboardUsername = reader.GetString(6),
-                    DashboardPasswordHash = reader.GetString(7),
-                    DashboardRole = reader.GetString(8),
-                });
-            }
+                users.Add(ReadProxyUser(reader));
 
             return users;
         }
@@ -2820,9 +2897,9 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 INSERT INTO proxy_users
-                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role)
+                    (name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access)
                 VALUES
-                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole);
+                    ($name, $email, $createdUtc, $isEnabled, $dashboardLoginEnabled, $dashboardUsername, $dashboardPasswordHash, $dashboardRole, $allowedModels, $mcpAccess);
                 SELECT last_insert_rowid();
                 """;
             command.Parameters.AddWithValue("$name", user.Name);
@@ -2833,6 +2910,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
             command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
             command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
 
             object? scalar = command.ExecuteScalar();
             user.Id = Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
@@ -2855,7 +2934,9 @@ internal sealed class AppDatabase : IDisposable
                     dashboard_login_enabled = $dashboardLoginEnabled,
                     dashboard_username = $dashboardUsername,
                     dashboard_password_hash = $dashboardPasswordHash,
-                    dashboard_role = $dashboardRole
+                    dashboard_role = $dashboardRole,
+                    allowed_models = $allowedModels,
+                    mcp_access = $mcpAccess
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", user.Id);
@@ -2866,6 +2947,8 @@ internal sealed class AppDatabase : IDisposable
             command.Parameters.AddWithValue("$dashboardUsername", user.DashboardUsername);
             command.Parameters.AddWithValue("$dashboardPasswordHash", user.DashboardPasswordHash);
             command.Parameters.AddWithValue("$dashboardRole", user.DashboardRole);
+            command.Parameters.AddWithValue("$allowedModels", JsonSerializer.Serialize(user.AllowedModels, _jsonOptions));
+            command.Parameters.AddWithValue("$mcpAccess", ToSqliteBoolean(user.McpAccess));
             command.ExecuteNonQuery();
         }
     }
@@ -2952,28 +3035,15 @@ internal sealed class AppDatabase : IDisposable
             command.CommandText =
                 """
                 SELECT id, name, email, created_utc, is_enabled,
-                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role
+                       dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role,
+                       allowed_models, mcp_access
                 FROM proxy_users
                 WHERE id = $id;
                 """;
             command.Parameters.AddWithValue("$id", id);
 
             using SqliteDataReader reader = command.ExecuteReader();
-            if (!reader.Read())
-                return null;
-
-            return new ProxyUser
-            {
-                Id = reader.GetInt32(0),
-                Name = reader.GetString(1),
-                Email = reader.GetString(2),
-                CreatedUtc = ReadUtc(reader, 3),
-                IsEnabled = ReadBoolean(reader, 4),
-                DashboardLoginEnabled = ReadBoolean(reader, 5),
-                DashboardUsername = reader.GetString(6),
-                DashboardPasswordHash = reader.GetString(7),
-                DashboardRole = reader.GetString(8),
-            };
+            return reader.Read() ? ReadProxyUser(reader) : null;
         }
     }
 
@@ -2991,25 +3061,11 @@ internal sealed class AppDatabase : IDisposable
             using SqliteConnection connection = OpenConnection();
             using SqliteCommand command = connection.CreateCommand();
             command.CommandText =
-                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
+                "SELECT id, name, email, created_utc, is_enabled, dashboard_login_enabled, dashboard_username, dashboard_password_hash, dashboard_role, allowed_models, mcp_access FROM proxy_users WHERE dashboard_username = $username COLLATE NOCASE LIMIT 1;";
             command.Parameters.AddWithValue("$username", username.Trim());
 
             using SqliteDataReader reader = command.ExecuteReader();
-            if (!reader.Read())
-                return null;
-
-            return new ProxyUser
-            {
-                Id = reader.GetInt32(0),
-                Name = reader.GetString(1),
-                Email = reader.GetString(2),
-                CreatedUtc = ReadUtc(reader, 3),
-                IsEnabled = ReadBoolean(reader, 4),
-                DashboardLoginEnabled = ReadBoolean(reader, 5),
-                DashboardUsername = reader.GetString(6),
-                DashboardPasswordHash = reader.GetString(7),
-                DashboardRole = reader.GetString(8),
-            };
+            return reader.Read() ? ReadProxyUser(reader) : null;
         }
     }
 
@@ -3122,7 +3178,22 @@ internal sealed class AppDatabase : IDisposable
         }
     }
 
-    private static ProxyApiKey ReadProxyApiKey(SqliteDataReader reader) => new()
+    private static ProxyUser ReadProxyUser(SqliteDataReader reader) => new()
+        {
+            Id = reader.GetInt32(0),
+            Name = reader.GetString(1),
+            Email = reader.GetString(2),
+            CreatedUtc = ReadUtc(reader, 3),
+            IsEnabled = ReadBoolean(reader, 4),
+            DashboardLoginEnabled = ReadBoolean(reader, 5),
+            DashboardUsername = reader.GetString(6),
+            DashboardPasswordHash = reader.GetString(7),
+            DashboardRole = reader.GetString(8),
+            AllowedModels = DeserializeAllowedModels(reader.IsDBNull(9) ? null : reader.GetString(9)),
+            McpAccess = reader.FieldCount > 10 && !reader.IsDBNull(10) && ReadBoolean(reader, 10),
+        };
+
+        private static ProxyApiKey ReadProxyApiKey(SqliteDataReader reader) => new()
     {
         Id = reader.GetInt32(0),
         UserId = reader.GetInt32(1),

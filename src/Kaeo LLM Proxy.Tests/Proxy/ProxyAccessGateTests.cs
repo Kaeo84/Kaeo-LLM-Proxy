@@ -107,7 +107,18 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
 
     private string CreateKey(List<string>? allowedModels = null, bool userEnabled = true, string role = "readOnly", bool mcpAccess = false)
     {
-        ProxyUser user = new() { Name = "Tester", Email = "t@example.com", CreatedUtc = DateTime.UtcNow, IsEnabled = userEnabled, DashboardRole = role };
+        // Grants belong to the user now, so they are written to the user record and inherited by
+        // every key that user holds.
+        ProxyUser user = new()
+        {
+            Name = "Tester",
+            Email = "t@example.com",
+            CreatedUtc = DateTime.UtcNow,
+            IsEnabled = userEnabled,
+            DashboardRole = role,
+            AllowedModels = allowedModels ?? [],
+            McpAccess = mcpAccess,
+        };
         _database.InsertProxyUser(user);
         (string plainText, string hash, string prefix) = ProxyAccessService.GenerateKey();
         _database.InsertProxyApiKey(new ProxyApiKey
@@ -117,8 +128,6 @@ public sealed class ProxyAccessGateTests : IAsyncDisposable
             KeyHash = hash,
             KeyPrefix = prefix,
             CreatedUtc = DateTime.UtcNow,
-            AllowedModels = allowedModels ?? [],
-            McpAccess = mcpAccess,
         });
         _access.InvalidateCache();
         return plainText;

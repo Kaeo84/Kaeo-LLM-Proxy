@@ -115,10 +115,24 @@ To allow connections from other machines on your network:
 
 The web dashboard is **login-only by default**: every page and dashboard API call sits behind a
 sign-in page. Dashboard accounts are configured per user in the **Users** tab (web or Windows app)
-with a username, password, and role:
+with a username, password, and one or more roles. Roles combine (the permissions are the union), so
+a user can be, say, *User Admin* plus *Dashboard Read Only*:
 
-- **Admin** — full dashboard access (settings, mappings, users, modules, logs, usage, everything).
+- **Admin** — everything: every model, every MCP tool, every tab, and every action.
 - **Read Only** — their own request logs (attributed by API key) and their own token usage.
+- **Dashboard Read Only** — the Dashboard tab: proxy/MCP/web-server state, performance, and
+  traffic totals, without the control buttons.
+- **Dashboard Read-Write** — Dashboard Read Only plus start/stop/restart of the proxy, the MCP
+  server, and the web dashboard.
+- **User Admin** — Read Only plus adding, updating, and removing users, their roles, their API
+  keys, and their access grants.
+- **Model Admin** — Read Only plus adding, updating, and removing model mappings.
+- **Test Console** — the **Test Console** tab, limited to the models that user can access.
+
+Admin always holds every permission, and a user with no valid role has no dashboard access at all
+rather than falling back to Read Only. The **Sys Log** tab, the live stream panes, and the
+**Settings**, **Credentials**, and **Modules** surfaces stay Admin-only because they expose payload
+text and other users' traffic.
 
 The **Requests** view loads newest-first from the full logged history in the database (not just
 the small in-memory window), then polls for new entries at the top. A **Requestor** column shows
@@ -137,20 +151,26 @@ machines cannot claim a fresh instance; create logins from the Windows app's Use
 
 Proxy **API keys never grant dashboard access** — they authenticate model and MCP requests only.
 
-## API Key Grants (Models and MCP)
+## User Grants (Models and MCP)
 
-Each API key carries its own grants, edited in the **Users** tab (web: edit key; Windows app: the
-key editor dialog) next to each other:
+Model and MCP access belong to the **user**, not to an individual API key, so every key a user
+holds has the same reach. Both grants are edited in the **Users** tab (web: *Edit user*; Windows
+app: the user editor dialog) next to each other:
 
-- **Allowed models** — one checkbox per configured model. A key with no boxes checked gets **no**
+- **Allowed models** — one checkbox per configured model. A user with no boxes checked gets **no**
   model access, including model discovery, `/api/show`, chat, and passthrough.
-- **Allow MCP server access** — a single on/off grant for the MCP server. A key without it gets
+- **Allow MCP server access** — a single on/off grant for the MCP server. A user without it gets
   `403 Forbidden` from the MCP endpoint, while a valid key without any grants still authenticates.
 
-Dashboard role decides the defaults:
+Roles decide the defaults:
 
-- **Admin** users always have every model and the full MCP server regardless of per-key grants.
-- **Read Only** users get only what their key explicitly grants.
+- **Admin** users always have every model and the full MCP server regardless of their grants.
+- Everyone else gets only what their user record explicitly grants.
+
+> **Upgrade note:** grants used to be stored per API key. On first start the app folds every key's
+grants into the owning user and clears the per-key copy, so nothing is lost — but a user who owns
+several keys now gets the union of what those keys could reach. Re-check Read Only users after
+upgrading, and remember that an empty allowed-model list means *no models*.
 
 The MCP server accepts either the configured shared bearer credential (full access, unchanged) or a
 proxy API key as the bearer token. Unknown keys get `401`; known keys without the MCP grant get
@@ -160,21 +180,22 @@ proxy API key as the bearer token. Unknown keys get `401`; known keys without th
 client that used to connect anonymously must add `Authorization: Bearer <key>` with a key that has
 MCP access (or an Admin key), or keep using the shared credential if one is configured.
 
-> **Upgrade note:** before per-key grants were enforced, an empty allowed-model list meant *all
-> models*. It now means *no models*, so re-check existing Read Only keys after upgrading.
+> **Upgrade note:** before grants were enforced, an empty allowed-model list meant *all* models. It
+> now means *no models*, so re-check existing users after upgrading.
 
 ## API Key Recovery (Reveal and Regenerate)
 
 Keys authenticate by hash, and the full value is also kept under reversible encryption so an
-**Admin** can read it back. Each key row in the **Users** tab carries:
+**Admin** can read it back. Each user card and each key row in the **Users** tab keeps its actions
+behind a **3-dot overflow menu** so the card stays readable however many keys it holds:
 
-- **Reveal** (web) / **Reveal key** (Windows app) — shows the stored key, masked until you ask for
-  it, with one-click copy.
-- **Regen** (web) / **Regenerate key** (Windows app) — issues a new secret in place. The label,
-  model grants, and MCP grant all survive; the previous key stops working immediately.
+- **Reveal key** — shows the stored key, masked until you ask for it, with one-click copy.
+- **Regenerate key** (web: *Regen* in the same menu) — issues a new secret in place. The label and
+  the user's grants survive; the previous key stops working immediately.
 
-Read Only accounts cannot reveal or regenerate anything. Keys created before this feature have no
-stored secret, so revealing one offers to regenerate it instead.
+Users without the User Admin role (and Read Only accounts) cannot reveal or regenerate anything.
+Keys created before this feature have no stored secret, so revealing one offers to regenerate it
+instead.
 
 The encryption key is a random 32-byte file named `api-key-protection.key`, created next to the
 application database on first use. It keeps a copied or synced database from leaking usable keys,
@@ -213,8 +234,8 @@ when you leave those fields blank, so you can change a description without re-pa
   the page you are on.
 - **Windows app** → Dashboard → **Web dashboard** group: the same status, URL, and three buttons.
 
-Read Only dashboard users see the web server status but not the buttons. Stopping the web server
-does not change the *Enabled* setting, so the next proxy start brings it back.
+Users without the **Dashboard Read-Write** role see the web server status but not the buttons.
+Stopping the web server does not change the *Enabled* setting, so the next proxy start brings it back.
 
 ### Performance and web traffic
 
@@ -232,7 +253,7 @@ but an error response is always recorded.
 
 The web dashboard's **Usage** tab reports token consumption from the request-log database:
 
-- **Read Only** users see their own usage only (matched by the API key that made each request).
+- Users without the Admin role see their own usage only (matched by the user that made each request).
 - **Admin** users see everyone's usage and can scope the view to *All users*, themselves, or any
   single user, plus a **Usage by user** breakdown with per-user totals and share bars.
 
@@ -243,6 +264,23 @@ into per-model detail (requests, prompt, completion, total, cached prompt, and r
 Only requests that reported tokens are counted — zero-token probes are excluded. Requests made
 without an API key (or before attribution existed) appear as **Unattributed** in the admin
 by-user view. Days are grouped in the server's local time zone.
+
+## Test Console (Web Dashboard)
+
+The **Test Console** tab sends a prompt straight through the proxy to a model mapping and streams
+the answer back into the page, mirroring the Windows app's Test Console. It is gated by the
+**Test Console** role, and the model list it offers is filtered to the models that user can access —
+the same per-user grants the proxy enforces, so a Test Console user cannot reach a model they were
+not granted (the server answers `403` even if the request is forged).
+
+Pick a model, type a prompt (Ctrl+Enter sends), optionally set a system prompt, temperature, and
+repeat penalty, then **Send**. Deltas stream in as they arrive, thinking-mode output lands in its
+own pane, token usage and elapsed time show in the status line, and **Cancel** aborts the upstream
+request. Each run is recorded in the request log like any other proxied call, marked with the
+`(web test console)` path.
+
+Temperature and repeat penalty are pre-filled from the model's mapping and locked when the mapping
+fixes that value, so the console cannot send a setting the proxy would overwrite anyway.
 
 ## Usage
 

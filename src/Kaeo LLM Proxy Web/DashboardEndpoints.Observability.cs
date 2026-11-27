@@ -7,11 +7,10 @@ using Microsoft.Data.Sqlite;
 namespace Kaeo.LlmProxy.Web;
 
 /// <summary>
-/// System-log and live-stream endpoints — the two observability views the Windows GUI has and the
-/// dashboard previously lacked. Both are admin-only: the log store can contain payload text and the
-/// stream monitor exposes the raw bytes of other users' in-flight requests, so neither is listed in
-/// <see cref="DashboardAuth.IsReadOnlyRequestAllowed"/> and the auth middleware rejects Read Only
-/// sessions with 403.
+/// System-log and live-stream endpoints — the two observability views the Windows GUI has. Both
+/// stay Admin-only: the log store can contain payload text and the stream monitor exposes the raw
+/// bytes of other users' in-flight requests. The auth middleware rejects sessions that lack the
+/// capability a route needs.
 /// </summary>
 internal static partial class DashboardEndpoints
 {

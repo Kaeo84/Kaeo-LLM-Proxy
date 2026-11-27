@@ -1,8 +1,9 @@
 namespace Kaeo.LlmProxy.Core.Models;
 
 /// <summary>
-/// A person or service represented in the application database. Proxy model access uses their
-/// <see cref="ProxyApiKey"/>s; optional dashboard credentials separately grant a dashboard role.
+/// A person or service represented in the application database. Model and MCP access are granted
+/// to the person, not to an individual key, so every key they hold inherits the same reach;
+/// optional dashboard credentials separately grant one or more dashboard roles.
 /// </summary>
 internal sealed class ProxyUser
 {
@@ -24,14 +25,30 @@ internal sealed class ProxyUser
 
     public string DashboardPasswordHash { get; set; } = string.Empty;
 
-    public string DashboardRole { get; set; } = "readOnly";
+        /// <summary>
+        /// Comma-separated <see cref="DashboardRoles"/> keys ("userAdmin,readOnly"). A user may hold
+        /// several roles and the effective capabilities are the union. Admin implies everything.
+        /// </summary>
+        public string DashboardRole { get; set; } = "readOnly";
 
-    /// <summary>
-    /// Disabled users keep their record and keys but every key authenticates as rejected,
-    /// so access can be suspended without destroying the key material clients still hold.
-    /// </summary>
-    public bool IsEnabled { get; set; } = true;
-}
+        /// <summary>
+        /// Proxy model names this user may call. Every key they hold inherits this list; Admin users
+        /// bypass it. Empty means no model access (unless the user is an Admin).
+        /// </summary>
+        public List<string> AllowedModels { get; set; } = [];
+
+        /// <summary>Whether this user may use the MCP server. Admin users bypass this flag.</summary>
+        public bool McpAccess { get; set; }
+
+        /// <summary>
+        /// Disabled users keep their record and keys but every key authenticates as rejected,
+        /// so access can be suspended without destroying the key material clients still hold.
+        /// </summary>
+        public bool IsEnabled { get; set; } = true;
+
+        /// <summary>True when any of this user's dashboard roles is Admin.</summary>
+        public bool IsDashboardAdmin => DashboardRoles.HasRole(DashboardRole, DashboardRoles.Admin);
+    }
 
 /// <summary>
 /// An API key belonging to a <see cref="ProxyUser"/>. Requests authenticate against the SHA-256
@@ -71,11 +88,15 @@ internal sealed class ProxyApiKey
     public DateTime? LastUsedUtc { get; set; }
 
     /// <summary>
-    /// Proxy model names this key may call. Read Only users must have an explicit grant; Admin
-    /// users bypass this list.
+    /// Legacy per-key model grants. Superseded by <see cref="ProxyUser.AllowedModels"/>: the
+    /// database keeps the column so pre-existing databases still load, and the startup migration
+    /// folds any grants found here into the owning user. Nothing reads it for authorization.
     /// </summary>
     public List<string> AllowedModels { get; set; } = [];
 
-    /// <summary>Whether this key may use the MCP server. Admin users bypass this flag.</summary>
+    /// <summary>
+    /// Legacy per-key MCP grant, superseded by <see cref="ProxyUser.McpAccess"/> for the same
+    /// reason as <see cref="AllowedModels"/>.
+    /// </summary>
     public bool McpAccess { get; set; }
 }

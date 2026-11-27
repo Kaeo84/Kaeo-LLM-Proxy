@@ -165,35 +165,74 @@
 
     // ------------------------------------------------------------------ tabs
     var activeTab = 'dashboard';
-    var dashboardRole = 'admin';
+    var capabilities = { Admin: true };
     var currentIdentity = null;
     var loaders = {};
 
+    // Tabs are gated by capability, not by a single role: a user may hold several roles at once and
+    // the server decides what the union allows. The list is ordered as the nav shows it.
+    var TAB_CAPABILITY = {
+        dashboard: 'ViewDashboard',
+        requests: 'ViewLogs',
+        syslog: 'Admin',
+        usage: 'ViewUsage',
+        models: 'ManageModels',
+        credentials: 'ManageSettings',
+        users: 'ManageUsers',
+        settings: 'ManageSettings',
+        mcp: 'ViewDashboard',
+        testconsole: 'TestConsole'
+    };
+
+    function can(capability) { return !!capabilities[capability]; }
+
+        // Mirrors DashboardRoles.All on the server. /api/auth/roles replaces this at boot; the copy is
+        // only a fallback so the user editor still renders if that call fails.
+        var DASHBOARD_ROLES = [
+            { key: 'admin', label: 'Admin', description: 'Everything, including all models and MCP tools.' },
+            { key: 'readOnly', label: 'Read Only', description: 'View request logs and usage.' },
+            { key: 'dashboardReadOnly', label: 'Dashboard Read Only', description: 'View the dashboard and status.' },
+            { key: 'dashboardReadWrite', label: 'Dashboard Read-Write', description: 'View the dashboard and use the start/stop/restart controls.' },
+            { key: 'userAdmin', label: 'User Admin', description: 'Read Only plus add, update and remove users and permissions.' },
+            { key: 'modelAdmin', label: 'Model Admin', description: 'Read Only plus add, update and remove models.' },
+            { key: 'testConsole', label: 'Test Console', description: 'Use the Test Console with the models this user can access.' }
+        ];
+
     function setIdentity(identity) {
         currentIdentity = identity || null;
-        applyDashboardRole(currentIdentity && currentIdentity.role);
+        capabilities = {};
+        ((currentIdentity && currentIdentity.capabilities) || []).forEach(function (name) { capabilities[name] = true; });
+        applyDashboardRole();
         var loginRequired = !currentIdentity || currentIdentity.loginRequired !== false;
         $('#btn-signin').toggle(loginRequired)
             .text(currentIdentity && currentIdentity.username ? 'Sign out' : 'Sign in')
             .attr('title', currentIdentity && currentIdentity.username ? 'Signed in as ' + currentIdentity.username : 'Sign in to the dashboard');
     }
 
-    function applyDashboardRole(role) {
-        dashboardRole = role === 'readOnly' ? 'readOnly' : 'admin';
+    function applyDashboardRole() {
         applyLogSourceRole();
-        $('#tabs a').show();
-        $('#topbar').removeClass('read-only');
-        if (dashboardRole !== 'readOnly') return;
 
-        $('#tabs a').not('[data-tab="requests"],[data-tab="usage"]').hide();
-        $('#topbar').addClass('read-only');
-        $('#tabs a[data-tab="requests"], #tabs a[data-tab="usage"]').show();
-        if (location.hash !== '#requests' && location.hash !== '#usage') location.hash = 'requests';
-        activateTab(location.hash === '#usage' ? 'usage' : 'requests');
+        var allowed = [];
+        $('#tabs a').each(function () {
+            var $a = $(this);
+            var needed = TAB_CAPABILITY[$a.attr('data-tab')];
+            var visible = !needed || can(needed);
+            $a.toggle(visible);
+            if (visible) allowed.push($a.attr('data-tab'));
+        });
+        $('#topbar').toggleClass('read-only', !can('DashboardControl'));
+
+        if (allowed.length && allowed.indexOf(activeTab) < 0) {
+            var next = allowed.indexOf('requests') >= 0 ? 'requests' : allowed[0];
+            location.hash = '#' + next;
+            activateTab(next);
+        }
     }
 
     function activateTab(name) {
-        if (dashboardRole === 'readOnly' && name !== 'requests' && name !== 'usage') name = 'requests';
+        if (TAB_CAPABILITY[name] && !can(TAB_CAPABILITY[name])) {
+            name = can('ViewLogs') ? 'requests' : 'dashboard';
+        }
         if (!loaders[name]) name = 'dashboard';
         activeTab = name;
         $('#tabs a').removeClass('active').filter('[data-tab="' + name + '"]').addClass('active');
@@ -234,7 +273,7 @@
             .on('click', function () { api('POST', '/api/proxy/stop').then(refreshDashboard); }).appendTo($proxyActions);
         $('<button type="button">').text('Restart').prop('disabled', !s.proxy.isRunning)
             .on('click', function () { api('POST', '/api/proxy/restart').then(refreshDashboard); }).appendTo($proxyActions);
-        $proxy.append($proxyActions);
+        if (can('DashboardControl')) $proxy.append($proxyActions);
         if (s.proxy.error) $proxy.append($('<p class="card-error">').text(s.proxy.error));
         $cards.append($proxy);
 
@@ -248,7 +287,7 @@
             .on('click', function () { api('POST', '/api/mcp/stop').then(refreshDashboard); }).appendTo($mcpActions);
         $('<button type="button">').text('Restart').prop('disabled', !s.mcp.isRunning)
             .on('click', function () { api('POST', '/api/mcp/restart').then(refreshDashboard); }).appendTo($mcpActions);
-        $mcp.append($mcpActions);
+        if (can('DashboardControl')) $mcp.append($mcpActions);
         $cards.append($mcp);
 
         // The dashboard owns this listener, so Stop and Restart take this page down with them.
@@ -274,7 +313,7 @@
                     .then(function () { toast('Web server restarting…'); })
                     .catch(function () { /* the listener drops before the reply is read */ });
             }).appendTo($webActions);
-        $web.append($webActions);
+        if (can('DashboardControl')) $web.append($webActions);
         if (web.error) $web.append($('<p class="card-error">').text(web.error));
         $cards.append($web);
 
@@ -334,14 +373,14 @@
 
     function currentSource() { return $('#log-source').val(); }
 
-    // Read Only sessions only see their own proxy requests; MCP/non-proxied traffic is not
-    // attributed to API-key users, so those sources are admin-only.
+    // Non-Admin sessions only see their own proxy requests; MCP/non-proxied traffic is not
+    // attributed to API-key users, so those sources stay Admin-only.
     function applyLogSourceRole() {
         var $source = $('#log-source');
         var keep = $source.val() || 'proxy';
         $source.empty();
         [['proxy', 'Proxy'], ['mcp', 'MCP'], ['web', 'Web'], ['nonproxied', 'Non-proxied']].forEach(function (s) {
-            if (dashboardRole === 'readOnly' && s[0] !== 'proxy') return;
+            if (!can('Admin') && s[0] !== 'proxy') return;
             $source.append($('<option>').val(s[0]).text(s[1]));
         });
         $source.val(keep);
@@ -1004,184 +1043,266 @@
     }
 
     // ------------------------------------------------------------------ users tab
-    function loadUsers() {
-        api('GET', '/api/users').then(function (list) {
-            var $cards = $('#user-cards').empty();
-            if (!list.length) {
-                $cards.append($('<p class="muted">').text('No users yet. Add a user, then create an API key for them.'));
-                return;
-            }
-            list.forEach(function (u) {
-                var $card = $('<div class="card">')
-                    .append($('<h3>').text(u.name + ' ')
-                        .append($('<span class="pill">').addClass(u.isEnabled ? 'ok' : '').text(u.isEnabled ? 'enabled' : 'disabled')));
-                $card.append(kv('Email', u.email || '—'))
-                    .append(kv('Dashboard login', u.dashboardLoginEnabled
-                        ? u.dashboardUsername + ' · ' + (u.dashboardRole === 'admin' ? 'Admin' : 'Read Only')
-                        : 'disabled'))
-                    .append(kv('Created', u.createdUtc ? new Date(u.createdUtc).toLocaleString() : '—'));
 
-                var $keys = $('<div class="user-keys">');
-                if (!(u.keys || []).length) {
-                    $keys.append($('<p class="muted">').text('No API keys.'));
-                } else {
-                    u.keys.forEach(function (k) {
-                        var $row = $('<div class="key-row">');
-                        var $head = $('<div class="key-head">')
-                            .append($('<span class="key-name">').text(k.label || '(unlabeled)'))
-                            .append($('<span class="key-prefix">').text(k.keyPrefix + '\u2026'));
-                        var $keyActions = $('<span class="key-actions">');
-                        $('<button type="button" class="ghost">').text('Reveal').on('click', function () {
-                            revealKey(u, k);
-                        }).appendTo($keyActions);
-                        $('<button type="button" class="ghost">').text('Edit').on('click', function () {
-                            keyDialog(u, k);
-                        }).appendTo($keyActions);
-                        $('<button type="button" class="ghost">').text('Regen').on('click', function () {
-                            regenerateKey(u, k);
-                        }).appendTo($keyActions);
-                        $('<button type="button" class="ghost danger">').text('Delete').on('click', function () {
-                            confirmDialog('Delete API key', 'Delete key "' + (k.label || k.keyPrefix) + '" for ' + u.name + '? Clients using it lose access immediately.', function () {
-                                api('DELETE', '/api/keys/' + k.id).then(function () { toast('Key deleted.'); loadUsers(); });
-                            });
-                        }).appendTo($keyActions);
-                        $head.append($keyActions);
-                        $row.append($head);
-                        var accessSummary = u.dashboardRole === 'admin'
-                            ? 'Admin: all models + MCP'
-                            : ((k.allowedModels && k.allowedModels.length) ? k.allowedModels.join(', ') : 'no models')
-                                + ' · MCP ' + (k.mcpAccess ? 'allowed' : 'denied');
-                        $row.append($('<div class="key-meta">').text(
-                            accessSummary + ' · last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
-                        $keys.append($row);
-                    });
-                }
-                $card.append($keys);
+        // Every per-row action lives behind a single 3-dot button so a card stays readable no matter
+        // how many keys it holds. The popup is a single shared element, positioned against the button
+        // that opened it, so nothing is clipped by the card's overflow.
+        var $kebabMenu = null;
 
-                var $actions = $('<div class="actions">');
-                $('<button type="button" class="primary">').text('Create key').on('click', function () { keyDialog(u, null); }).appendTo($actions);
-                $('<button type="button">').text('Edit').on('click', function () { userDialog(u); }).appendTo($actions);
-                $('<button type="button">').text(u.isEnabled ? 'Disable' : 'Enable').on('click', function () {
-                    api('PUT', '/api/users/' + u.id, { isEnabled: !u.isEnabled })
-                        .then(function () { toast('User ' + (u.isEnabled ? 'disabled' : 'enabled') + '.'); loadUsers(); });
-                }).appendTo($actions);
-                $('<button type="button" class="danger">').text('Delete').on('click', function () {
-                    confirmDialog('Delete user', 'Delete user "' + u.name + '" and all of their API keys? This cannot be undone.', function () {
-                        api('DELETE', '/api/users/' + u.id).then(function () { toast('User deleted.'); loadUsers(); });
-                    });
-                }).appendTo($actions);
-                $card.append($actions);
-                $cards.append($card);
+        function closeKebabMenu() {
+            if (!$kebabMenu) return;
+            $($kebabMenu.data('owner')).attr('aria-expanded', 'false');
+            $kebabMenu.remove();
+            $kebabMenu = null;
+        }
+
+        function kebabButton(items) {
+            var $btn = $('<button type="button" class="kebab" aria-haspopup="menu" aria-label="More options">')
+                .append('<span></span><span></span><span></span>');
+            $btn.on('click', function (e) {
+                e.stopPropagation();
+                var reopen = !($kebabMenu && $kebabMenu.data('owner') === $btn[0]);
+                closeKebabMenu();
+                if (!reopen) return;
+
+                var $menu = $('<div class="kebab-menu" role="menu">');
+                items.forEach(function (item) {
+                    if (item.separator) { $menu.append($('<div class="kebab-sep">')); return; }
+                    $('<button type="button" role="menuitem">')
+                        .addClass(item.danger ? 'danger' : '')
+                        .text(item.label)
+                        .on('click', function (ev) {
+                            ev.stopPropagation();
+                            closeKebabMenu();
+                            item.action();
+                        })
+                        .appendTo($menu);
+                });
+
+                $('body').append($menu);
+                var rect = $btn[0].getBoundingClientRect();
+                var width = $menu.outerWidth();
+                var height = $menu.outerHeight();
+                var left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+                var top = rect.bottom + 4;
+                if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
+                $menu.css({ left: left + 'px', top: top + 'px' }).data('owner', $btn[0]);
+                $btn.attr('aria-expanded', 'true');
+                $kebabMenu = $menu;
             });
-        });
-    }
-
-    function userDialog(existing) {
-        var $body = $('<div>');
-        function field(label, $input, hint) {
-            var $f = $('<div class="field">').append($('<label>').text(label)).append($input);
-            if (hint) $f.append($('<span class="hint">').text(hint));
-            $body.append($f);
-            return $input;
+            return $btn;
         }
-        var $name = field('Name', $('<input type="text">').val(existing ? existing.name : ''), 'Required — who this account belongs to.');
-        var $email = field('Email', $('<input type="email">').val(existing ? existing.email : ''), 'Contact address (optional).');
-        var $loginEnabled = $('<input type="checkbox">').prop('checked', !!(existing && existing.dashboardLoginEnabled));
-        $body.append($('<div class="field bool">').append($loginEnabled).append($('<label>').text('Enable dashboard login')));
-        var $username = field('Dashboard username', $('<input type="text" autocomplete="username">')
-            .val(existing ? existing.dashboardUsername : ''), 'Separate from the proxy API keys used by model clients.');
-        var $password = field('Dashboard password', $('<input type="password" autocomplete="new-password">'),
-            existing && existing.hasDashboardPassword ? 'Leave blank to keep the current password; enter a new one to reset it.' : 'Use at least 12 characters.');
-        var $role = $('<select>').append($('<option>').val('admin').text('Admin — full dashboard access'))
-            .append($('<option>').val('readOnly').text('Read Only — request logs only'))
-            .val(existing ? existing.dashboardRole : 'readOnly');
-        field('Dashboard role', $role, 'Admin always has full model and MCP access. Read Only users need explicit per-key model and MCP grants.');
 
-        function syncLoginFields() {
-            var disabled = !$loginEnabled.prop('checked');
-            $username.add($password).add($role).prop('disabled', disabled);
+        $(document).on('click', function () { closeKebabMenu(); });
+        $(document).on('keydown', function (e) { if (e.key === 'Escape') closeKebabMenu(); });
+        $(window).on('resize scroll', function () { closeKebabMenu(); });
+
+        function roleListLabel(user) {
+            if (user.roleLabel) return user.roleLabel;
+            return (user.dashboardRoles && user.dashboardRoles.length) ? user.dashboardRoles.join(', ') : 'No dashboard access';
         }
-        $loginEnabled.on('change', syncLoginFields);
-        syncLoginFields();
 
-        function save() {
-            var name = $name.val().trim();
-            var username = $username.val().trim();
-            var password = $password.val();
-            var enabled = $loginEnabled.prop('checked');
-            if (!name) { modalError('User name is required.'); return; }
-            if (enabled && !password && !(existing && existing.hasDashboardPassword)) {
-                modalError('Set a password when enabling a dashboard login.');
-                return;
+        function grantSummary(user) {
+                if ((user.dashboardRoles || []).indexOf('admin') >= 0) return 'Admin: all models + MCP';
+                var models = user.allowedModels || [];
+                return (models.length ? models.join(', ') : 'no models') + ' · MCP ' + (user.mcpAccess ? 'allowed' : 'denied');
             }
-            var payload = {
-                name: name,
-                email: $email.val().trim(),
-                dashboardLoginEnabled: enabled,
-                dashboardUsername: username,
-                dashboardRole: $role.val()
-            };
-            if (password) payload.dashboardPassword = password;
-            var request = existing
-                ? api('PUT', '/api/users/' + existing.id, payload)
-                : api('POST', '/api/users', payload);
-            request.then(function () {
-                closeModal();
-                toast(existing ? 'User updated.' : 'User added.');
-                loadUsers();
-            }).catch(function (err) { modalError(err.message); });
+
+        function loadUsers() {
+            api('GET', '/api/users').then(function (list) {
+                var $cards = $('#user-cards').empty();
+                if (!list.length) {
+                    $cards.append($('<p class="muted">').text('No users yet. Add a user, then create an API key for them.'));
+                    return;
+                }
+                list.forEach(function (u) {
+                    var $card = $('<div class="card">');
+                    var $title = $('<h3>')
+                        .append($('<span class="card-title">').text(u.name + ' '))
+                        .append($('<span class="pill">').addClass(u.isEnabled ? 'ok' : '').text(u.isEnabled ? 'enabled' : 'disabled'))
+                        .append($('<span class="card-kebab">').append(kebabButton([
+                            { label: 'Create API key', action: function () { keyDialog(u, null); } },
+                            { label: 'Edit user', action: function () { userDialog(u); } },
+                            { label: u.isEnabled ? 'Disable user' : 'Enable user', action: function () { toggleUser(u); } },
+                            { separator: true },
+                            {
+                                label: 'Delete user', danger: true, action: function () {
+                                    confirmDialog('Delete user', 'Delete user "' + u.name + '" and all of their API keys? This cannot be undone.', function () {
+                                        api('DELETE', '/api/users/' + u.id).then(function () { toast('User deleted.'); loadUsers(); });
+                                    });
+                                }
+                            }
+                        ])));
+                    $card.append($title);
+                    $card.append(kv('Email', u.email || '—'))
+                        .append(kv('Dashboard login', u.dashboardLoginEnabled ? (u.dashboardUsername || '—') : 'disabled'))
+                        .append(kv('Roles', u.dashboardLoginEnabled ? roleListLabel(u) : '—'))
+                        .append(kv('Model access', grantSummary(u)))
+                        .append(kv('Created', u.createdUtc ? new Date(u.createdUtc).toLocaleString() : '—'));
+
+                    var $keys = $('<div class="user-keys">');
+                    if (!(u.keys || []).length) {
+                        $keys.append($('<p class="muted">').text('No API keys.'));
+                    } else {
+                        u.keys.forEach(function (k) {
+                            var $row = $('<div class="key-row">');
+                            var $head = $('<div class="key-head">')
+                                .append($('<span class="key-name">').text(k.label || '(unlabeled)'))
+                                .append($('<span class="key-prefix">').text(k.keyPrefix + '\u2026'))
+                                .append(kebabButton([
+                                    { label: 'Reveal key', action: function () { revealKey(u, k); } },
+                                    { label: 'Edit label', action: function () { keyDialog(u, k); } },
+                                    { label: 'Regenerate key', action: function () { regenerateKey(u, k); } },
+                                    { separator: true },
+                                    {
+                                        label: 'Delete key', danger: true, action: function () {
+                                            confirmDialog('Delete API key', 'Delete key "' + (k.label || k.keyPrefix) + '" for ' + u.name + '? Clients using it lose access immediately.', function () {
+                                                api('DELETE', '/api/keys/' + k.id).then(function () { toast('Key deleted.'); loadUsers(); });
+                                            });
+                                        }
+                                    }
+                                ]));
+                            $row.append($head);
+                            $row.append($('<div class="key-meta">').text(
+                                'last used ' + (k.lastUsedUtc ? new Date(k.lastUsedUtc).toLocaleString() : 'never')));
+                            $keys.append($row);
+                        });
+                    }
+                    $card.append($keys);
+                    $cards.append($card);
+                });
+            });
         }
 
-        openModal(existing ? 'Edit user' : 'Add user', $body, [
-            { label: 'Cancel' },
-            { label: 'Save', cls: 'primary', onClick: save }
-        ]);
-    }
+        function toggleUser(u) {
+            api('PUT', '/api/users/' + u.id, { isEnabled: !u.isEnabled })
+                .then(function () { toast('User ' + (u.isEnabled ? 'disabled' : 'enabled') + '.'); loadUsers(); });
+        }
 
-    function keyDialog(user, existing) {
-        api('GET', '/api/mappings', undefined, { silent: true }).then(function (mappings) {
-            var models = (mappings || [])
-                .map(function (m) { return m.OllamaName; })
-                .filter(function (n) { return !!n; })
-                .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
-            var allowed = existing ? (existing.allowedModels || []) : [];
-            var isAdmin = user.dashboardRole === 'admin';
+        function userDialog(existing) {
+            var $body = $('<div>');
+            function field(label, $input, hint) {
+                var $f = $('<div class="field">').append($('<label>').text(label)).append($input);
+                if (hint) $f.append($('<span class="hint">').text(hint));
+                $body.append($f);
+                return $input;
+            }
+            var $name = field('Name', $('<input type="text">').val(existing ? existing.name : ''), 'Required — who this account belongs to.');
+            var $email = field('Email', $('<input type="email">').val(existing ? existing.email : ''), 'Contact address (optional).');
+            var $loginEnabled = $('<input type="checkbox">').prop('checked', !!(existing && existing.dashboardLoginEnabled));
+            $body.append($('<div class="field bool">').append($loginEnabled).append($('<label>').text('Enable dashboard login')));
+            var $username = field('Dashboard username', $('<input type="text" autocomplete="username">')
+                .val(existing ? existing.dashboardUsername : ''), 'Separate from the proxy API keys used by model clients.');
+            var $password = field('Dashboard password', $('<input type="password" autocomplete="new-password">'),
+                existing && existing.hasDashboardPassword ? 'Leave blank to keep the current password; enter a new one to reset it.' : 'Use at least 12 characters.');
 
+            var held = (existing && existing.dashboardRoles) || (existing && existing.dashboardRole ? [existing.dashboardRole] : ['readOnly']);
+            var $roles = $('<div class="model-checks">');
+            DASHBOARD_ROLES.forEach(function (role) {
+                var $cb = $('<input type="checkbox">').val(role.key)
+                    .prop('checked', held.indexOf(role.key) >= 0);
+                $roles.append($('<label class="check">')
+                    .append($cb)
+                    .append($('<span>').append($('<strong>').text(role.label))
+                        .append(document.createTextNode(' — ' + role.description))));
+            });
+            $body.append($('<div class="field">').append($('<label>').text('Dashboard roles'))
+                .append($('<span class="hint">').text('Hold as many as apply; the permissions are combined. Admin already includes everything.'))
+                .append($roles));
+
+            var $models = null;
+            var $mcpAccess = null;
+
+            function buildGrants(models) {
+                var granted = (existing && existing.allowedModels) || [];
+                var $wrap = $('<div class="field">').append($('<label>').text('Model access'))
+                    .append($('<span class="hint">').text('Every API key this user holds inherits these grants. Admin users always have access to every model.'));
+                var $list = $('<div class="model-checks">');
+                if (!models.length) {
+                    $list.append($('<p class="muted">').text('No models are configured yet.'));
+                }
+                models.forEach(function (name) {
+                    var checked = granted.some(function (g) { return g.toLowerCase() === name.toLowerCase(); });
+                    var $cb = $('<input type="checkbox">').val(name).prop('checked', checked);
+                    $list.append($('<label class="check">').append($cb).append($('<span>').text(name)));
+                });
+                $wrap.append($list);
+                $models = $list;
+
+                $mcpAccess = $('<input type="checkbox">').prop('checked', !!(existing && existing.mcpAccess));
+                $wrap.append($('<div class="field bool">').append($mcpAccess)
+                    .append($('<label>').text('Allow MCP server access'))
+                    .append($('<span class="hint">').text('Grants this user the MCP server and all enabled MCP tools.')));
+                $body.append($wrap);
+            }
+
+            function selectedRoles() {
+                return $roles.find('input:checked').map(function () { return $(this).val(); }).get();
+            }
+
+            function save() {
+                var name = $name.val().trim();
+                var username = $username.val().trim();
+                var password = $password.val();
+                var enabled = $loginEnabled.prop('checked');
+                var roles = selectedRoles();
+                if (!name) { modalError('User name is required.'); return; }
+                if (enabled && !roles.length) { modalError('Pick at least one dashboard role.'); return; }
+                if (enabled && !password && !(existing && existing.hasDashboardPassword)) {
+                    modalError('Set a password when enabling a dashboard login.');
+                    return;
+                }
+                var payload = {
+                    name: name,
+                    email: $email.val().trim(),
+                    dashboardLoginEnabled: enabled,
+                    dashboardUsername: username,
+                    dashboardRoles: roles
+                };
+                if ($models) {
+                    payload.allowedModels = $models.find('input:checked').map(function () { return $(this).val(); }).get();
+                    payload.mcpAccess = $mcpAccess.prop('checked');
+                }
+                if (password) payload.dashboardPassword = password;
+                var request = existing
+                    ? api('PUT', '/api/users/' + existing.id, payload)
+                    : api('POST', '/api/users', payload);
+                request.then(function () {
+                    closeModal();
+                    toast(existing ? 'User updated.' : 'User added.');
+                    loadUsers();
+                }).catch(function (err) { modalError(err.message); });
+            }
+
+            // The role vocabulary and the model list both come from the server so the dialog can never
+            // drift from what the endpoints accept.
+            $.when(
+                api('GET', '/api/auth/roles', undefined, { silent: true }).catch(function () { return { roles: DASHBOARD_ROLES }; }),
+                api('GET', '/api/mappings', undefined, { silent: true }).catch(function () { return []; })
+            ).then(function (rolesResult, mappings) {
+                if (rolesResult && rolesResult.roles && rolesResult.roles.length) DASHBOARD_ROLES = rolesResult.roles;
+                var models = (mappings || [])
+                    .filter(function (m) { return m.IsEnabled !== false && m.OllamaName; })
+                    .map(function (m) { return m.OllamaName; })
+                    .sort(function (a, b) { return a.toLowerCase().localeCompare(b.toLowerCase()); });
+                buildGrants(models);
+                openModal(existing ? 'Edit user' : 'Add user', $body, [
+                    { label: 'Cancel' },
+                    { label: 'Save', cls: 'primary', onClick: save }
+                ]);
+            });
+        }
+
+        function keyDialog(user, existing) {
             var $body = $('<div>');
             var $label = $('<input type="text">').val(existing ? existing.label : '');
             $body.append($('<div class="field">').append($('<label>').text('Label')).append($label)
                 .append($('<span class="hint">').text('What this key is for, e.g. "laptop" or "CI pipeline".')));
-
-            $body.append($('<div class="field">').append($('<label>').text('Model access'))
-                .append($('<span class="hint">').text(isAdmin
-                    ? 'Admin users always have access to every model.'
-                    : 'Check each model this key may call. No selections means no model access.')));
-            var $models = $('<div class="model-checks">');
-            if (!models.length) {
-                $models.append($('<p class="muted">').text(isAdmin
-                    ? 'No models are configured. Admin users still have access to all models.'
-                    : 'No models are configured; this key has no model access.'));
-            }
-            models.forEach(function (name) {
-                var checked = allowed.some(function (a) { return a.toLowerCase() === name.toLowerCase(); });
-                var $cb = $('<input type="checkbox">').val(name).prop('checked', checked);
-                $models.append($('<label class="check">').append($cb).append($('<span>').text(name)));
-            });
-            $body.append($models);
-
-            var $mcpAccess = $('<input type="checkbox">').prop('checked', existing ? !!existing.mcpAccess : false);
-            $body.append($('<div class="field bool">').append($mcpAccess)
-                .append($('<label>').text('Allow MCP server access'))
-                .append($('<span class="hint">').text(isAdmin
-                    ? 'Admin users always have access to all MCP tools.'
-                    : 'Grants this key access to the MCP server and all enabled MCP tools.')));
-
-            function selectedModels() {
-                return $models.find('input:checked').map(function () { return $(this).val(); }).get();
-            }
+            $body.append($('<p class="muted">').text(
+                'Model and MCP access belong to ' + user.name + ', not to the key, so every key they hold has the same access. Change it with "Edit user".'));
 
             function save() {
-                var payload = { label: $label.val().trim(), allowedModels: selectedModels(), mcpAccess: $mcpAccess.prop('checked') };
+                var payload = { label: $label.val().trim() };
                 if (existing) {
                     api('PUT', '/api/keys/' + existing.id, payload).then(function () {
                         closeModal();
@@ -1201,8 +1322,7 @@
                 { label: 'Cancel' },
                 { label: existing ? 'Save' : 'Create', cls: 'primary', onClick: save }
             ]);
-        }).catch(function (err) { toast(err.message, true); });
-    }
+        }
 
     function showNewKeyDialog(user, plainText) {
         showKeyDialog('New API key', plainText,
@@ -1262,7 +1382,7 @@
 
     function regenerateKey(user, key) {
         openModal('Regenerate API key', $('<p>').text(
-            'Replace the key "' + (key.label || key.keyPrefix) + '" with a new one? The current key stops working immediately. The label, model grants, and MCP access stay the same.'), [
+            'Replace the key "' + (key.label || key.keyPrefix) + '" with a new one? The current key stops working immediately. The label stays the same, and model access is unchanged because it belongs to ' + user.name + '.'), [
             { label: 'Cancel' },
             {
                 label: 'Regenerate', cls: 'danger', onClick: function () {
@@ -1316,7 +1436,7 @@
         var range = usageRange(usageState.period);
         var url = '/api/usage?from=' + range.from + '&to=' + range.to + '&groupBy=' + usageState.group;
         if (usageState.model) url += '&model=' + encodeURIComponent(usageState.model);
-        if (dashboardRole !== 'readOnly' && usageState.user) url += '&userId=' + encodeURIComponent(usageState.user);
+        if (can('Admin') && usageState.user) url += '&userId=' + encodeURIComponent(usageState.user);
         api('GET', url).then(renderUsage).catch(function () { /* toast already shown */ });
     }
     loaders.usage = loadUsage;
@@ -1333,7 +1453,7 @@
             (data.models || []).forEach(function (m) { $model.append($('<option>').val(m).text(m)); });
         }
 
-        var isAdmin = dashboardRole !== 'readOnly';
+        var isAdmin = can('Admin');
         $('#usage-user-wrap').toggle(isAdmin);
         $('#usage-byuser-wrap').toggle(isAdmin);
         if (isAdmin) {
@@ -1702,6 +1822,164 @@
 
     loaders.mcp = function () { loadMcp(); loadModules(); };
 
+        // ------------------------------------------------------------------ test console tab
+        // Talks to /api/testchat, which streams SSE frames: delta / thinking / usage / done / error.
+        // The model list is filtered server-side to what this user may actually call, so there is no
+        // client-side gate to bypass.
+        var tcModels = [];
+        var tcAbort = null;
+
+        function tcSetStatus(text, isError) {
+            $('#tc-status').text(text || '').toggleClass('err', !!isError);
+        }
+
+        function tcBusy(busy) {
+            $('#tc-send').prop('disabled', busy);
+            $('#tc-cancel').prop('disabled', !busy);
+            $('#tc-model, #tc-prompt, #tc-system, #tc-temperature, #tc-repeat-penalty').prop('disabled', busy);
+        }
+
+        function tcApplyModelDefaults() {
+            var model = tcModels.filter(function (m) { return m.name === $('#tc-model').val(); })[0];
+            if (!model) return;
+            var $temp = $('#tc-temperature');
+            var $penalty = $('#tc-repeat-penalty');
+            if (typeof model.temperature === 'number' && !$temp.val()) $temp.val(model.temperature);
+            if (typeof model.repeatPenalty === 'number' && !$penalty.val()) $penalty.val(model.repeatPenalty);
+            // A provider-priority setting wins over the request, so lock the input instead of letting
+            // the operator type a value the proxy will overwrite.
+            $temp.prop('disabled', !!model.temperatureLocked)
+                .attr('title', model.temperatureLocked ? 'Temperature is fixed by this model\'s configuration.' : '');
+            $penalty.prop('disabled', !!model.repeatPenaltyLocked)
+                .attr('title', model.repeatPenaltyLocked ? 'Repeat penalty is fixed by this model\'s configuration.' : '');
+        }
+
+        function loadTestConsole() {
+            api('GET', '/api/testchat/models').then(function (result) {
+                tcModels = (result && result.models) || [];
+                var $select = $('#tc-model').empty();
+                if (!tcModels.length) {
+                    $select.append($('<option>').val('').text('No models available'));
+                    tcSetStatus('No models are available to your account. Ask an admin to grant you model access.', true);
+                    return;
+                }
+                tcModels.forEach(function (m) { $select.append($('<option>').val(m.name).text(m.name)); });
+                tcSetStatus('');
+                tcApplyModelDefaults();
+            }).catch(function (err) { tcSetStatus(err.message, true); });
+        }
+
+        function tcClear() {
+            $('#tc-response').text('');
+            $('#tc-thinking').text('');
+            $('#tc-thinking-wrap').addClass('hidden');
+            tcSetStatus('');
+        }
+
+        function tcAppend(target, text) {
+            var el = document.getElementById(target);
+            if (!el) return;
+            var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+            el.textContent += text;
+            if (atBottom) el.scrollTop = el.scrollHeight;
+        }
+
+        function tcSend() {
+            var model = $('#tc-model').val();
+            var prompt = $('#tc-prompt').val();
+            if (!model) { tcSetStatus('Select a model first.', true); return; }
+            if (!prompt || !prompt.trim()) { tcSetStatus('Enter a prompt first.', true); return; }
+
+            tcClear();
+            tcBusy(true);
+            tcSetStatus('Sending to ' + model + '\u2026');
+
+            var body = { model: model, prompt: prompt };
+            var system = $('#tc-system').val();
+            if (system && system.trim()) body.system = system;
+            var temperature = parseFloat($('#tc-temperature').val());
+            if (!isNaN(temperature)) body.temperature = temperature;
+            var penalty = parseFloat($('#tc-repeat-penalty').val());
+            if (!isNaN(penalty)) body.repeatPenalty = penalty;
+
+            var controller = new AbortController();
+            tcAbort = controller;
+            var started = Date.now();
+            var chunks = 0;
+
+            fetch('/api/testchat', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            }).then(function (response) {
+                var contentType = response.headers.get('content-type') || '';
+                if (contentType.indexOf('application/json') >= 0) {
+                    return response.json().then(function (payload) {
+                        throw new Error((payload && payload.error) || 'The Test Console request was rejected.');
+                    });
+                }
+                if (!response.ok) throw new Error('Request failed with status ' + response.status + '.');
+                if (!response.body || !response.body.getReader) throw new Error('This browser cannot read a streaming response.');
+
+                var reader = response.body.getReader();
+                var decoder = new TextDecoder();
+                var buffer = '';
+
+                function handleFrame(frame) {
+                    var line = frame.split('\n').filter(function (l) { return l.indexOf('data:') === 0; })[0];
+                    if (!line) return;
+                    var payload;
+                    try { payload = JSON.parse(line.slice(5).trim()); } catch (e) { return; }
+                    if (payload.type === 'delta') { tcAppend('tc-response', payload.text || ''); chunks++; }
+                    else if (payload.type === 'thinking') {
+                        $('#tc-thinking-wrap').removeClass('hidden');
+                        tcAppend('tc-thinking', payload.text || '');
+                    } else if (payload.type === 'usage') {
+                        var usage = payload.usage || {};
+                        var promptTokens = usage.prompt_tokens || usage.promptTokens || 0;
+                        var completionTokens = usage.completion_tokens || usage.completionTokens || 0;
+                        if (promptTokens || completionTokens) {
+                            tcSetStatus('Prompt ' + promptTokens + ' \u00b7 completion ' + completionTokens + ' tokens');
+                        }
+                    } else if (payload.type === 'error') {
+                        tcSetStatus(payload.message || 'The upstream rejected the request.', true);
+                    } else if (payload.type === 'done') {
+                        var elapsed = payload.durationMs != null ? Math.round(payload.durationMs) : Date.now() - started;
+                        tcSetStatus('Done in ' + elapsed + ' ms \u00b7 ' + (payload.chunks != null ? payload.chunks : chunks) + ' chunks');
+                    }
+                }
+
+                function pump() {
+                    return reader.read().then(function (result) {
+                        if (result.done) {
+                            if (buffer.trim()) handleFrame(buffer);
+                            return;
+                        }
+                        buffer += decoder.decode(result.value, { stream: true });
+                        var split;
+                        while ((split = buffer.indexOf('\n\n')) >= 0) {
+                            handleFrame(buffer.slice(0, split));
+                            buffer = buffer.slice(split + 2);
+                        }
+                        return pump();
+                    });
+                }
+
+                return pump();
+            }).catch(function (err) {
+                if (err && err.name === 'AbortError') tcSetStatus('Cancelled.');
+                else tcSetStatus(err && err.message ? err.message : String(err), true);
+            }).then(function () {
+                tcAbort = null;
+                tcBusy(false);
+                tcApplyModelDefaults();
+            });
+        }
+
+        loaders.testconsole = loadTestConsole;
+
     // ------------------------------------------------------------------ polling
     var lastStatusPoll = 0;
     var lastLogPoll = 0;
@@ -1831,11 +2109,25 @@
         $('#settings-form').on('submit', function (e) { e.preventDefault(); saveSettings(); });
         $('#btn-refresh-mcp').on('click', loadMcp);
 
+                $('#tc-model').on('change', function () {
+                    $('#tc-temperature').val('');
+                    $('#tc-repeat-penalty').val('');
+                    tcApplyModelDefaults();
+                });
+                $('#tc-send').on('click', tcSend);
+                $('#tc-clear').on('click', tcClear);
+                $('#tc-cancel').on('click', function () {
+                    if (tcAbort) tcAbort.abort();
+                });
+                // Ctrl+Enter sends, matching the Windows GUI's Test Console.
+                $('#tc-prompt').on('keydown', function (e) {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); tcSend(); }
+                });
+
         api('GET', '/api/auth/me', undefined, { silent: true })
             .then(function (identity) {
                 setIdentity(identity);
-                if (dashboardRole !== 'readOnly')
-                    activateTab(location.hash.replace('#', '') || 'dashboard');
+                activateTab(location.hash.replace('#', '') || 'dashboard');
             })
             .catch(function (err) { if (err.status !== 401) setConn('err'); });
     });

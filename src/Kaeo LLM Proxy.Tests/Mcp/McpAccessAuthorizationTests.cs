@@ -63,6 +63,7 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
 
     private string CreateKey(string role = "readOnly", bool mcpAccess = false)
     {
+        // MCP access is a user-level grant; the key inherits it.
         ProxyUser user = new()
         {
             Name = "Tester",
@@ -70,6 +71,8 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
             CreatedUtc = DateTime.UtcNow,
             IsEnabled = true,
             DashboardRole = role,
+            AllowedModels = [],
+            McpAccess = mcpAccess,
         };
         _database.InsertProxyUser(user);
 
@@ -81,8 +84,6 @@ public sealed class McpAccessAuthorizationTests : IAsyncLifetime
             KeyHash = hash,
             KeyPrefix = prefix,
             CreatedUtc = DateTime.UtcNow,
-            AllowedModels = [],
-            McpAccess = mcpAccess,
         });
         _access.InvalidateCache();
         return plainText;

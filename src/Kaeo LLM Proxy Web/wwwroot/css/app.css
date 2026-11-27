@@ -205,17 +205,91 @@ textarea { width: 100%; resize: vertical; font-family: Consolas, "SF Mono", mono
 .user-keys { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
 .user-keys .key-row { padding: 4px 0; }
 .user-keys .key-row + .key-row { border-top: 1px dashed var(--border); }
-/* One block per key: name + prefix on the first line with that key's Edit/Delete pinned right,
-   scope and last-used on the second. Long model lists and timestamps then wrap in their own line
-   instead of pushing the buttons out of the card or hiding the other keys' buttons. */
+/* One block per key: name + prefix on the first line with that key's overflow menu pinned right,
+   last-used on the second. Long labels and timestamps then wrap in their own line instead of
+   pushing anything out of the card. */
 .user-keys .key-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.user-keys .key-name { min-width: 0; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-keys .key-name { min-width: 0; flex: 1 1 auto; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-keys .key-prefix { flex: none; font-family: Consolas, "SF Mono", monospace; font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
-.user-keys .key-actions { flex: none; margin-left: auto; display: flex; gap: 4px; }
-.user-keys .key-actions button { padding: 2px 8px; font-size: 12px; }
 .user-keys .key-meta { margin-top: 2px; font-size: 12px; color: var(--fg-muted); word-break: break-word; }
 .model-checks { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
-.model-checks .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.model-checks .check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
+.model-checks .check input { margin-top: 3px; }
+.model-checks .check span { min-width: 0; word-break: break-word; }
+
+/* ---- overflow (kebab) menu ---- */
+/* One 3-dot button per card/key keeps a card's action surface a fixed size. The popup is appended
+   to <body> and positioned against the button, so it is never clipped by a card's padding. */
+.card-title { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-kebab { flex: none; margin-left: auto; display: flex; }
+.kebab {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    width: 26px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.kebab span { display: block; width: 3px; height: 3px; border-radius: 50%; background: var(--fg-muted); }
+.kebab:hover, .kebab[aria-expanded="true"] { background: var(--row-hover); border-color: var(--border); }
+.kebab:hover span { background: var(--fg); }
+.kebab-menu {
+    position: fixed;
+    z-index: 300;
+    min-width: 170px;
+    padding: 4px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    display: flex;
+    flex-direction: column;
+}
+.kebab-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--fg);
+    cursor: pointer;
+}
+.kebab-menu button:hover { background: var(--row-hover); }
+.kebab-menu button.danger { color: var(--err); }
+.kebab-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+
+/* ---- test console tab ---- */
+.tc-pane { display: flex; flex-direction: column; gap: 10px; }
+.tc-pane textarea {
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 13px;
+    resize: vertical;
+}
+.tc-params { display: flex; gap: 16px; flex-wrap: wrap; }
+.tc-params label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+.tc-params input { width: 90px; }
+.tc-block { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.tc-block h3 { margin: 0 0 6px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: .04em; }
+.tc-block pre {
+    margin: 0;
+    max-height: 34vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: Consolas, "SF Mono", monospace;
+    font-size: 13px;
+}
+.tc-response { min-height: 8em; }
+#tc-status.err { color: var(--err); }
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }

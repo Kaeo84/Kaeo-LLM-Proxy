@@ -78,7 +78,18 @@ internal sealed class UserWrite
     public bool? DashboardLoginEnabled { get; set; }
     public string? DashboardUsername { get; set; }
     public string? DashboardPassword { get; set; }
+
+    /// <summary>Legacy single-role field; still accepted so older clients keep working.</summary>
     public string? DashboardRole { get; set; }
+
+    /// <summary>Every role the user holds. Replaces <see cref="DashboardRole"/> when supplied.</summary>
+    public List<string>? DashboardRoles { get; set; }
+
+    /// <summary>Models this user may call with any of their keys. Null leaves the list untouched.</summary>
+    public List<string>? AllowedModels { get; set; }
+
+    /// <summary>Whether this user may use the MCP server. Null leaves the grant untouched.</summary>
+    public bool? McpAccess { get; set; }
 }
 
 internal sealed class DashboardLoginWrite
@@ -96,15 +107,26 @@ internal sealed class DashboardSetupWrite
 }
 
 /// <summary>
-/// API key create/update payload. On create the server generates the key material; on update
-/// only label, model grants, and MCP access are mutable. Missing AllowedModels on update leaves
-/// the list untouched.
+/// API key create/update payload. On create the server generates the key material; on update only
+/// the label is mutable. Model and MCP access belong to the user, not the key, so every key a user
+/// holds inherits their grants.
 /// </summary>
 internal sealed class KeyWrite
 {
     public string? Label { get; set; }
-    public List<string>? AllowedModels { get; set; }
-    public bool? McpAccess { get; set; }
+}
+
+/// <summary>
+/// Test Console prompt. Sampling values are optional: when omitted the model's own configuration
+/// is left to the upstream, and a model configured to defer to the provider ignores them anyway.
+/// </summary>
+internal sealed class TestChatWrite
+{
+    public string? Model { get; set; }
+    public string? Prompt { get; set; }
+    public string? System { get; set; }
+    public double? Temperature { get; set; }
+    public double? RepeatPenalty { get; set; }
 }
 
 /// <summary>

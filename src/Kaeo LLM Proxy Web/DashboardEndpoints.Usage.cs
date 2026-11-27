@@ -38,15 +38,15 @@ internal static partial class DashboardEndpoints
             if (groupBy is not ("day" or "week" or "month"))
                 return Results.Json(new { error = "groupBy must be day, week, or month." }, statusCode: StatusCodes.Status400BadRequest);
 
-            string role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole;
+            bool fullVisibility = DashboardAuth.IsAdmin(context);
             int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
                 ? parsedId
                 : null;
 
-            // Read Only is pinned to its own user no matter what was requested.
+            // Non-Admin roles are pinned to their own user no matter what was requested.
             int? filterUserId;
             string scope;
-            if (role == DashboardAuth.ReadOnlyRole)
+            if (!fullVisibility)
             {
                 if (callerId is null)
                     return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
@@ -82,7 +82,7 @@ internal static partial class DashboardEndpoints
                 if (!string.IsNullOrWhiteSpace(model))
                     rows = rows.Where(r => string.Equals(r.Model, model, StringComparison.OrdinalIgnoreCase)).ToList();
 
-                List<ProxyUser> users = role == DashboardAuth.ReadOnlyRole ? [] : [.. controller.Database.LoadProxyUsers()];
+                List<ProxyUser> users = fullVisibility ? [.. controller.Database.LoadProxyUsers()] : [];
                 Dictionary<int, string> userNames = users.ToDictionary(u => u.Id, u => u.Name);
 
                 return Results.Json(new

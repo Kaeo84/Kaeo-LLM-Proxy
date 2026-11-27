@@ -17,6 +17,7 @@
             <a href="#models" data-tab="models">Models</a>
             <a href="#credentials" data-tab="credentials">Credentials</a>
             <a href="#users" data-tab="users">Users</a>
+            <a href="#testconsole" data-tab="testconsole">Test Console</a>
             <a href="#settings" data-tab="settings">Settings</a>
             <a href="#mcp" data-tab="mcp">MCP</a>
         </nav>
@@ -230,9 +231,43 @@
             <div class="toolbar">
                 <button id="btn-add-user" type="button" class="primary">Add user</button>
                 <button id="btn-refresh-users" type="button">Refresh</button>
-                <span class="muted">Read Only users need explicit model and MCP grants per API key. Admin users always have full model, MCP, and dashboard access.</span>
+                <span class="muted">Model and MCP access belong to the user, so every API key they hold shares it. Admin users always have full model, MCP, and dashboard access.</span>
             </div>
             <div id="user-cards" class="cards"></div>
+        </section>
+
+        <section id="tab-testconsole" class="tab">
+            <div class="toolbar">
+                <label>Model
+                    <select id="tc-model"></select>
+                </label>
+                <button id="tc-send" type="button" class="primary">Send</button>
+                <button id="tc-cancel" type="button" disabled>Cancel</button>
+                <button id="tc-clear" type="button">Clear</button>
+                <span id="tc-status" class="muted"></span>
+            </div>
+            <div class="tc-pane">
+                <div class="field">
+                    <label for="tc-system">System prompt (optional)</label>
+                    <textarea id="tc-system" rows="2" spellcheck="false"></textarea>
+                </div>
+                <div class="field">
+                    <label for="tc-prompt">Prompt</label>
+                    <textarea id="tc-prompt" rows="4" spellcheck="false"></textarea>
+                </div>
+                <div class="tc-params">
+                    <label>Temperature <input id="tc-temperature" type="number" min="0" max="2" step="0.05" value="0.7"></label>
+                    <label>Repeat penalty <input id="tc-repeat-penalty" type="number" min="0" max="2" step="0.05" value="1.1"></label>
+                </div>
+                <div id="tc-thinking-wrap" class="tc-block hidden">
+                    <h3>Thinking</h3>
+                    <pre id="tc-thinking"></pre>
+                </div>
+                <div class="tc-block">
+                    <h3>Response</h3>
+                    <pre id="tc-response" class="tc-response"></pre>
+                </div>
+            </div>
         </section>
 
         <section id="tab-settings" class="tab">

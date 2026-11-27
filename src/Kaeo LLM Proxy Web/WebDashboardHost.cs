@@ -152,11 +152,11 @@ internal sealed class WebDashboardHost : IWebDashboardHost
                         return;
                     }
 
-                    if (Equals(context.Items[DashboardAuth.RoleItemKey], DashboardAuth.ReadOnlyRole)
-                        && !DashboardAuth.IsReadOnlyRequestAllowed(request))
+                    string? denied = DashboardAuth.Authorize(context, DashboardAuth.RequiredCapability(request));
+                    if (denied is not null)
                     {
                         context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                        await context.Response.WriteAsJsonAsync(new { error = "Read-only dashboard accounts can access logs only." });
+                        await context.Response.WriteAsJsonAsync(new { error = denied });
                         return;
                     }
 
@@ -431,7 +431,8 @@ internal sealed class WebDashboardHost : IWebDashboardHost
             || path.Equals("/api/syslog", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/api/streams", StringComparison.OrdinalIgnoreCase)
             || path.Equals("/api/streams/detail", StringComparison.OrdinalIgnoreCase)
-            || path.Equals("/api/usage", StringComparison.OrdinalIgnoreCase);
+            || path.Equals("/api/usage", StringComparison.OrdinalIgnoreCase)
+                        || path.Equals("/api/testchat/models", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? NormalizeClientAddress(IPAddress? address)

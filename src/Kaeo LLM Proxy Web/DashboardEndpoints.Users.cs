@@ -37,9 +37,9 @@ internal static partial class DashboardEndpoints
             if (!string.IsNullOrWhiteSpace(write.Email) && !write.Email.Contains('@'))
                 return Results.BadRequest(new { error = "Email address looks invalid." });
 
-            string? dashboardRole = DashboardAuth.NormalizeRole(write.DashboardRole ?? DashboardAuth.ReadOnlyRole);
-            if (dashboardRole is null)
-                return Results.BadRequest(new { error = "Dashboard role must be Admin or Read Only." });
+            string? dashboardRoles = NormalizeRoles(write, DashboardRoles.ReadOnly);
+            if (dashboardRoles is null)
+                return Results.BadRequest(new { error = RolesError });
 
             ProxyUser user = new()
             {
@@ -49,7 +49,9 @@ internal static partial class DashboardEndpoints
                 IsEnabled = write.IsEnabled ?? true,
                 DashboardLoginEnabled = write.DashboardLoginEnabled ?? false,
                 DashboardUsername = write.DashboardUsername?.Trim() ?? string.Empty,
-                DashboardRole = dashboardRole,
+                DashboardRole = dashboardRoles,
+                AllowedModels = NormalizeModelList(write.AllowedModels),
+                McpAccess = write.McpAccess ?? false,
             };
             if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
                 return Results.BadRequest(new { error = credentialError });
@@ -96,13 +98,15 @@ internal static partial class DashboardEndpoints
                     if (write.IsEnabled is { } enabled) user.IsEnabled = enabled;
                     if (write.DashboardUsername is not null) user.DashboardUsername = write.DashboardUsername.Trim();
                     if (write.DashboardLoginEnabled is { } loginEnabled) user.DashboardLoginEnabled = loginEnabled;
-                    if (write.DashboardRole is not null)
+                    if (write.DashboardRole is not null || write.DashboardRoles is not null)
                     {
-                        string? dashboardRole = DashboardAuth.NormalizeRole(write.DashboardRole);
-                        if (dashboardRole is null)
-                            return Results.BadRequest(new { error = "Dashboard role must be Admin or Read Only." });
-                        user.DashboardRole = dashboardRole;
+                        string? dashboardRoles = NormalizeRoles(write, user.DashboardRole);
+                        if (dashboardRoles is null)
+                            return Results.BadRequest(new { error = RolesError });
+                        user.DashboardRole = dashboardRoles;
                     }
+                    if (write.AllowedModels is not null) user.AllowedModels = NormalizeModelList(write.AllowedModels);
+                    if (write.McpAccess is { } mcpAccess) user.McpAccess = mcpAccess;
                     if (!TryConfigureDashboardPassword(user, write.DashboardPassword, out string? credentialError))
                         return Results.BadRequest(new { error = credentialError });
                     if (!ValidateDashboardLogin(user, controller.Database.LoadProxyUsers(), id, out credentialError))
@@ -164,8 +168,6 @@ internal static partial class DashboardEndpoints
                         KeyPrefix = prefix,
                         KeySecret = secret,
                         CreatedUtc = DateTime.UtcNow,
-                        AllowedModels = NormalizeModelList(write.AllowedModels),
-                        McpAccess = write.McpAccess ?? false,
                     };
 
                     controller.Database.InsertProxyApiKey(key);
@@ -184,12 +186,12 @@ internal static partial class DashboardEndpoints
             }
         });
 
-        // Admin only: hands the stored plaintext key back. Read Only sessions never reach here
-        // (the middleware allow-list blocks the path) but the role check makes that explicit.
+        // User Admin and above: hands the stored plaintext key back. Read Only sessions never reach
+        // here (the middleware capability check blocks the path) but the check makes that explicit.
         app.MapGet("/api/keys/{id:int}/reveal", (int id, HttpContext context) =>
         {
-            if (!DashboardAuth.IsAdmin(context))
-                return Results.Json(new { error = "Only an Admin account can reveal API keys." },
+            if (!DashboardAuth.Can(context, DashboardCapability.ManageUsers))
+                return Results.Json(new { error = "Revealing API keys requires the User Admin role." },
                     statusCode: StatusCodes.Status403Forbidden);
 
             try
@@ -224,12 +226,12 @@ internal static partial class DashboardEndpoints
             }
         });
 
-        // Admin only: replaces a key's secret material in place. Label, model grants, and the MCP
-        // grant survive; the previous key stops authenticating immediately.
+        // User Admin and above: replaces a key's secret material in place. Label and the owner's
+        // grants survive; the previous key stops authenticating immediately.
         app.MapPost("/api/keys/{id:int}/regenerate", (int id, HttpContext context) =>
         {
-            if (!DashboardAuth.IsAdmin(context))
-                return Results.Json(new { error = "Only an Admin account can regenerate API keys." },
+            if (!DashboardAuth.Can(context, DashboardCapability.ManageUsers))
+                return Results.Json(new { error = "Regenerating API keys requires the User Admin role." },
                     statusCode: StatusCodes.Status403Forbidden);
 
             try
@@ -278,15 +280,11 @@ internal static partial class DashboardEndpoints
                         return Results.NotFound(new { error = $"Key {id} not found." });
 
                     string label = write.Label?.Trim() ?? key.Label;
-                    List<string> models = write.AllowedModels is not null ? NormalizeModelList(write.AllowedModels) : key.AllowedModels;
-                    bool mcpAccess = write.McpAccess ?? key.McpAccess;
 
-                    controller.Database.UpdateProxyApiKeyAccess(id, label, models, mcpAccess);
+                    controller.Database.UpdateProxyApiKeyAccess(id, label, key.AllowedModels, key.McpAccess);
                     controller.Access.InvalidateCache();
 
                     key.Label = label;
-                    key.AllowedModels = models;
-                    key.McpAccess = mcpAccess;
                     return Results.Json(KeyView(key));
                 }
             }
@@ -327,6 +325,10 @@ internal static partial class DashboardEndpoints
         dashboardLoginEnabled = user.DashboardLoginEnabled,
         dashboardUsername = user.DashboardUsername,
         dashboardRole = user.DashboardRole,
+        dashboardRoles = DashboardRoles.Parse(user.DashboardRole),
+        roleLabel = DashboardRoles.Describe(user.DashboardRole),
+        allowedModels = user.AllowedModels,
+        mcpAccess = user.McpAccess,
         hasDashboardPassword = !string.IsNullOrEmpty(user.DashboardPasswordHash),
         keys = keys.Select(KeyView).ToList(),
     };
@@ -381,10 +383,25 @@ internal static partial class DashboardEndpoints
         keyPrefix = key.KeyPrefix,
         createdUtc = key.CreatedUtc,
         lastUsedUtc = key.LastUsedUtc,
-        allowedModels = key.AllowedModels,
-        mcpAccess = key.McpAccess,
         canReveal = !string.IsNullOrEmpty(key.KeySecret),
     };
+
+    private const string RolesError =
+        "Dashboard roles must be any of: Admin, Read Only, Dashboard Read Only, Dashboard Read-Write, User Admin, Model Admin, Test Console.";
+
+    /// <summary>
+    /// Resolves the role list from a write payload: the array wins, then the legacy single value,
+    /// then the fallback. Returns null when nothing valid was supplied so the caller can reject it
+    /// rather than silently dropping the user's access.
+    /// </summary>
+    private static string? NormalizeRoles(UserWrite write, string? fallback)
+    {
+        if (write.DashboardRoles is not null)
+            return DashboardRoles.Normalize(string.Join(',', write.DashboardRoles));
+        if (write.DashboardRole is not null)
+            return DashboardRoles.Normalize(write.DashboardRole);
+        return DashboardRoles.Normalize(fallback) ?? DashboardRoles.ReadOnly;
+    }
 
     private static List<string> NormalizeModelList(List<string>? models) =>
         models is null

@@ -246,7 +246,7 @@ public sealed class WebUsersEndpointTests
         int userId = await CreateUserAsync(b, "Alice");
 
         HttpResponseMessage created = await b.Client.PostAsJsonAsync($"/api/users/{userId}/keys",
-            new { label = "laptop", allowedModels = new[] { "alpha", " Alpha ", "beta" } });
+            new { label = "laptop" });
         Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         string createdBody = await created.Content.ReadAsStringAsync();
         using JsonDocument createdDoc = JsonDocument.Parse(createdBody);
@@ -257,8 +257,6 @@ public sealed class WebUsersEndpointTests
         int keyId = key.GetProperty("id").GetInt32();
         Assert.Equal("laptop", key.GetProperty("label").GetString());
         Assert.Equal(plainText[..13], key.GetProperty("keyPrefix").GetString());
-        // Normalization: trimmed + case-insensitive dedupe.
-        Assert.Equal(2, key.GetProperty("allowedModels").GetArrayLength());
         Assert.False(key.TryGetProperty("keyHash", out _));
         Assert.False(key.TryGetProperty("plainText", out _));
 
@@ -270,7 +268,7 @@ public sealed class WebUsersEndpointTests
     }
 
     [Fact]
-    public async Task Keys_UpdateLabelAndModels_NullModelsKeepsExisting()
+    public async Task Keys_UpdateLabel_OnlyChangesTheLabel()
     {
         await using Bundle b = await CreateBundleAsync();
         int userId = await CreateUserAsync(b, "Alice");
@@ -280,12 +278,9 @@ public sealed class WebUsersEndpointTests
         Assert.Equal(HttpStatusCode.OK, labelOnly.StatusCode);
         using JsonDocument labelDoc = JsonDocument.Parse(await labelOnly.Content.ReadAsStringAsync());
         Assert.Equal("renamed", labelDoc.RootElement.GetProperty("label").GetString());
-        Assert.Equal(1, labelDoc.RootElement.GetProperty("allowedModels").GetArrayLength());
-        Assert.Equal("alpha", labelDoc.RootElement.GetProperty("allowedModels")[0].GetString());
-
-        HttpResponseMessage cleared = await b.Client.PutAsJsonAsync($"/api/keys/{keyId}", new { allowedModels = Array.Empty<string>() });
-        using JsonDocument clearedDoc = JsonDocument.Parse(await cleared.Content.ReadAsStringAsync());
-        Assert.Equal(0, clearedDoc.RootElement.GetProperty("allowedModels").GetArrayLength());
+        // The key carries no grants of its own, and the user's grants are untouched.
+        Assert.False(labelDoc.RootElement.TryGetProperty("allowedModels", out _));
+        Assert.Equal(["alpha"], b.Database.FindProxyUser(userId)!.AllowedModels);
     }
 
     [Fact]
@@ -329,10 +324,10 @@ public sealed class WebUsersEndpointTests
         JsonElement regeneratedKey = regeneratedDoc.RootElement.GetProperty("key");
         Assert.Equal(keyId, regeneratedKey.GetProperty("id").GetInt32());
         Assert.Equal(newPlainText[..13], regeneratedKey.GetProperty("keyPrefix").GetString());
-        // Grants survive a regeneration; only the secret material changes.
+        // Only the secret material changes; the label and the user's grants stay put.
         Assert.Equal("test", regeneratedKey.GetProperty("label").GetString());
-        Assert.Equal(1, regeneratedKey.GetProperty("allowedModels").GetArrayLength());
-        Assert.Equal("alpha", regeneratedKey.GetProperty("allowedModels")[0].GetString());
+        Assert.False(regeneratedKey.TryGetProperty("allowedModels", out _));
+        Assert.Equal(["alpha"], b.Database.FindProxyUser(userId)!.AllowedModels);
 
         Assert.Null(b.Controller.Access.Authenticate(plainText));
         Assert.NotNull(b.Controller.Access.Authenticate(newPlainText));
@@ -428,8 +423,17 @@ public sealed class WebUsersEndpointTests
 
     private static async Task<(int Id, string PlainText)> CreateKeyAsync(Bundle b, int userId, string[] allowedModels)
     {
+        // Grants are user-level now; createKeyAsync keeps the parameter so callers can still say
+        // which models the owning user should have.
+        if (allowedModels.Length > 0)
+        {
+            HttpResponseMessage grant = await b.Client.PutAsJsonAsync($"/api/users/{userId}",
+                new { allowedModels });
+            grant.EnsureSuccessStatusCode();
+        }
+
         HttpResponseMessage response = await b.Client.PostAsJsonAsync($"/api/users/{userId}/keys",
-            new { label = "test", allowedModels });
+            new { label = "test" });
         response.EnsureSuccessStatusCode();
         using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         return (doc.RootElement.GetProperty("key").GetProperty("id").GetInt32(),

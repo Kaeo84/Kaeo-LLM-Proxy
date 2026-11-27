@@ -32,12 +32,11 @@ internal sealed class ProxyUsersControl : UserControl
         _users.Columns.Add("Name", 155);
         _users.Columns.Add("Email", 190);
         _users.Columns.Add("Status", 75);
-        _users.Columns.Add("Dashboard", 150);
-        _keys.Columns.Add("Label", 115);
+        _users.Columns.Add("Dashboard", 210);
+        _users.Columns.Add("Model access", 190);
+        _keys.Columns.Add("Label", 150);
         _keys.Columns.Add("Prefix", 105);
-        _keys.Columns.Add("Models", 210);
-        _keys.Columns.Add("MCP", 75);
-        _keys.Columns.Add("Last used", 125);
+        _keys.Columns.Add("Last used", 140);
 
         Button addUser = MakeButton("Add user", (_, _) => AddUser());
         Button editUser = MakeButton("Edit", (_, _) => EditSelectedUser());
@@ -45,7 +44,7 @@ internal sealed class ProxyUsersControl : UserControl
         Button deleteUser = MakeButton("Delete user", (_, _) => DeleteSelectedUser());
         Button refresh = MakeButton("Refresh", (_, _) => RefreshUsers());
         Button createKey = MakeButton("Create key", (_, _) => CreateKey());
-        Button editKey = MakeButton("Edit key access", (_, _) => EditSelectedKey());
+        Button editKey = MakeButton("Edit key label", (_, _) => EditSelectedKey());
         Button revealKey = MakeButton("Reveal key", (_, _) => RevealSelectedKey());
         Button regenerateKey = MakeButton("Regenerate key", (_, _) => RegenerateSelectedKey());
         Button deleteKey = MakeButton("Delete key", (_, _) => DeleteSelectedKey());
@@ -71,7 +70,7 @@ internal sealed class ProxyUsersControl : UserControl
             AutoSize = true,
             Dock = DockStyle.Top,
             Padding = new Padding(0, 6, 0, 8),
-            Text = "Create users and keys, and grant Read Only users access to selected models and the MCP server. No selected models means no model access. Admin users always have full access.",
+            Text = "Create users and keys, and grant each user access to selected models and the MCP server. No selected models means no model access. Admin users always have full access. Model and MCP access belong to the user, so every key they hold shares it.",
         };
         FlowLayoutPanel security = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
         security.Controls.Add(_requireApiKey);
@@ -132,8 +131,9 @@ internal sealed class ProxyUsersControl : UserControl
                 item.SubItems.Add(user.Email);
                 item.SubItems.Add(user.IsEnabled ? "Enabled" : "Disabled");
                 item.SubItems.Add(user.DashboardLoginEnabled
-                    ? $"{(user.DashboardRole == "admin" ? "Admin" : "Read only")} ({user.DashboardUsername})"
+                    ? $"{DashboardRoles.Describe(user.DashboardRole)} ({user.DashboardUsername})"
                     : "None");
+                item.SubItems.Add(DescribeModelAccess(user));
                 _users.Items.Add(item);
                 if (user.Id == selectedId)
                     item.Selected = true;
@@ -161,11 +161,8 @@ internal sealed class ProxyUsersControl : UserControl
         {
             foreach (ProxyApiKey key in _database.LoadProxyApiKeys().Where(k => k.UserId == user.Id))
             {
-                string models = key.AllowedModels.Count == 0 ? "No models" : string.Join(", ", key.AllowedModels);
                 ListViewItem item = new(key.Label.Length == 0 ? "(unlabeled)" : key.Label) { Tag = key };
                 item.SubItems.Add(key.KeyPrefix);
-                item.SubItems.Add(models);
-                item.SubItems.Add(key.McpAccess ? "Allowed" : "Denied");
                 item.SubItems.Add(key.LastUsedUtc?.ToLocalTime().ToString("g") ?? "Never");
                 _keys.Items.Add(item);
             }
@@ -179,13 +176,39 @@ internal sealed class ProxyUsersControl : UserControl
     private ProxyUser? SelectedUser() => _users.SelectedItems.Count == 0 ? null : _users.SelectedItems[0].Tag as ProxyUser;
     private ProxyApiKey? SelectedKey() => _keys.SelectedItems.Count == 0 ? null : _keys.SelectedItems[0].Tag as ProxyApiKey;
 
+    // Admin implies every model, so say that instead of listing them all.
+    private static string DescribeModelAccess(ProxyUser user)
+    {
+        if (DashboardRoles.HasRole(user.DashboardRole, DashboardRoles.Admin))
+            return "All models (admin)";
+        string models = user.AllowedModels.Count == 0 ? "No models" : string.Join(", ", user.AllowedModels);
+        return models + (user.McpAccess ? " + MCP" : string.Empty);
+    }
+
+    /// <summary>Enabled model mappings for the grant pickers, or null when the database read failed.</summary>
+    private IReadOnlyList<ModelMapping>? LoadEnabledMappings()
+    {
+        try
+        {
+            return _database.LoadModelMappings().Where(m => m.IsEnabled).ToList();
+        }
+        catch (Exception ex) when (ex is IOException or DbException)
+        {
+            ShowDatabaseError(ex);
+            return null;
+        }
+    }
+
     private void AddUser()
     {
         Func<string, bool>? usernameTaken = TryBuildUsernameCheck(null);
         if (usernameTaken is null)
             return;
+        IReadOnlyList<ModelMapping>? mappings = LoadEnabledMappings();
+        if (mappings is null)
+            return;
 
-        using UserEditorDialog dialog = new("Add user", new ProxyUser(), usernameTaken);
+        using UserEditorDialog dialog = new("Add user", new ProxyUser(), usernameTaken, mappings);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -219,8 +242,11 @@ internal sealed class ProxyUsersControl : UserControl
         Func<string, bool>? usernameTaken = TryBuildUsernameCheck(selected.Id);
         if (usernameTaken is null)
             return;
+        IReadOnlyList<ModelMapping>? mappings = LoadEnabledMappings();
+        if (mappings is null)
+            return;
 
-        using UserEditorDialog dialog = new("Edit user", selected, usernameTaken);
+        using UserEditorDialog dialog = new("Edit user", selected, usernameTaken, mappings);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -327,18 +353,7 @@ internal sealed class ProxyUsersControl : UserControl
             return;
         }
 
-        IReadOnlyList<ModelMapping> mappings;
-        try
-        {
-            mappings = _database.LoadModelMappings().Where(m => m.IsEnabled).ToList();
-        }
-        catch (Exception ex) when (ex is IOException or DbException)
-        {
-            ShowDatabaseError(ex);
-            return;
-        }
-
-        using KeyEditorDialog dialog = new("Create API key", mappings, [], string.Empty, mcpAccess: false);
+        using KeyEditorDialog dialog = new("Create API key", string.Empty);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -353,8 +368,6 @@ internal sealed class ProxyUsersControl : UserControl
                 KeyPrefix = prefix,
                 KeySecret = secret,
                 CreatedUtc = DateTime.UtcNow,
-                AllowedModels = dialog.AllowedModels,
-                McpAccess = dialog.McpAccess,
             };
             _database.InsertProxyApiKey(key);
             _access.InvalidateCache();
@@ -377,24 +390,13 @@ internal sealed class ProxyUsersControl : UserControl
             return;
         }
 
-        IReadOnlyList<ModelMapping> mappings;
-        try
-        {
-            mappings = _database.LoadModelMappings().Where(m => m.IsEnabled).ToList();
-        }
-        catch (Exception ex) when (ex is IOException or DbException)
-        {
-            ShowDatabaseError(ex);
-            return;
-        }
-
-        using KeyEditorDialog dialog = new("Edit API key access", mappings, key.AllowedModels, key.Label, key.McpAccess);
+        using KeyEditorDialog dialog = new("Edit API key label", key.Label);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
         try
         {
-            _database.UpdateProxyApiKeyAccess(key.Id, dialog.Label, dialog.AllowedModels, dialog.McpAccess);
+            _database.UpdateProxyApiKeyAccess(key.Id, dialog.Label, key.AllowedModels, key.McpAccess);
             _access.InvalidateCache();
             RefreshKeys();
         }
@@ -512,7 +514,9 @@ internal sealed class UserEditorDialog : Form
     private readonly CheckBox _loginEnabled = new() { AutoSize = true, Text = "Enable dashboard login (Web GUI)" };
     private readonly TextBox _loginUsername = new() { Dock = DockStyle.Fill };
     private readonly TextBox _loginPassword = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
-    private readonly ComboBox _loginRole = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly CheckedListBox _roles = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
+    private readonly CheckedListBox _models = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
+    private readonly CheckBox _mcpAccess = new() { AutoSize = true, Text = "Allow MCP server access" };
 
     public ProxyUser User => new()
     {
@@ -521,13 +525,15 @@ internal sealed class UserEditorDialog : Form
         IsEnabled = _enabled.Checked,
         DashboardLoginEnabled = _loginEnabled.Checked,
         DashboardUsername = _loginUsername.Text.Trim(),
-        DashboardRole = ((RoleChoice)_loginRole.SelectedItem!).Value,
+        DashboardRole = string.Join(',', SelectedRoles()),
+        AllowedModels = _models.CheckedItems.Cast<ModelChoice>().Select(m => m.Name).ToList(),
+        McpAccess = _mcpAccess.Checked,
         DashboardPasswordHash = _loginPassword.Text.Length > 0
             ? DashboardPasswords.Hash(_original, _loginPassword.Text)
             : _original.DashboardPasswordHash,
     };
 
-    public UserEditorDialog(string title, ProxyUser user, Func<string, bool> usernameTaken)
+    public UserEditorDialog(string title, ProxyUser user, Func<string, bool> usernameTaken, IReadOnlyList<ModelMapping> mappings)
     {
         _original = user;
         Text = title;
@@ -536,20 +542,38 @@ internal sealed class UserEditorDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(460, 360);
+        ClientSize = new Size(560, 620);
 
         _name.Text = user.Name;
         _email.Text = user.Email;
         _enabled.Checked = user.IsEnabled;
         _loginEnabled.Checked = user.DashboardLoginEnabled;
         _loginUsername.Text = user.DashboardUsername;
-        _loginRole.Items.Add(new RoleChoice("Admin (full dashboard)", "admin"));
-        _loginRole.Items.Add(new RoleChoice("Read only (logs only)", "readOnly"));
-        _loginRole.SelectedIndex = user.DashboardRole == "admin" ? 0 : 1;
+        _mcpAccess.Checked = user.McpAccess;
+
+        // A user may hold several roles at once and the effective permissions are the union, so the
+        // editor is a checklist rather than the single-select combo this used to be.
+        IReadOnlyList<string> held = DashboardRoles.Parse(user.DashboardRole);
+        foreach (DashboardRoleDefinition role in DashboardRoles.All)
+        {
+            int index = _roles.Items.Add(new RoleChoice(role.Label, role.Description, role.Key));
+            _roles.SetItemChecked(index, held.Contains(role.Key, StringComparer.OrdinalIgnoreCase));
+        }
+
+        HashSet<string> allowed = new(user.AllowedModels, StringComparer.OrdinalIgnoreCase);
+        foreach (ModelMapping mapping in mappings.OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(mapping.ProxyName))
+                continue;
+            int index = _models.Items.Add(new ModelChoice(mapping.ProxyName));
+            if (allowed.Contains(mapping.ProxyName))
+                _models.SetItemChecked(index, true);
+        }
+
         _loginEnabled.CheckedChanged += (_, _) => UpdateLoginFieldState();
         UpdateLoginFieldState();
 
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 9 };
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 11 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
@@ -564,16 +588,33 @@ internal sealed class UserEditorDialog : Form
         layout.Controls.Add(_loginUsername, 1, 4);
         layout.Controls.Add(new Label { AutoSize = true, Text = "Password", Anchor = AnchorStyles.Left }, 0, 5);
         layout.Controls.Add(_loginPassword, 1, 5);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "Role", Anchor = AnchorStyles.Left }, 0, 6);
-        layout.Controls.Add(_loginRole, 1, 6);
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Roles", Anchor = AnchorStyles.Left }, 0, 6);
+        layout.Controls.Add(_roles, 1, 6);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        layout.Controls.Add(new Label { AutoSize = true, Text = "Model access", Anchor = AnchorStyles.Left }, 0, 7);
+        layout.Controls.Add(_models, 1, 7);
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
+        layout.Controls.Add(_mcpAccess, 0, 8);
+        layout.SetColumnSpan(_mcpAccess, 2);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Label hint = new()
         {
             AutoSize = true,
             Anchor = AnchorStyles.Left,
-            Text = "Passwords need 12+ characters. Leave blank to keep the current password.\nDashboard logins sign in to the Web GUI; API keys stay model-only.",
+            Text = "Passwords need 12+ characters. Leave blank to keep the current password.\n"
+                + "Check every role that applies; permissions are combined and Admin already includes everything.\n"
+                + "Model and MCP access belong to the user, so every API key they hold shares it. Leave every\n"
+                + "model unchecked to grant no model access.",
         };
-        layout.Controls.Add(hint, 0, 7);
+        layout.Controls.Add(hint, 0, 9);
         layout.SetColumnSpan(hint, 2);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         Button save = new() { AutoSize = true, Text = "Save" };
         Button cancel = new() { AutoSize = true, Text = "Cancel", DialogResult = DialogResult.Cancel };
@@ -602,6 +643,11 @@ internal sealed class UserEditorDialog : Form
                     MessageBox.Show(this, "That dashboard username is already in use.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
+                if (SelectedRoles().Count == 0)
+                {
+                    MessageBox.Show(this, "Pick at least one dashboard role.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
                 if (_loginPassword.Text.Length == 0 && _original.DashboardPasswordHash.Length == 0)
                 {
                     MessageBox.Show(this, "A password is required to enable dashboard login.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -619,37 +665,43 @@ internal sealed class UserEditorDialog : Form
         };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 8);
+        layout.Controls.Add(buttons, 0, 10);
         layout.SetColumnSpan(buttons, 2);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(layout);
         AcceptButton = save;
         CancelButton = cancel;
     }
 
+    private List<string> SelectedRoles() =>
+        _roles.CheckedItems.Cast<RoleChoice>().Select(r => r.Value).ToList();
+
     private void UpdateLoginFieldState()
     {
         _loginUsername.Enabled = _loginEnabled.Checked;
         _loginPassword.Enabled = _loginEnabled.Checked;
-        _loginRole.Enabled = _loginEnabled.Checked;
+        _roles.Enabled = _loginEnabled.Checked;
     }
 
-    private sealed record RoleChoice(string Label, string Value)
+    private sealed record RoleChoice(string Label, string Description, string Value)
     {
-        public override string ToString() => Label;
+        public override string ToString() => $"{Label} — {Description}";
+    }
+
+    private sealed record ModelChoice(string Name)
+    {
+        public override string ToString() => Name;
     }
 }
 
+/// <summary>Label-only editor: a key carries no grants of its own, the owning user does.</summary>
 internal sealed class KeyEditorDialog : Form
 {
     private readonly TextBox _label = new() { Dock = DockStyle.Fill };
-    private readonly CheckedListBox _models = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
-    private readonly CheckBox _mcpAccess = new() { AutoSize = true, Text = "Allow MCP server access" };
 
     public string Label => _label.Text.Trim();
-    public List<string> AllowedModels => _models.CheckedItems.Cast<ModelChoice>().Select(m => m.Name).ToList();
-    public bool McpAccess => _mcpAccess.Checked;
 
-    public KeyEditorDialog(string title, IReadOnlyList<ModelMapping> mappings, IReadOnlyList<string> allowedModels, string label, bool mcpAccess)
+    public KeyEditorDialog(string title, string label)
     {
         Text = title;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -657,51 +709,37 @@ internal sealed class KeyEditorDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(480, 470);
+        ClientSize = new Size(460, 190);
         _label.Text = label;
-        _mcpAccess.Checked = mcpAccess;
 
-        HashSet<string> allowed = new(allowedModels, StringComparer.OrdinalIgnoreCase);
-        foreach (ModelMapping mapping in mappings.OrderBy(m => m.ProxyName, StringComparer.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(mapping.ProxyName))
-                continue;
-            int index = _models.Items.Add(new ModelChoice(mapping.ProxyName));
-            if (allowed.Contains(mapping.ProxyName))
-                _models.SetItemChecked(index, true);
-        }
-
-        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 5 };
+        TableLayoutPanel layout = new() { Dock = DockStyle.Fill, Padding = new Padding(12), ColumnCount = 2, RowCount = 4 };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(new Label { AutoSize = true, Text = "Label", Anchor = AnchorStyles.Left }, 0, 0);
         layout.Controls.Add(_label, 1, 0);
-        layout.Controls.Add(_models, 0, 1);
-        layout.SetColumnSpan(_models, 2);
-        layout.Controls.Add(new Label { AutoSize = true, Text = "Leave every model unchecked to grant no model access.", Anchor = AnchorStyles.Left }, 0, 2);
-        layout.SetColumnSpan(layout.GetControlFromPosition(0, 2)!, 2);
-        layout.Controls.Add(_mcpAccess, 0, 3);
-        layout.SetColumnSpan(_mcpAccess, 2);
+        Label hint = new()
+        {
+            AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Text = "What this key is for, e.g. \"laptop\" or \"CI pipeline\".\n"
+                + "Model and MCP access belong to the user, not the key; change it with \"Edit user\".",
+        };
+        layout.Controls.Add(hint, 0, 1);
+        layout.SetColumnSpan(hint, 2);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
         Button save = new() { AutoSize = true, Text = "Save", DialogResult = DialogResult.OK };
         Button cancel = new() { AutoSize = true, Text = "Cancel", DialogResult = DialogResult.Cancel };
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        layout.Controls.Add(buttons, 0, 4);
+        layout.Controls.Add(buttons, 0, 3);
         layout.SetColumnSpan(buttons, 2);
         Controls.Add(layout);
         AcceptButton = save;
         CancelButton = cancel;
-    }
-
-    private sealed record ModelChoice(string Name)
-    {
-        public override string ToString() => Name;
     }
 }
 

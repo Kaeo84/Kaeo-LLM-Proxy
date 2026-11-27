@@ -24,11 +24,37 @@ internal static partial class DashboardEndpoints
     public static void MapAll(WebApplication app, AppSettings settings, ProxyHostController controller)
     {
         MapAuthentication(app, settings, controller);
-        app.MapGet("/api/auth/me", (HttpContext context) => Results.Json(new
+        // /api/auth/me sits outside the auth gate so the login page can probe it; it resolves the
+        // session itself and reports the caller's roles and capabilities so the front end can hide
+        // controls the caller cannot use.
+        app.MapGet("/api/auth/me", (HttpContext context) =>
         {
-            role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole,
-            username = context.Items[DashboardAuth.UserNameItemKey]?.ToString(),
-            loginRequired = settings.WebDashboard.RequireLogin,
+            DashboardAuth.TryAuthorize(context, settings, controller.Database, out _);
+            string roles = context.Items[DashboardAuth.RoleItemKey] as string ?? string.Empty;
+            return Results.Json(new
+            {
+                role = roles,
+                roles = DashboardRoles.Parse(roles)
+                    .Select(key => new { key, label = DashboardRoles.Find(key)?.Label ?? key })
+                    .ToList(),
+                capabilities = DashboardRoles.CapabilityNames(roles),
+                username = context.Items[DashboardAuth.UserNameItemKey]?.ToString(),
+                loginRequired = settings.WebDashboard.RequireLogin,
+            });
+        });
+        // The role vocabulary the user editor renders, so the UI can never offer a role the
+        // endpoints would reject. Readable by any signed-in session; it exposes no user data.
+        app.MapGet("/api/auth/roles", () => Results.Json(new
+        {
+            roles = DashboardRoles.All
+                .Select(role => new
+                {
+                    key = role.Key,
+                    label = role.Label,
+                    description = role.Description,
+                    capabilities = DashboardRoles.CapabilityNames(role.Capabilities),
+                })
+                .ToList(),
         }));
         MapStatus(app, settings, controller);
         MapProxy(app, controller);
@@ -43,6 +69,7 @@ internal static partial class DashboardEndpoints
         MapCredentials(app, controller);
         MapModules(app, controller);
         MapUsers(app, controller);
+        MapTestConsole(app, settings, controller);
     }
 
     private static void MapStatus(WebApplication app, AppSettings settings, ProxyHostController controller)
@@ -173,16 +200,17 @@ internal static partial class DashboardEndpoints
         //    (the full retention window, not just the in-memory queue), newest first.
         //  - `after` supplied: incremental poll of the in-memory window — strictly newer entries,
         //    oldest first.
-        // Read Only sessions only ever see requests attributed to their own user (via API key).
+        // Only Admin sessions see every user's traffic; every other role is limited to requests
+        // attributed to the signed-in user (via API key), matching what Read Only has always shown.
         app.MapGet("/api/logs", (HttpContext context, string? source, long? after, int? limit) =>
         {
-            string role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole;
+            bool fullVisibility = DashboardAuth.IsAdmin(context);
             int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
                 ? parsedId
                 : null;
-            if (role == DashboardAuth.ReadOnlyRole && callerId is null)
+            if (!fullVisibility && callerId is null)
                 return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
-            int? filterUserId = role == DashboardAuth.ReadOnlyRole ? callerId : null;
+            int? filterUserId = fullVisibility ? null : callerId;
 
             int take = Math.Clamp(limit ?? 100, 1, 1000);
 
@@ -228,17 +256,17 @@ internal static partial class DashboardEndpoints
             if (!DateTime.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out DateTime parsed))
                 return Results.Json(new { error = "timestamp must be an ISO 8601 date/time." }, statusCode: StatusCodes.Status400BadRequest);
 
-            string role = context.Items[DashboardAuth.RoleItemKey]?.ToString() ?? DashboardAuth.AdminRole;
+            bool fullVisibility = DashboardAuth.IsAdmin(context);
             int? callerId = int.TryParse(context.User.FindFirstValue(ClaimTypes.NameIdentifier), out int parsedId)
                 ? parsedId
                 : null;
-            if (role == DashboardAuth.ReadOnlyRole && callerId is null)
+            if (!fullVisibility && callerId is null)
                 return Results.Json(new { error = "Sign in with a dashboard username and password." }, statusCode: StatusCodes.Status401Unauthorized);
 
             try
             {
                 RequestLog? full = controller.Database.LoadFullLogEntry(parsed.ToLocalTime(), LogSourceFor(source));
-                if (full is null || (role == DashboardAuth.ReadOnlyRole && full.UserId != callerId))
+                if (full is null || (!fullVisibility && full.UserId != callerId))
                     return Results.Json(new { error = "Log entry not found." }, statusCode: StatusCodes.Status404NotFound);
                 AttachDerivedFields(full, BuildRequestorAliases(controller.Database.LoadProxyUsers()));
                 return Results.Json(full);

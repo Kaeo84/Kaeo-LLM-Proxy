@@ -146,7 +146,8 @@ internal sealed class ProxyAccessService(AppDatabase database, ApiKeyProtector? 
 
     /// <summary>
     /// Whether the principal may call <paramref name="modelName"/>. Open-proxy requests and Admin
-    /// users may call every model; other users need an explicit per-key model grant.
+    /// users may call every model; other users need an explicit model grant on their user record,
+    /// which every key they hold inherits.
     /// </summary>
     internal static bool IsModelAllowed(ProxyAccessPrincipal? principal, string? modelName)
     {
@@ -154,17 +155,30 @@ internal sealed class ProxyAccessService(AppDatabase database, ApiKeyProtector? 
             return true;
 
         return !string.IsNullOrWhiteSpace(modelName)
-            && principal.Key.AllowedModels.Contains(modelName, StringComparer.OrdinalIgnoreCase);
+            && principal.User.AllowedModels.Contains(modelName, StringComparer.OrdinalIgnoreCase);
     }
 
-    /// <summary>Whether the principal may use the MCP server. Open-proxy requests and Admin users bypass the key grant.</summary>
+    /// <summary>
+    /// The same check for a caller identified by a user record rather than an API key — the
+    /// dashboard's Test Console, where the session names a user but no key is involved. A null
+    /// user means there is no per-user record to restrict against (dashboard login disabled, which
+    /// already grants Admin, or the user row could not be read), so it is treated as unrestricted.
+    /// </summary>
+    internal static bool IsModelAllowedForUser(ProxyUser? user, string? modelName)
+    {
+        if (user is null || DashboardRoles.HasRole(user.DashboardRole, DashboardRoles.Admin))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(modelName)
+            && user.AllowedModels.Contains(modelName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether the principal may use the MCP server. Open-proxy requests and Admin users bypass the user grant.</summary>
     internal static bool IsMcpAllowed(ProxyAccessPrincipal? principal) =>
-        principal is null || IsAdmin(principal) || principal.Key.McpAccess;
+        principal is null || IsAdmin(principal) || principal.User.McpAccess;
 
     private static bool IsAdmin(ProxyAccessPrincipal principal) =>
-        string.Equals(principal.User.DashboardRole, DashboardAdminRole, StringComparison.OrdinalIgnoreCase);
-
-    private const string DashboardAdminRole = "admin";
+        DashboardRoles.HasRole(principal.User.DashboardRole, DashboardRoles.Admin);
 
     /// <summary>Drops all cached authentications so dashboard edits take effect immediately.</summary>
     public void InvalidateCache()
