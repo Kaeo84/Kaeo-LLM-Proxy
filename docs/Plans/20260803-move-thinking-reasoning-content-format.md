@@ -18,10 +18,17 @@ Replace the unconditional content write in the Move/Strip branch with:
 
 ---
 
-- [ ] Step 1: Create this plan file in Plans/ folder
-- [ ] Step 2: Empirically verify JsonNode null-serialization with WhenWritingNull
-- [ ] Step 3: Fix OpenAiSseRewriter.Process Move/Strip branch in OllamaProxyHandler.cs
-- [ ] Step 4: Verify serialization preserves null finish_reason
-- [ ] Step 5: Walk through both scenarios and confirm reference format
-- [ ] Step 6: Build solution
-- [ ] Step 7: Commit changes to git
+- [x] Step 1: Create this plan file in Plans/ folder
+- [x] Step 2: Empirically verify JsonNode null-serialization with WhenWritingNull
+- [x] Step 3: Fix OpenAiSseRewriter.Process Move/Strip branch in OllamaProxyHandler.cs
+- [x] Step 4: Verify serialization preserves null finish_reason
+- [x] Step 5: Walk through both scenarios and confirm reference format
+- [x] Step 6: Build solution
+- [x] Step 7: Commit changes to git
+
+## Outcome
+The Move/Strip branch now sets `delta.content` only when the extractor returns visible text,
+removes the key when the incoming content was fully consumed (thinking or partial-tag buffering),
+and leaves the delta untouched when the upstream frame carried no content at all. The code lives in
+`Services/Proxy/OllamaProxyHandler.Passthrough.cs` (`OpenAiSseRewriter.Process`) after the split out
+of the old monolithic `OllamaProxyHandler.cs`; `OpenAiSseFrameParityTests` pins the behaviour.

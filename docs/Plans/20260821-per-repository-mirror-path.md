@@ -6,4 +6,4 @@
 - [x] Update mirror synchronization to resolve each repository path.
 - [x] Update repo UI and remove the global Mirror Path setting.
 - [x] Build and inspect diagnostics.
-- [ ] Commit the change.
+- [x] Commit the change.

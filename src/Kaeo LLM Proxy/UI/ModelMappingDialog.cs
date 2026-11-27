@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using Kaeo.LlmProxy.Core.Models;
 using Kaeo.LlmProxy.Services;
 using Kaeo.LlmProxy.Infrastructure;
+using Kaeo.LlmProxy.VSExtension.Core;
 
 namespace Kaeo.LlmProxy;
 
@@ -1511,20 +1512,15 @@ internal sealed class ModelMappingDialog : Form
         _cmbThinkingHandling.Margin = new Padding(0, 4, 0, 4);
         _cmbThinkingHandling.Items.AddRange(
         [
-            new ThinkingModeOption(ThinkingMode.LeaveInline, "Leave thinking in the visible answer"),
-            new ThinkingModeOption(ThinkingMode.MoveToReasoningContent, "Move thinking into reasoning_content (Qwen Cloud compatibility)"),
-            new ThinkingModeOption(ThinkingMode.StripFromOutput, "Remove thinking from client output (kept in logs)"),
-            new ThinkingModeOption(ThinkingMode.QwenThinkingCompatible, "Qwen Thinking Compatible ([Thinking] → reasoning_content, [Answer] → answer)"),
+            .. ThinkingModeOptions.Select(mode => new ThinkingModeOption(mode, ReasoningVocabulary.LabelForProxyMode(mode.ToString()))),
         ]);
         _cmbThinkingHandling.SelectedIndex = 0;
+        // The copy comes from the shared vocabulary so the proxy's list and the extension's
+        // Reasoning column describe one axis in one set of words instead of drifting apart.
         _toolTip.SetToolTip(
             _cmbThinkingHandling,
-            "Controls how upstream <think> reasoning is surfaced to clients.\n"
-            + "Leave inline keeps it in the visible answer; moving it to reasoning_content lets\n"
-            + "clients like VS render a collapsible thinking panel; removing it hides it from\n"
-            + "clients entirely while captured logs still retain the original upstream body.\n"
-            + "Qwen Thinking Compatible handles models that emit literal [Thinking] and [Answer]\n"
-            + "markers: the text between them becomes reasoning_content and the rest the answer.");
+            "Controls how upstream reasoning is surfaced to clients.\n\n"
+            + string.Join("\n\n", ThinkingModeOptions.Select(mode => ReasoningVocabulary.HelpForProxyMode(mode.ToString()))));
 
         _grpThinkingReasoning.AutoSize = true;
         _grpThinkingReasoning.AutoSizeMode = AutoSizeMode.GrowOnly;
@@ -2314,6 +2310,18 @@ internal sealed class ModelMappingDialog : Form
     {
         public override string ToString() => Label;
     }
+
+    /// <summary>
+    /// The order the Thinking Handling list presents its options in: the plain policies first, the
+    /// Qwen-specific variant last. Labels and help text come from <see cref="ReasoningVocabulary"/>.
+    /// </summary>
+    private static readonly ThinkingMode[] ThinkingModeOptions =
+    [
+        ThinkingMode.LeaveInline,
+        ThinkingMode.MoveToReasoningContent,
+        ThinkingMode.StripFromOutput,
+        ThinkingMode.QwenThinkingCompatible,
+    ];
 
     /// <summary>Display wrapper binding a friendly label to a <see cref="SamplingPriority"/> value.</summary>
     private sealed record SamplingPriorityOption(SamplingPriority Priority, string Label)

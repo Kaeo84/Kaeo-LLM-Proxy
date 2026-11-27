@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using Kaeo.LlmProxy.VSExtension.Core;
 
 namespace Kaeo.LlmProxy.VSExtension.Settings
 {
@@ -11,7 +13,17 @@ namespace Kaeo.LlmProxy.VSExtension.Settings
     public sealed class ModelViewModel : INotifyPropertyChanged
     {
         /// <summary>Values offered by the grid's Reasoning source column (ModelEntry.ReasoningSource).</summary>
-        public static IReadOnlyList<string> ReasoningSourceOptions { get; } = ["Auto", "ThinkingField", "InlineTags", "Disabled"];
+        /// <remarks>
+        /// These are the persisted keys, not display labels: they are written to the settings file and
+        /// parsed by <c>ReasoningSources.Parse</c>, so renaming one would silently reset every saved
+        /// model. The shared <see cref="ReasoningVocabulary"/> owns the human wording for the same
+        /// axis and is the list this one is filtered against, so the proxy's Thinking Handling list
+        /// and this column cannot drift into offering different concepts.
+        /// </remarks>
+        public static IReadOnlyList<string> ReasoningSourceOptions { get; } =
+            new[] { "Auto", "ThinkingField", "InlineTags", "Disabled" }
+                .Where(name => ReasoningVocabulary.ForReasoningSource(name) is not null)
+                .ToArray();
 
         private string _name = string.Empty;
         private string _modelId = string.Empty;
