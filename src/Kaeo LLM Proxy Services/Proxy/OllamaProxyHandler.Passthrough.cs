@@ -1417,6 +1417,23 @@ partial class OllamaProxyHandler
         PumpPreResponseSseKeepAliveReportingDisconnectAsync(output, intervalSeconds, ct);
 
     /// <summary>
+    /// Test seam that replays upstream SSE lines through the same <see cref="SseUsageSniffer"/> the
+    /// streaming copy loop uses, returning the request log it filled. Token capture for an upstream
+    /// that reports <c>timings</c> instead of <c>usage</c> can then be pinned without a live HTTP
+    /// response.
+    /// </summary>
+    internal static RequestLog SniffUpstreamTokenCountsForTest(IEnumerable<string> sseLines)
+    {
+        RequestLog log = new();
+        SseUsageSniffer sniffer = new(chunk => FillTokenStats(log, chunk));
+        foreach (string line in sseLines)
+            sniffer.FeedLine(line);
+
+        sniffer.Flush();
+        return log;
+    }
+
+    /// <summary>
     /// Copies an SSE response to the client verbatim, interleaving keep-alive comment frames while the
     /// upstream is quiet. Used on passthrough paths that need no rewriting.
     /// </summary>
@@ -1782,10 +1799,12 @@ partial class OllamaProxyHandler
     }
 
     /// <summary>
-    /// Incrementally scans a forwarded SSE byte/text stream for the terminal
-    /// <c>usage</c> chunk without buffering the whole body. Only lines that start with
-    /// <c>data:</c> and contain the literal <c>"usage"</c> are JSON-parsed; everything else
-    /// passes through untouched. A trailing partial line is held until the next
+    /// Incrementally scans a forwarded SSE byte/text stream for the terminal <c>usage</c> chunk
+    /// without buffering the whole body. Only lines that start with <c>data:</c> and carry a literal
+    /// <c>"usage"</c> or <c>"timings"</c> member are JSON-parsed; everything else passes through
+    /// untouched. llama.cpp reports its counts as <c>timings</c> alone whenever the client's
+    /// <c>stream_options.include_usage</c> block was stripped from the upstream request, so that
+    /// shape has to be sniffed too. A trailing partial line is held until the next
     /// <see cref="Feed"/> call or <see cref="Flush"/> at end of stream.
     /// </summary>
     private sealed class SseUsageSniffer(Action<LlamaCppStreamChunk> onUsage)
@@ -1857,13 +1876,13 @@ partial class OllamaProxyHandler
                 return;
 
             string data = trimmed["data:".Length..].Trim();
-            if (data.Length == 0 || !data.Contains("\"usage\"", StringComparison.Ordinal))
+            if (data.Length == 0 || !CarriesCounts(data))
                 return;
 
             try
             {
                 LlamaCppStreamChunk? chunk = JsonSerializer.Deserialize<LlamaCppStreamChunk>(data, _jsonOptions);
-                if (chunk?.Usage is not null)
+                if (chunk is not null && (chunk.Usage is not null || chunk.Timings is not null))
                     onUsage(chunk);
             }
             catch (JsonException ex)
@@ -1871,6 +1890,15 @@ partial class OllamaProxyHandler
                 Log.Debug(ex, "Skipping unparseable SSE data frame while sniffing usage");
             }
         }
+
+        /// <summary>
+        /// Whether a frame could carry token counts: an OpenAI-style <c>usage</c> object or the
+        /// <c>timings</c> block llama.cpp attaches to its terminal chunk. Cheap enough to run on every
+        /// forwarded line, which is what keeps the hot path free of a JSON parse per token.
+        /// </summary>
+        private static bool CarriesCounts(string data) =>
+            data.Contains("\"usage\"", StringComparison.Ordinal)
+            || data.Contains("\"timings\"", StringComparison.Ordinal);
     }
 
     /// <summary>

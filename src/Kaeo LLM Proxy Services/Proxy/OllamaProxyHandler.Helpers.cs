@@ -1305,10 +1305,28 @@ partial class OllamaProxyHandler
         FillTokenStats(log, chunk?.Usage);
 
         LlamaCppTimings? timings = chunk?.Timings;
-        if (timings is not null)
+        if (timings is null)
+            return;
+
+        log.DraftN = timings.DraftN;
+        log.DraftNAccepted = timings.DraftNAccepted;
+
+        // llama.cpp reports its counts as `timings` and adds a `usage` object only when the client
+        // asked for one through stream_options.include_usage (a block Copilot compatibility strips
+        // from the upstream request, so a llama.cpp-served model logged zero tokens and the Usage
+        // view attributed nothing to it. `prompt_n` covers just the prompt tokens processed in the
+        // final batch, so the ones reused from the cache are added back.
+        if (chunk!.Usage is null)
         {
-            log.DraftN = timings.DraftN;
-            log.DraftNAccepted = timings.DraftNAccepted;
+            int prompt = timings.CacheN + timings.PromptN;
+            if (prompt > 0)
+                log.PromptTokens = prompt;
+            if (timings.PredictedN > 0)
+                log.CompletionTokens = timings.PredictedN;
+            if (timings.CacheN > 0)
+                log.CachedPromptTokens = timings.CacheN;
+
+            log.TotalTokens = log.PromptTokens + log.CompletionTokens;
         }
     }
 

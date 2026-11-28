@@ -549,8 +549,12 @@
                     entries.forEach(function (entry) { $tbody.append(logRow(entry)); });
                     logLoaded[source] = true;
                 } else {
-                    // Incremental batches arrive oldest-first; prepend reversed so newest stays on top.
-                    for (var i = entries.length - 1; i >= 0; i--) $tbody.prepend(logRow(entries[i]));
+                    // Polls answer oldest-first. Prepending them in a reverse loop left each batch in
+                    // that same ascending order while stacking every newer batch on top, so the table
+                    // alternated between time blocks instead of reading newest-to-oldest. Merge the
+                    // batch and re-sort by date and time instead of relying on arrival order.
+                    entries.forEach(function (entry) { $tbody.append(logRow(entry)); });
+                    sortLogRows($tbody);
                 }
                 while ($tbody.children().length > MAX_LOG_ROWS) $tbody.children().last().remove();
                 updateLogCount();
@@ -584,9 +588,25 @@
             .append($('<td class="num">').text(fmt(e.completionTokens)))
             .append($('<td class="num">').text((e.tokensPerSecond || 0).toFixed(1)));
         $row.attr('data-client', e.clientTag || '');
+        // Sort keys for sortLogRows: epoch milliseconds, plus the request id the server breaks ties on.
+        $row.attr('data-ticks', String(timestamp.getTime()));
+        $row.attr('data-req', e.requestId || '');
         if (clientFilter() && clientFilter() !== (e.clientTag || '')) $row.addClass('hidden');
         $row.on('click', function () { logDetail(e); });
         return $row;
+    }
+
+    // Newest first by date and time, then by request id, matching the server's own ordering so a
+    // polled batch can be merged into already-rendered rows without scrambling the sequence.
+    function sortLogRows($tbody) {
+        var rows = $tbody.children().toArray();
+        rows.sort(function (a, b) {
+            var diff = (+b.getAttribute('data-ticks')) - (+a.getAttribute('data-ticks'));
+            if (diff !== 0) return diff;
+            var left = a.getAttribute('data-req') || '', right = b.getAttribute('data-req') || '';
+            return left < right ? 1 : left > right ? -1 : 0;
+        });
+        $tbody.append(rows);
     }
 
     function logDetail(e) {
