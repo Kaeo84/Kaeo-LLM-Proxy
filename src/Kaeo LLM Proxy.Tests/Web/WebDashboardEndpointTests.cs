@@ -185,8 +185,12 @@ public sealed class WebDashboardEndpointTests
         b.Controller.Stats.AddLog(slow);
 
         using JsonDocument poll = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
-        Assert.Equal("slow-model", Assert.Single(poll.RootElement.GetProperty("entries").EnumerateArray())
-            .GetProperty("model").GetString());
+        JsonElement polled = Assert.Single(poll.RootElement.GetProperty("entries").EnumerateArray());
+        Assert.Equal("slow-model", polled.GetProperty("model").GetString());
+
+        // The sequence is an internal cursor only; it must not leak into the payload.
+        Assert.False(polled.TryGetProperty("logSequence", out _),
+            "LogSequence must not be serialized into /api/logs.");
     }
 
     [Fact]
