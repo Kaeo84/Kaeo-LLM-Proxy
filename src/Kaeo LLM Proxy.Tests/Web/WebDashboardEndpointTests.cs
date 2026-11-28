@@ -137,10 +137,101 @@ public sealed class WebDashboardEndpointTests
         JsonElement[] entries = fresh.RootElement.GetProperty("entries").EnumerateArray().ToArray();
         Assert.Equal(["m2", "m1", "m0"], entries.Select(e => e.GetProperty("model").GetString()));
         long next = fresh.RootElement.GetProperty("nextAfter").GetInt64();
-        Assert.Equal(start.AddMinutes(2).Ticks, next);
+        // Nothing has been added to the in-memory queue, so the poll cursor sits at its start:
+        // the fresh load is authoritative for everything already logged.
+        Assert.Equal(0, next);
 
         using JsonDocument poll = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
         Assert.Equal(0, poll.RootElement.GetProperty("entries").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Logs_Poll_DeliversARequestThatFinishedAfterNewerRowsWereAlreadySent()
+    {
+        await using Bundle b = await CreateBundleAsync();
+
+        // A long request is stamped with the moment it STARTED...
+        RequestLog slow = new()
+        {
+            RequestId = "slow",
+            Timestamp = DateTime.UtcNow.AddMinutes(-5),
+            Method = "POST",
+            OllamaPath = "/api/chat",
+            Model = "slow-model",
+            Status = RequestStatus.Success,
+            StatusCode = 200,
+        };
+
+        // ...while a quick request that started later finishes and is polled first, moving the
+        // cursor past the long request's start time.
+        b.Controller.Stats.AddLog(new RequestLog
+        {
+            RequestId = "quick",
+            Timestamp = DateTime.UtcNow,
+            Method = "POST",
+            OllamaPath = "/api/chat",
+            Model = "quick-model",
+            Status = RequestStatus.Success,
+            StatusCode = 200,
+        });
+
+        using JsonDocument first = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&after=0"));
+        JsonElement firstEntries = first.RootElement.GetProperty("entries");
+        Assert.Equal("quick-model", Assert.Single(firstEntries.EnumerateArray()).GetProperty("model").GetString());
+        long next = first.RootElement.GetProperty("nextAfter").GetInt64();
+
+        // The long request finally completes. Its timestamp is older than everything already sent,
+        // so a timestamp cursor would drop it; the insertion cursor still hands it over.
+        b.Controller.Stats.AddLog(slow);
+
+        using JsonDocument poll = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
+        Assert.Equal("slow-model", Assert.Single(poll.RootElement.GetProperty("entries").EnumerateArray())
+            .GetProperty("model").GetString());
+    }
+
+    [Fact]
+    public async Task Logs_FreshLoadCursor_DoesNotReplayEntriesAlreadyRendered()
+    {
+        await using Bundle b = await CreateBundleAsync();
+        foreach (string model in new[] { "one", "two" })
+        {
+            b.Controller.Stats.AddLog(new RequestLog
+            {
+                RequestId = model,
+                Timestamp = DateTime.UtcNow,
+                Method = "POST",
+                OllamaPath = "/api/chat",
+                Model = model,
+                Status = RequestStatus.Success,
+                StatusCode = 200,
+            });
+        }
+
+        using JsonDocument fresh = JsonDocument.Parse(await b.Client.GetStringAsync("/api/logs?source=proxy&limit=10"));
+        long next = fresh.RootElement.GetProperty("nextAfter").GetInt64();
+
+        // The fresh load's cursor is the sequence high-water mark, so it is already past both
+        // entries regardless of whether the persistence channel has flushed them to the database.
+        Assert.True(next >= 2, $"expected the cursor to pass both entries, got {next}.");
+
+        // The rows the fresh load just rendered must not come back on the first poll.
+        using JsonDocument replay = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
+        Assert.Equal(0, replay.RootElement.GetProperty("entries").GetArrayLength());
+
+        b.Controller.Stats.AddLog(new RequestLog
+        {
+            RequestId = "three",
+            Timestamp = DateTime.UtcNow,
+            Method = "POST",
+            OllamaPath = "/api/chat",
+            Model = "three",
+            Status = RequestStatus.Success,
+            StatusCode = 200,
+        });
+
+        using JsonDocument poll = JsonDocument.Parse(await b.Client.GetStringAsync($"/api/logs?source=proxy&after={next}"));
+        Assert.Equal("three", Assert.Single(poll.RootElement.GetProperty("entries").EnumerateArray())
+            .GetProperty("model").GetString());
     }
 
     [Fact]

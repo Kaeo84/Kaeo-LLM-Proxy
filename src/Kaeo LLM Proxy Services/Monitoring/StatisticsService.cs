@@ -18,6 +18,14 @@ namespace Kaeo.LlmProxy.Services;
 internal class StatisticsService : IDisposable
 {
     private readonly ConcurrentQueue<RequestLog> _logs = new();
+
+    // Monotonic insertion counter for _logs, stamped in AddLog so it reflects completion order
+    // rather than the request-start Timestamp. Dashboard polls page by it, which is what lets a
+    // long-running request be delivered after rows that are already newer than it. Deliberately
+    // never reset: Reset() clears the queue, but a client holding a cursor must not be re-sent
+    // entries that reappear in the queue.
+    private long _logSequence;
+
     private int _maxEntries;
     private int _retentionHours;
 
@@ -206,6 +214,7 @@ internal class StatisticsService : IDisposable
         // original is handed to the persistence channel below with its bodies intact). Only the
         // most recent _maxEntriesWithBodies copies keep their bodies; older ones are trimmed.
         RequestLog inMemory = CreateInMemoryCopy(entry);
+        inMemory.LogSequence = Interlocked.Increment(ref _logSequence);
         _logs.Enqueue(inMemory);
         if (inMemory.RequestBody is not null || inMemory.ResponseBody is not null)
         {
@@ -305,6 +314,13 @@ internal class StatisticsService : IDisposable
         RequestBytes = source.RequestBytes,
         ResponseBytes = source.ResponseBytes,
     };
+
+    /// <summary>
+    /// Insertion position of the most recently added entry, or 0 when nothing has been added since
+    /// start-up. A client that has just rendered a fresh load polls from this value, so only entries
+    /// added afterwards are streamed in.
+    /// </summary>
+    public long CurrentLogSequence => Interlocked.Read(ref _logSequence);
 
     public IReadOnlyList<RequestLog> GetRecentLogs()
     {

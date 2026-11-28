@@ -470,6 +470,9 @@
     loaders.dashboard = refreshDashboard;
 
     // ------------------------------------------------------------------ requests tab
+    // Opaque per-source poll cursor from the server: an insertion sequence, not a timestamp, so
+    // a request that finishes late is still delivered even though it started earlier than rows
+    // already on screen.
     var logCursors = { proxy: 0, mcp: 0, web: 0, nonproxied: 0 };
     var logLoaded = { proxy: false, mcp: false, web: false, nonproxied: false };
     var renderedLogSource = null;
@@ -542,7 +545,9 @@
         api('GET', url, undefined, { silent: true })
             .then(function (data) {
                 if (generation !== logGeneration || source !== currentSource()) return;
-                logCursors[source] = data.nextAfter || logCursors[source];
+                // 0 is a valid cursor on an instance that has not logged anything yet, so test the
+                // type rather than the truthiness of the value.
+                if (typeof data.nextAfter === 'number') logCursors[source] = data.nextAfter;
                 var $tbody = $('#log-table tbody');
                 var entries = data.entries || [];
                 if (initial) {

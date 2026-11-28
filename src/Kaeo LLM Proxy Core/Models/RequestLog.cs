@@ -48,6 +48,17 @@ internal sealed class RequestLog
     public string RequestId { get; set; } = string.Empty;
 
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Insertion position in the in-memory log queue, assigned when the entry is added (that is,
+    /// when the request finished) rather than when it started. The dashboard's incremental poll
+    /// pages by this value: <see cref="Timestamp"/> is stamped at request start, so a long-running
+    /// request completes after rows that are already newer than it, and a timestamp cursor would
+    /// silently skip it. Not persisted and not part of the API payload.
+    /// </summary>
+    [JsonIgnore]
+    public long LogSequence { get; set; }
+
     public string Method { get; set; } = string.Empty;
     public string OllamaPath { get; set; } = string.Empty;
     public string UpstreamPath { get; set; } = string.Empty;

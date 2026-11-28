@@ -247,11 +247,14 @@ internal static partial class DashboardEndpoints
 
     private static void MapLogs(WebApplication app, ProxyHostController controller)
     {
-        // Two modes sharing a timestamp-ticks cursor (RequestLog has no numeric id):
-        //  - `after` omitted: fresh load — the newest `limit` entries straight from the database
-        //    (the full retention window, not just the in-memory queue), newest first.
-        //  - `after` supplied: incremental poll of the in-memory window — strictly newer entries,
-        //    oldest first.
+        // Two modes sharing an insertion-sequence cursor (RequestLog has no numeric id, and its
+        // Timestamp is stamped when the request STARTED, so it cannot page a log that is appended
+        // when the request FINISHED):
+        //  - `after` omitted: fresh load - the newest `limit` entries straight from the database
+        //    (the full retention window, not just the in-memory queue), newest first, with the
+        //    current sequence as the cursor for the polls that follow.
+        //  - `after` supplied: incremental poll of the in-memory window - entries added after that
+        //    sequence, in arrival order.
         // Only Admin sessions see every user's traffic; every other role is limited to requests
         // attributed to the signed-in user (via API key), matching what Read Only has always shown.
         app.MapGet("/api/logs", (HttpContext context, string? source, long? after, int? limit) =>
@@ -265,17 +268,23 @@ internal static partial class DashboardEndpoints
             int? filterUserId = fullVisibility ? null : callerId;
 
             int take = Math.Clamp(limit ?? 100, 1, 1000);
+            StatisticsService stats = StatsForSource(controller, source);
 
             if (after is null)
             {
+                // Read the cursor BEFORE querying the database, so an entry that lands while the
+                // query runs is still newer than the cursor and gets polled in. The one gap this
+                // leaves is an entry that is in memory but not yet flushed by the persistence
+                // channel when the cursor is read; that window is the channel's flush latency and
+                // the row still appears on the next full reload.
+                long highWater = stats.CurrentLogSequence;
                 try
                 {
                     IReadOnlyList<RequestLog> recent = controller.Database.QueryRecent(take, LogSourceFor(source), filterUserId);
                     Dictionary<int, string> aliases = BuildRequestorAliases(controller.Database.LoadProxyUsers());
                     foreach (RequestLog entry in recent)
                         AttachDerivedFields(entry, aliases);
-                    long newest = recent.Count > 0 ? recent[0].Timestamp.Ticks : 0;
-                    return Results.Json(new { entries = recent, nextAfter = newest });
+                    return Results.Json(new { entries = recent, nextAfter = highWater });
                 }
                 catch (Exception ex) when (ex is IOException or SqliteException)
                 {
@@ -284,12 +293,10 @@ internal static partial class DashboardEndpoints
                 }
             }
 
-            StatisticsService stats = StatsForSource(controller, source);
             long cursor = after.Value;
             List<RequestLog> entries = stats.GetRecentLogs()
-                .Where(e => e.Timestamp.Ticks > cursor && (filterUserId is null || e.UserId == filterUserId))
-                .OrderBy(e => e.Timestamp.Ticks)
-                .ThenBy(e => e.RequestId, StringComparer.Ordinal)
+                .Where(e => e.LogSequence > cursor && (filterUserId is null || e.UserId == filterUserId))
+                .OrderBy(e => e.LogSequence)
                 .Take(take)
                 .ToList();
 
@@ -297,7 +304,7 @@ internal static partial class DashboardEndpoints
             foreach (RequestLog entry in entries)
                 AttachDerivedFields(entry, requestorAliases);
 
-            long next = entries.Count > 0 ? entries[^1].Timestamp.Ticks : cursor;
+            long next = entries.Count > 0 ? entries[^1].LogSequence : cursor;
             return Results.Json(new { entries, nextAfter = next });
         });
 
